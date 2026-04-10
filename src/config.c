@@ -213,7 +213,7 @@ static struct iflist *iface_find(char *ifname, uint32_t addr)
     struct iflist *entry;
 
     LIST_FOREACH(entry, &il, link) {
-	if (!strcmp(entry->ifname, ifname))
+	if (!strcasecmp(entry->ifname, ifname))
 	    return entry;
 
 	if (addr && addr != 0xffffffff && addr == entry->addr)
@@ -1639,7 +1639,7 @@ static uint32_t ifname2addr(char *s)
     struct uvif *v;
 
     for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
-	if (!strcmp(v->uv_name, s))
+	if (!strcasecmp(v->uv_name, s))
 	    return v->uv_lcl_addr;
     }
 
