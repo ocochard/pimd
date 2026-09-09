@@ -623,6 +623,7 @@ extern void	delete_grp_mask		(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_
 extern void	delete_rp		(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_list,
                                          uint32_t rp_addr);
 extern void	delete_rp_list		(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_list);
+extern int	i_am_rp			(uint32_t rp_addr);
 extern rpentry_t *rp_match		(uint32_t group);
 extern rp_grp_entry_t *rp_grp_match	(uint32_t group);
 extern rpentry_t *rp_find		(uint32_t rp_address);

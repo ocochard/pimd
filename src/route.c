@@ -934,7 +934,7 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 
 	mrt->flags &= ~MRTF_NEW;
 	/* set PIMREG_VIF as outgoing interface ONLY if I am not the RP */
-	if (mrt->group->rpaddr != my_cand_rp_address)
+	if (!i_am_rp(mrt->group->rpaddr))
 	    PIMD_VIFM_SET(PIMREG_VIF, mrt->joined_oifs);
 	change_interfaces(mrt,
 			  mrt->incoming,
@@ -1366,7 +1366,7 @@ void age_routes(void)
 	rpentry_save.upstream = rp->upstream;
 
 	update_rp_iif = FALSE;
-	if ((ucast_flag == TRUE) && (rp->address != my_cand_rp_address)) {
+	if ((ucast_flag == TRUE) && !i_am_rp(rp->address)) {
 	    /* I am not the RP. If I was the RP, then the iif is
 	     * register_vif and no need to reset it. */
 	    if (set_incoming(rp, PIM_IIF_RP) != TRUE) {

@@ -39,6 +39,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
   is now _disabled_
 
 ### Fixes
+- Fix `I_am_RP()` tests being written against `my_cand_rp_address`, which
+  is only ever assigned when parsing `cand_rp`.  On a router whose RP
+  comes from a static `rp-address` in `pimd.conf` it stays 0.0.0.0, so
+  the router that *is* the RP answered "no" to every internal test of
+  whether it is one.  RFC 7761 sec. 4.4.2 defines `I_am_RP(G)` from the
+  group-to-RP mapping, not from candidacy, so these now ask whether the
+  group's RP address is local.  Visible effects: the RP no longer adds
+  the register vif to the oif list of its own directly connected sources
+  (it was encapsulating traffic to itself), no longer sends a Join/Prune
+  towards S for an (S,G) with an empty oif list, which the end of RFC
+  2362 sec. 3.3.2 says must not be sent, and no longer drops every
+  Register when run with `-t TABLE_ID`
 - Remove GNU:isms like `%m` and `__progname` to be able to build on
   systems that don't have them, like musl libc in e.g. Alpine Linux
 - Issue #38: Allow enable `phyint` based on ifname or address.

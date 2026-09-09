@@ -611,12 +611,15 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
      * If instance specific multicast routing table is in use, check
      * that we are the target of the register packet. Otherwise we
      * might end up responding to register packet belonging to another
-     * pimd instance. If we are not an RP candidate, we shouldn't have
-     * pimreg interface and shouldn't receive register packets, but we'll
-     * check the cand_rp flag anyway, just to be on the safe side.
+     * pimd instance.
+     *
+     * This is RFC 7761 sec. 4.4.2's "if (outer.dst is not one of my
+     * addresses) drop the packet silently".  It used to be gated on
+     * cand_rp_flag as well, which dropped every Register on a pimd
+     * whose RP came from a static rp-address rather than an election.
      */
     if (mrt_table_id != 0) {
-        if (!cand_rp_flag || my_cand_rp_address != reg_dst) {
+        if (!i_am_rp(reg_dst)) {
             IF_DEBUG(DEBUG_PIM_REGISTER)
                 logit(LOG_DEBUG, 0, "PIM register: packet from %s to %s is not destined for us",
 		      inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)));
@@ -1165,7 +1168,7 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 		/* Upstream router toward S */
 		if (PIMD_VIFM_ISEMPTY(entry_oifs)) {
 		    if (mrtentry->group->active_rp_grp &&
-			mrtentry->group->rpaddr == my_cand_rp_address) {
+			i_am_rp(mrtentry->group->rpaddr)) {
 			/* (S,G) at the RP. Don't send Join/Prune
 			 * (see the end of Section 3.3.2)
 			 */

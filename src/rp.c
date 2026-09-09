@@ -786,6 +786,33 @@ int remap_grpentry(grpentry_t *grpentry_ptr)
 }
 
 
+/*
+ * RFC 7761 sec. 4.4.2: "I_am_RP(G) is true if the group-to-RP mapping
+ * indicates that this router is the RP for the group."
+ *
+ * The mapping, not the candidacy.  A router is the RP for a group
+ * whenever the RP that group maps to is one of its own addresses, no
+ * matter whether it got there by winning a Cand-RP election or by a
+ * static rp-address line in pimd.conf.
+ *
+ * my_cand_rp_address cannot answer that question and must not be used
+ * for it: it is only assigned while parsing cand_rp (config.c), so on a
+ * statically configured RP it stays 0.0.0.0 and every test written
+ * against it is false on the very router that is the RP.  It is also a
+ * single address, while I_am_RP() is a function of the group -- two
+ * rp-address lines covering different ranges cannot both be represented
+ * in one scalar.  Keep my_cand_rp_address for what it actually means:
+ * the address this router advertises in its own Cand-RP-Adv.
+ */
+int i_am_rp(uint32_t rp_addr)
+{
+    if (rp_addr == INADDR_ANY_N)
+	return FALSE;
+
+    return local_address(rp_addr) != NO_VIF;
+}
+
+
 rpentry_t *rp_match(uint32_t group)
 {
     rp_grp_entry_t *ptr;
