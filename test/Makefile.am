@@ -1,4 +1,6 @@
 EXTRA_DIST         = lib.sh mping.c pod.sh rp.sh shared.sh single.sh three.sh two.sh
+# Not in TESTS: needs FreeBSD vnet jails and root, see the script header
+EXTRA_DIST        += freebsd-lab.sh
 CLEANFILES         = *~ *.trs *.log
 
 noinst_PROGRAMS    = mping
