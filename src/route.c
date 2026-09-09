@@ -958,15 +958,23 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
      * too many upcalls. */
 
     if (mrt->incoming == iif) {
+	/* The source is alive, restart the (S,G) entry timer.  This has to
+	 * happen even when the oif list is empty: a router that is both the
+	 * DR for a directly connected source and the RP for the group adds
+	 * neither the register vif nor any leaf to the oifs, so nothing else
+	 * would ever refresh the timer.  age_routes() then deletes the entry
+	 * on its next run and every packet of an active source recreates it,
+	 * which is why sources appear and disappear from `pimctl show mrt`.
+	 */
+	/* TODO: check that the RPbit is not set? */
+	/* TODO: XXX: TIMER implem. dependency! */
+	if ((mrt->flags & MRTF_SG) && mrt->entry_timer < PIM_DATA_TIMEOUT)
+	    SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
+
 	if (!PIMD_VIFM_ISEMPTY(mrt->oifs)) {
 	    uint32_t rp_addr;
 
 	    if (mrt->flags & MRTF_SG) {
-		/* TODO: check that the RPbit is not set? */
-		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->entry_timer < PIM_DATA_TIMEOUT)
-		    SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
-
 		if (!(mrt->flags & MRTF_SPT)) {
 		    mrp = mrt->group->grp_route;
 		    if (!mrp)

@@ -52,6 +52,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   elections. The change makes `pimd` compatible with Cisco IOS, but it
   also makes `pimd` v3.0 *incompatible* with earlier `pimd`
   releases. Found and fixed by Xiaodong Xu
+- Issue #251: Sources kept appearing and disappearing from the multicast
+  routing table on a router acting both as DR for a directly connected
+  source and as RP for the group.  With no members for the group the
+  (S,G) outgoing interface list is empty, and the entry timer was only
+  restarted for entries that had outgoing interfaces, so every entry was
+  aged out a few seconds after a cache miss recreated it
 
 
 [v2.3.2][] - 2016-03-10
