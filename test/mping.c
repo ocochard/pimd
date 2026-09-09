@@ -119,6 +119,7 @@ int quiet = 0;
 
 void init_socket(int ifindex)
 {
+	struct sockaddr_in bindaddr;
 	int off = 0;
 	int on = 1;
 
@@ -141,8 +142,19 @@ void init_socket(int ifindex)
 	mcaddr.sin_addr.s_addr = inet_addr(arg_mcaddr);
 	mcaddr.sin_port = htons(arg_mcport);
 
-	/* bind to multicast address to socket */
-	if ((bind(sd, (struct sockaddr *)&mcaddr, sizeof(mcaddr))) < 0)
+	/*
+	 * Bind the wildcard address rather than the group.  On the BSDs the
+	 * bound address is also used as the source address of outgoing
+	 * datagrams, so binding the group would emit packets with the group
+	 * in the IP source field, which no router will ever forward.  Linux
+	 * picks a source from the route instead and hides the problem.
+	 * Delivery of the group is handled by IP_ADD_MEMBERSHIP below.
+	 */
+	bindaddr.sin_family = AF_INET;
+	bindaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	bindaddr.sin_port = htons(arg_mcport);
+
+	if ((bind(sd, (struct sockaddr *)&bindaddr, sizeof(bindaddr))) < 0)
 		err(1, "bind() failed");
 
 	/* construct a IGMP join request structure */
