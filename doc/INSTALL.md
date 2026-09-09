@@ -109,7 +109,7 @@ available in all major operating systems
 
    Valid debug levels: `dvmrp_prunes`, `dvmrp_mrt`, `dvmrp_neighbors`,
    `dvmrp_timers`, `igmp_proto`, `igmp_timers`, `igmp_members`, `trace`,
-   `timeout`, `pkt`, `interfaces`, `kernel`, `cache`, `rsrr`,
+   `timeout`, `pkt`, `interfaces`, `kernel`, `cache`,
    `pim_hello`, `pim_register`, `pim_join_prune`, `pim_bootstrap`,
    `pim_asserts`, `pim_cand_rp`, `pim_routes`, `pim_timers`, `pim_rpf`
 

@@ -26,10 +26,5 @@ if BSD
 pimd_SOURCES    += routesock.c
 endif
 
-if RSRR
-AM_CPPFLAGS     += -DPIM
-pimd_SOURCES    += rsrr.c		rsrr_var.h	rsrr.h
-endif
-
 pimctl_SOURCES   = pimctl.c		queue.h
 pimctl_LDADD     = $(LIBS) $(LIBOBJS)

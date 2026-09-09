@@ -78,7 +78,6 @@ extern int              log_nmsgs;
 #define DEBUG_IF              0x00000400
 #define DEBUG_KERN            0x00000800
 #define DEBUG_MFC             0x00001000
-#define DEBUG_RSRR            0x00002000
 
 /* PIM related */
 #define DEBUG_PIM_HELLO       0x00004000

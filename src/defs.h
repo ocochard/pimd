@@ -133,10 +133,6 @@ typedef void (*ihfunc_t) (int);
 #include "vif.h"
 #include "debug.h"
 #include "pathnames.h"
-#ifdef RSRR
-#include "rsrr.h"
-#include "rsrr_var.h"
-#endif /* RSRR */
 
 /*
  * Miscellaneous constants and macros
@@ -255,12 +251,6 @@ typedef void (*ihfunc_t) (int);
 				- sizeof(pim_jp_header_t))
 #define MAX_JP_MESSAGE_POOL_NUMBER 8
 
-#ifdef RSRR
-#define BIT_ZERO(X)		((X) = 0)
-#define BIT_SET(X,n)		((X) |= 1 << (n))
-#define BIT_CLR(X,n)		((X) &= ~(1 << (n)))
-#define BIT_TST(X,n)		((X) & 1 << (n))
-#endif /* RSRR */
 
 #if defined(SYSV)
 #define bcopy(a, b, c)		memcpy((b), (a), (c))
@@ -632,20 +622,6 @@ extern int	create_pim_bootstrap_message (char *send_buff);
 extern int	check_mrtentry_rp	(mrtentry_t *mrtentry_ptr, uint32_t rp_addr);
 extern void	age_misc		(void);
 
-#ifdef RSRR
-#ifdef PIM
-#define gtable				mrtentry
-#endif /* PIM */
-#define RSRR_NOTIFICATION_OK		TRUE
-#define RSRR_NOTIFICATION_FALSE		FALSE
-
-/* rsrr.c */
-extern void	rsrr_init		(void);
-extern void	rsrr_clean		(void);
-extern void	rsrr_cache_send		(struct gtable *, int);
-extern void	rsrr_cache_clean	(struct gtable *);
-extern void	rsrr_cache_bring_up	(struct gtable *);
-#endif /* RSRR */
 
 /* trace.c */
 /* u_int is promoted uint8_t */

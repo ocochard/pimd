@@ -211,10 +211,6 @@ typedef struct mrtentry {
     u_int		 assert_timer;
     u_int		 assert_rate_timer;
     struct kernel_cache *kernel_cache;	/* List of the kernel cache entries */
-#ifdef RSRR
-    struct rsrr_cache	*rsrr_cache;	/* Used to save RSRR requests for
-					 * route change notification. */
-#endif /* RSRR */
 } mrtentry_t;
 
 

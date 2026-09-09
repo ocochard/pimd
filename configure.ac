@@ -97,12 +97,6 @@ AC_ARG_ENABLE(memory_save,
 			new interfaces.]),,
 	enable_memory_save=no)
 
-AC_ARG_ENABLE(rsrr,
-	AS_HELP_STRING([--enable-rsrr], [Routing Support for Resource Reservation
-			currently used by RSVP (EXPERIMENTAL).  For details, see
-			http://tools.ietf.org/html/draft-ietf-rsvp-routing-02]),,
-	enable_rsrr=no)
-
 AC_ARG_ENABLE(test,
         AS_HELP_STRING([--enable-test], [enable tests, requries unshare, tshark, etc.]),
         enable_test="$enableval", enable_test="no")
@@ -131,9 +125,6 @@ AS_IF([test "x$enable_kernel_mfc" = "xyes"], [
 AS_IF([test "x$enable_memory_save" = "xyes"], [
         AC_DEFINE(SAVE_MEMORY, 1, [Save 4 bytes/unconfigured interface/routing entry.])])
 
-AS_IF([test "x$enable_rsrr" = "xyes"], [
-        AC_DEFINE(RSRR, 1, [Routing Support for Resource Reservation.])])
-
 AS_IF([test "x$enable_exit_on_error" = "xno"], [
 	AC_DEFINE(CONTINUE_ON_ERROR, 1, [Do not exit on error messages (LOG_ERR).])])
 
@@ -153,7 +144,6 @@ AS_IF([test "x$with_systemd" != "xno"],
 
 AM_CONDITIONAL(BSD,         [test "x$ac_cv_header_net_if_dl_h"     = "xyes"])
 AM_CONDITIONAL(LINUX,       [test "x$ac_cv_header_linux_netlink_h" = "xyes"])
-AM_CONDITIONAL(RSRR,        [test "x$enable_rsrr"                  = "xyes"])
 AM_CONDITIONAL(SYSTEMD,     [test "x$with_systemd"                != "xno"])
 AM_CONDITIONAL(ENABLE_TEST, [test "x$enable_test"                 != "xno"])
 
@@ -194,7 +184,6 @@ Optional features:
   Kernel (*,G) support..: $enable_kernel_mfc
   Kernel MAX VIFs.......: $max_vifs
   Memory save...........: $enable_memory_save
-  RSRR (experimental)...: $enable_rsrr
   Exit on error.........: $enable_exit_on_error
   systemd...............: $with_systemd
   Unit tests............: $enable_test

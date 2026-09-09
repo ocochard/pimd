@@ -417,9 +417,6 @@ int main(int argc, char *argv[])
     init_route();
     init_rp_and_bsr();   /* Must be after init_vifs() */
     add_static_rp();	 /* Must be after init_vifs() */
-#ifdef RSRR
-    rsrr_init();
-#endif /* RSRR */
 
     sa.sa_handler = handle_signals;
     sa.sa_flags = 0;	/* Interrupt system calls */
@@ -593,9 +590,6 @@ static void cleanup(void)
 	    send_pim_hello(v, 0);
     }
 
-#ifdef RSRR
-    rsrr_clean();
-#endif /* RSRR */
 
     /* TODO: XXX (not in the spec): if I am the BSR, somehow inform the
      * other routers I am going down and need to elect another BSR?

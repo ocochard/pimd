@@ -8,6 +8,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
 **Note:** command line arguments in v3.0 are not compatible with v2.x!
 
 ### Changes
+- Remove RSRR, Routing Support for Resource Reservation, the RSVP
+  interface built with `--enable-rsrr`.  It implemented
+  draft-ietf-rsvp-routing-02, an Internet-Draft that expired without
+  becoming an RFC, was disabled by default, was never covered by a test,
+  and its own TODO entry recorded that it had never been tested.  The
+  `--enable-rsrr` configure flag and the `rsrr` debug level of `-d` are
+  gone with it
 - Remove the (*,*,RP) and PIM Multicast Border Router (PMBR) features.
   RFC 7761, which obsoletes RFC 4601 and is the current PIM-SM standard,
   removed both in its Appendix A for lack of implementation and

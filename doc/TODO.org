@@ -184,12 +184,6 @@ very large)
 
 ** Do more testings for SPT switch, Join/Prune, asserts, etc...
 
-** Test the (*,*,RP) code (need PIM/DVMRP border router to do so)
-
-** Test the RSRR (RSVP support) code
-
-** Send Initial_Reply RSRR message if the interfaces detected by pimd change
-
 ** SNMP support, RFC2934
 
 * Issues by function name:

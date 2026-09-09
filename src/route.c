@@ -616,9 +616,6 @@ int change_interfaces(mrtentry_t *mrt,
 	    delete_mrt_flag = TRUE;
 	} else {
 	    delete_mrt_flag = FALSE;
-#ifdef RSRR
-	    rsrr_cache_send(mrt, RSRR_NOTIFICATION_OK);
-#endif /* RSRR */
 	}
 
 	if (mrt->flags & MRTF_KERNEL_CACHE) {
@@ -708,9 +705,6 @@ int change_interfaces(mrtentry_t *mrt,
 	    delete_mrt_flag = TRUE;
 	} else {
 	    delete_mrt_flag = FALSE;
-#ifdef RSRR
-	    rsrr_cache_send(mrt, RSRR_NOTIFICATION_OK);
-#endif
 	}
 
 	if (mrt->flags & MRTF_KERNEL_CACHE) {
@@ -907,7 +901,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	    APPLY_SCOPE(group, mrt);
 	    k_chg_mfc(igmp_socket, mfc_source, group, iif, mrt->oifs, rp_addr);
 
-	    /* No need for RSRR message, because nothing has changed. */
 	}
 
 	return;			/* iif match */
@@ -936,9 +929,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 		/* marian: not sure if we reach here with our scoped traffic? */
 		APPLY_SCOPE(group, mrt);
 		k_chg_mfc(igmp_socket, mfc_source, group, iif, mrp->oifs, mrt->group->rpaddr);
-#ifdef RSRR
-		rsrr_cache_send(mrp, RSRR_NOTIFICATION_OK);
-#endif /* RSRR */
 	    }
 	}
     }
@@ -996,9 +986,6 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
 		k_chg_mfc(igmp_socket, source, group, iif,
 			  mrt->oifs, mrt->group->rpaddr);
 		FIRE_TIMER(mrt->jp_timer);
-#ifdef RSRR
-		rsrr_cache_send(mrt, RSRR_NOTIFICATION_OK);
-#endif /* RSRR */
 
 		return;
 	    }

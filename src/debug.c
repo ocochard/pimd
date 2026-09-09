@@ -135,7 +135,6 @@ static struct debugname {
     {	"pim_register",	    DEBUG_PIM_REGISTER,	  5	    },
     {	"pim-register",	    DEBUG_PIM_REGISTER,	  5	    },
     {	"rpf",		    DEBUG_RPF,		  3	    },
-    {	"rsrr",		    DEBUG_RSRR,		  2	    },
     {	"timeout",	    DEBUG_TIMEOUT,	  2	    },
     {	"callout",	    DEBUG_TIMEOUT,	  3	    },
     {	"timers",	    DEBUG_TIMER,	  1	    },

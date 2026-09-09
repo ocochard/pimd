@@ -267,9 +267,6 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	    mrt_wc->metric   = rp->metric;
 	    mrt_wc->preference = rp->preference;
 	    move_kernel_cache(mrt_wc, 0);
-#ifdef RSRR
-	    rsrr_cache_bring_up(mrt_wc);
-#endif /* RSRR */
 	}
 
 	if (!(flags & MRTF_SG))
@@ -331,9 +328,6 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 		mrt->preference = src->preference;
 	    }
 	    move_kernel_cache(mrt, 0);
-#ifdef RSRR
-	    rsrr_cache_bring_up(mrt);
-#endif /* RSRR */
 	}
 
 	return mrt;
@@ -450,10 +444,6 @@ void delete_mrtentry(mrtentry_t *mrt)
     if (mrt->flags & MRTF_KERNEL_CACHE)
 	delete_mrtentry_all_kernel_cache(mrt);
 
-#ifdef RSRR
-    /* Tell the reservation daemon */
-    rsrr_cache_clean(mrt);
-#endif /* RSRR */
 
     if (mrt->flags & MRTF_SG) {
 	/* (S,G) mrtentry */
@@ -768,9 +758,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->upstream = NULL;
     mrt->metric = 0;
     mrt->preference = 0;
-#ifdef RSRR
-    mrt->rsrr_cache = NULL;
-#endif /* RSRR */
 
     /* XXX: TODO: if we are short in memory, we can reserve as few as possible
      * space for vif timers (per group and/or routing entry), but then everytime
