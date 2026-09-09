@@ -42,7 +42,6 @@
 #define MRTF_REG_SUPP		0x0800	/* register suppress	???	    */
 #define MRTF_ASSERTED		0x1000	/* upstream is not that of src ???  */
 #define MRTF_SG			0x2000	/* (S,G) pure, not hanging off of (*,G)*/
-#define MRTF_PMBR		0x4000	/* (*,*,RP) entry (for interop)	    */
 #define MRTF_MFC_CLONE_SG	0x8000	/* clone (S,G) MFC from (*,G) or (*,*,RP) */
 
 /* Macro to duplicate oif info (oif bits, timers) */
@@ -203,7 +202,6 @@ typedef struct mrtentry {
 					 */
     uint32_t		 metric;	/* Routing Metric for this entry    */
     uint32_t		 preference;	/* The metric preference value	    */
-    uint32_t		 pmbr_addr;	/* The PMBR address (for interop)   */
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint16_t		*vif_deletion_delay; /* vifs deletion delay list    */
     uint16_t		 flags;		/* The MRTF_* flags		    */

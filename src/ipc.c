@@ -524,7 +524,6 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	if (r->flags & MRTF_ASSERTED)     fprintf(fp, " ASSERTED");
 	if (r->flags & MRTF_REG_SUPP)     fprintf(fp, " REG_SUPP");
 	if (r->flags & MRTF_SG)	          fprintf(fp, " SG");
-	if (r->flags & MRTF_PMBR)	  fprintf(fp, " PMBR");
 	fprintf(fp, "\n");
 
 	if (!detail)
@@ -600,25 +599,6 @@ static int show_pim_mrt(FILE *fp)
 				: (g->active_rp_grp
 				   ? inet_fmt(g->rpaddr, s3, sizeof(s3))
 				   : "NULL"));
-
-			dump_route(fp, r);
-		}
-	}
-
-	for (rp = cand_rp_list; rp; rp = rp->next) {
-		r = rp->rpentry->mrtlink;
-		if (r) {
-			if (r->flags & MRTF_KERNEL_CACHE) {
-				for (kc = r->kernel_cache; kc; kc = kc->next)
-					number_of_cache_mirrors++;
-			}
-
-			if (detail)
-				fprintf(fp, "\nSource            Group            RP Address       Flags =\n");
-			fprintf(fp, "%-15s   %-15s  %-15s ",
-				inet_fmt(r->source->address, s1, sizeof(s1)),
-				"ANY",
-				"");
 
 			dump_route(fp, r);
 		}

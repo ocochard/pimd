@@ -504,16 +504,6 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
     }
 
     PIMD_VIFM_CLRALL(oifs);
-    if (!(mrt->flags & MRTF_PMBR)) {
-	/* Either (*,G) or (S,G). Merge with the oifs from the (*,*,RP) */
-	mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	if (mrp) {
-	    PIMD_VIFM_MERGE(oifs, mrp->joined_oifs, oifs);
-	    PIMD_VIFM_CLR_MASK(oifs, mrp->pruned_oifs);
-	    PIMD_VIFM_MERGE(oifs, mrp->leaves, oifs);
-	    PIMD_VIFM_CLR_MASK(oifs, mrp->asserted_oifs);
-	}
-    }
     if (mrt->flags & MRTF_SG) {
 	/* (S,G) entry. Merge with the oifs from (*,G) */
 	grp = mrt->group->grp_route;
@@ -619,95 +609,6 @@ int change_interfaces(mrtentry_t *mrt,
 	FIRE_TIMER(mrt->jp_timer);
     }
     PIMD_VIFM_COPY(new_real_oifs, mrt->oifs);
-
-    if (mrt->flags & MRTF_PMBR) {
-	/* (*,*,RP) entry */
-	rp = mrt->source;
-	if (!rp)
-	    return 0;		/* Shouldn't happen */
-
-	rp->incoming = new_iif;
-	cand_rp = rp->cand_rp;
-
-	if (PIMD_VIFM_ISEMPTY(new_real_oifs)) {
-	    delete_mrt_flag = TRUE;
-	} else {
-	    delete_mrt_flag = FALSE;
-#ifdef RSRR
-	    rsrr_cache_send(mrt, RSRR_NOTIFICATION_OK);
-#endif /* RSRR */
-	}
-
-	if (mrt->flags & MRTF_KERNEL_CACHE) {
-	    /* Update the kernel MFC entries */
-	    if (delete_mrt_flag == TRUE) {
-		/*
-		 * XXX: no need to send RSRR message. Will do it when
-		 * deleting the mrtentry.
-		 */
-		delete_mrtentry_all_kernel_cache(mrt);
-	    } else {
-		/* here mrt->source->address is the RP address */
-		for (kc = mrt->kernel_cache; kc; kc = kc->next)
-		    k_chg_mfc(igmp_socket, kc->source,
-			      kc->group, new_iif,
-			      new_real_oifs, mrt->source->address);
-	    }
-	}
-
-	/*
-	 * Update all (*,G) entries associated with this RP.
-	 * The particular (*,G) outgoing are not changed, but the change
-	 * in the (*,*,RP) oifs may have affect the real oifs.
-	 */
-	fire_timer_flag = FALSE;
-	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
-	    for (grp = rp_grp->grplink; grp; grp = grp->rpnext) {
-		if (grp->grp_route) {
-		    if (change_interfaces(grp->grp_route, new_iif,
-					  grp->grp_route->joined_oifs,
-					  grp->grp_route->pruned_oifs,
-					  grp->grp_route->leaves,
-					  grp->grp_route->asserted_oifs,
-					  flags))
-			fire_timer_flag = TRUE;
-		} else {
-		    /* Change all (S,G) entries if no (*,G) */
-		    for (srcs = grp->mrtlink; srcs; srcs = srcs->grpnext) {
-			if (srcs->flags & MRTF_RP) {
-			    if (change_interfaces(srcs, new_iif,
-						  srcs->joined_oifs,
-						  srcs->pruned_oifs,
-						  srcs->leaves,
-						  srcs->asserted_oifs,
-						  flags))
-				fire_timer_flag = TRUE;
-			} else {
-			    if (change_interfaces(srcs,
-						  srcs->incoming,
-						  srcs->joined_oifs,
-						  srcs->pruned_oifs,
-						  srcs->leaves,
-						  srcs->asserted_oifs,
-						  flags))
-				fire_timer_flag = TRUE;
-			}
-		    }
-		}
-	    }
-	}
-	if (fire_timer_flag == TRUE)
-	    FIRE_TIMER(mrt->jp_timer);
-	if (delete_mrt_flag == TRUE) {
-	    /* TODO: XXX: trigger a Prune message? Don't delete now, it will
-	     * be automatically timed out. If want to delete now, don't
-	     * reference to it anymore!
-	    delete_mrtentry(mrt);
-	    */
-	}
-
-	return result;   /* (*,*,RP) */
-    }
 
     if (mrt->flags & MRTF_WC) {
 	/* (*,G) entry */
@@ -943,7 +844,7 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 			  mrt->leaves,
 			  mrt->asserted_oifs, 0);
     } else {
-	mrt = find_route(source, group, MRTF_SG | MRTF_WC | MRTF_PMBR, DONT_CREATE);
+	mrt = find_route(source, group, MRTF_SG | MRTF_WC, DONT_CREATE);
 	if (!mrt)
 	    return;
 
@@ -992,14 +893,11 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 		}
 	    }
 
-	    if (mrt->flags & MRTF_PMBR)
-		rp_addr = mrt->source->address;
-	    else
-		rp_addr = mrt->group->rpaddr;
+	    rp_addr = mrt->group->rpaddr;
 
 	    mfc_source = source;
 #ifdef KERNEL_MFC_WC_G
-	    if (mrt->flags & (MRTF_WC | MRTF_PMBR))
+	    if (mrt->flags & MRTF_WC)
 		if (!(mrt->flags & MRTF_MFC_CLONE_SG))
 		    mfc_source = INADDR_ANY_N;
 #endif /* KERNEL_MFC_WC_G */
@@ -1081,7 +979,7 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
     if (uvifs[iif].uv_flags & VIFF_REGISTER)
 	return;
 
-    mrt = find_route(source, group, MRTF_SG | MRTF_WC | MRTF_PMBR, DONT_CREATE);
+    mrt = find_route(source, group, MRTF_SG | MRTF_WC, DONT_CREATE);
     if (!mrt)
 	return;
 
@@ -1319,7 +1217,6 @@ void age_routes(void)
     grpentry_t *grp;
     grpentry_t *grp_next;
     mrtentry_t *mrt_grp;
-    mrtentry_t *mrt_rp;
     mrtentry_t *mrt_wide;
     mrtentry_t *mrt_srcs;
     mrtentry_t *mrt_srcs_next;
@@ -1351,10 +1248,9 @@ void age_routes(void)
 	SET_TIMER(pim_spt_threshold_timer, spt_threshold.interval);
     }
 
-    /* Scan the (*,*,RP) entries */
+    /* Scan the candidate RPs, tracking the unicast route to each */
     for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
 	int update_rp_iif;
-	int rp_action;
 
 	rp = cand_rp->rpentry;
 
@@ -1386,74 +1282,6 @@ void age_routes(void)
 	    }
 	}
 
-	rp_action = PIM_ACTION_NOTHING;
-	mrt_rp = cand_rp->rpentry->mrtlink;
-	if (mrt_rp) {
-	    /* outgoing interfaces timers */
-	    change_flag = FALSE;
-	    for (vifi = 0; vifi < numvifs; vifi++) {
-		if (PIMD_VIFM_ISSET(vifi, mrt_rp->joined_oifs)) {
-		    IF_TIMEOUT(mrt_rp->vif_timers[vifi]) {
-			PIMD_VIFM_CLR(vifi, mrt_rp->joined_oifs);
-			change_flag = TRUE;
-		    }
-		}
-	    }
-	    if ((change_flag == TRUE) || (update_rp_iif == TRUE)) {
-		change_interfaces(mrt_rp,
-				  rp->incoming,
-				  mrt_rp->joined_oifs,
-				  mrt_rp->pruned_oifs,
-				  mrt_rp->leaves,
-				  mrt_rp->asserted_oifs, 0);
-		mrt_rp->upstream = rp->upstream;
-	    }
-
-	    /* Check the activity for this entry */
-	    if (rate_flag == TRUE)
-		check_spt_threshold(mrt_rp);
-
-	    /* Join/Prune timer */
-	    IF_TIMEOUT(mrt_rp->jp_timer) {
-		rp_action = join_or_prune(mrt_rp, mrt_rp->upstream);
-
-		if (rp_action != PIM_ACTION_NOTHING)
-		    add_jp_entry(mrt_rp->upstream,
-				 PIM_JOIN_PRUNE_HOLDTIME,
-				 htonl(CLASSD_PREFIX),
-				 STAR_STAR_RP_MSKLEN,
-				 mrt_rp->source->address,
-				 SINGLE_SRC_MSKLEN,
-				 MRTF_RP | MRTF_WC,
-				 rp_action);
-
-		SET_TIMER(mrt_rp->jp_timer, PIM_JOIN_PRUNE_PERIOD);
-	    }
-
-	    /* Assert timer */
-	    if (mrt_rp->flags & MRTF_ASSERTED) {
-		IF_TIMEOUT(mrt_rp->assert_timer) {
-		    /* TODO: XXX: reset the upstream router now */
-		    mrt_rp->flags &= ~MRTF_ASSERTED;
-		}
-	    }
-
-	    /* Register-Suppression timer */
-	    /* TODO: to reduce the kernel calls, if the timer is running,
-	     * install a negative cache entry in the kernel?
-	     */
-	    /* TODO: can we have Register-Suppression timer for (*,*,RP)?
-	     * Currently no...
-	     */
-	    IF_TIMEOUT(mrt_rp->rs_timer) {}
-
-	    /* routing entry */
-	    if ((TIMEOUT(mrt_rp->entry_timer)) && (PIMD_VIFM_ISEMPTY(mrt_rp->leaves)))
-		delete_mrtentry(mrt_rp);
-	} /* if (mrt_rp) */
-
-	/* Just in case if that (*,*,RP) was deleted */
-	mrt_rp = cand_rp->rpentry->mrtlink;
 
 	/* Check the (*,G) and (S,G) entries */
 	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
@@ -1501,15 +1329,6 @@ void age_routes(void)
 			check_spt_threshold(mrt_grp);
 
 		    dont_calc_action = FALSE;
-		    if (rp_action != PIM_ACTION_NOTHING) {
-			dont_calc_action = TRUE;
-
-			grp_action = join_or_prune(mrt_grp, mrt_grp->upstream);
-			if (((rp_action == PIM_ACTION_JOIN)  && (grp_action == PIM_ACTION_PRUNE)) ||
-			    ((rp_action == PIM_ACTION_PRUNE) && (grp_action == PIM_ACTION_JOIN)))
-			    FIRE_TIMER(mrt_grp->jp_timer);
-		    }
-
 
 		    /* Join/Prune timer */
 		    IF_TIMEOUT(mrt_grp->jp_timer) {
@@ -1622,23 +1441,18 @@ void age_routes(void)
 			check_spt_threshold(mrt_srcs);
 
 		    mrt_wide = mrt_srcs->group->grp_route;
-		    if (!mrt_wide)
-			mrt_wide = mrt_rp;
 
 		    dont_calc_action = FALSE;
-		    if ((rp_action  != PIM_ACTION_NOTHING) ||
-			(grp_action != PIM_ACTION_NOTHING)) {
+		    if (grp_action != PIM_ACTION_NOTHING) {
 			src_action_rp    = join_or_prune(mrt_srcs, rp->upstream);
 			src_action       = src_action_rp;
 			dont_calc_action = TRUE;
 
 			if (src_action_rp == PIM_ACTION_JOIN) {
-			    if ((grp_action == PIM_ACTION_PRUNE) ||
-				(rp_action  == PIM_ACTION_PRUNE))
+			    if (grp_action == PIM_ACTION_PRUNE)
 				FIRE_TIMER(mrt_srcs->jp_timer);
 			} else if (src_action_rp == PIM_ACTION_PRUNE) {
-			    if ((grp_action == PIM_ACTION_JOIN) ||
-				(rp_action  == PIM_ACTION_JOIN))
+			    if (grp_action == PIM_ACTION_JOIN)
 				FIRE_TIMER(mrt_srcs->jp_timer);
 			}
 		    }

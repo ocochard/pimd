@@ -310,7 +310,6 @@ typedef struct pim_jp_encod_grp_ {
 #define PIM_HELLO_GENID_LEN             4
 
 /* PIM_REGISTER definitions */
-#define PIM_REGISTER_BORDER_BIT         0x80000000
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 
 

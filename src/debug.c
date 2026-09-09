@@ -721,7 +721,6 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     if (r->flags & MRTF_ASSERTED)      fprintf(fp, " ASSERTED");
     if (r->flags & MRTF_REG_SUPP)      fprintf(fp, " REG_SUPP");
     if (r->flags & MRTF_SG)	       fprintf(fp, " SG");
-    if (r->flags & MRTF_PMBR)	       fprintf(fp, " PMBR");
     fprintf(fp, "\n");
 
     fprintf(fp, "Joined   oifs: %-20s\n", joined_oifs);
@@ -791,26 +790,6 @@ void dump_pim_mrt(FILE *fp, int detail)
 	    dump_route(fp, r);
 	}
     }/* for all groups */
-
-    /* Print the (*,*,R) routing entries */
-    for (rp = cand_rp_list; rp; rp = rp->next) {
-	r = rp->rpentry->mrtlink;
-	if (r) {
-	    if (r->flags & MRTF_KERNEL_CACHE) {
-		for (kc = r->kernel_cache; kc; kc = kc->next)
-		    number_of_cache_mirrors++;
-	    }
-
-	    /* Print the (*,*,RP) routing info */
-	    fprintf(fp, "\n");
-	    fprintf(fp, "Source           Group            RP Address       Flags              (*,*,RP)=\n");
-	    fprintf(fp, "%-15s  ", inet_fmt(r->source->address, s1, sizeof(s1)));
-	    fprintf(fp, "%-15s  ", "*");
-	    fprintf(fp, "%-15s ", "");
-
-	    dump_route(fp, r);
-	}
-    } /* For all (*,*,RP) */
 
     fprintf(fp, "Number of Groups: %u\n", number_of_groups);
     fprintf(fp, "Number of Cache MIRRORs: %u\n", number_of_cache_mirrors);

@@ -123,7 +123,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     }
 
     /* determine the routing table entry for this traceroute */
-    mrt = find_route(qry->tr_src, group, MRTF_SG | MRTF_WC | MRTF_PMBR,
+    mrt = find_route(qry->tr_src, group, MRTF_SG | MRTF_WC,
                      DONT_CREATE);
     IF_DEBUG(DEBUG_TRACE) {
         if (mrt != (mrtentry_t *)NULL) {

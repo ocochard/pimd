@@ -8,6 +8,16 @@ pimd on all routers in the same domain.  See issue #93 for details.
 **Note:** command line arguments in v3.0 are not compatible with v2.x!
 
 ### Changes
+- Remove the (*,*,RP) and PIM Multicast Border Router (PMBR) features.
+  RFC 7761, which obsoletes RFC 4601 and is the current PIM-SM standard,
+  removed both in its Appendix A for lack of implementation and
+  deployment experience.  In pimd they were reachable only from a peer's
+  Join(224.0.0.0/4): nothing else ever created a (*,*,RP) entry, and the
+  code that originated one was itself gated on already having one, so in
+  any RFC 7761 domain none of it could run.  pimd still parses and skips
+  a (*,*,RP) group entry in a received Join/Prune, it just no longer
+  builds state from it.  The third feature RFC 7761 removes,
+  authentication using IPsec, was never implemented here
 - Converted to GNU Configure & Build system
 - Replace libite (`-lite`) GIT submodule with compatibility functions.
   I.e., as of this release `pimd` is self-hosting again.

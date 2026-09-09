@@ -294,7 +294,7 @@ static int rsrr_accept_rq(struct rsrr_rq *route_query, uint8_t flags, struct gta
 	status_ok = TRUE;
     } else if ((gt = find_route(route_query->source_addr,
 				route_query->dest_addr,
-				MRTF_SG | MRTF_WC | MRTF_PMBR,
+				MRTF_SG | MRTF_WC,
 				DONT_CREATE)) != (struct gtable *)NULL) {
 	status_ok = TRUE;
 	route_reply->in_vif = gt->incoming;
@@ -306,33 +306,14 @@ static int rsrr_accept_rq(struct rsrr_rq *route_query, uint8_t flags, struct gta
 	BIT_SET(rsrr->flags, RSRR_ERROR_BIT);
     }
     else {
-	if (gt->flags & (MRTF_WC | MRTF_PMBR)) {
+	if (gt->flags & MRTF_WC) {
 	    tmp_flags = 0;
 	    BIT_SET(tmp_flags, RSRR_THIS_SENDER_SHARED_TREE);
 	    BIT_SET(tmp_flags, RSRR_ALL_SENDERS_SHARED_TREE);
 	    if (!(flags & tmp_flags)) {
 		/* Check whether need to setup the (*,G) related flags */
 		found = FALSE;
-		if (gt->flags & MRTF_PMBR) {
-		    /* Check whether there is at least one (S,G) entry which is
-		     * a longer match than this (*,*,RP) entry.
-		     */
-		    for (rp_grp_entry = gt->source->cand_rp->rp_grp_next;
-			 rp_grp_entry != (rp_grp_entry_t *)NULL;
-			 rp_grp_entry = rp_grp_entry->rp_grp_next) {
-			for (grpentry_ptr = rp_grp_entry->grplink;
-			     grpentry_ptr != (grpentry_t *)NULL;
-			     grpentry_ptr = grpentry_ptr->rpnext) {
-			    if (grpentry_ptr->mrtlink != (mrtentry_t *)NULL) {
-				found = TRUE;
-				break;
-			    }
-			}
-			if (found == TRUE)
-			    break;
-		    }
-		}
-		else if (gt->flags & MRTF_WC) {
+		if (gt->flags & MRTF_WC) {
 		    if (gt->group->mrtlink != (mrtentry_t *)NULL)
 			found = TRUE;
 		}
@@ -576,9 +557,6 @@ void rsrr_cache_bring_up(struct gtable *gt)
 
     if (gt == (struct gtable *)NULL)
 	return;
-    if (gt->flags & MRTF_PMBR)
-	/* (*,*,RP) */
-	return;
     if (gt->flags & MRTF_WC) {
 	/* (*,G) */
 	if (((gt_rp = gt->group->active_rp_grp->rp->rpentry->mrtlink) ==
@@ -680,12 +658,6 @@ void rsrr_cache_bring_up(struct gtable *gt)
 		return;
 	    }
 	}
-	if (gt_wide->flags & MRTF_PMBR) {
-	    if (((gt_wide = gt->group->grp_route) == (struct gtable *)NULL)
-		|| (gt_wide->rsrr_cache == (struct rsrr_cache *)NULL))
-		return;
-	    goto try_again;
-	}
     }
 }
 
@@ -713,10 +685,6 @@ void rsrr_cache_clean(struct gtable *gt)
 	else if (gt->flags & MRTF_WC)
 	    logit(LOG_DEBUG, 0, "cleaning cache for group %s and ANY sources",
 		  inet_fmt(gt->group->group, s1, sizeof(s1)));
-	else if (gt->flags & MRTF_PMBR)
-	    logit(LOG_DEBUG, 0,
-		  "cleaning cache for ALL groups matching to RP %s",
-		  inet_fmt(gt->source->address, s1, sizeof(s1)));
     }
     rc = gt->rsrr_cache;
     if (rc == (struct rsrr_cache *)NULL)

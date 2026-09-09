@@ -602,7 +602,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
     uint32_t inner_src, inner_grp;
     pim_register_t *reg;
     struct ip *ip;
-    uint32_t is_border, is_null;
+    uint32_t is_null;
     mrtentry_t *mrtentry;
     mrtentry_t *mrtentry2;
     uint8_t oifs[MAXVIFS];
@@ -663,7 +663,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 
     /* Lookup register message flags */
     reg = (pim_register_t *)(msg + sizeof(pim_header_t));
-    is_border = ntohl(reg->reg_flags) & PIM_REGISTER_BORDER_BIT;
     is_null   = ntohl(reg->reg_flags) & PIM_REGISTER_NULL_REGISTER_BIT;
 
     /* initialize the pointer to the encapsulated packet */
@@ -725,7 +724,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	return TRUE;
     }
 
-    mrtentry = find_route(inner_src, inner_grp, MRTF_SG | MRTF_WC | MRTF_PMBR, DONT_CREATE);
+    mrtentry = find_route(inner_src, inner_grp, MRTF_SG | MRTF_WC, DONT_CREATE);
 
     /* Check if I am the RP for that group */
     if ((local_address(reg_dst) == NO_VIF) || !check_mrtentry_rp(mrtentry, reg_dst)) {
@@ -756,29 +755,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 		    return TRUE;
 		}
 
-		/*
-		 * TODO: XXX: BUG!!!
-		 * The data will be forwarded by the kernel MFC!!!
-		 * Need to set a special flag for this routing entry so after
-		 * a cache miss occur, the multicast packet will be forwarded
-		 * from user space and won't install entry in the kernel MFC.
-		 * The problem is that the kernel MFC doesn't know the
-		 * PMBR address and simply sets the multicast forwarding
-		 * cache to accept/forward all data coming from the
-		 * register_vif.
-		 */
-		if (is_border) {
-		    if (mrtentry->pmbr_addr != reg_src) {
-			IF_DEBUG(DEBUG_PIM_REGISTER)
-			    logit(LOG_DEBUG, 0, "pmbr_addr (%s) != reg_src (%s)",
-				  inet_fmt(mrtentry->pmbr_addr, s1, sizeof(s1)), inet_fmt(reg_src, s2, sizeof(s2)));
-
-			send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
-
-			return TRUE;
-		    }
-		}
-
 		return TRUE;
 	    }
 
@@ -796,27 +772,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	    return TRUE;
 	}
     }
-    if (mrtentry->flags & (MRTF_WC | MRTF_PMBR)) {
-	if (is_border) {
-	    /* Create (S,G) state. The oifs will be the copied from the
-	     * existing (*,G) or (*,*,RP) entry. */
-	    mrtentry2 = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
-	    if (mrtentry2) {
-		mrtentry2->pmbr_addr = reg_src;
-		/* Clear the SPT flag */
-		mrtentry2->flags &= ~(MRTF_SPT | MRTF_NEW);
-		SET_TIMER(mrtentry2->entry_timer, PIM_DATA_TIMEOUT);
-		/* TODO: explicitly call the Join/Prune send function? */
-		FIRE_TIMER(mrtentry2->jp_timer); /* Send the Join immediately */
-		/* TODO: explicitly call this function?
-		   send_pim_join_prune(mrtentry2->upstream->vifi,
-		   mrtentry2->upstream,
-		   PIM_JOIN_PRUNE_HOLDTIME);
-		*/
-	    }
-	}
-    }
-
     if (mrtentry->flags & MRTF_WC) {
 	/* First PIM Register for this routing entry, log it */
 	IF_DEBUG(DEBUG_PIM_REGISTER)
@@ -856,39 +811,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	}
 
 	return TRUE;
-    }
-
-    if (mrtentry->flags & MRTF_PMBR) {
-	/* (*,*,RP) entry */
-	if (!is_null) {
-	    uint32_t mfc_source = inner_src;
-
-	    /* XXX: have to create either (S,G) or (*,G).
-	     * The choice below is (*,G)
-	     */
-	    mrtentry2 = find_route(INADDR_ANY_N, inner_grp, MRTF_WC, CREATE);
-	    if (!mrtentry2)
-		return FALSE;
-
-	    if (mrtentry2->flags & MRTF_NEW) {
-		/* TODO: something else? Have the feeling sth is missing */
-		mrtentry2->flags &= ~MRTF_NEW;
-		/* TODO: XXX: copy the timer from the (*,*,RP) entry? */
-		COPY_TIMER(mrtentry->entry_timer, mrtentry2->entry_timer);
-	    }
-
-	    /* Install cache entry in the kernel */
-#ifdef KERNEL_MFC_WC_G
-	    if (!(mrtentry->flags & MRTF_MFC_CLONE_SG))
-		mfc_source = INADDR_ANY_N;
-#endif /* KERNEL_MFC_WC_G */
-	    add_kernel_cache(mrtentry, mfc_source, inner_grp, 0);
-	    k_chg_mfc(igmp_socket, mfc_source, inner_grp,
-		      mrtentry->incoming, mrtentry->oifs,
-		      mrtentry2->group->rpaddr);
-
-	    return TRUE;
-	}
     }
 
     /* Shoudn't happen: invalid routing entry? */
@@ -1131,13 +1053,13 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 	return PIM_ACTION_NOTHING;
 
     calc_oifs(mrtentry, entry_oifs);
-    if (mrtentry->flags & (MRTF_PMBR | MRTF_WC)) {
+    if (mrtentry->flags & MRTF_WC) {
 	if (IN_PIM_SSM_RANGE(mrtentry->group->group)) {
-	    logit(LOG_DEBUG, 0, "No action for SSM (PMBR|WC)");
+	    logit(LOG_DEBUG, 0, "No action for SSM (WC)");
 	    return PIM_ACTION_NOTHING;
 	}
-	/* (*,*,RP) or (*,G) entry */
-	/* The (*,*,RP) or (*,G) J/P messages are sent only toward the RP */
+	/* (*,G) entry */
+	/* The (*,G) J/P messages are sent only toward the RP */
 	if (upstream_router != mrtentry->upstream)
 	    return PIM_ACTION_NOTHING;
 
@@ -1307,7 +1229,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     uint8_t *data_group_end;
     uint8_t num_groups;
     uint8_t num_groups_tmp;
-    int star_star_rp_found;
     uint16_t holdtime;
     uint16_t num_j_srcs;
     uint16_t num_j_srcs_tmp;
@@ -1705,15 +1626,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     /* The spec says that if there is (*,G) Join, it has priority over
      * old existing ~(S,G) prunes in the routing table.
      * However, if the (*,G) Join and the ~(S,G) prune are in
-     * the same message, ~(S,G) has the priority. The spec doesn't say it,
-     * but I think the same is true for (*,*,RP) and ~(S,G) prunes.
+     * the same message, ~(S,G) has the priority.
      *
      * The code below do:
-     *  (1) Check the whole message for (*,*,RP) Joins.
-     *  (1.1) If found, clean all pruned_oifs for all (*,G) and all (S,G)
-     *        for each RP in the list, but do not update the kernel cache.
-     *        Then go back to the beginning of the message and start
-     *        processing for each group:
      *  (2) Check for Prunes. If no prunes, process the Joins.
      *  (3) If there are Prunes:
      *  (3.1) Scan the Join part for existing (*,G) Join.
@@ -1726,7 +1641,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
      *        (setting the prune_oifs and flashing the changes to the (kernel).
      *  (3.3) After the Prune part is processed, process the Join part
      *        normally (by applying any changes to the kernel)
-     *  (4) If there were (*,*,RP) Join/Prune, process them.
      *
      *   If the Join/Prune list is too long, it may result in long processing
      *   overhead. The idea above is not to place any wrong info in the
@@ -1736,40 +1650,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
      */
     num_groups_tmp = num_groups;
     data_start = data;
-    star_star_rp_found = FALSE; /* Indicating whether we have (*,*,RP) join */
-    while (num_groups_tmp--) {
-	/* Search for (*,*,RP) Join */
-	GET_EGADDR(&egaddr, data);
-	GET_HOSTSHORT(num_j_srcs, data);
-	GET_HOSTSHORT(num_p_srcs, data);
-	group = egaddr.mcast_addr;
-	if ((ntohl(group) != CLASSD_PREFIX) || (egaddr.masklen != STAR_STAR_RP_MSKLEN)) {
-	    /* This is not (*,*,RP). Jump to the next group. */
-	    data += (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
-	    continue;
-	}
-
-	/* (*,*,RP) found. For each RP and each (*,G) and each (S,G) clear
-	 * the pruned oif, but do not update the kernel.
-	 */
-	star_star_rp_found = TRUE;
-	while (num_j_srcs--) {
-	    GET_ESADDR(&esaddr, data);
-	    rpentry = rp_find(esaddr.src_addr);
-	    if (!rpentry)
-		continue;
-
-	    for (rp_grp = rpentry->cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
-		for (grp = rp_grp->grplink; grp; grp = grp->rpnext) {
-		    if (grp->grp_route)
-			PIMD_VIFM_CLR(vifi, grp->grp_route->pruned_oifs);
-		    for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext)
-			PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
-		}
-	    }
-	}
-	data += (num_p_srcs) * sizeof(pim_encod_src_addr_t);
-    }
 
     /*
      * Start processing the groups. If this is (*,*,RP), skip it, but process
@@ -1906,8 +1786,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    continue;
 		}
 
-		/* There is no (S,G) entry. Check for (*,G) or (*,*,RP) */
-		mrt = find_route(INADDR_ANY_N, group, MRTF_WC | MRTF_PMBR, DONT_CREATE);
+		/* There is no (S,G) entry. Check for (*,G) */
+		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		if (mrt) {
 		    mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
 		    if (!mrt)
@@ -1937,7 +1817,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 		/* (*,G) Prune */
-		mrt = find_route(INADDR_ANY_N, group, MRTF_WC | MRTF_PMBR, DONT_CREATE);
+		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		if (mrt) {
 		    if (mrt->flags & MRTF_WC) {
 			/* TODO: XXX: Should check the whole Prune list in
@@ -2122,127 +2002,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	data = data_group_end;
     } /* for all groups */
 
-    /* Now process the (*,*,RP) Join/Prune */
-    if (star_star_rp_found != TRUE)
-	return TRUE;
-
-    data = data_start;
-    while (num_groups--) {
-	/* The conservative approach is to scan again the whole message,
-	 * just in case if we have more than one (*,*,RP) requests.
-	 */
-	GET_EGADDR(&egaddr, data);
-	GET_HOSTSHORT(num_j_srcs, data);
-	GET_HOSTSHORT(num_p_srcs, data);
-	group = egaddr.mcast_addr;
-	if ((ntohl(group) != CLASSD_PREFIX)
-	    || (egaddr.masklen != STAR_STAR_RP_MSKLEN)) {
-	    /* This is not (*,*,RP). Jump to the next group. */
-	    data +=
-		(num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
-	    continue;
-	}
-	/* (*,*,RP) found */
-	while (num_j_srcs--) {
-	    /* TODO: XXX: check that the iif is different from the Join oifs */
-	    GET_ESADDR(&esaddr, data);
-	    source = esaddr.src_addr;
-	    if (!inet_valid_host(source))
-		continue;
-
-	    s_flags = esaddr.flags;
-	    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
-	    mrt = find_route(source, INADDR_ANY_N, MRTF_PMBR, CREATE);
-	    if (!mrt)
-		continue;
-
-	    PIMD_VIFM_SET(vifi, mrt->joined_oifs);
-	    PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
-	    PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
-	    /* TODO: XXX: TIMER implem. dependency! */
-	    if (mrt->vif_timers[vifi] < holdtime) {
-		SET_TIMER(mrt->vif_timers[vifi], holdtime);
-		mrt->vif_deletion_delay[vifi] = holdtime/3;
-	    }
-	    if (mrt->entry_timer < holdtime)
-		SET_TIMER(mrt->entry_timer, holdtime);
-	    mrt->flags &= ~MRTF_NEW;
-	    change_interfaces(mrt,
-			      mrt->incoming,
-			      mrt->joined_oifs,
-			      mrt->pruned_oifs,
-			      mrt->leaves,
-			      mrt->asserted_oifs, 0);
-
-	    /* Need to update the (S,G) and (*,G) entries, because of
-	     * the previous cleaning of the pruned_oifs. The reason is
-	     * that if the oifs for (*,*,RP) weren't changed, the
-	     * (*,G) and (S,G) entries won't be updated by change_interfaces()
-	     */
-	    for (rp_grp = mrt->source->cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
-		for (grp = rp_grp->grplink; grp; grp = grp->rpnext) {
-		    /* Update the (*,G) entry */
-		    if (grp->grp_route) {
-			change_interfaces(grp->grp_route,
-					  grp->grp_route->incoming,
-					  grp->grp_route->joined_oifs,
-					  grp->grp_route->pruned_oifs,
-					  grp->grp_route->leaves,
-					  grp->grp_route->asserted_oifs, 0);
-		    }
-		    /* Update the (S,G) entries */
-		    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext)
-			change_interfaces(mrt_srcs,
-					  mrt_srcs->incoming,
-					  mrt_srcs->joined_oifs,
-					  mrt_srcs->pruned_oifs,
-					  mrt_srcs->leaves,
-					  mrt_srcs->asserted_oifs, 0);
-		}
-	    }
-	    continue;
-	}
-
-	while (num_p_srcs--) {
-	    /* TODO: XXX: can we have (*,*,RP) Prune? */
-	    GET_ESADDR(&esaddr, data);
-	    source = esaddr.src_addr;
-	    if (!inet_valid_host(source))
-		continue;
-
-	    s_flags = esaddr.flags;
-	    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
-	    mrt = find_route(source, INADDR_ANY_N, MRTF_PMBR, DONT_CREATE);
-	    if (!mrt)
-		continue;
-
-	    /* If the link is point-to-point, timeout the oif
-	     * immediately, otherwise decrease the timer to allow
-	     * other downstream routers to override the prune.
-	     */
-	    /* TODO: XXX: increase the entry timer? */
-	    if (v->uv_flags & VIFF_POINT_TO_POINT) {
-		FIRE_TIMER(mrt->vif_timers[vifi]);
-	    } else {
-		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->vif_timers[vifi] > mrt->vif_deletion_delay[vifi])
-		    SET_TIMER(mrt->vif_timers[vifi],
-			      mrt->vif_deletion_delay[vifi]);
-	    }
-	    IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
-		PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-		PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
-		PIMD_VIFM_SET(vifi, mrt->asserted_oifs);
-		change_interfaces(mrt,
-				  mrt->incoming,
-				  mrt->joined_oifs,
-				  mrt->pruned_oifs,
-				  mrt->leaves,
-				  mrt->asserted_oifs, 0);
-	    }
-
-	}
-    } /* For all groups processing (*,*,R) */
 
     return TRUE;
 }
@@ -2392,23 +2151,6 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 				 SINGLE_SRC_MSKLEN, MRTF_RP,
 				 PIM_ACTION_PRUNE);
 	    }
-	}
-    }
-
-    /* Check the (*,*,RP) entries */
-    for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
-	rpentry_t *rp = cand_rp->rpentry;
-
-	/* If join/prune to a particular neighbor only was specified */
-	if (pim_nbr && rp->upstream != pim_nbr)
-	    continue;
-
-	/* TODO: XXX: TIMER implem. dependency! */
-	if (rp->mrtlink &&
-	    rp->incoming == vifi &&
-	    rp->mrtlink->jp_timer <= TIMER_INTERVAL) {
-	    add_jp_entry(rp->upstream, holdtime, htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN,
-			 rp->address, SINGLE_SRC_MSKLEN, MRTF_RP | MRTF_WC, PIM_ACTION_JOIN);
 	}
     }
 
@@ -2838,13 +2580,13 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 
     /* Find the longest "active" entry, i.e. the one with a kernel mirror */
     if (assert_rptbit) {
-	mrt = find_route(INADDR_ANY_N, group, MRTF_WC | MRTF_PMBR, DONT_CREATE);
+	mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 	if (mrt && !(mrt->flags & MRTF_KERNEL_CACHE)) {
 	    if (mrt->flags & MRTF_WC)
 		mrt = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
 	}
     } else {
-	mrt = find_route(source, group, MRTF_SG | MRTF_WC | MRTF_PMBR, DONT_CREATE);
+	mrt = find_route(source, group, MRTF_SG | MRTF_WC, DONT_CREATE);
 	if (mrt && !(mrt->flags & MRTF_KERNEL_CACHE)) {
 	    if (mrt->flags & MRTF_SG) {
 		mrt2 = mrt->group->grp_route;
@@ -2865,10 +2607,9 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     }
 
     /* Prepare the local preference and metric */
-    if ((mrt->flags & MRTF_PMBR)
-	|| ((mrt->flags & MRTF_SG)
-	    && !(mrt->flags & MRTF_RP))) {
-	/* Either (S,G) (toward S) or (*,*,RP). */
+    if ((mrt->flags & MRTF_SG)
+	&& !(mrt->flags & MRTF_RP)) {
+	/* (S,G) toward S */
 	/* TODO: XXX: get the info from mrt, or source or from kernel ? */
 	/*
 	  local_metric = mrt->source->metric;
@@ -2921,10 +2662,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	}
 
 	/* Create a "better" routing entry and try again */
-	if (assert_rptbit && (mrt->flags & MRTF_PMBR)) {
-	    /* The matching entry was (*,*,RP). Create (*,G) */
-	    mrt2 = find_route(INADDR_ANY_N, group, MRTF_WC, CREATE);
-	} else if (!assert_rptbit && (mrt->flags & (MRTF_WC | MRTF_PMBR))) {
+	if (!assert_rptbit && (mrt->flags & MRTF_WC)) {
 	    /* create (S,G) */
 	    mrt2 = find_route(source, group, MRTF_SG, CREATE);
 	} else {
@@ -3029,9 +2767,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	mrt->upstream = find_pim_nbr(src);
 
 	/* Check if the upstream router is different from the original one */
-	if (mrt->flags & MRTF_PMBR) {
-	    original_upstream_router = mrt->source->upstream;
-	} else {
+	{
 	    if (mrt->flags & MRTF_RP)
 		original_upstream_router = mrt->group->active_rp_grp->rp->rpentry->upstream;
 	    else
@@ -3074,13 +2810,7 @@ int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mr
     /* TODO: XXX: where to get the metric from: srcentry or mrt
      * or from the kernel?
      */
-    if (mrt->flags & MRTF_PMBR) {
-	/* (*,*,RP) */
-	srcentry = mrt->source;
-	/* TODO:
-	   set_incoming(srcentry, PIM_IIF_RP);
-	*/
-    } else if (mrt->flags & MRTF_RP) {
+    if (mrt->flags & MRTF_RP) {
 	/* (*,G) or (S,G)RPbit (iif toward RP) */
 	srcentry = mrt->group->active_rp_grp->rp->rpentry;
 	/* TODO:

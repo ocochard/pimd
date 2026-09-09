@@ -167,18 +167,7 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
     if (create == DONT_CREATE) {
 	if (flags & (MRTF_SG | MRTF_WC)) {
 	    if (search_grplist(group, &grp) == FALSE) {
-		/* Group not found. Return the (*,*,RP) entry */
-		if (flags & MRTF_PMBR) {
-		    rp = rp_match(group);
-		    if (rp) {
-			logit(LOG_DEBUG, 0 , "%s: Group %s not found. Return the (*,*,RP) entry",
-			      __func__, inet_fmt(group, s1, sizeof(s1)));
-			return rp->mrtlink;
-		    }
-		}
-
-		/* Not a pim multicast border router */
-		logit(LOG_DEBUG, 0 , "%s: Group %s. Not PMBR, return NULL",
+		logit(LOG_DEBUG, 0 , "%s: Group %s not found, return NULL",
 		      __func__, inet_fmt(group, s1, sizeof(s1)));
 		return NULL;
 	    }
@@ -202,20 +191,6 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 		logit(LOG_DEBUG, 0 , "%s: No (S,G) entry. Return the (*,G) for (*,%s) entry",
 		      __func__, inet_fmt(group, s1, sizeof(s1)));
 		return grp->grp_route;
-	    }
-	}
-
-	/* Return the (*,*,RP) entry */
-	if (flags & MRTF_PMBR) {
-	    rp = NULL;
-	    if (group != INADDR_ANY_N)
-		rp = rp_match(group);
-	    else if (source != INADDR_ANY_N)
-		rp = rp_find(source);
-
-	    if (rp) {
-		logit(LOG_DEBUG, 0 , "%s: Return the (*,*,RP) entry", __func__);
-		return rp->mrtlink;
 	    }
 	}
 
@@ -364,33 +339,6 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	return mrt;
     }
 
-    if (flags & MRTF_PMBR) {
-	/* Get/return the (*,*,RP) routing entry */
-	if (group != INADDR_ANY_N)
-	    rp = rp_match(group);
-	else if (source != INADDR_ANY_N)
-	    rp = rp_find(source);
-	else
-	    return NULL; /* source == group == INADDR_ANY */
-
-	if (!rp)
-	    return NULL;
-
-	if (rp->mrtlink)
-	    return rp->mrtlink;
-
-	mrt = create_mrtentry(rp, NULL, MRTF_PMBR);
-	if (!mrt)
-	    return NULL;
-
-	mrt->incoming   = rp->incoming;
-	mrt->upstream   = rp->upstream;
-	mrt->metric     = rp->metric;
-	mrt->preference = rp->preference;
-
-	return mrt;
-    }
-
     return NULL;
 }
 
@@ -507,10 +455,7 @@ void delete_mrtentry(mrtentry_t *mrt)
     rsrr_cache_clean(mrt);
 #endif /* RSRR */
 
-    if (mrt->flags & MRTF_PMBR) {
-	/* (*,*,RP) mrtentry */
-	mrt->source->mrtlink = NULL;
-    } else if (mrt->flags & MRTF_SG) {
+    if (mrt->flags & MRTF_SG) {
 	/* (S,G) mrtentry */
 
 	/* Delete from the grpentry MRT chain */
@@ -823,7 +768,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->upstream = NULL;
     mrt->metric = 0;
     mrt->preference = 0;
-    mrt->pmbr_addr = INADDR_ANY_N;
 #ifdef RSRR
     mrt->rsrr_cache = NULL;
 #endif /* RSRR */
@@ -920,21 +864,6 @@ static mrtentry_t *create_mrtentry(srcentry_t *src, grpentry_t *grp, uint16_t fl
 
 	grp->grp_route = node;
 	node->flags |= (MRTF_WC | MRTF_RP);
-
-	return node;
-    }
-
-    if (flags & MRTF_PMBR) {
-	/* (*,*,RP) entry */
-	if (src->mrtlink)
-	    return src->mrtlink;
-
-	node = alloc_mrtentry(src, grp);
-	if (!node)
-	    return NULL;
-
-	src->mrtlink = node;
-	node->flags |= (MRTF_PMBR | MRTF_RP);
 
 	return node;
     }
@@ -1156,89 +1085,6 @@ static void move_kernel_cache(mrtentry_t *mrt, uint16_t flags)
 
     if (!mrt)
 	return;
-
-    if (mrt->flags & MRTF_PMBR)
-	return;
-
-    if (mrt->flags & MRTF_WC) {
-	/* Move the cache info from (*,*,RP) to (*,G) */
-	group_h       = ntohl(mrt->group->group);
-	mrtentry_pmbr = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	if (!mrtentry_pmbr)
-	    return;    /* Nothing to move */
-
-	first_node = last_node = NULL;
-	for (node = mrtentry_pmbr->kernel_cache; node; node = node->next) {
-	    /*
-	     * The order is: (1) smaller group;
-	     *               (2) smaller source within group
-	     */
-	    if (ntohl(node->group) < group_h)
-		continue;
-
-	    if (ntohl(node->group) != group_h)
-		break;
-
-	    /* Select the kernel_cache entries to move  */
-	    if (!first_node)
-		first_node = last_node = node;
-	    else
-		last_node = node;
-	}
-
-	if (first_node) {
-	    /* Fix the old chain */
-	    if (first_node->prev)
-		first_node->prev->next = last_node->next;
-	    else
-		mrtentry_pmbr->kernel_cache = last_node->next;
-
-	    if (last_node->next)
-		last_node->next->prev = first_node->prev;
-
-	    if (!mrtentry_pmbr->kernel_cache)
-		mrtentry_pmbr->flags &= ~(MRTF_KERNEL_CACHE | MRTF_MFC_CLONE_SG);
-
-	    /* Insert in the new place */
-	    prev_node       = NULL;
-	    last_node->next = NULL;
-	    mrt->flags |= MRTF_KERNEL_CACHE;
-
-	    for (node = mrt->kernel_cache; node; ) {
-		if (!first_node)
-		    break;  /* All entries have been inserted */
-
-		if (ntohl(node->source) > ntohl(first_node->source)) {
-		    /* Insert the entry before node */
-		    insert_node = first_node;
-		    first_node = first_node->next;
-
-		    if (node->prev)
-			node->prev->next = insert_node;
-		    else
-			mrt->kernel_cache = insert_node;
-
-		    insert_node->prev = node->prev;
-		    insert_node->next = node;
-		    node->prev = insert_node;
-		}
-		prev_node = node;
-		node = node->next;
-	    }
-
-	    if (first_node) {
-		/* Place all at the end after prev_node */
-		if (prev_node)
-		    prev_node->next   = first_node;
-		else
-		    mrt->kernel_cache = first_node;
-
-		first_node->prev = prev_node;
-	    }
-	}
-
-	return;
-    }
 
     if (mrt->flags & MRTF_SG) {
 	logit(LOG_DEBUG, 0, "move_kernel_cache: SG");
