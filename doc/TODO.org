@@ -73,7 +73,7 @@ the distinction between layer-2 and layer-3.
 * Random issues:
 ** Run the code checker sparse harder on the code: CC=cgcc make
 
-** Start work on ironing out a TODO list for RFC 4601 compliancy.
+** Start work on ironing out a TODO list for RFC 7761 compliancy.
 
 ** Look into updates RFC 5059 and RFC 5796
 
