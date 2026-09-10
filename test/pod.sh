@@ -209,7 +209,8 @@ vrrp_instance left {
 EOF
 cat "/tmp/$NM/keep-r1.conf"
 
-nsenter --net="$R1" -- keepalived -P -p "/tmp/$NM/keep-r1.pid" -r "/tmp/$NM/vrrp-r1.pid" -f "/tmp/$NM/keep-r1.conf" -l -D -n &
+nsenter --net="$R1" -- keepalived -P -p "/tmp/$NM/keep-r1.pid" -r "/tmp/$NM/vrrp-r1.pid" -f "/tmp/$NM/keep-r1.conf" -l -D -n \
+	>"/tmp/$NM/keep-r1.log" 2>&1 &
 echo $! >> "/tmp/$NM/PIDs"
 
 print "$R2: starting up VRRP ..."
@@ -227,7 +228,8 @@ vrrp_instance right {
 EOF
 cat "/tmp/$NM/keep-r2.conf"
 
-nsenter --net="$R2" -- keepalived -P -p "/tmp/$NM/keep-r2.pid" -r "/tmp/$NM/vrrp-r2.pid" -f "/tmp/$NM/keep-r2.conf" -l -D -n &
+nsenter --net="$R2" -- keepalived -P -p "/tmp/$NM/keep-r2.pid" -r "/tmp/$NM/vrrp-r2.pid" -f "/tmp/$NM/keep-r2.conf" -l -D -n \
+	>"/tmp/$NM/keep-r2.log" 2>&1 &
 echo $! >> "/tmp/$NM/PIDs"
 
 print "$R3: starting up VRRP ..."
@@ -245,7 +247,8 @@ vrrp_instance left {
 EOF
 cat "/tmp/$NM/keep-r3.conf"
 
-nsenter --net="$R3" -- keepalived -P -p "/tmp/$NM/keep-r3.pid" -r "/tmp/$NM/vrrp-r3.pid" -f "/tmp/$NM/keep-r3.conf" -l -D -n &
+nsenter --net="$R3" -- keepalived -P -p "/tmp/$NM/keep-r3.pid" -r "/tmp/$NM/vrrp-r3.pid" -f "/tmp/$NM/keep-r3.conf" -l -D -n \
+	>"/tmp/$NM/keep-r3.log" 2>&1 &
 echo $! >> "/tmp/$NM/PIDs"
 
 print "$R4: starting up VRRP ..."
@@ -263,8 +266,14 @@ vrrp_instance right {
 EOF
 cat "/tmp/$NM/keep-r4.conf"
 
-nsenter --net="$R4" -- keepalived -P -p "/tmp/$NM/keep-r4.pid" -r "/tmp/$NM/vrrp-r4.pid" -f "/tmp/$NM/keep-r4.conf" -l -D -n &
+nsenter --net="$R4" -- keepalived -P -p "/tmp/$NM/keep-r4.pid" -r "/tmp/$NM/vrrp-r4.pid" -f "/tmp/$NM/keep-r4.conf" -l -D -n \
+	>"/tmp/$NM/keep-r4.log" 2>&1 &
 echo $! >> "/tmp/$NM/PIDs"
+
+print "Waiting for the VRRP masters to take their addresses ..."
+wait_vip "$R1" 10.0.0.1 "/tmp/$NM/keep-r1.log"
+wait_vip "$R2" 10.0.2.1 "/tmp/$NM/keep-r2.log"
+dprint "OK"
 
 print "Creating OSPF config ..."
 cat <<EOF > "/tmp/$NM/bird.conf"

@@ -62,6 +62,32 @@ tenacious()
     FAIL "Timeed out $*"
 }
 
+# Wait for keepalived in netns $1 to take the VRRP address $2, dumping the
+# log named by $3 if it never does.  Without this a VRRP instance that
+# fails to start surfaces thirty seconds later as an unreachable default
+# gateway, and keepalived's own reason for failing is nowhere in the
+# output: the tests start it in the background and its stderr goes with it.
+wait_vip()
+{
+    ns=$1
+    vip=$2
+    log=$3
+    timeout=${4:-30}
+
+    while [ "$timeout" -gt 0 ]; do
+	if nsenter --net="$ns" -- ip -4 -br addr | grep -q "${vip}/"; then
+	    return 0
+	fi
+	sleep 1
+	timeout=$((timeout - 1))
+    done
+
+    echo "VRRP address $vip never appeared in $ns, keepalived said:"
+    [ -f "$log" ] && cat "$log"
+    nsenter --net="$ns" -- ip -4 -br addr
+    FAIL "keepalived never took $vip in $ns"
+}
+
 # Show active routes (and counters)
 show_mroute()
 {
