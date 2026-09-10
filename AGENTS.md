@@ -141,18 +141,37 @@ CLI flags are documented in `man/pimd.conf.5`, `man/pimd.8`, `man/pimctl.8` and 
 
 ## Security review
 
-`doc/security-review-prompt.md` is a review prompt, not a vulnerability disclosure policy. Read it
-in full and follow it — its audit checklist and its report structure — whenever the task is to audit
-or security-review C code here, instead of improvising a checklist. It covers memory safety and
-buffer hygiene, allocation and free paths, integer and conversion hazards, pointer and data-flow
-integrity, and input validation, each keyed to CWE and SEI CERT C rules.
+`doc/security-review-prompt.md` is a review prompt, not a vulnerability disclosure policy. It covers
+memory safety and buffer hygiene, allocation and free paths, integer and conversion hazards, pointer
+and data-flow integrity, and input validation, each keyed to CWE and SEI CERT C rules.
 
-Two things it does not say, which this tree requires anyway:
+Read it in full and follow it — its audit checklist and its report structure — whenever the task is
+to audit or security-review C code here, instead of improvising a checklist.
 
-- Remediated code still follows the conventions above. Keep the surrounding indentation style, use
-  the `strlcpy()`/`strlcat()`/`strtonum()` wrappers from `lib/` rather than introducing new bounded
-  copies, and report through `logit()`.
-- Packet parsers are the code that matters most here. `pim_proto.c`, `igmp_proto.c` and `trace.c`
-  walk attacker-supplied network buffers with pointer arithmetic and length fields taken from the
-  wire, so bounds derived from a packet's own header are exactly the "unconstrained length" the
-  prompt says to treat as a vulnerability.
+Apply its checklist to your own diff as well, unasked and whatever the task was called, whenever you
+write or edit:
+
+- `src/pim_proto.c`, `src/igmp_proto.c`, `src/trace.c`, `src/pim.c`, `src/igmp.c` — the files that
+  walk attacker-supplied network buffers, and every `receive_*()` in them;
+- anywhere else that does pointer arithmetic over a received buffer, sizes an allocation, or copies
+  into a fixed-size one.
+
+Scoping this to the words "audit" and "review" is how `receive_pim_assert()` came to parse 26 bytes
+out of a message `pim.c` guarantees only 4 of. It was written, reviewed and committed as a
+protocol fix, and the checklist that would have caught it went unread because nobody called the task
+security work. The file being touched is the trigger, not the framing of the request.
+
+Four rules this tree wants at the point of writing, ahead of any wider review:
+
+- **Bound before parsing.** A `receive_*()` that reads past the header checks the message length
+  first, the way `PIM_JOIN_PRUNE_MINLEN`, `PIM_BOOTSTRAP_MINLEN`, `PIM_CAND_RP_ADV_MINLEN` and
+  `PIM_ASSERT_MINLEN` do. Spell the constant as the fields being read rather than as a number, so it
+  stays right when the parser changes.
+- **A length off the wire bounds nothing by itself.** Lengths and counts taken from a packet are
+  attacker input: check them against what is left of the buffer before trusting them, as the group
+  loop in `receive_pim_join_prune()` does. Bounds derived from a packet's own header are precisely
+  the "unconstrained length" the prompt says to treat as a vulnerability.
+- **Copy with the wrappers.** Use `strlcpy()`/`strlcat()`/`strtonum()` from `lib/` rather than
+  introducing new bounded copies, and report through `logit()`.
+- **Remediated code still follows the conventions above.** Keep the surrounding indentation style;
+  a security fix is not a licence to reformat.
