@@ -163,7 +163,6 @@ static void igmp_read(int sd)
     for (cmsg = CMSG_FIRSTHDR(&msgh); cmsg; cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
 #ifdef IP_PKTINFO
 	struct in_pktinfo *ipi = (struct in_pktinfo *)CMSG_DATA(cmsg);
-	char tmp[IF_NAMESIZE + 1] = { 0 };
 
 	if (cmsg->cmsg_level != SOL_IP || cmsg->cmsg_type != IP_PKTINFO)
 	    continue;
@@ -209,22 +208,29 @@ static void accept_igmp(int ifi, ssize_t recvlen)
 	return;
     }
 
-    iphdrlen  = ip->ip_hl << 2;
-    ipdatalen = recvlen - iphdrlen;
-
-    if (iphdrlen + ipdatalen != recvlen) {
-	logit(LOG_WARNING, 0, "Received packet from %s shorter (%zd bytes) than hdr+data length (%d+%d)",
-	    inet_fmt(src, s1, sizeof(s1)), recvlen, iphdrlen, ipdatalen);
+    iphdrlen = ip->ip_hl << 2;
+    if (iphdrlen < (int)sizeof(struct ip) || iphdrlen > recvlen) {
+	logit(LOG_WARNING, 0, "Received packet from %s with invalid IP header length %d (%zd bytes)",
+	      inet_fmt(src, s1, sizeof(s1)), iphdrlen, recvlen);
 	return;
     }
 
-    igmp	= (struct igmp *)(igmp_recv_buf + iphdrlen);
-    group       = igmp->igmp_group.s_addr;
+    ipdatalen   = recvlen - iphdrlen;
     igmpdatalen = ipdatalen - IGMP_MINLEN;
 
     if (igmpdatalen < 0) {
 	logit(LOG_WARNING, 0, "Received IP data field too short (%d bytes) for IGMP, from %s",
 	      ipdatalen, inet_fmt(src, s1, sizeof(s1)));
+	return;
+    }
+
+    igmp	= (struct igmp *)(igmp_recv_buf + iphdrlen);
+    group       = igmp->igmp_group.s_addr;
+
+    if (inet_cksum((uint16_t *)igmp, ipdatalen)) {
+	IF_DEBUG(DEBUG_IGMP)
+	    logit(LOG_DEBUG, 0, "Received IGMP message with bad checksum from %s",
+		  inet_fmt(src, s1, sizeof(s1)));
 	return;
     }
 
