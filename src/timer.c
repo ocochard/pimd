@@ -111,6 +111,13 @@ int timer_next_delay(void)
  * @delay: Number of seconds for timeout
  * @action: Timer callback
  * @data: Optional callback data, must be a dynically allocated ptr
+ *
+ * The timer owns @data from here on: it is handed to @action when the
+ * timer fires, freed by timer_clear(), and freed here if the timer
+ * cannot be created.
+ *
+ * Returns:
+ * The timer ID, always greater than zero, or zero on failure.
  */
 int timer_set(int delay, cfunc_t action, void *data)
 {
@@ -124,7 +131,8 @@ int timer_set(int delay, cfunc_t action, void *data)
     node = calloc(1, sizeof(struct tmr));
     if (!node) {
 	logit(LOG_ERR, 0, "Ran out of memory in %s()", __func__);
-	return -1;
+	free(data);
+	return 0;
     }
 
     node->func = action; 
