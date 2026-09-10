@@ -351,7 +351,10 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 
 	    /* Find source */
 	    if (IN_PIM_SSM_RANGE(group)) {
+		int num = 0;
+
 		for (s = g->al_sources; s; s = s->al_next) {
+		    num++;
 		    IF_DEBUG(DEBUG_IGMP)
 			logit(LOG_DEBUG, 0, "%s(): Seek source %s, curr=%s", __func__,
 			      inet_fmt(ssm_src, s1, sizeof(s1)),
@@ -363,6 +366,16 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 		    }
 		}
 		if (!s) {
+		    /* A source is a membership, a timer and an (S,G) entry
+		     * of its own, all of it created by a report anyone on
+		     * the LAN can send.  Nothing in RFC 3376 bounds how many
+		     * sources a group may name, so pimd has to. */
+		    if (num >= IGMP_MAX_SOURCES) {
+			logit(LOG_INFO, 0, "Ignoring source %s for group %s from %s, already"
+			      " holding the %d source limit", s2, s3, s1, IGMP_MAX_SOURCES);
+			return;
+		    }
+
 		    /* Add new source */
 		    s = calloc(1, sizeof(struct listaddr));
 		    if (!s) {
@@ -647,6 +660,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	int             rec_type;
 	int             rec_auxdatalen;
 	int             rec_num_sources;
+	int             num_sources;
 	int             j, rc;
 	int record_size = 0;
 
@@ -668,6 +682,22 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	rec_type = record->grec_type;
 	rec_group.s_addr = (in_addr_t)record->grec_mca;
 	sources = (uint8_t *)record->grec_src;
+
+	/*
+	 * Every source in the record is looked up in, or added to, the
+	 * group's source list, so a record naming 65535 of them costs
+	 * that many walks of a list this router will never let past
+	 * IGMP_MAX_SOURCES entries anyway.  Act on the ones that can
+	 * still fit and say so.  record_size, and with it the walk to
+	 * the next record, keeps counting all of them.
+	 */
+	num_sources = rec_num_sources;
+	if (num_sources > IGMP_MAX_SOURCES) {
+	    logit(LOG_INFO, 0, "Group record for %s from %s names %d sources, using the first %d",
+		  inet_fmt(rec_group.s_addr, s1, sizeof(s1)), inet_fmt(src, s2, sizeof(s2)),
+		  rec_num_sources, IGMP_MAX_SOURCES);
+	    num_sources = IGMP_MAX_SOURCES;
+	}
 	switch (rec_type) {
 	    case IGMP_MODE_IS_EXCLUDE:
 	    case IGMP_CHANGE_TO_EXCLUDE_MODE:
@@ -706,7 +736,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		     *          join with >= 1 source, 'S'.
 		     */
 		    rc = accept_sources(ifi, report->type, src, rec_group.s_addr,
-					sources, canary, rec_num_sources);
+					sources, canary, num_sources);
 		    if (rc)
 			return;
 		}
@@ -715,14 +745,14 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	    case IGMP_ALLOW_NEW_SOURCES:
 		/* RFC5790: Same as TO_IN({x}) */
 		rc = accept_sources(ifi, report->type, src, rec_group.s_addr,
-				    sources, canary, rec_num_sources);
+				    sources, canary, num_sources);
 		if (rc)
 		    return;
 		break;
 
 	    case IGMP_BLOCK_OLD_SOURCES:
 		/* RFC5790: Instead of TO_EX({x}) */
-		for (j = 0; j < rec_num_sources; j++) {
+		for (j = 0; j < num_sources; j++) {
 		    uint8_t *gsrc = (uint8_t *)&record->grec_src[j];
 
 		    if (gsrc + sizeof(record->grec_src[0]) > canary) {

@@ -74,6 +74,15 @@ struct igmpv3_grec {
 #define IGMP_GRPREC_HDRLEN		8
 #define IGMP_V3_GROUP_RECORD_MIN_SIZE	8
 
+/*
+ * Sources pimd is willing to hold for one group on one interface.  Not a
+ * protocol limit, RFC 3376 has none: a report can name 65535 sources per
+ * group record and 65535 group records, and each source pimd accepts is a
+ * membership, a timer and an (S,G) entry it keeps until that source is
+ * blocked or times out.
+ */
+#define IGMP_MAX_SOURCES		256
+
 struct igmpv3_report {
     uint8_t  type;
     uint8_t  resv1;
