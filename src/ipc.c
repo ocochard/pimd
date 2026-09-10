@@ -694,18 +694,22 @@ static int show_igmp_groups(FILE *fp)
 			snprintf(pre, sizeof(pre), "%-16s  %-15s  ",
 				 uv->uv_name, inet_fmt(group->al_addr, s1, sizeof(s1)));
 
-			snprintf(post, sizeof(post), "%-15s  %7u",
-				 inet_fmt(group->al_reporter, s1, sizeof(s1)),
-				 group->al_timer);
-
 			if (!group->al_sources) {
+				snprintf(post, sizeof(post), "%-15s  %7d",
+					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
+					 group->al_timer);
 				fprintf(fp, "%s%-15s  %s\n", pre, "ANY", post);
 				continue;
 			}
 
-			for (source = group->al_sources; source; source = source->al_next)
+			/* Each (S,G) membership expires on a timer of its own */
+			for (source = group->al_sources; source; source = source->al_next) {
+				snprintf(post, sizeof(post), "%-15s  %7d",
+					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
+					 source->al_timer);
 				fprintf(fp, "%s%-15s  %s\n",
 					pre, inet_fmt(source->al_addr, s1, sizeof(s1)), post);
+			}
 		}
 	}
 

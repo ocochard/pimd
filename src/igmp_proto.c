@@ -55,7 +55,8 @@ typedef struct {
  * Forward declarations.
  */
 static void DelVif       (void *arg);
-static int SetTimer      (vifi_t vifi, struct listaddr *g, uint32_t source);
+static int SetTimer      (vifi_t vifi, struct listaddr *g, uint32_t source, int delay);
+static void arm_membership_timer(vifi_t vifi, struct listaddr *g, struct listaddr *s, uint32_t source);
 static int SetVerTimer   (vifi_t vifi, struct listaddr *g);
 static int DeleteTimer   (int id);
 static void send_query   (struct uvif *v, uint32_t group, int interval);
@@ -260,7 +261,7 @@ void accept_membership_query(int ifi, uint32_t src, uint32_t dst, uint32_t group
 		g->al_timer = IGMP_LAST_MEMBER_QUERY_COUNT * tmo / IGMP_TIMER_SCALE;
 		/* use al_query to record our presence in last-member state */
 		g->al_query = -1;
-		g->al_timerid = SetTimer(vifi, g, 0);
+		g->al_timerid = SetTimer(vifi, g, 0, g->al_timer);
 		IF_DEBUG(DEBUG_IGMP) {
 		    logit(LOG_DEBUG, 0, "Timer for grp %s on vif %d set to %u",
 			  inet_fmt(group, s2, sizeof(s2)), vifi, g->al_timer);
@@ -337,14 +338,8 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 	    g->al_reporter = igmp_src;
 
 	    /** delete old timers, set a timer for expiration **/
-	    g->al_timer = igmp_group_membership_timeout();
 	    if (g->al_query)
 		g->al_query = DeleteTimer(g->al_query);
-
-	    if (g->al_timerid)
-		g->al_timerid = DeleteTimer(g->al_timerid);
-
-	    g->al_timerid = SetTimer(vifi, g, ssm_src);
 
 	    /* Reset timer for switching version back every time an older version report is received */
 	    if (g->al_pv < 3 && old_report) {
@@ -382,6 +377,8 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 			logit(LOG_DEBUG, 0, "%s(): Source %s added to g:%p", __func__, s2, g);
 		}
 	    }
+
+	    arm_membership_timer(vifi, g, s, ssm_src);
 
 	    /* TODO: might need to add a check if I am the forwarder??? */
 	    /* if (v->uv_flags & VIFF_DR) */
@@ -438,9 +435,8 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 
 	/** set a timer for expiration **/
 	g->al_query     = 0;
-	g->al_timer     = igmp_group_membership_timeout();
 	g->al_reporter  = igmp_src;
-	g->al_timerid   = SetTimer(vifi, g, ssm_src);
+	arm_membership_timer(vifi, g, s, ssm_src);
 
 	/* Set timer for swithing version back if an older version report is received */
 	if (g->al_pv < 3)
@@ -536,7 +532,8 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 		    else
 			prev->al_next = curr->al_next;
 
-		    /* Stop any switch_version() timer */
+		    /* Stop this membership's own timers */
+		    timer_clear(curr->al_timerid);
 		    timer_clear(curr->al_versiontimer);
 		    free(curr);
 		    removed = 1;
@@ -584,7 +581,7 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 
 	    g->al_timer = IGMP_LAST_MEMBER_QUERY_INTERVAL * (IGMP_LAST_MEMBER_QUERY_COUNT + 1);
 	    g->al_query = SetQueryTimer(g, vifi, IGMP_LAST_MEMBER_QUERY_INTERVAL, code, datalen);
-	    g->al_timerid = SetTimer(vifi, g, dst);
+	    g->al_timerid = SetTimer(vifi, g, dst, g->al_timer);
 	    break;
 	}
     }
@@ -852,6 +849,8 @@ static void DelVif(void *arg)
 		struct listaddr *s = g->al_sources;
 
 		g->al_sources = s->al_next;
+		timer_clear(s->al_timerid);
+		timer_clear(s->al_versiontimer);
 		free(s);
 	    }
 
@@ -902,7 +901,7 @@ static int SetVerTimer(vifi_t vifi, struct listaddr *g)
 /*
  * Set a timer to delete the record of a group membership on a vif.
  */
-static int SetTimer(vifi_t vifi, struct listaddr *g, uint32_t source)
+static int SetTimer(vifi_t vifi, struct listaddr *g, uint32_t source, int delay)
 {
     cbk_t *cbk;
 
@@ -919,7 +918,30 @@ static int SetTimer(vifi_t vifi, struct listaddr *g, uint32_t source)
     IF_DEBUG(DEBUG_IGMP)
 	logit(LOG_DEBUG, 0, "Set delete timer for group: %s", inet_ntoa(*((struct in_addr *)&g->al_addr)));
 
-    return timer_set(g->al_timer, DelVif, cbk);
+    return timer_set(delay, DelVif, cbk);
+}
+
+/*
+ * Arm the membership timer for whatever a report refreshed: the source it
+ * named, for a group in the SSM range, and the group itself for any other.
+ *
+ * An SSM group is a list of (S,G) memberships that share a group address
+ * and otherwise come and go one at a time, so each of them has to hold a
+ * timer of its own.  With one timer per group, a report for one source
+ * rearmed the timer belonging to another, and a block for whichever source
+ * had armed it cancelled the only timer the group had while leaving its
+ * other sources in place: nothing was left to expire them, on any
+ * timescale.
+ */
+static void arm_membership_timer(vifi_t vifi, struct listaddr *g, struct listaddr *s, uint32_t source)
+{
+    struct listaddr *e = s ? s : g;
+
+    if (e->al_timerid)
+	e->al_timerid = DeleteTimer(e->al_timerid);
+
+    e->al_timer = igmp_group_membership_timeout();
+    e->al_timerid = SetTimer(vifi, g, source, e->al_timer);
 }
 
 

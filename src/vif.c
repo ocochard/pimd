@@ -391,6 +391,12 @@ static void stop_vif(vifi_t vifi)
 	    while (a->al_sources) {
 		b = a->al_sources;
 		a->al_sources = b->al_next;
+
+		/* Each (S,G) membership holds a timer of its own */
+		if (b->al_timerid)
+		    timer_clear(b->al_timerid);
+		if (b->al_versiontimer)
+		    timer_clear(b->al_versiontimer);
 		free(b);
 	    }
 
