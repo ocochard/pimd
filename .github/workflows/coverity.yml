@@ -1,21 +1,43 @@
 name: Coverity Scan
 
+# Coverity's free tier caps how many builds a project may submit per week,
+# and per day, so this does not run on push.  Once a week keeps a fresh
+# analysis without spending the quota on every commit, and the manual
+# trigger is there for when something is worth scanning right away.
 on:
-  push:
-    branches:
-      - 'dev'
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   PROJECT_NAME: pimd
-  CONTACT_EMAIL: troglobit@gmail.com
-  COVERITY_NAME: troglobit-pimd
-  COVERITY_PROJ: troglobit%2Fpimd
+  # The project as Coverity Scan knows it, and the address it mails
+  # results to.  Set the repository variables to override, so registering
+  # under a different account does not need a commit.
+  COVERITY_NAME: ${{ vars.COVERITY_PROJECT || 'ocochard/pimd' }}
+  CONTACT_EMAIL: ${{ vars.COVERITY_EMAIL || 'olivier@cochard.me' }}
 
 jobs:
   coverity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v7
+
+      - name: Check the scan token is configured
+        env:
+          TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::COVERITY_SCAN_TOKEN is not set.  Register the project at"
+            echo "::error::https://scan.coverity.com/ and add its token as a repository secret."
+            exit 1
+          fi
+          # Coverity wants the project name form-encoded in the URL
+          echo "COVERITY_PROJ=$(printf '%s' "$COVERITY_NAME" | sed 's|/|%2F|g')" >> "$GITHUB_ENV"
+
       - name: Fetch latest Coverity Scan MD5
         id: var
         env:
@@ -24,10 +46,11 @@ jobs:
           wget -q https://scan.coverity.com/download/cxx/linux64         \
                --post-data "token=$TOKEN&project=${COVERITY_PROJ}&md5=1" \
                -O coverity-latest.tar.gz.md5
-          export MD5=$(cat coverity-latest.tar.gz.md5)
+          MD5=$(cat coverity-latest.tar.gz.md5)
           echo "Got MD5 $MD5"
-          echo ::set-output name=md5::${MD5}
-      - uses: actions/cache@v2
+          echo "md5=$MD5" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
         id: cache
         with:
           path: coverity-latest.tar.gz
@@ -36,6 +59,7 @@ jobs:
             ${{ runner.os }}-coverity-${{ steps.var.outputs.md5 }}
             ${{ runner.os }}-coverity-
             ${{ runner.os }}-coverity
+
       - name: Download Coverity Scan
         env:
           TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
@@ -50,18 +74,22 @@ jobs:
           fi
           mkdir coverity
           tar xzf coverity-latest.tar.gz --strip 1 -C coverity
+
       - name: Install dependencies
         run: |
           sudo apt-get -y update
           sudo apt-get -y install pkg-config libsystemd-dev
+
       - name: Configure
         run: |
           ./autogen.sh
           ./configure --prefix=
+
       - name: Build
         run: |
           export PATH=`pwd`/coverity/bin:$PATH
           cov-build --dir cov-int make
+
       - name: Submit results to Coverity Scan
         env:
           TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
@@ -75,8 +103,11 @@ jobs:
             --form version=trunk \
             --form description="${PROJECT_NAME} $(git rev-parse HEAD)" \
             https://scan.coverity.com/builds?project=${COVERITY_PROJ}
+
       - name: Upload build.log
-        uses: actions/upload-artifact@v2
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
           name: coverity-build.log
           path: cov-int/build-log.txt
+          if-no-files-found: ignore

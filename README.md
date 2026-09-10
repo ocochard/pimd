@@ -372,5 +372,5 @@ Stanford Junior University.
 [Linux Status]:    https://github.com/ocochard/pimd/actions/workflows/build.yml/badge.svg
 [FreeBSD]:         https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml
 [FreeBSD Status]:  https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml/badge.svg
-[Coverity Scan]:   https://scan.coverity.com/projects/3319
-[Coverity Status]: https://scan.coverity.com/projects/3319/badge.svg
+[Coverity Scan]:   https://scan.coverity.com/projects/33273
+[Coverity Status]: https://scan.coverity.com/projects/33273/badge.svg
