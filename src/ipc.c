@@ -263,8 +263,10 @@ static void ipc_show(int sd, int (*cb)(FILE *), char *buf, size_t len)
 		return;
 	}
 
-	if (cb(fp))
+	if (cb(fp)) {
+		fclose(fp);
 		return;
+	}
 
 	rewind(fp);
 	ipc_send(sd, buf, len, fp);
