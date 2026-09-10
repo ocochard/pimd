@@ -956,7 +956,7 @@ static void ipc_handle(int sd)
 	}
 
 	if (rc == IPC_ERR)
-		ipc_err(sd, cmd, sizeof(cmd));
+		ipc_err(client, cmd, sizeof(cmd));
 
 	ipc_close(client);
 }
