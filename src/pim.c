@@ -73,6 +73,7 @@ void init_pim(void)
     pim_socket = socket(AF_INET, SOCK_RAW, IPPROTO_PIM);
     if (pim_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating PIM socket");
+	pim_socket = -1;
 	return;
     }
 
@@ -95,6 +96,7 @@ void init_pim(void)
     if (!pim_recv_buf || !pim_send_buf) {
 	logit(LOG_ERR, 0, "Ran out of memory in init_pim()");
 	close(pim_socket);
+	pim_socket = -1;
 	return;
     }
 
