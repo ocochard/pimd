@@ -177,6 +177,11 @@ static void accept_pim(ssize_t recvlen)
     src		= ip->ip_src.s_addr;
     dst		= ip->ip_dst.s_addr;
     iphdrlen	= ip->ip_hl << 2;
+    if (iphdrlen < (int)sizeof(struct ip) || iphdrlen > recvlen) {
+	logit(LOG_WARNING, 0, "Received PIM packet from %s to %s with invalid IP header length %d",
+	      inet_fmt(src, source, sizeof(source)), inet_fmt(dst, dest, sizeof(dest)), iphdrlen);
+	return;
+    }
 
     pim		= (pim_header_t *)(pim_recv_buf + iphdrlen);
     pimlen	= recvlen - iphdrlen;
