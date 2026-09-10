@@ -871,6 +871,27 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 
 	    if (mrt->flags & MRTF_SG) {
 		if (!(mrt->flags & MRTF_SPT)) {
+		    /* RFC 7761 sec. 4.2.2: the SPTbit goes up once (S,G)
+		     * traffic arrives on RPF_interface(S) while we hold
+		     * (S,G) join state of our own, whether or not that is
+		     * also the interface the (*,G) uses.  The comparison
+		     * below cannot see that case: where the path to the
+		     * source and the path to the RP leave by the same
+		     * interface the two iifs are equal however genuinely we
+		     * joined the shortest path tree, and the entry then
+		     * advertises an RPT assert metric for a tree it is on.
+		     * joined_oifs is what tells the two apart: an (S,G)
+		     * that a cache miss built underneath a (*,G) has none
+		     * of its own, it forwards on the (*,G)'s leaves.
+		     */
+		    if (mrt->incoming == mrt->source->incoming &&
+			!PIMD_VIFM_ISEMPTY(mrt->joined_oifs)) {
+			mrt->flags |= MRTF_SPT;
+			mrt->flags &= ~MRTF_RP;
+		    }
+		}
+
+		if (!(mrt->flags & MRTF_SPT)) {
 		    mrp = mrt->group->grp_route;
 		    if (!mrp)
 			mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;

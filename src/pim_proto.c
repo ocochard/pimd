@@ -59,6 +59,9 @@ static int compare_metrics         (uint32_t local_preference,
 				    uint32_t remote_preference,
 				    uint32_t remote_metric,
 				    uint32_t remote_address);
+static void my_assert_metric       (mrtentry_t *mrt,
+				    uint32_t *preference,
+				    uint32_t *metric);
 
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
@@ -2531,9 +2534,9 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     uint32_t assert_rptbit;
     uint32_t local_metric;
     uint32_t local_preference;
-    uint8_t  local_rptbit;
     uint8_t  local_wins;
     pim_nbr_entry_t *original_upstream_router;
+    rpentry_t *rpentry;
 
     (void)dst;
 
@@ -2578,8 +2581,18 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	      inet_fmt(src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
 	      inet_fmt(source, s3, sizeof(s3)));
 
-    /* Find the longest "active" entry, i.e. the one with a kernel mirror */
-    if (assert_rptbit) {
+    /* Find the longest "active" entry, i.e. the one with a kernel mirror.
+     *
+     * The RPT bit alone does not say which state the Assert is about.  A
+     * (*,G) Assert carries the RP in its source field (RFC 7761 sec. 4.9.6),
+     * while an (S,G) Assert from a router that has no (S,G) forwarding state
+     * carries the source and the RPT bit both, sec. 4.6.1.  Matching on the
+     * bit alone sent the latter to the (*,G), which usually has no kernel
+     * cache, so the Assert was dropped and the duplicate it was raised for
+     * never got resolved.
+     */
+    rpentry = rp_match(group);
+    if (assert_rptbit && rpentry && source == rpentry->address) {
 	mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 	if (mrt && !(mrt->flags & MRTF_KERNEL_CACHE)) {
 	    if (mrt->flags & MRTF_WC)
@@ -2606,37 +2619,8 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	return FALSE;
     }
 
-    /* Prepare the local preference and metric */
-    if ((mrt->flags & MRTF_SG)
-	&& !(mrt->flags & MRTF_RP)) {
-	/* (S,G) toward S */
-	/* TODO: XXX: get the info from mrt, or source or from kernel ? */
-	/*
-	  local_metric = mrt->source->metric;
-	  local_preference = mrt->source->preference;
-	*/
-	local_metric = mrt->metric;
-	local_preference = mrt->preference;
-    } else {
-	/* Should be (*,G) or (S,G)RPbit entry.
-	 * Get what we need from the RP info.
-	 */
-	/* TODO: get the info from mrt, RP-entry or kernel? */
-	/*
-	  local_metric =
-	  mrt->group->active_rp_grp->rp->rpentry->metric;
-	  local_preference =
-	  mrt->group->active_rp_grp->rp->rpentry->preference;
-	*/
-	local_metric = mrt->metric;
-	local_preference = mrt->preference;
-    }
-
-    local_rptbit = (mrt->flags & MRTF_RP);
-    if (local_rptbit) {
-	/* Make the RPT bit the most significant one */
-	local_preference |= PIM_ASSERT_RPT_BIT;
-    }
+    /* Prepare the local preference and metric, RPT bit included */
+    my_assert_metric(mrt, &local_preference, &local_metric);
 
     if (PIMD_VIFM_ISSET(vifi, mrt->oifs)) {
 	/* The ASSERT has arrived on oif */
@@ -2746,13 +2730,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (mrt->upstream == NULL)
 	    return FALSE;
 
-	/* TODO: where to get the local metric and preference from?
-	 * system call or mrt is fine?
-	 */
-	local_metric = mrt->metric;
-	local_preference = mrt->preference;
-	if (mrt->flags & MRTF_RP)
-	    local_preference |= PIM_ASSERT_RPT_BIT;
+	my_assert_metric(mrt, &local_preference, &local_metric);
 
 	local_wins = compare_metrics(local_preference, local_metric,
 				     mrt->upstream->address,
@@ -2828,11 +2806,8 @@ int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mr
        local_metric = srcentry->metric;
        local_preference = srcentry->preference;
     */
-    local_metric = mrt->metric;
-    local_preference = mrt->preference;
+    my_assert_metric(mrt, &local_preference, &local_metric);
 
-    if (mrt->flags & MRTF_RP)
-	local_preference |= PIM_ASSERT_RPT_BIT;
     PUT_HOSTLONG(local_preference, data);
     PUT_HOSTLONG(local_metric, data);
 
@@ -2850,6 +2825,52 @@ int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mr
 
 
 /* Return TRUE if the local win, otherwise FALSE */
+/*
+ * RFC 7761 sec. 4.6.1, my_assert_metric(): an Assert may only carry the
+ * shortest path tree metric, the one with the RPT bit clear, when
+ * CouldAssert(S,G,I) holds, and that in turn requires SPTbit(S,G) to be
+ * set.  Everything else forwarding the group has to assert as an RPT
+ * forwarder, with the metric towards the RP and the bit set, so that a
+ * neighbor which really is on the shortest path tree beats it on the bit
+ * before either metric or address is looked at.
+ *
+ * MRTF_SPT is that SPTbit: process_cache_miss() and process_wrong_iif()
+ * (src/route.c) set it once an (S,G) iif or upstream router differs from
+ * the (*,G) the entry was built under, i.e. once we really did leave the
+ * shared tree.  The (S,G) that a cache miss creates underneath a (*,G)
+ * keeps it clear, and must not claim a tree it never joined: doing so used
+ * to hand it a tie on preference and metric and let the address tiebreak
+ * decide an election the spec had already answered.
+ */
+static void my_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *metric)
+{
+    mrtentry_t *mrp = NULL;
+
+    if (mrt->flags & MRTF_SPT) {
+	/* spt_assert_metric(S,I), the metric towards the source.  The bit
+	 * is masked off rather than assumed clear: losing an assert on the
+	 * iif copies the winner's preference, bit and all, into ours. */
+	*preference = mrt->preference & ~PIM_ASSERT_RPT_BIT;
+	*metric     = mrt->metric;
+
+	return;
+    }
+
+    /* rpt_assert_metric(G,I), the metric towards the RP.  On an (S,G) that
+     * never left the shared tree that lives on the (*,G), not on the entry
+     * we happen to be forwarding off. */
+    if (mrt->group) {
+	mrp = mrt->group->grp_route;
+	if (!mrp && mrt->group->active_rp_grp && mrt->group->active_rp_grp->rp)
+	    mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
+    }
+    if (!mrp)
+	mrp = mrt;
+
+    *preference = mrp->preference | PIM_ASSERT_RPT_BIT;
+    *metric     = mrp->metric;
+}
+
 static int compare_metrics(uint32_t local_preference, uint32_t local_metric, uint32_t local_address,
 			   uint32_t remote_preference, uint32_t remote_metric, uint32_t remote_address)
 {
