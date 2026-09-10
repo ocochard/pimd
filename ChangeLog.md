@@ -56,6 +56,47 @@ pimd on all routers in the same domain.  See issue #93 for details.
   is now _disabled_
 
 ### Fixes
+- Fix IGMPv3 (S,G) memberships that could never expire.  A group held a
+  single membership timer, carrying whichever source had reported last.
+  For an any-source group that is the whole story, but a group in the SSM
+  range is a list of (S,G) memberships that come and go one at a time: a
+  report for a second source rearmed the timer belonging to the first, and
+  an IGMPv3 BLOCK for the source that had armed it cancelled the only
+  timer the group had while leaving its other sources in place.  Nothing
+  expired the group after that, on any timescale, so the memberships and
+  the (S,G) forwarding state under them stayed until the interface went
+  away.  A leave for the last source still cleaned up, which is why this
+  only showed when a receiver stopped reporting rather than leaving.
+  Every source now arms, refreshes and cancels a timer of its own, and
+  `pimctl show igmp` prints each source's own timeout rather than the
+  group's for all of them
+- Bound the sources pimd keeps for one group, and the work one report can
+  ask for.  Every source in an IGMPv3 group record is looked up in, or
+  added to, the group's source list, and each one accepted is a
+  membership, a timer and an (S,G) entry held until that source is blocked
+  or times out.  RFC 3376 bounds neither: a single 64 KiB datagram carries
+  some 16000 source addresses, so one packet from any host on the LAN
+  walked a growing list once per source and left as many entries behind as
+  it liked.  A group now keeps at most 256 sources, at most that many are
+  acted on per group record, and both are logged when they bite
+- Harden the paths that parse packets off the wire.  `accept_igmp()` and
+  `accept_pim()` derived the IGMP and PIM message offsets from the IP
+  header length without checking it, and the guard that looked like it
+  covered this in `accept_igmp()` compared a value against its own
+  definition and could never be true.  IGMP messages are now also
+  discarded when the checksum is wrong, as RFC 3376 sec. 4.1.2 requires
+  and as every `receive_pim_*()` already did.  In the IGMPv3 report
+  parser, Aux Data Len is now scaled in 32-bit words per RFC 3376
+  sec. 4.2.6 rather than counted as bytes, which had the walk to the next
+  group record land inside the record it just parsed, on bytes the sender
+  chooses, and read them as further records; the report header and each
+  record header are bounded before the counts inside them are read.  On
+  the housekeeping side, timer IDs are no longer stored in unsigned
+  fields, where the -1 of a failed `timer_set()` read back as a running
+  timer, `timer_set()` frees the callback data it was handed when it
+  cannot create the timer, and the `init_igmp()` and `init_pim()` error
+  paths no longer leave a freed buffer pointer or a closed descriptor
+  behind for a later `restart()` to pick up
 - Fix PIM Assert being sent with the RPT bit clear for a group the router
   only has (\*,G) forwarding state for.  RFC 7761 sec. 4.6.1 compares
   assert metrics with `rpt_bit_flag` first, and only a router whose
