@@ -13,9 +13,9 @@ on:
 
 jobs:
   build:
-    # Verify we can build on latest Ubuntu with both gcc and clang
+    # Verify we can build on Ubuntu 26.04 with both gcc and clang
     name: ${{ matrix.compiler }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         compiler: [gcc, clang]
@@ -56,8 +56,8 @@ jobs:
       - name: Test
         # The suite runs every script under `unshare -mrun`, and the -r
         # maps root through a user namespace.  Ubuntu 23.10 and later
-        # restrict unprivileged user namespaces with AppArmor, so on the
-        # ubuntu-latest image that write fails with
+        # restrict unprivileged user namespaces with AppArmor, 26.04
+        # included, so that write fails with
         #
         #   unshare: write failed /proc/self/uid_map: Operation not permitted
         #
