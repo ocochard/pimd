@@ -517,6 +517,16 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 	GET_HOSTSHORT(opt_type, data);
 	GET_HOSTSHORT(opt_len,  data);
 
+	/* The option has to fit in what is left of the message before its
+	 * value is read, not after: validate_pim_opt() compares opt_len
+	 * against the length the option is defined to have and never
+	 * against the message, so a truncated final option would be read
+	 * past the end and only then rejected.
+	 */
+	rec_len = (sizeof(pim_hello_t) + opt_len);
+	if (len < rec_len)
+	    return FALSE;
+
 	switch (opt_type) {
 	    case PIM_HELLO_HOLDTIME:
 		result = validate_pim_opt(src, "Holdtime", PIM_HELLO_HOLDTIME_LEN, opt_len);
@@ -543,8 +553,7 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 	}
 
 	/* Move to the next option */
-	rec_len = (sizeof(pim_hello_t) + opt_len);
-	if (len < rec_len || result == FALSE)
+	if (result == FALSE)
 	    return FALSE;
 
 	msg += rec_len;
