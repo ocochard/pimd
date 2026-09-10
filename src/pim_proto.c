@@ -3323,6 +3323,7 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
     pim_encod_uni_addr_t euaddr;
     pim_encod_grp_addr_t egaddr;
     uint8_t *data_ptr;
+    uint8_t *max_data;
     uint32_t grp_mask;
 
     /* Checksum */
@@ -3343,8 +3344,8 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
     }
 
     data_ptr = (uint8_t *)(msg + sizeof(pim_header_t));
+    max_data = (uint8_t *)msg + len;
     /* Parse the CAND_RP_ADV message */
-    /* TODO: XXX: check len whether it is at least the minimum */
     GET_BYTE(prefix_cnt, data_ptr);
     GET_BYTE(priority, data_ptr);
     GET_HOSTSHORT(holdtime, data_ptr);
@@ -3365,6 +3366,14 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
     }
 
     while (prefix_cnt--) {
+	if (data_ptr + PIM_ENCODE_GRP_ADDR_LEN > max_data) {
+	    IF_DEBUG(DEBUG_PIM_CAND_RP)
+		logit(LOG_NOTICE, 0, "Truncated cand_RP message from %s,"
+		      " prefix count runs past the end", inet_fmt(src, s1, sizeof(s1)));
+
+	    return FALSE;
+	}
+
 	GET_EGADDR(&egaddr, data_ptr);
 	MASKLEN_TO_MASK(egaddr.masklen, grp_mask);
 	/* Do not advertise internal virtual RP for SSM groups */
@@ -3375,7 +3384,6 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 			     my_bsr_hash_mask,
 			     curr_bsr_fragment_tag);
 	}
-	/* TODO: Check for len */
     }
 
     return TRUE;
