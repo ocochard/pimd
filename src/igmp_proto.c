@@ -847,7 +847,14 @@ static void DelVif(void *arg)
     while ((g = *anp)) {
 	if (g == group) {
 	    *anp = g->al_next;
-	    free(g->al_sources);
+
+	    while (g->al_sources) {
+		struct listaddr *s = g->al_sources;
+
+		g->al_sources = s->al_next;
+		free(s);
+	    }
+
 	    free(g);
 	} else {
 	    anp = &g->al_next;
@@ -883,7 +890,7 @@ static int SetVerTimer(vifi_t vifi, struct listaddr *g)
     cbk = calloc(1, sizeof(cbk_t));
     if (!cbk) {
 	logit(LOG_ERR, 0, "Failed calloc() in SetVerTimer()\n");
-	return -1;
+	return 0;	/* 0 is not a valid timer ID, i.e. no timer running */
     }
 
     cbk->vifi = vifi;
@@ -902,7 +909,7 @@ static int SetTimer(vifi_t vifi, struct listaddr *g, uint32_t source)
     cbk = calloc(1, sizeof(cbk_t));
     if (!cbk) {
 	logit(LOG_ERR, 0, "Failed calloc() in SetTimer()");
-	return -1;
+	return 0;	/* 0 is not a valid timer ID, i.e. no timer running */
     }
 
     cbk->vifi = vifi;
@@ -961,7 +968,7 @@ static int SetQueryTimer(struct listaddr *g, vifi_t vifi, int to_expire, int q_t
     cbk = calloc(1, sizeof(cbk_t));
     if (!cbk) {
 	logit(LOG_ERR, 0, "Failed calloc() in SetQueryTimer()");
-	return -1;
+	return 0;	/* 0 is not a valid timer ID, i.e. no timer running */
     }
 
     cbk->g = g;

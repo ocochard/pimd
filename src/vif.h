@@ -285,10 +285,10 @@ struct listaddr {
     uint8_t	     al_mv;		/* router mrouted version	    */
     uint8_t	     al_old;            /* time since heard old report      */
     uint8_t	     al_index;		/* neighbor index		    */
-    uint32_t	     al_timerid;        /* timer for group membership	    */
-    uint32_t	     al_query;		/* timer for repeated leave query   */
+    int		     al_timerid;        /* timer for group membership	    */
+    int		     al_query;		/* timer for repeated leave query   */
     uint16_t	     al_flags;		/* flags related to this neighbor   */
-    u_long	     al_versiontimer;	/* timer for version switch         */
+    int		     al_versiontimer;	/* timer for version switch         */
 };
 #define	al_genid	al_alu.alu_genid
 #define	al_reporter	al_alu.alu_reporter
