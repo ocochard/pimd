@@ -239,6 +239,7 @@ static int ipc_close(int sd)
 		close(sd);
 }
 
+/* The caller owns sd, ipc_handle() closes it once the reply is out. */
 static int ipc_send(int sd, char *buf, size_t len, FILE *fp)
 {
 	while (fgets(buf, len, fp)) {
@@ -249,7 +250,7 @@ static int ipc_send(int sd, char *buf, size_t len, FILE *fp)
 		return IPC_ERR;
 	}
 
-	return ipc_close(sd);
+	return 0;
 }
 
 static void ipc_show(int sd, int (*cb)(FILE *), char *buf, size_t len)
