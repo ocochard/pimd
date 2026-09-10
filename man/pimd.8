@@ -51,8 +51,8 @@ The robustness, flexibility, and scaling properties of this architecture
 make it well suited to large heterogeneous internetworks.
 .Pp
 .Nm
-originally only implemented RFC2362, but since v2.3.0 is supporting more
-and more of RFC4601.
+originally only implemented the experimental RFC2362, but since v2.3.0
+is supporting more and more of RFC7761, the current PIM-SM standard.
 .Pp
 .Nm
 ships with a
@@ -307,8 +307,9 @@ socket used for communication with
 .Xr mrouted 8 ,
 .Xr smcroute 8 ,
 .Pp
-PIM-SM is described in, the now obsolete RFC2362, and the current
-RFC4601, with additions in RFC5059 and RFC5796.
+PIM-SM is described in RFC7761 (STD 83), which obsoletes RFC4601, which
+in turn obsoleted the experimental RFC2362, with additions in RFC5059
+and RFC5796.
 .Pp
 The pages at USC, http://netweb.usc.edu/pim/, are unfortunately no
 longer available.  The wiki pages of the upstream GitHub project,
