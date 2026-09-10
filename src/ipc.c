@@ -171,7 +171,13 @@ static void check_detail(char *cmd, size_t len)
 
 static int ipc_read(int sd, char *cmd, ssize_t len)
 {
-	while ((len = read(sd, cmd, len - 1)) == -1) {
+	ssize_t num;
+
+	/* Keep the size of the buffer and the result of the read apart: one
+	 * variable for both means a retry asks read() for len - 1 with len
+	 * already -1, and the client decides how much it sends.
+	 */
+	while ((num = read(sd, cmd, len - 1)) == -1) {
 		switch (errno) {
 		case EAGAIN:
 		case EINTR:
@@ -181,10 +187,10 @@ static int ipc_read(int sd, char *cmd, ssize_t len)
 		}
 		return IPC_ERR;
 	}
-	if (len == 0)
+	if (num == 0)
 		return IPC_OK;
 
-	cmd[len] = 0;
+	cmd[num] = 0;
 //	logit(LOG_DEBUG, 0, "IPC cmd: '%s'", cmd);
 
 	for (size_t i = 0; i < NELEMS(cmds); i++) {
