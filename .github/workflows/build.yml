@@ -54,7 +54,17 @@ jobs:
           sudo ~/tmp/sbin/pimctl -u ~/tmp/foo.sock
           sudo ~/tmp/sbin/pimctl -u ~/tmp/foo.sock kill
       - name: Test
+        # The suite runs every script under `unshare -mrun`, and the -r
+        # maps root through a user namespace.  Ubuntu 23.10 and later
+        # restrict unprivileged user namespaces with AppArmor, so on the
+        # ubuntu-latest image that write fails with
+        #
+        #   unshare: write failed /proc/self/uid_map: Operation not permitted
+        #
+        # and every test errors out before it starts.  Lift the
+        # restriction for this job rather than pinning an older image.
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           make check || (cat test/test-suite.log; false)
       - name: Upload Test Results
         uses: actions/upload-artifact@v7
