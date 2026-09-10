@@ -167,6 +167,28 @@
 #               claims the shortest path tree it never joined, the metrics
 #               tie, and the address hands it a win the spec does not.
 #               Takes about 3 minutes.
+#   ssm         IGMPv3 (S,G) membership state on R3, the last hop router,
+#               for a group in the 232.0.0.0/8 SSM range.  The only
+#               scenario about what IGMP leaves behind on a router rather
+#               than about what PIM forwards, and the only one where a
+#               group has a source list at all: everywhere else the
+#               receiver joins (*,G) and pimd keeps no sources for it.
+#
+#               ED2 reports two sources, blocks one, and then goes quiet.
+#               The membership that is left has to expire on its own, and
+#               it used to be unable to: a group held one membership timer,
+#               carrying whichever source had reported last, so blocking
+#               that source cancelled the only timer the group had while
+#               leaving its other source in place.  Nothing then aged the
+#               group out, on any timescale.  A leave for the last source
+#               still cleaned up, which is why this needs a receiver that
+#               stops reporting rather than one that leaves, and why no
+#               scenario built on mping could show it: a kernel that joined
+#               a group answers every query afterwards, and a receiver
+#               taken off the LAN takes the epair, and R3's vif, with it.
+#               The reports come from test/igmpv3.c for that reason - one
+#               report, sent exactly as asked, and nothing after it.
+#               Takes about 90s.
 #
 # The scenarios cannot run in parallel: they use the same jail names and
 # epairs, and net.inet.ip.mcast.loop is a host-global sysctl.
@@ -208,6 +230,7 @@ DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap"}
 PIMD="$PIMD_SRC/src/pimd"
 PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
+IGMPV3="$WORKDIR/igmpv3"
 # mping joins the group it sends to, which would give the (S,G) entries a
 # leaf and hide the bug the keepalive scenario is after.  That scenario
 # needs a source that only sends, so it gets its own little sender.
@@ -291,6 +314,18 @@ MAX_REGISTERS=${MAX_REGISTERS:-25}
 # check_gif_staticrp() for why that scenario needs it and the others do not.
 SETTLE=${SETTLE:-45}
 
+# ssm: two sources reported for one SSM group, and how long a membership
+# then lives without a report.  IGMP_ROBUSTNESS_VARIABLE (3) *
+# SSM_QUERY_INTERVAL + IGMP_QUERY_RESPONSE_INTERVAL (10), see r3.conf in
+# write_configs().  SSM_SRC1 and SSM_SRC2 only have to be routable from
+# R3, they never send: this scenario is about membership state, not
+# forwarding.
+SSM_QUERY_INTERVAL=${SSM_QUERY_INTERVAL:-5}
+SSM_TIMEOUT=${SSM_TIMEOUT:-25}
+SSM_SRC1=${SSM_SRC1:-10.0.1.10}
+SSM_SRC2=${SSM_SRC2:-10.0.1.11}
+SSM_MAX_SOURCES=${SSM_MAX_SOURCES:-256}
+
 # gif-tunnel: the tunnel R1 and R3 build over R2.  The inner prefix is a
 # /24 on a point-to-point link on purpose, see the header.
 GIF_IF=gif0
@@ -316,7 +351,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -332,7 +367,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt)
+	rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -353,6 +388,11 @@ set_scenario() {
 	# outside it and never resolve to an RP at all.
 	if [ "$SCENARIO" = gif-tunnel-staticrp ]; then
 		GROUP=${STATICRP_GROUP:-224.0.23.12}
+	elif [ "$SCENARIO" = ssm ]; then
+		# 232.0.0.0/8 is the SSM range, IN_PIM_SSM_RANGE() in
+		# src/pimd.h, and the only range where pimd keeps a source
+		# list per group at all
+		GROUP=${SSM_GROUP:-232.1.1.1}
 	else
 		GROUP=$GROUP_DEFAULT
 	fi
@@ -539,6 +579,7 @@ check_req() {
 	[ -x "$PIMD" ] || die "$PIMD not found, build it first (PIMD_SRC=$PIMD_SRC)"
 	[ -x "$PIMCTL" ] || die "$PIMCTL not found, build it first"
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
+	[ -f "$PIMD_SRC/test/igmpv3.c" ] || die "$PIMD_SRC/test/igmpv3.c not found"
 	# ip_mroute is a module on GENERIC and a jail may not kldload
 	${SUDO} kldload -n ip_mroute 2>/dev/null || \
 		die "cannot load ip_mroute.ko, kernel has no multicast routing"
@@ -600,6 +641,33 @@ write_configs() {
 
 		: > "$WORKDIR/r2.conf"
 		: > "$WORKDIR/r3.conf"
+		return
+	fi
+
+	if [ "$SCENARIO" = ssm ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for the reported sources
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point.  Not used by an
+		# SSM group, which never has a shared tree, but the domain
+		# needs one for pimd to consider itself converged
+		bsr-candidate Epair112b priority 1 interval 10
+		rp-candidate Epair112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# The membership timeout is
+		# IGMP_ROBUSTNESS_VARIABLE * igmp_query_interval +
+		# IGMP_QUERY_RESPONSE_INTERVAL (src/igmp_proto.c), 385s at the
+		# default query interval.  Nothing in this scenario is worth
+		# waiting six minutes for, so the interval is cut to 5s and the
+		# timeout with it, to $SSM_TIMEOUT.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router for the receiver LAN
+		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
 		return
 	fi
 
@@ -986,6 +1054,10 @@ start() {
 	cc -O2 -o "$MPING" "$PIMD_SRC/test/mping.c" || \
 		die "failed building $PIMD_SRC/test/mping.c"
 
+	print "Building igmpv3 (membership report generator) ..."
+	cc -O2 -o "$IGMPV3" "$PIMD_SRC/test/igmpv3.c" || \
+		die "failed building $PIMD_SRC/test/igmpv3.c"
+
 	print "Disabling multicast loopback on the host (restored by stop) ..."
 	disable_mcast_loop
 
@@ -1301,6 +1373,7 @@ check() {
 	gif-tunnel) check_gif_tunnel; return $? ;;
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
+	ssm)        check_ssm; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -1408,6 +1481,95 @@ check() {
 # restart the entry timer from it.  When it does not, age_routes() deletes
 # each entry within one TIMER_INTERVAL of its creation and the table
 # content is different every time you look at it.
+# ssm: IGMPv3 (S,G) membership state on the last hop router.
+#
+# The reports are generated by test/igmpv3.c rather than by joining the
+# group on ED2.  A kernel join answers every query R3 sends afterwards,
+# so the membership can never age out while ED2 is on the LAN, and taking
+# ED2 off the LAN destroys the epair and R3's vif with it.  Sending one
+# report and stopping is the only way to ask "does this membership expire
+# when the receiver goes quiet?", which is assertion 4.
+check_ssm() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. A report with two sources creates one membership each"
+	ssm_report -t allow "$SSM_SRC1" "$SSM_SRC2"
+	if wait_for 15 ssm_count_is 2; then
+		ok "R3 holds ($SSM_SRC1,$GROUP) and ($SSM_SRC2,$GROUP)"
+	else
+		fail "R3 holds $(ssm_sources | tr '\n' ' ')instead of both sources"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. Blocking one source leaves the other alone"
+	ssm_report -t block "$SSM_SRC2"
+	if wait_for 15 ssm_count_is 1 && [ "$(ssm_sources)" = "$SSM_SRC1" ]; then
+		ok "R3 dropped $SSM_SRC2 and kept $SSM_SRC1"
+	else
+		fail "block left $(ssm_sources | tr '\n' ' ')behind"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The regression.  One timer per group, holding whichever source
+	# reported last, means the block above cancelled the only timer the
+	# group had: the membership then outlives any timeout, because
+	# nothing is left to expire it.  A leave for the last source still
+	# cleans up, so only a receiver that goes quiet shows this.
+	print "4. The surviving membership ages out once the reports stop"
+	dprint "waiting up to $((SSM_TIMEOUT * 2))s, the membership timeout is ${SSM_TIMEOUT}s"
+	if wait_for $((SSM_TIMEOUT * 2)) ssm_count_is 0; then
+		ok "($SSM_SRC1,$GROUP) expired with no report to refresh it"
+	else
+		fail "($SSM_SRC1,$GROUP) never expired, no timer left after the block"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. A report with more sources than pimd keeps is bounded"
+	ssm_report -t allow -n $((SSM_MAX_SOURCES + 144)) -b 10.0.1.100
+	sleep 2
+	if ! pimctl r3 show status >/dev/null 2>&1; then
+		fail "pimd stopped answering after a $((SSM_MAX_SOURCES + 144)) source report"
+		return 1
+	fi
+
+	num=$(ssm_sources | wc -l | tr -d ' ')
+	if [ "$num" -ge 1 ] && [ "$num" -le "$SSM_MAX_SOURCES" ]; then
+		ok "R3 kept $num sources, at most $SSM_MAX_SOURCES"
+	else
+		fail "R3 kept $num sources, the list is not bounded"
+	fi
+
+	[ "$FAILED" -eq 0 ] || return 1
+	return 0
+}
+
+# Send one IGMPv3 report for $GROUP from ED2
+ssm_report() {
+	jrun ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$GROUP" "$@" || \
+		die "failed sending an IGMPv3 report from ed2"
+}
+
+# Sources R3 holds for $GROUP.  "show igmp" prints one line per (group,
+# source) and "ANY" in the source column for an any-source membership, so
+# this lists (S,G) memberships only.
+ssm_sources() {
+	pimctl r3 -t show igmp 2>/dev/null | \
+		awk -v grp="$GROUP" '$2 == grp && $3 != "ANY" { print $3 }'
+}
+
+# For wait_for(), which needs a command that returns a status
+ssm_count_is() {
+	[ "$(ssm_sources | wc -l | tr -d ' ')" -eq "$1" ]
+}
+
 check_keepalive() {
 	print "1. pimd is alive on R1"
 	if pimctl r1 show status >/dev/null 2>&1; then
@@ -2258,7 +2420,7 @@ run() {
 
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop gif-tunnel gif-tunnel-staticrp \
-			 shared-lan shared-lan-spt; do
+			 shared-lan shared-lan-spt ssm; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?
