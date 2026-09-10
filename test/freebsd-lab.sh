@@ -346,6 +346,16 @@ set_scenario() {
 		ED2_IF=epair510b
 	fi
 
+	# gif-tunnel-staticrp copies the issue down to the addresses: the
+	# KNX/IP group its reporters run, and the 224.0.0.0/16 rp-address
+	# mask their pimd.conf uses, which only just covers that group.
+	# 225.1.2.3, the group every other scenario uses, would fall
+	# outside it and never resolve to an RP at all.
+	if [ "$SCENARIO" = gif-tunnel-staticrp ]; then
+		GROUP=${STATICRP_GROUP:-224.0.23.12}
+	else
+		GROUP=$GROUP_DEFAULT
+	fi
 }
 
 # Interfaces each box owns, "a" and "b" ends of the epairs above
@@ -1106,19 +1116,36 @@ map_isset() {
 	[ "$(printf '%s' "$3" | cut -c "$((idx + 1))")" != "." ]
 }
 
-# Does router $1 forward group $3 onto interface $2, and has it been
-# asserted off it?  Both the (*,G) and the (S,G) are consulted: which one
-# carries the state depends on whether the router had joined the group
-# itself or is only forwarding what it overhears, and on which entry the
-# assert arrived for.
+# Does router $1 forward this scenario's stream onto interface $2, and has
+# it been asserted off it?
+#
+# Forwarding is read out of the kernel rather than out of pimd, because
+# neither pimd entry answers it on its own: a router that lost the assert
+# can still show the LAN in the oifs of its (*,G), which is state about the
+# group and not about this source, and a router that won can be forwarding
+# off a kernel cache hung on its (*,G) with no (S,G) of its own to read.
+# The MFC is the forwarding decision itself, and its vif numbers are the
+# ones pimd handed the kernel, so vif_index() maps names onto them.
+#
+# Asserted state is read off both entries, since which one the assert
+# landed on depends on what the router held when it arrived.
 forwards_on() {
-	for src in ANY "$SRC_ADDR"; do
-		if map_isset "$1" "$2" "$(route_map "$1" "$src" "$3" Outgoing)"; then
-			return 0
-		fi
-	done
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
 
-	return 1
+	jrun "$1" netstat -gn 2>/dev/null | awk -v s="$SRC_ADDR" -v g="$3" -v v="$idx" '
+		$1 == s && $2 == g {
+			# "Origin Group Packets In-Vif Out-Vifs:Ttls", the
+			# out-vifs being "<vif>:<ttl>" from field 5 on
+			for (i = 5; i <= NF; i++) {
+				split($i, oif, ":")
+				if (oif[1] == v)
+					found = 1
+			}
+			exit
+		}
+		END { exit !found }
+	'
 }
 
 asserted_on() {
@@ -1258,6 +1285,15 @@ run_stream_and_sample_shared() {
 
 check() {
 	jls -j "$(jname r1)" jid >/dev/null 2>&1 || die "lab is not running, run '$0 start'"
+
+	# "run all" walks the scenarios in one shell, and every check_*()
+	# gates its later assertions on "[ $FAILED -eq 0 ] || return 1".
+	# Without this the first scenario to fail takes every scenario after
+	# it down at its first checkpoint, with all of their assertions
+	# printing ok on the way out - a clean looking run that tested
+	# nothing.
+	FAILED=0
+	XFAILED=0
 
 	case $SCENARIO in
 	keepalive)  check_keepalive; return $? ;;
