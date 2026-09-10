@@ -2923,6 +2923,13 @@ static int compare_metrics(uint32_t local_preference, uint32_t local_metric, uin
  *                        PIM_BOOTSTRAP
  ************************************************************************/
 #define PIM_BOOTSTRAP_MINLEN (PIM_MINLEN + PIM_ENCODE_UNI_ADDR_LEN)
+/* One RP record inside a Bootstrap group record: the encoded RP address,
+ * its holdtime, its priority and a reserved byte.  Every loop that walks
+ * them is driven by a count taken off the wire, so each one has to check
+ * this much is still there before reading.
+ */
+#define PIM_BOOTSTRAP_RP_RECORD_LEN (PIM_ENCODE_UNI_ADDR_LEN + sizeof(uint16_t) \
+				     + sizeof(uint8_t) + sizeof(uint8_t))
 int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 {
     uint8_t               *data;
@@ -3137,6 +3144,14 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (curr_rp_count == curr_frag_rp_count) {
 	    /* Add all RPs */
 	    while (curr_frag_rp_count--) {
+		if (data + PIM_BOOTSTRAP_RP_RECORD_LEN > max_data) {
+		    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+			logit(LOG_NOTICE, 0, "Truncated Bootstrap message from %s,"
+			      " RP count runs past the end", inet_fmt(src, s1, sizeof(s1)));
+
+		    return FALSE;
+		}
+
 		GET_EUADDR(&curr_rp_addr, data);
 		GET_HOSTSHORT(curr_rp_holdtime, data);
 		GET_BYTE(curr_rp_priority, data);
@@ -3170,6 +3185,14 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    && (grp_mask->group_rp_number + curr_frag_rp_count == curr_rp_count)) {
 	    /* All missing PRs have arrived. Add all RP entries */
 	    while (curr_frag_rp_count--) {
+		if (data + PIM_BOOTSTRAP_RP_RECORD_LEN > max_data) {
+		    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+			logit(LOG_NOTICE, 0, "Truncated Bootstrap message from %s,"
+			      " RP count runs past the end", inet_fmt(src, s1, sizeof(s1)));
+
+		    return FALSE;
+		}
+
 		GET_EUADDR(&curr_rp_addr, data);
 		GET_HOSTSHORT(curr_rp_holdtime, data);
 		GET_BYTE(curr_rp_priority, data);
@@ -3205,6 +3228,14 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	} else {
 	    /* Add the partially received RP-list to the group of pending RPs*/
 	    while (curr_frag_rp_count--) {
+		if (data + PIM_BOOTSTRAP_RP_RECORD_LEN > max_data) {
+		    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+			logit(LOG_NOTICE, 0, "Truncated Bootstrap message from %s,"
+			      " RP count runs past the end", inet_fmt(src, s1, sizeof(s1)));
+
+		    return FALSE;
+		}
+
 		GET_EUADDR(&curr_rp_addr, data);
 		GET_HOSTSHORT(curr_rp_holdtime, data);
 		GET_BYTE(curr_rp_priority, data);
