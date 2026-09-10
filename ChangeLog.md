@@ -56,6 +56,27 @@ pimd on all routers in the same domain.  See issue #93 for details.
   is now _disabled_
 
 ### Fixes
+- Fix PIM Assert being sent with the RPT bit clear for a group the router
+  only has (\*,G) forwarding state for.  RFC 7761 sec. 4.6.1 compares
+  assert metrics with `rpt_bit_flag` first, and only a router whose
+  `SPTbit(S,G)` is set may claim the shortest path tree metric, so a
+  router forwarding off the shared tree has to lose to one that joined
+  the source.  pimd took the bit from `MRTF_RP` on whichever entry it was
+  forwarding off, and the (S,G) that a cache miss builds underneath a
+  (\*,G) never carries it, so such a router claimed a tree it never
+  joined, the metrics tied and the election was settled by the address
+  tiebreak instead.  On a LAN with two forwarders this could leave the
+  traffic on the shared tree and discard the shortest path copy.  Three
+  parts: the metric now comes from one helper named after the spec's
+  `my_assert_metric()`, shared by the send and receive paths that had
+  three hand rolled copies of it; the receive path no longer reads the
+  RPT bit as "this is a (\*,G) assert", which sent an (S,G) assert from an
+  RPT forwarder to the (\*,G), where the absent kernel cache made it drop
+  the assert and never resolve the duplicate; and `MRTF_SPT` is now set
+  when (S,G) traffic arrives on `RPF_interface(S)` while the router holds
+  joined oifs of its own, per sec. 4.2.2, instead of only when the (S,G)
+  and (\*,G) incoming interfaces differ, which they never do where the
+  path to the source and the path to the RP leave by the same interface
 - Fix `I_am_RP()` tests being written against `my_cand_rp_address`, which
   is only ever assigned when parsing `cand_rp`.  On a router whose RP
   comes from a static `rp-address` in `pimd.conf` it stays 0.0.0.0, so
