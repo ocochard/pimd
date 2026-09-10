@@ -90,9 +90,9 @@ Mini FAQ
   [GitHub issue tracker][tracker].
 
 
-[debug]:   https://github.com/troglobit/pimd/blob/dev/README-debug.md
-[config]:  https://github.com/troglobit/pimd/blob/dev/README-config.md
-[tracker]: https://github.com/troglobit/pimd/issues 
+[debug]:   https://github.com/ocochard/pimd/blob/master/doc/README-debug.md
+[config]:  https://github.com/ocochard/pimd/blob/master/doc/README-config.md
+[tracker]: https://github.com/ocochard/pimd/issues 
 
 <!--
   -- Local Variables:

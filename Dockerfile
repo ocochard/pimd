@@ -1,7 +1,7 @@
 FROM alpine:3.9
 RUN apk add --update git build-base automake autoconf linux-headers
 
-RUN git clone --depth=1 https://github.com/troglobit/pimd.git /root/pimd
+RUN git clone --depth=1 https://github.com/ocochard/pimd.git /root/pimd
 WORKDIR /root/pimd
 
 RUN ./autogen.sh

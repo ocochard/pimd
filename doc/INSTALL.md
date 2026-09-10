@@ -4,8 +4,9 @@ Installation instruction for pimd
 It is recommended to use a pimd from your distribution, be it from ports
 in one of the major BSD's, or your GNU/Linux distribution of choice.
 
-However, if you want to try the latest bleeding edge pimd, download one
-of the release tarballs at <https://github.com/troglobit/pimd/releases>
+However, if you want to try the latest bleeding edge pimd, clone the GIT
+sources from <https://github.com/ocochard/pimd>, or download one of the
+2.x release tarballs at <https://github.com/troglobit/pimd/releases>
 
 After unpacking the tarball, cd to the new directory, e.g. `pimd-2.3.0/`
 followed by:
@@ -47,7 +48,8 @@ PIM support was unfortunately removed from the multicast stack as of
 [OpenBSD 6.1](https://marc.info/?l=openbsd-cvs&m=148240469327159)
 
 For instructions on installing pimd on OpenBSD 6.0, and earlier, you can
-use the [HOWTO](https://troglobit.com/howto-run-pimd-on-openbsd.html),
+use Joachim Wiberg's
+[HOWTO](https://troglobit.com/howto-run-pimd-on-openbsd.html),
 taking into account the following:
 
 1. The MROUTING option is enabled by default in the kernel, but the PIM

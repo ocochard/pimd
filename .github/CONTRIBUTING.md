@@ -104,7 +104,7 @@ It is expected of everyone engaging in the project to, in the words of
 Bill & Ted; [be excellent to each other][conduct].
 
 
-[github]:   https://github.com/troglobit/pimd/
+[github]:   https://github.com/ocochard/pimd/
 [KNF]:      https://en.wikipedia.org/wiki/Kernel_Normal_Form
 [gitbook]:  https://git-scm.com/book/ch5-2.html
 [conduct]:  CODE-OF-CONDUCT.md
