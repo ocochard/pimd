@@ -30,7 +30,7 @@ jobs:
             arch: amd64
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Build + smoke test in FreeBSD VM
         uses: vmactions/freebsd-vm@v1
@@ -96,7 +96,7 @@ jobs:
             arch: amd64
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Run the vnet jail lab in a FreeBSD VM
         uses: vmactions/freebsd-vm@v1
