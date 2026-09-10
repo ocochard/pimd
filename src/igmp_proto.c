@@ -599,15 +599,17 @@ int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8_t *sou
     int j;
 
     for (j = 0, s = sources; j < num_sources; ++j, s += 4) {
-	in_addr_t ina = ((struct in_addr *)s)->s_addr;
+	in_addr_t ina;
 
-        if ((s + 4) > canary) {
+	if ((s + 4) > canary) {
 	    IF_DEBUG(DEBUG_IGMP)
 		logit(LOG_DEBUG, 0, "Invalid IGMPv3 report, too many sources, would overflow.");
-            return 1;
-        }
+	    return 1;
+	}
 
-        accept_group_report(ifi, src, ina, group, type);
+	ina = ((struct in_addr *)s)->s_addr;
+
+	accept_group_report(ifi, src, ina, group, type);
 
 	IF_DEBUG(DEBUG_IGMP)
 	    logit(LOG_DEBUG, 0, "Accepted, switch SPT (%s,%s)", inet_fmt(ina, s1, sizeof(s1)),
@@ -628,12 +630,13 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
     struct igmpv3_grec *record;
     int num_groups, i;
 
-    num_groups = ntohs(report->ngrec);
-    if (num_groups < 0) {
-	logit(LOG_INFO, 0, "Invalid Membership Report from %s: num_groups = %d",
-	      inet_fmt(src, s1, sizeof(s1)), num_groups);
+    if (reportlen < (ssize_t)sizeof(struct igmpv3_report)) {
+	logit(LOG_INFO, 0, "Too short Membership Report from %s: %zd bytes",
+	      inet_fmt(src, s1, sizeof(s1)), reportlen);
 	return;
     }
+
+    num_groups = ntohs(report->ngrec);
 
     IF_DEBUG(DEBUG_IGMP)
 	logit(LOG_DEBUG, 0, "IGMP v3 report, %zd bytes, from %s to %s with %d group records.",
@@ -648,11 +651,16 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	int             rec_auxdatalen;
 	int             rec_num_sources;
 	int             j, rc;
-	char src_str[200];
 	int record_size = 0;
 
+	if ((uint8_t *)record + sizeof(struct igmpv3_grec) > canary) {
+	    logit(LOG_INFO, 0, "Invalid group report, record header past end of message");
+	    return;
+	}
+
 	rec_num_sources = ntohs(record->grec_nsrcs);
-	rec_auxdatalen = record->grec_auxwords;
+	/* RFC 3376 sec. 4.2.6: Aux Data Len is in units of 32-bit words */
+	rec_auxdatalen = record->grec_auxwords * 4;
 	record_size = sizeof(struct igmpv3_grec) + sizeof(uint32_t) * rec_num_sources + rec_auxdatalen;
 	if ((uint8_t *)record + record_size > canary) {
 	    logit(LOG_INFO, 0, "Invalid group report %p > %p",
@@ -720,7 +728,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		for (j = 0; j < rec_num_sources; j++) {
 		    uint8_t *gsrc = (uint8_t *)&record->grec_src[j];
 
-		    if (gsrc > canary) {
+		    if (gsrc + sizeof(record->grec_src[0]) > canary) {
 			logit(LOG_INFO, 0, "Invalid group record");
 			return;
 		    }
