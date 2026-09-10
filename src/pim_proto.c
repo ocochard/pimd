@@ -2520,6 +2520,15 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 /************************************************************************
  *                        PIM_ASSERT
  ************************************************************************/
+/* Header, encoded group, encoded source, then the preference and the
+ * metric: everything receive_pim_assert() reads before it has looked at
+ * anything in the message.  pim.c only guarantees a PIM header, so
+ * without this an Assert truncated to its header had the parser reading
+ * whatever the previous packet left in the receive buffer.
+ */
+#define PIM_ASSERT_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN	\
+			   + PIM_ENCODE_UNI_ADDR_LEN + 2 * sizeof(uint32_t))
+
 int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 {
     vifi_t vifi;
@@ -2561,6 +2570,15 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     v = &uvifs[vifi];
     if (uvifs[vifi].uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_NONBRS | VIFF_REGISTER))
 	return FALSE;    /* Shoudn't come on this interface */
+
+    /* sanity check for the minimum length */
+    if (len < PIM_ASSERT_MINLEN) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Too short Assert message (%zu bytes) from %s on %s",
+		  len, inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
 
     data = (uint8_t *)(msg + sizeof(pim_header_t));
 
