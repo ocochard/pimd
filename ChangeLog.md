@@ -108,6 +108,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
   (S,G) outgoing interface list is empty, and the entry timer was only
   restarted for entries that had outgoing interfaces, so every entry was
   aged out a few seconds after a cache miss recreated it
+- Issue #237: `igmp-querier-timeout` recommended the value the setting
+  already had.  The recommendation was logged for any configured
+  timeout, not only for one below the recommendation, and the checks ran
+  while parsing the setting, so with `igmp-querier-timeout` ahead of
+  `igmp-query-interval` in `pimd.conf` they compared against the default
+  query interval instead of the configured one, warned, and replaced the
+  timeout.  The pair is now checked once the whole file has been read,
+  and `igmp-query-interval` no longer discards an already parsed
+  `igmp-querier-timeout`.  Both settings are also range checked against
+  the limits the man page documents, so an `igmp-query-interval 0` is no
+  longer accepted, and both are reset to their defaults on `SIGHUP`, so
+  removing either from `pimd.conf` now takes effect on reload
 
 
 [v2.3.2][] - 2016-03-10

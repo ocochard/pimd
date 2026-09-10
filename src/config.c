@@ -1405,20 +1405,22 @@ int parse_default_route_distance(char *s)
  */
 static int parse_igmp_query_interval(char *s)
 {
-    char *w;
     uint32_t value = IGMP_QUERY_INTERVAL;
+    const char *errstr;
+    long long num;
+    char *w;
 
     if (EQUAL((w = next_word(&s)), "")) {
 	WARN("Missing argument to igmp-query-interval; defaulting to %u", IGMP_QUERY_INTERVAL);
-    } else if (sscanf(w, "%u", &value) != 1) {
-	WARN("Invalid default igmp-query-interval; defaulting to %u", IGMP_QUERY_INTERVAL);
-	value = IGMP_QUERY_INTERVAL;
+    } else {
+	num = strtonum(w, 1, 65535, &errstr);
+	if (errstr)
+	    WARN("Invalid igmp-query-interval %s, %s; defaulting to %u", w, errstr, IGMP_QUERY_INTERVAL);
+	else
+	    value = (uint32_t)num;
     }
 
     igmp_query_interval = value;
-
-    /* Calculate new querier timeout, or expect config option after this. */
-    igmp_querier_timeout = 0;
 
     return TRUE;
 }
@@ -1432,6 +1434,10 @@ static int parse_igmp_query_interval(char *s)
  * active querier.  If the argument is missing or invalid the system
  * will calculate a fallback based on the query interval.
  *
+ * The value is only recorded here, it is sanity checked against the
+ * query interval in check_igmp_timers(), once the whole file has been
+ * read, because the two settings may come in any order.
+ *
  * Syntax:
  * igmp-querier-timeout <SEC>
  *
@@ -1440,39 +1446,58 @@ static int parse_igmp_query_interval(char *s)
  */
 static int parse_igmp_querier_timeout(char *s)
 {
+    uint32_t value = 0;		/* Zero: derive it from the query interval */
+    const char *errstr;
+    long long num;
     char *w;
-    uint32_t value = 0;
-    uint32_t recommended = QUERIER_TIMEOUT(igmp_query_interval);
 
     if (EQUAL((w = next_word(&s)), "")) {
-	WARN("Missing argument to igmp-querier-timeout!");
-    } else if (sscanf(w, "%u", &value) != 1) {
-	WARN("Invalid default igmp-querier-timeout!");
-	value = 0;
-    }
-
-    /* Do some sanity checks to prevent invalid configuration and to recommend
-     * better settings, see GitHub issue troglobit/pimd#31 for details. */
-    if (value != 0) {
-	/* 1) Prevent invalid configuration */
-	if (value <= igmp_query_interval) {
-	    WARN("IGMP querier timeout %d must be larger than the query interval %d, forcing default!",
-		 value, igmp_query_interval);
-	    value = recommended;
-	}
-
-	/* 2) Warn power user of potentially too low setting. */
-	if (value < recommended)
-	    WARN("The IGMP querier timeout %d is smaller than the recommended value %d, allowing ...",
-		 value, recommended);
-
-	logit(LOG_WARNING, 0, "Recommended querier timeout = Robustness x query-interval + response-time / 2 = %d x %d + %d / 2 = %d",
-	      IGMP_ROBUSTNESS_VARIABLE, igmp_query_interval, IGMP_QUERY_RESPONSE_INTERVAL, recommended);
+	WARN("Missing argument to igmp-querier-timeout, computing it from the query interval ...");
+    } else {
+	num = strtonum(w, 8, 65535, &errstr);
+	if (errstr)
+	    WARN("Invalid igmp-querier-timeout %s, %s; computing it from the query interval ...", w, errstr);
+	else
+	    value = (uint32_t)num;
     }
 
     igmp_querier_timeout = value;
 
     return TRUE;
+}
+
+/*
+ * Derive the querier timeout from the query interval unless the .conf set
+ * one, then sanity check the pair, see GitHub issue troglobit/pimd#31.
+ *
+ * Called after the whole .conf has been read so that the checks see the
+ * final query interval no matter which order the two settings came in,
+ * and so that a timeout matching the recommendation is not warned about,
+ * see GitHub issue troglobit/pimd#237.
+ */
+static void check_igmp_timers(void)
+{
+    uint32_t recommended = QUERIER_TIMEOUT(igmp_query_interval);
+
+    if (!igmp_querier_timeout) {
+	igmp_querier_timeout = recommended;
+	return;
+    }
+
+    /* 1) Prevent invalid configuration */
+    if (igmp_querier_timeout <= igmp_query_interval) {
+	logit(LOG_WARNING, 0, "IGMP querier timeout %u must be larger than the query interval %u, using %u instead",
+	      igmp_querier_timeout, igmp_query_interval, recommended);
+	igmp_querier_timeout = recommended;
+	return;
+    }
+
+    /* 2) Warn power user of potentially too low setting. */
+    if (igmp_querier_timeout < recommended)
+	logit(LOG_WARNING, 0, "IGMP querier timeout %u is smaller than the recommended %u"
+	      " = robustness %u x query interval %u + query response interval %u / 2, allowing ...",
+	      igmp_querier_timeout, recommended, IGMP_ROBUSTNESS_VARIABLE, igmp_query_interval,
+	      IGMP_QUERY_RESPONSE_INTERVAL);
 }
 
 void config_vifs_from_file(void)
@@ -1509,6 +1534,8 @@ void config_vifs_from_file(void)
     /* set a sensible defaults */
     my_bsr_adv_period = PIM_BOOTSTRAP_PERIOD;
     my_cand_rp_adv_period = PIM_DEFAULT_CAND_RP_ADV_PERIOD;
+    igmp_query_interval = IGMP_QUERY_INTERVAL;
+    igmp_querier_timeout = 0;	/* Derived from the query interval below */
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -1622,9 +1649,7 @@ void config_vifs_from_file(void)
 	PUT_EUADDR(my_cand_rp_address, data_ptr);
     }
 
-    /* If no IGMP querier timeout was set, calculate from query interval */
-    if (!igmp_querier_timeout)
-	igmp_querier_timeout = QUERIER_TIMEOUT(igmp_query_interval);
+    check_igmp_timers();
 
     IF_DEBUG(DEBUG_IGMP) {
 	logit(LOG_INFO, 0, "IGMP query interval  : %u sec", igmp_query_interval);

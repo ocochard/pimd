@@ -108,6 +108,13 @@ sec.  This value must be same across all IGMP capable devices on the
 same LAN!  Including any IGMP snooping switches (bridges) that can act
 as IGMP querier.
 .Pp
+When left out, the timeout is calculated from
+.Cm igmp-query-interval ,
+in which order the two settings appear in the file does not matter.  A
+timeout that is not larger than the query interval is refused and the
+calculated one used instead, a timeout below the recommended value is
+warned about but honored.
+.Pp
 Default value, per RFC2236: 380
 .It Cm hello-interval Ar <30-18724>
 The PIM Hello message interval can be tuned by changing this setting.
