@@ -84,7 +84,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
             logit(LOG_DEBUG, 0, "Initial traceroute query rcvd from %s to %s",
                   inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 	}
-    } else if ((datalen - QLEN) % RLEN == 0) {
+    } else if (datalen > (int)QLEN && ((size_t)datalen - QLEN) % RLEN == 0) {
         type = RESP;
         IF_DEBUG(DEBUG_TRACE) {
             logit(LOG_DEBUG, 0, "In-transit traceroute query rcvd from %s to %s",
@@ -108,7 +108,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     /*
      * if it is a packet with all reports filled, drop it
      */
-    if ((rcount = (datalen - QLEN)/RLEN) == no) {
+    if ((rcount = ((size_t)datalen - QLEN) / RLEN) == no) {
         IF_DEBUG(DEBUG_TRACE)
             logit(LOG_DEBUG, 0, "packet with all reports filled in");
         return;
