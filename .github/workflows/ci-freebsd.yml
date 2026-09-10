@@ -1,0 +1,127 @@
+name: CI-FreeBSD
+
+# GitHub has no FreeBSD runners, so everything here happens inside a VM on
+# an Ubuntu host.  This is the only workflow that compiles routesock.c and
+# the kern.c BSD branches at all: the Linux job in build.yml selects
+# netlink.c instead, through the LINUX/BSD conditionals in src/Makefile.am,
+# so half of the OS glue never sees a compiler there.
+on:
+  push:
+    branches:
+      - '**'
+      - '!dev'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build on FreeBSD ${{ matrix.release }} (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "15.1"
+            arch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build + smoke test in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          usesh: true
+          sync: rsync
+          copyback: false
+          prepare: |
+            # autoconf/automake for autogen.sh, gmake because the build is
+            # GNU autotools and FreeBSD's make(1) is not GNU make.
+            pkg install -y autoconf automake gmake pkgconf
+
+          run: |
+            set -eux
+            cd $GITHUB_WORKSPACE
+
+            ./autogen.sh
+            ./configure --prefix= --enable-test
+            gmake V=1
+
+            # `gmake check` is deliberately not run: test/Makefile.am sets
+            # TESTS_ENVIRONMENT to `unshare -mrun` and every script in TESTS
+            # builds its topology out of network namespaces and veth pairs,
+            # none of which exist here.  The FreeBSD counterpart is
+            # test/freebsd-lab.sh, run by the lab job below.
+            DESTDIR=/tmp/inst gmake install-strip
+            /tmp/inst/sbin/pimd -h
+            /tmp/inst/sbin/pimctl -h
+
+            # Enough to prove the daemon reaches the kernel: MRT_INIT is the
+            # first thing it does that a build error or a missing BSD branch
+            # would take out, and pimctl answering means the IPC socket and
+            # the vif table came up.
+            kldload -n ip_mroute
+            /tmp/inst/sbin/pimd -p /tmp/pimd.pid -u /tmp/pimd.sock
+            sleep 2
+            /tmp/inst/sbin/pimctl -u /tmp/pimd.sock show interface
+            /tmp/inst/sbin/pimctl -u /tmp/pimd.sock kill
+
+  lab:
+    # The vnet jail lab: seven PIM-SM scenarios over real jails, epairs and
+    # bridges, asserting on forwarded traffic and on the kernel MFC in each
+    # vnet.  It is the only regression test that exercises the RPF lookups
+    # in routesock.c and the kern.c BSD branches, rather than merely
+    # compiling them.
+    #
+    # Opt-in rather than on every push: it needs root, a VIMAGE kernel and
+    # ip_mroute.ko/if_bridge.ko inside the VM, it sets a host-global sysctl
+    # (net.inet.ip.mcast.loop), and `run all` takes upwards of twenty
+    # minutes.  Start it from the Actions tab, or add a schedule, once it
+    # has proven itself reliable here.
+    name: Lab on FreeBSD ${{ matrix.release }} (${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "15.1"
+            arch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run the vnet jail lab in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          usesh: true
+          sync: rsync
+          copyback: false
+          prepare: |
+            pkg install -y autoconf automake gmake pkgconf
+
+          run: |
+            set -eux
+            cd $GITHUB_WORKSPACE
+
+            # The lab cannot kldload from inside a jail, so the modules have
+            # to be in place before any of it starts.
+            kldload -n ip_mroute
+            kldload -n if_bridge
+            sysctl -n kern.features.vimage
+
+            ./autogen.sh
+            ./configure --prefix= --enable-test
+            gmake V=1
+
+            # Already root in the VM, so the script's sudo wrapper is empty.
+            SUDO= sh test/freebsd-lab.sh run all
