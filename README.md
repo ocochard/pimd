@@ -13,6 +13,7 @@ Table of Contents
 * [Large Setups](#large-setups)
 * [Build & Install](#build--install)
 * [Building from GIT](#building-from-git)
+* [Testing](#testing)
 * [Contributing](#contributing)
 * [Origin & References](#origin--references)
 
@@ -25,14 +26,18 @@ available under the free [3-clause BSD license][License].  This is the
 restored original version from University of Southern California, by
 Ahmed Helmy, Rusty Eddy and Pavlin Ivanov Radoslavov.
 
-Today pimd is maintained at [GitHub][].  This is the preferred way to
-download releases, access the GIT sources, report bugs, and send patches
-or pull requests.  Official release tarballs at the [homepage][] and at
-the GitHub project's release directory.
+Development happens in [this GitHub repository][GitHub], a fork of
+[troglobit/pimd][upstream].  This is the preferred way to access the GIT
+sources, report bugs, and send patches or pull requests.  Tarballs of the
+2.x releases are still on the [upstream releases page][releases page].
 
-pimd is developed on Linux and should work as-is out of the box on all
-major distributions.  Other UNIX variants; NetBSD, FreeBSD, and Illumos,
-may also work, but do not receive the same amount of testing.
+pimd is developed, built and tested on both FreeBSD and Linux, and CI
+covers both: the [Linux][] workflow builds with gcc and clang and runs
+the network namespace test suite, the [FreeBSD][] one builds in a VM and
+can run the vnet jail lab (see [Testing](#testing)).  On Linux it should
+work as-is out of the box on all major distributions.  Other UNIX
+variants; NetBSD, DragonFly, and Illumos, may also work, but do not
+receive the same amount of testing.
 
 pimd ships with a useful `pimctl` tool, compatible with all PIM daemons
 from the same family: pimd, pimd-dense, pim6sd. It can be a very helpful
@@ -201,25 +206,35 @@ usual, it is recommended that you start it manually first, to make sure
 everything works as expected, before adding it to your system's startup
 scripts, with any startup flags it might need.
 
-    pimd [-hnrsv] [-f file] [-d subsys1[,...,subsysN]] [-l level]
+    pimd [-hnrsv] [-f FILE] [-i NAME] [-d SYS[,SYS...]] [-l LEVEL] [-p FILE] \
+         [-t ID] [-u FILE] [-w SEC]
 
+* `-f FILE`: Use the specified configuration file rather than the
+  default, `/etc/pimd.conf`
 * `-n`: Run in foreground, with logs to stdout (for systemd and finit)
 * `-s`: Use syslog, default unless `-n`
-* `-c file`: Utilize the specified configuration file rather than the
-   default, `/etc/pimd.conf`
-* `-d [subsys1,...,subsysN]`: Subsystems to enable debug for when
-  running the daemon.  Optional argument, if left out, all subsystems
-  are enabled.  Type `pimd -h` for a full list of subsystems
-* `-l level`: Log level, one of `none`, `error`, `warning`, `notice`,
-   `info`, or `debug`.  Default is `notice`
+* `-d SYS[,SYS...]`: Subsystems to enable debug for when running the
+  daemon.  Type `pimd -h` for the full list of subsystems
+* `-l LEVEL`: Log level, one of `none`, `err`, `notice`, `info`, or
+  `debug`.  Default is `notice`
+* `-i NAME`: Identity, see below
+* `-p FILE`: File to store the process ID in, default from `-i`
+* `-t ID`: Multicast routing table ID, Linux only
+* `-u FILE`: Override the `pimctl` UNIX domain socket, default from `-i`
+* `-w SEC`: Initial startup delay before probing interfaces
+* `-r`: Retry forever if not all configured interfaces are available at
+  startup, e.g. wait for a DHCP lease
+
+For the long options, and the remaining ones, see `pimd -h` and the
+pimd(8) manual page.
 
 **Example:**
 
     pimd -f /cfg/pimd.conf
 
-When running multiple instances of pimd, make sure to use the `-I ident`
+When running multiple instances of pimd, make sure to use the `-i NAME`
 argument, otherwise the PID and IPC socket files will be overwritten and
-the syslog will also be hard to follow.  Note, `-I` changes the default
+the syslog will also be hard to follow.  Note, `-i` changes the default
 `.conf` filename pimd looks for as well, a complete identity change.
 
 
@@ -229,7 +244,7 @@ Remember to set the correct log level when enabling debug messages,
 usually you need `-l debug`, and `-s` to force messages to syslog
 when running in the foreground (`-n`).
 
-    pimd -d igmp_proto,pim_jp,kernel,pim_register -l debug -n -s
+    pimd -d igmp,jp,kernel,registers -l debug -n -s
 
 
 ## Troubleshooting Checklist
@@ -261,7 +276,7 @@ Monitoring
 To see the virtual interface table, including neighboring PIM routers,
 and the multicast routing table:
 
-    pimctl show interfaces
+    pimctl show interface
     pimctl show neighbor
     pimctl show mrt
     ...
@@ -284,7 +299,8 @@ Large Setups
 ------------
 
 pimd is limited to the number of `MAXVIFS` interfaces listed in the
-kernel headers.  In Linux see `/usr/include/linux/mroute.h`. 
+kernel headers.  In Linux see `/usr/include/linux/mroute.h`, on FreeBSD
+see `/usr/include/netinet/ip_mroute.h`.
 
 To overcome this limitation, adjust the kernel `#define` to, e.g., 1280,
 and configure pimd `--with-max-vifs=1280`.  Please note, this has only
@@ -308,7 +324,11 @@ install process.  E.g., to install pimd to `/usr` instead of the default
 
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
 	make
-    make DESTDIR=/tmp/pimd-2.3.2-1 install-strip
+    make DESTDIR=/tmp/pimd-3.0 install-strip
+
+On FreeBSD the build is the same, only the tools differ: the Makefiles
+are GNU make ones, so use `gmake` from the `gmake` package instead of
+the base system `make`.
 
 
 Building from GIT
@@ -326,23 +346,52 @@ To build from GIT you first need to clone the repository and run the
 `autogen.sh` script.  This requires `automake` and `autoconf` to be
 installed on your system.
 
-    git clone https://github.com/troglobit/pimd.git
+    git clone https://github.com/ocochard/pimd.git
     cd pimd/
     ./autogen.sh
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var && make
+
+On FreeBSD, `pkg install autoconf automake gmake pkgconf` first, then
+run `gmake` in place of `make`.
 
 GIT sources are a moving target and are not recommended for production
 systems, unless you know what you are doing!
 
 
+Testing
+-------
+
+Configure with `--enable-test` to build the test tools, then:
+
+    make check
+
+The automake suite in `test/` is **Linux only** — every script builds its
+router topology out of network namespaces, veth pairs and bridges — and
+needs root plus `ethtool`, `tshark` and `bird`.  A missing dependency
+makes a test SKIP, not fail.
+
+The FreeBSD counterpart is `test/freebsd-lab.sh`, which builds the same
+kind of topologies out of vnet jails, epairs and `if_bridge`, and is the
+only regression test that exercises the BSD routing socket and kernel
+glue rather than merely compiling it.  It needs root, a VIMAGE kernel and
+`ip_mroute.ko`, so it is deliberately not part of `make check`:
+
+    sh test/freebsd-lab.sh run all
+
+See the header of each script for its topology, and the [Linux][] and
+[FreeBSD][] workflows for how CI runs them.
+
+
 Contributing
 ------------
 
-pimd is maintained by [Joachim Wiberg][] at [GitHub][].  If you find
-bugs, have feature requests, or want to contribute fixes or features,
-check out the code from GitHub:
+pimd was written and is maintained by [Joachim Wiberg][] at
+[troglobit/pimd][upstream]; this fork is where the FreeBSD work and the
+changes listed in the [ChangeLog][] happen.  If you find bugs, have
+feature requests, or want to contribute fixes or features, check out the
+code from GitHub:
 
-	git clone https://github.com/troglobit/pimd
+	git clone https://github.com/ocochard/pimd
 	cd pimd
 
 See the file [CONTRIBUTING.md][contrib] for further details.
@@ -361,12 +410,12 @@ Stanford Junior University.
 
 [License]:         https://en.wikipedia.org/wiki/BSD_licenses
 [License Badge]:   https://img.shields.io/badge/License-BSD%203--Clause-blue.svg
-[github]:          https://github.com/troglobit/pimd
-[homepage]:        https://troglobit.com/pimd.html
-[ChangeLog]:       https://github.com/troglobit/pimd/blob/master/ChangeLog.org
+[github]:          https://github.com/ocochard/pimd
+[upstream]:        https://github.com/troglobit/pimd
+[ChangeLog]:       https://github.com/ocochard/pimd/blob/master/ChangeLog.md
 [releases page]:   https://github.com/troglobit/pimd/releases
 [buildsystem]:     https://autotools.io/
-[contrib]:         https://github.com/troglobit/pimd/blob/master/.github/CONTRIBUTING.md
+[contrib]:         https://github.com/ocochard/pimd/blob/master/.github/CONTRIBUTING.md
 [Joachim Wiberg]:  https://troglobit.com
 [Linux]:           https://github.com/ocochard/pimd/actions/workflows/build.yml
 [Linux Status]:    https://github.com/ocochard/pimd/actions/workflows/build.yml/badge.svg
