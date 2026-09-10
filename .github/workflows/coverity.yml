@@ -95,14 +95,32 @@ jobs:
           TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
         run: |
           tar czvf ${PROJECT_NAME}.tgz cov-int
-          curl \
-            --form project=${COVERITY_NAME} \
-            --form token=$TOKEN \
-            --form email=${CONTACT_EMAIL} \
+
+          # Coverity answers 200 with the reason in the body when it turns
+          # a build away - a project name it does not know, a quota already
+          # spent - so curl's own exit status cannot tell acceptance from
+          # rejection, and an unchecked upload leaves the job green while
+          # nothing was analysed.  Demand both the status and the wording
+          # it uses on success.
+          code=$(curl --silent --show-error --write-out '%{http_code}' \
+            --output response.txt \
+            --form project="${COVERITY_NAME}" \
+            --form token="$TOKEN" \
+            --form email="${CONTACT_EMAIL}" \
             --form file=@${PROJECT_NAME}.tgz \
             --form version=trunk \
             --form description="${PROJECT_NAME} $(git rev-parse HEAD)" \
-            https://scan.coverity.com/builds?project=${COVERITY_PROJ}
+            "https://scan.coverity.com/builds?project=${COVERITY_PROJ}")
+          cat response.txt
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Coverity Scan returned HTTP $code, see the response above"
+            exit 1
+          fi
+          if ! grep -qi "successfully submitted" response.txt; then
+            echo "::error::Coverity Scan did not accept the build, see the response above"
+            exit 1
+          fi
 
       - name: Upload build.log
         if: always()
