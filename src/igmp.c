@@ -90,7 +90,9 @@ void init_igmp(void)
     if (igmp_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating IGMP socket in init_igmp()");
 	free(igmp_recv_buf);
+	igmp_recv_buf = NULL;
 	free(igmp_send_buf);
+	igmp_send_buf = NULL;
 	return;
     }
 
