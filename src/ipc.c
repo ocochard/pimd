@@ -41,6 +41,7 @@
  * it to the daemon.
  */
 
+#include <sys/stat.h>		/* umask() */
 #include "defs.h"
 
 #define ENABLED(v) (v ? "Enabled" : "Disabled")
@@ -964,6 +965,7 @@ static void ipc_handle(int sd)
 void ipc_init(char *sockfile)
 {
 	socklen_t len;
+	mode_t mask;
 	int sd;
 
 	sd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -972,8 +974,12 @@ void ipc_init(char *sockfile)
 		return;
 	}
 
-	/* Portable SOCK_NONBLOCK replacement, ignore any error. */
-	(void)fcntl(sd, F_SETFD, fcntl(sd, F_GETFD) | O_NONBLOCK);
+	/* Portable SOCK_NONBLOCK replacement, ignore any error.  O_NONBLOCK
+	 * is a file status flag, so it belongs to F_SETFL; setting it with
+	 * F_SETFD wrote it to the descriptor flags, where the only bit that
+	 * means anything is FD_CLOEXEC, and left the socket blocking.
+	 */
+	(void)fcntl(sd, F_SETFL, fcntl(sd, F_GETFL) | O_NONBLOCK);
 
 #ifdef HAVE_SOCKADDR_UN_SUN_LEN
 	sun.sun_len = 0;	/* <- correct length is set by the OS */
@@ -987,12 +993,22 @@ void ipc_init(char *sockfile)
 	unlink(sun.sun_path);
 	logit(LOG_DEBUG, 0, "Binding IPC socket to %s", sun.sun_path);
 
+	/* Connecting to a UNIX socket needs write permission on it, and the
+	 * commands it takes are the ones that reconfigure this daemon, so
+	 * say who may rather than leaving it to whatever umask pimd was
+	 * started with.  The mode has to be in place before bind() creates
+	 * the node, since there is no unprivileged window afterwards to
+	 * fix it in.
+	 */
+	mask = umask(0077);
 	len = offsetof(struct sockaddr_un, sun_path) + strlen(sun.sun_path);
 	if (bind(sd, (struct sockaddr *)&sun, len) < 0 || listen(sd, 1)) {
+		umask(mask);
 		logit(LOG_WARNING, errno, "Failed binding IPC socket, client disabled");
 		close(sd);
 		return;
 	}
+	umask(mask);
 
 	if (register_input_handler(sd, ipc_handle) < 0)
 		logit(LOG_ERR, 0, "Failed registering IPC handler");
