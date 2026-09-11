@@ -114,7 +114,10 @@ void init_vifs(void)
     init_reg_vif();
 
     /*
-     * Quit if there are fewer than two enabled vifs.
+     * Quit unless at least one phyint is enabled.  The count starts at
+     * one for the register vif, which always holds vifi 0 and which the
+     * loop below therefore skips, so "fewer than two" is how "none of
+     * them" reads here.
      */
     enabled_vifs    = 1;
     phys_vif        = -1;
@@ -139,8 +142,7 @@ void init_vifs(void)
     }
 
     if (enabled_vifs < 2)
-	logit(LOG_ERR, 0, "Cannot forward: %s",
-	      enabled_vifs == 0 ? "no enabled vifs" : "only one enabled vif");
+	logit(LOG_ERR, 0, "Cannot forward: no enabled vifs");
 
     k_init_pim(igmp_socket);	/* Call to kernel to initialize structures */
 
