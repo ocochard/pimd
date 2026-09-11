@@ -1597,8 +1597,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			if (my_action == PIM_ACTION_JOIN) {
 			    jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
 			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (mrt->jp_timer > jp_value)
-				SET_TIMER(mrt->jp_timer, jp_value);
+			    if (mrt_srcs->jp_timer > jp_value)
+				SET_TIMER(mrt_srcs->jp_timer, jp_value);
 			}
 		    } /* For all (S,G) */
 		    continue;  /* End of (*,G) prune suppression */
