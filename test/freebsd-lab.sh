@@ -189,6 +189,31 @@
 #               The reports come from test/igmpv3.c for that reason - one
 #               report, sent exactly as asked, and nothing after it.
 #               Takes about 90s.
+#   ifgone      The rpt topology again, but ED1's link is destroyed while
+#               pimd is running and the only question is what R1 does about
+#               the VIF that was sitting on it, which is
+#               https://github.com/troglobit/pimd/issues/218: a pimd.conf
+#               left naming VLANs that had since been deleted, and a router
+#               that panicked hours later.
+#
+#               The errno is the whole scenario.  ifioctl() in
+#               sys/net/if.c answers ENXIO for a name it cannot resolve
+#               while Linux answers ENODEV, and check_vif_state()
+#               (src/vif.c) used to know only the Linux one: on FreeBSD the
+#               SIOCGIFFLAGS failure fell through to logit(LOG_ERR), which
+#               is exit(-1), so pimd died instead of taking the VIF out of
+#               service.  It got there rarely, because the poll it sits in
+#               was gated on vifs_down, and nothing sets that when an
+#               interface is removed outright - the addresses leave with
+#               it, pimd's IP_MULTICAST_IF is then silently ignored and the
+#               Hello goes out whatever route the kernel picks instead of
+#               failing with ENETDOWN.  So the usual outcome was worse than
+#               a crash: the VIF stayed in service forever, pointing at an
+#               ifnet the kernel had freed.
+#
+#               Only ED1's link goes away, so R1 keeps the link to R2 and
+#               the run can tell a daemon that survived from one that
+#               exited.  Takes about 30s.
 #
 # The scenarios cannot run in parallel: they use the same jail names and
 # epairs, and net.inet.ip.mcast.loop is a host-global sysctl.
@@ -333,6 +358,15 @@ SSM_SRC1=${SSM_SRC1:-10.0.1.10}
 SSM_SRC2=${SSM_SRC2:-10.0.1.11}
 SSM_MAX_SOURCES=${SSM_MAX_SOURCES:-256}
 
+# ifgone: the link that is destroyed under R1, named from both ends
+# because an epair can only be destroyed from the jail that owns an end,
+# and both ends of this one live in jails.  IFGONE_KEPT is the address on
+# R1's other interface, the one the register VIF has to fall back to.
+IFGONE_IF=${IFGONE_IF:-epair101b}
+IFGONE_PEER_IF=${IFGONE_PEER_IF:-epair101a}
+IFGONE_ADDR=${IFGONE_ADDR:-10.0.1.1}
+IFGONE_KEPT=${IFGONE_KEPT:-10.0.12.1}
+
 # gif-tunnel: the tunnel R1 and R3 build over R2.  The inner prefix is a
 # /24 on a point-to-point link on purpose, see the header.
 GIF_IF=gif0
@@ -358,7 +392,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -374,7 +408,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm)
+	rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1389,6 +1423,7 @@ check() {
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
 	ssm)        check_ssm; return $? ;;
+	ifgone)     check_ifgone; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -1583,6 +1618,106 @@ ssm_sources() {
 # For wait_for(), which needs a command that returns a status
 ssm_count_is() {
 	[ "$(ssm_sources | wc -l | tr -d ' ')" -eq "$1" ]
+}
+
+# State column of one interface in "pimctl show interface", empty if pimd
+# has no VIF by that name at all
+iface_state() {
+	pimctl "$1" show interface 2>/dev/null | awk -v i="$2" '$1 == i { print $2 }'
+}
+
+iface_not_up() {
+	[ "$(iface_state "$1" "$2")" != "Up" ]
+}
+
+# Local address the kernel holds for one VIF index, out of "netstat -gn".
+# VIF 0 is the register VIF: uvifs[0] is reserved for it, which is why
+# config_vifs_from_kernel() starts its loop at 1 (src/config.c), and the
+# kernel index is the same one.
+kern_vif_addr() {
+	jrun "$1" netstat -gn 2>/dev/null | awk -v v="$2" '$1 == v { print $3 }'
+}
+
+logged() {
+	${SUDO} grep -q "$2" "$WORKDIR/$1.log" 2>/dev/null
+}
+
+check_ifgone() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R1 has a VIF on the interface that is about to go away"
+	if wait_for 30 has_iface r1 "$IFGONE_IF" && \
+	   [ "$(iface_state r1 "$IFGONE_IF")" = "Up" ]; then
+		ok "r1: $IFGONE_IF ($IFGONE_ADDR) is up"
+	else
+		fail "r1: no VIF on $IFGONE_IF to take away"
+		return 1
+	fi
+
+	# Taken before the interface goes, so assertion 6 knows whether the
+	# register VIF had anything to fall back from in the first place
+	reg_before=$(kern_vif_addr r1 0)
+	dprint "register VIF sits on ${reg_before:-none}"
+
+	print "3. The interface is destroyed under pimd"
+	jrun ed1 ifconfig "$IFGONE_PEER_IF" destroy || \
+		die "failed destroying $IFGONE_PEER_IF on ed1"
+	# age_vifs() polls every TIMER_INTERVAL (5s), src/defs.h
+	if wait_for 30 iface_not_up r1 "$IFGONE_IF"; then
+		ok "r1: $IFGONE_IF taken out of service"
+	else
+		fail "r1: $IFGONE_IF still reads $(iface_state r1 "$IFGONE_IF"), VIF left in service"
+	fi
+
+	# Before anything else: an exited pimd answers no question below
+	print "4. pimd survived the removal"
+	if pimctl r1 show status >/dev/null 2>&1; then
+		ok "r1: pimd still answers on its pimctl socket"
+	else
+		fail "r1: pimd exited when the interface went away, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	print "5. The removal was logged, and not as a fatal ioctl error"
+	if logged r1 "Interface $IFGONE_IF has gone"; then
+		ok "r1: logged $IFGONE_IF out of service"
+	else
+		fail "r1: nothing logged about $IFGONE_IF"
+	fi
+	if logged r1 "ioctl SIOCGIFFLAGS"; then
+		fail "r1: SIOCGIFFLAGS errno not recognised as a removed interface"
+	else
+		ok "r1: no SIOCGIFFLAGS error, ENXIO read as a removed interface"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "6. The register VIF moved off the address that went away"
+	reg_after=$(kern_vif_addr r1 0)
+	if [ "$reg_before" != "$IFGONE_ADDR" ]; then
+		dprint "register VIF was on ${reg_before:-none}, not $IFGONE_ADDR, nothing to move"
+	elif [ "$reg_after" = "$IFGONE_KEPT" ]; then
+		ok "register VIF re-homed from $IFGONE_ADDR to $reg_after"
+	else
+		fail "register VIF reads ${reg_after:-none}, expected $IFGONE_KEPT"
+	fi
+
+	print "7. R1 still runs PIM on the link it has left"
+	if wait_for 60 has_neighbor r1 10.0.12.2; then
+		ok "r1 still has R2 (10.0.12.2) as a neighbour"
+	else
+		fail "r1 lost its remaining PIM adjacency"
+	fi
+
+	[ "$FAILED" -eq 0 ] || return 1
+	return 0
 }
 
 check_keepalive() {
@@ -2435,7 +2570,7 @@ run() {
 
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop gif-tunnel gif-tunnel-staticrp \
-			 shared-lan shared-lan-spt ssm; do
+			 shared-lan shared-lan-spt ssm ifgone; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?

@@ -58,10 +58,11 @@ never expires while the emulated device is on the LAN.
 vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for `shared-lan`), and it drives the
 `routesock.c` and `kern.c` BSD branches the Linux suite can never reach. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `gif-tunnel`, `gif-tunnel-staticrp`, `shared-lan`,
-`shared-lan-spt`, `ssm`); see the script header for the topologies and which upstream issue each one
-pins down. The two `shared-lan*` ones are the only ones with several PIM routers on a link, so DR
-election, IGMP querier election and the assert election only ever run there, and `ssm` is the only
-one about IGMP state rather than PIM forwarding. Assertions that reproduce a deviation report
+`shared-lan-spt`, `ssm`, `ifgone`); see the script header for the topologies and which upstream issue
+each one pins down. The two `shared-lan*` ones are the only ones with several PIM routers on a link,
+so DR election, IGMP querier election and the assert election only ever run there, `ssm` is the only
+one about IGMP state rather than PIM forwarding, and `ifgone` the only one about what pimd does when
+an interface it has a VIF on is destroyed underneath it. Assertions that reproduce a deviation report
 `KNOWN` through `xfail()` instead of failing the run, and turn into an `ok` once pimd is fixed;
 `shared-lan-spt` has the only one written so far, for the assert RPT bit of RFC 7761 4.6.1, and it
 now reports `ok` -- the deviation it guards was fixed in `4cb79f1`.
