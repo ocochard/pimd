@@ -67,6 +67,26 @@ pimd on all routers in the same domain.  See issue #93 for details.
   `arc4random()` in 2.36 and musl in 1.2.3
 
 ### Fixes
+- Notice on *BSD when an interface a VIF sits on is removed, issue #218.
+  `check_vif_state()` read a removed interface as Linux's `ENODEV` only,
+  so on FreeBSD, NetBSD and DragonFly the `SIOCGIFFLAGS` failure, `ENXIO`
+  there, fell through to `logit(LOG_ERR)`, which exits the daemon.  It
+  rarely got that far: the poll it sits in was gated on `vifs_down`, and
+  nothing sets that when an interface is removed outright.  The addresses
+  leave with it, so pimd's `IP_MULTICAST_IF` is silently ignored and the
+  Hello goes out whatever route the kernel picks instead of failing with
+  `ENETDOWN`.  The usual outcome was therefore worse than the crash: the
+  VIF stayed in service indefinitely, naming an interface that no longer
+  existed, with the kernel left holding forwarding state for it.  pimd now
+  polls the interfaces unconditionally, takes the VIF out of service on
+  either errno, and treats any other `SIOCGIFFLAGS` failure the same way
+  rather than acting on interface flags the failed call never filled in.
+  Covered by the new `ifgone` scenario of `test/freebsd-lab.sh`
+- Fix `update_reg_vif()` reading one past the last VIF when it logs that
+  it cannot restart the register VIF.  The index it printed was left over
+  from a loop that had run to completion, so it was `numvifs`, which is
+  past the end of `uvifs[]` altogether once `MAXVIFS` interfaces are
+  configured.  It now names the register VIF it failed to move
 - Fix IGMPv3 (S,G) memberships that could never expire.  A group held a
   single membership timer, carrying whichever source had reported last.
   For an any-source group that is the whole story, but a group in the SSM
