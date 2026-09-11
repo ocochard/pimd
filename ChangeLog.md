@@ -192,6 +192,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   needs our own priority to be 0, which `pimd.conf` currently refuses,
   so this was latent; the tiebreak now falls back on the head of the
   neighbor list, the highest address, which is the winner it looks for
+- Let `utimensat()` be its own existence test when `pidfile()` refreshes
+  an existing PID file, rather than asking `access()` first.  The two
+  calls left a window for the path to change in between, `access()`
+  answered for the real uid rather than the one the file is touched with,
+  and the touch itself went unchecked, so a failed refresh was still
+  reported as a success.  One syscall now does all of it, and a PID file
+  that went missing is created again as before
 - Fix the message pimd exits with when no interface is usable.  It chose
   between "no enabled vifs" and "only one enabled vif" on a count that
   starts at one for the register vif and is only ever incremented, so the
