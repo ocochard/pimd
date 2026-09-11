@@ -54,6 +54,17 @@ pimd on all routers in the same domain.  See issue #93 for details.
   of `bsr-candidate` and `rp-candidate`.  The case of no .conf file
   or commented out settings for the same, are now similar.  The default
   is now _disabled_
+- Draw every random value from `arc4random()`, on all platforms.  pimd
+  jitters its protocol timers, picks PIM Hello GenIDs and tags BSR
+  bootstrap fragments with `RANDOM()`, which resolved to `arc4random()`
+  only on the BSDs and to `random()` or `lrand48()` everywhere else.
+  Those two are seeded predictably and their state can be recovered from
+  the output, so a neighbor on the LAN could anticipate values it is only
+  supposed to observe.  None of them are keys, but none of them are
+  meant to be guessable either.  `configure` now looks for `arc4random()`
+  and falls back on `lib/arc4random.c`, which reads the kernel generator
+  through `getentropy()` or `/dev/urandom`, since GLIBC only grew an
+  `arc4random()` in 2.36 and musl in 1.2.3
 
 ### Fixes
 - Fix IGMPv3 (S,G) memberships that could never expire.  A group held a
@@ -181,6 +192,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   needs our own priority to be 0, which `pimd.conf` currently refuses,
   so this was latent; the tiebreak now falls back on the head of the
   neighbor list, the highest address, which is the winner it looks for
+- Fix the message pimd exits with when no interface is usable.  It chose
+  between "no enabled vifs" and "only one enabled vif" on a count that
+  starts at one for the register vif and is only ever incremented, so the
+  first arm could not be reached and the second one printed for a router
+  with no enabled phyint at all -- counting the register vif, which
+  cannot forward anything, as the one interface it had
 
 
 [v2.3.2][] - 2016-03-10
