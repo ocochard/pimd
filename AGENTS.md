@@ -48,16 +48,23 @@ router), `two.sh`/`three.sh` (chains), `rp.sh` (RP + SPT switchover), `shared.sh
 (redundant paths). Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
 runtime `pimctl` dumps.
 
+`ssm.sh` is the exception to "asserts on forwarded traffic": it asserts on the IGMPv3 (S,G)
+membership state one router holds, and drives it with `test/igmpv3.c`, which sends one membership
+report and exits. Use that tool, not a kernel join, whenever a test needs a router to age a
+membership out: a kernel that joined a group answers every query afterwards, so the membership
+never expires while the emulated device is on the LAN.
+
 `test/freebsd-lab.sh` is the FreeBSD counterpart and is deliberately **not** in `TESTS`: it needs
 vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for `shared-lan`), and it drives the
 `routesock.c` and `kern.c` BSD branches the Linux suite can never reach. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `gif-tunnel`, `gif-tunnel-staticrp`, `shared-lan`,
-`shared-lan-spt`); see the script header for the topologies and which upstream issue each one pins
-down. The two `shared-lan*` ones are the only ones with several PIM routers on a link, so DR
-election, IGMP querier election and the assert election only ever run there. `shared-lan-spt`
-reports a known deviation: pimd asserts with the RPT bit clear for a group it only has (\*,G)
-state for, where RFC 7761 4.6.1 requires it set. Assertions that reproduce a deviation report
-`KNOWN` through `xfail()` instead of failing the run, and turn into an `ok` once pimd is fixed.
+`shared-lan-spt`, `ssm`); see the script header for the topologies and which upstream issue each one
+pins down. The two `shared-lan*` ones are the only ones with several PIM routers on a link, so DR
+election, IGMP querier election and the assert election only ever run there, and `ssm` is the only
+one about IGMP state rather than PIM forwarding. Assertions that reproduce a deviation report
+`KNOWN` through `xfail()` instead of failing the run, and turn into an `ok` once pimd is fixed;
+`shared-lan-spt` has the only one written so far, for the assert RPT bit of RFC 7761 4.6.1, and it
+now reports `ok` -- the deviation it guards was fixed in `4cb79f1`.
 
 ## Running
 
