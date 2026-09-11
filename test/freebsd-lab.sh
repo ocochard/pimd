@@ -39,11 +39,11 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Seven scenarios share that topology.  The first three differ only in which
-# pimd.conf each router gets and which assertions run; the two gif ones also
-# add a tunnel and take R2 out of PIM entirely; the last one rebuilds the
-# two right hand links as bridged segments and hangs a fourth router off
-# them:
+# Ten scenarios are built on that topology.  Most differ only in which
+# pimd.conf each router gets and which assertions run; rp-offpath adds one
+# link to close the chain into a triangle; the two gif ones add a tunnel and
+# take R2 out of PIM entirely; the two shared segment ones rebuild the two
+# right hand links as bridged segments and hang two more routers off them:
 #
 #   rpt         R2 is BSR and RP, ED2 joins, traffic has to reach it over
 #               the shared tree.  Takes about 90s.
@@ -70,6 +70,43 @@
 #               on separate routers (R2 is RP, R3 is last hop), so the RP
 #               there never has a directly connected member and its (*,G)
 #               never has the register vif as its incoming interface.
+#   rp-offpath  The only scenario whose topology is not a chain: one extra
+#               link joins the first hop router to the last hop one, and
+#               the RP sits on the third side of the triangle, off the path
+#               the traffic takes once the shortest path tree is up.  That
+#               is the topology of
+#               https://github.com/troglobit/pimd/issues/211.
+#
+#                                 R2 (BSR + RP, 10.0.23.2)
+#                                /      \
+#                    10.0.12/24 /        \ 10.0.23/24
+#                              /          \
+#                 ED1 --- R1 -+------------+- R3 --- ED2
+#                  (sender) (FHR) 10.0.13/24 (LHR) (receiver)
+#
+#               Two things only this shape has.  Every router is adjacent
+#               to the RP router, so the last hop router is directly
+#               connected to the BSR and to the RP, and R3's RPF interface
+#               towards the source is the direct link while its (*,G)
+#               arrives over R2, so the switch to the shortest path tree
+#               has to move the incoming interface between two ordinary
+#               interfaces rather than off the register vif.
+#
+#               The first is what the issue is about.  k_req_incoming()
+#               (src/routesock.c) is the only RPF lookup pimd has on BSD,
+#               and it used to go to the kernel even for an address on one
+#               of its own subnets; a route to a connected subnet carries
+#               no gateway, so the answer came back with no RPF neighbour,
+#               and receive_pim_bootstrap() (src/pim_proto.c) drops a
+#               Bootstrap whose RPF neighbour is 0.0.0.0.  The router next
+#               to the BSR was then the one router in the domain that never
+#               learned the RP set, so it could not send the (*,G) Join its
+#               receiver needed and nothing was ever forwarded, which is
+#               what the issue reports.  The fix, 7aed78f, is in
+#               k_req_incoming(): a destination on a connected subnet is
+#               answered from the vif table, with the destination as its
+#               own RPF neighbour, the way netlink.c has always answered
+#               it on Linux.  Takes about 2 minutes.
 #   gif-tunnel  rp-lasthop again, but R1 and R3 are joined by a gif tunnel
 #               across a plain unicast R2 that runs no pimd at all, which
 #               is the shape everyone on #243 actually runs: two PIM
@@ -225,8 +262,8 @@
 #   ./freebsd-lab.sh stop               tear everything down
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
-# "gif-tunnel", "gif-tunnel-staticrp", "shared-lan", "shared-lan-spt", or
-# "all" for run.
+# "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
+# "shared-lan-spt", "ssm", "ifgone", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # shared-lan, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -288,10 +325,22 @@ BR_UPSTREAM_EPAIRS="epair223 epair323 epair423"
 BR_RECEIVER_EPAIRS="epair503 epair303 epair403 epair603"
 SHARED_EPAIRS="$BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS epair510"
 
+# rp-offpath: one extra link closes the chain into a triangle, straight
+# from the first hop router to the last hop one, so the RP no longer sits
+# on the path the traffic takes once the shortest path tree is up.
+OFFPATH_EPAIRS="$DEFAULT_EPAIRS epair113"
+OFFPATH_R1_IF=epair113a
+OFFPATH_R3_IF=epair113b
+OFFPATH_R1_ADDR=10.0.13.1
+OFFPATH_R3_ADDR=10.0.13.3
+# The RP and the BSR sit on R2's interface facing the last hop router, so
+# R3 is directly connected to both, see write_configs()
+OFFPATH_RP_ADDR=10.0.23.2
+
 # Everything any scenario can create, so stop() cleans up without having to
 # be told which one was running.
 ALL_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
-ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS"
+ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS epair113"
 
 # Source and RP addresses the assertions expect
 SRC_ADDR=10.0.1.10
@@ -392,7 +441,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -408,7 +457,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -423,6 +472,11 @@ set_scenario() {
 		ROUTERS=$SHARED_ROUTERS
 		EPAIRS="epair101 epair112 $SHARED_EPAIRS"
 		ED2_IF=epair510b
+	elif [ "$SCENARIO" = rp-offpath ]; then
+		BOXES=$DEFAULT_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
+		EPAIRS=$OFFPATH_EPAIRS
+		ED2_IF=$DEFAULT_ED2_IF
 	else
 		BOXES=$DEFAULT_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -461,6 +515,17 @@ ifaces() {
 		r5)  echo "epair503b epair510a" ;;
 		ed2) echo "epair510b" ;;
 		ed3) echo "epair603b" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = rp-offpath ]; then
+		case $1 in
+		ed1) echo "epair101a" ;;
+		r1)  echo "epair101b epair112a $OFFPATH_R1_IF" ;;
+		r2)  echo "epair112b epair123a" ;;
+		r3)  echo "epair123b epair203a $OFFPATH_R3_IF" ;;
+		ed2) echo "epair203b" ;;
 		esac
 		return
 	fi
@@ -504,6 +569,17 @@ addrs() {
 		r5)  echo "epair503b $SL_QUERIER_ADDR/24 epair510a 10.0.5.1/24" ;;
 		ed2) echo "epair510b 10.0.5.10/24" ;;
 		ed3) echo "epair603b $SL_ED3_ADDR/24" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = rp-offpath ]; then
+		case $1 in
+		ed1) echo "epair101a 10.0.1.10/24" ;;
+		r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24 $OFFPATH_R1_IF $OFFPATH_R1_ADDR/24" ;;
+		r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
+		r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24 $OFFPATH_R3_IF $OFFPATH_R3_ADDR/24" ;;
+		ed2) echo "epair203b 10.0.3.10/24" ;;
 		esac
 		return
 	fi
@@ -557,6 +633,21 @@ routes() {
 		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 $GIF_R3" ;;
 		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
 		r3)  echo "10.0.12.0/24 10.0.23.2 10.0.1.0/24 $GIF_R1" ;;
+		ed2) echo "default 10.0.3.1" ;;
+		esac
+		return ;;
+	rp-offpath)
+		# The triangle: R1 and R3 reach each other directly, so the
+		# RPF answer for the source on the last hop router, and for
+		# the receiver LAN on the first hop one, is the direct link.
+		# Only the RP is reached the long way around, over R2, which
+		# is the whole shape of the scenario: the shared tree and the
+		# shortest path tree do not share an interface anywhere.
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 $OFFPATH_R3_ADDR" ;;
+		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3 10.0.13.0/24 10.0.12.1" ;;
+		r3)  echo "10.0.12.0/24 10.0.23.2 10.0.1.0/24 $OFFPATH_R1_ADDR" ;;
 		ed2) echo "default 10.0.3.1" ;;
 		esac
 		return ;;
@@ -716,6 +807,55 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: last hop router for the receiver LAN
 		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = rp-offpath ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for $SRC_ADDR, no BSR/RP role
+		EOF
+
+		# The candidacies are pinned to epair123a, R2's interface
+		# facing the last hop router, so the BSR and the RP are an
+		# address on a subnet R3 is directly connected to.  That is
+		# what the topology of issue #211 has -- every router there
+		# is adjacent to the RP router -- and it is the whole point
+		# of the scenario: k_req_incoming() (src/routesock.c) is the
+		# only RPF lookup pimd has on BSD, and it used to ask the
+		# kernel even for a destination on a subnet of its own.  A
+		# route to a connected subnet carries no gateway, so the
+		# answer came back with no RPF neighbour, and
+		# receive_pim_bootstrap() (src/pim_proto.c) drops a Bootstrap
+		# whose RPF neighbour is 0.0.0.0.  The router next to the BSR
+		# was then the one router in the domain that never learned
+		# the RP set.
+		#
+		# The interface name is spelled in lower case here, unlike
+		# r2.conf everywhere else, so the case-insensitivity fix of
+		# PR #252 does not decide the RP address: both this pimd and
+		# a pre-#252 one elect $OFFPATH_RP_ADDR, and the scenario
+		# then tells them apart on the bootstrap path alone.
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point, one hop off the
+		# path the traffic takes once the SPT is up
+		bsr-candidate epair123a priority 1 interval 10
+		rp-candidate epair123a priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# The shortest path tree is the whole difference between this
+		# scenario and rpt: R3's RPF interface towards the source is
+		# the direct link to R1, not the one its (*,G) came in on, so
+		# the switch has to move the incoming interface.  Its
+		# interval is cut from the 100s default for the same reason
+		# rp-lasthop cuts it: the decision is only ever taken from
+		# age_routes(), and at the default it lands inside or after
+		# the measured stream depending on timer phase.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router for the receiver LAN, directly
+		# connected to the BSR and the RP
+		spt-threshold packets 0 interval 10
 		EOF
 		return
 	fi
@@ -1419,6 +1559,7 @@ check() {
 	case $SCENARIO in
 	keepalive)  check_keepalive; return $? ;;
 	rp-lasthop) check_rp_lasthop; return $? ;;
+	rp-offpath) check_rp_offpath; return $? ;;
 	gif-tunnel) check_gif_tunnel; return $? ;;
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
@@ -1900,6 +2041,163 @@ check_rp_lasthop() {
 	dprint "--- r3: netstat -gn ---"
 	jrun r3 netstat -gn 2>&1 || true
 	dprint "--- registers decapsulated by r3, total: $(registers_seen) ---"
+	return 1
+}
+
+# rp-offpath: run the ED1 -> ED2 stream and watch the last hop router while
+# it is in flight.  Sets: replies, sg_first, sg_last.
+#
+# sg_first is the incoming interface R3's (S,G) is created with, sg_last the
+# one it ends the stream on.  The two differ here and nowhere else: the
+# (*,G) arrives over R2 and the source sits behind the direct link, so a
+# router that switches to the shortest path tree has to move the incoming
+# interface from one to the other.  Sampling has to happen while the stream
+# runs, because killing the receiver expires the membership and the (S,G)
+# with it.
+run_stream_and_sample_offpath() {
+	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 &
+	sender=$!
+
+	sg_first=
+	sg_last=
+	direct=$(vif_index r3 "$OFFPATH_R3_IF")
+	deadline=$(($(date +%s) + STREAM_PKTS + 30))
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		iif=$(route_iif r3 "$SRC_ADDR" "$GROUP")
+		if [ -n "$iif" ]; then
+			[ -n "$sg_first" ] || sg_first=$iif
+			sg_last=$iif
+			[ "$iif" = "$direct" ] && break
+		fi
+		sleep 1
+	done
+
+	wait "$sender" 2>/dev/null || true
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	replies=${replies:-0}
+}
+
+# Issue #211: the RP is one hop off the path the traffic takes, and every
+# router in the domain is adjacent to it.  The last hop router is therefore
+# directly connected to the BSR, which is the case a BSD pimd used to get
+# wrong: its RPF lookup went to the kernel even for an address on one of its
+# own subnets, the route to a connected subnet has no gateway, and both
+# receive_pim_bootstrap() and set_incoming() read a missing gateway as "no
+# RPF neighbour" and give up.  The router next to the RP then never learned
+# the RP set at all, so it could not send the (*,G) Join its receiver needed
+# and no traffic ever arrived, which is what the issue reports.
+check_rp_offpath() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. PIM neighbors are discovered, including over the direct link"
+	if wait_for 60 has_neighbor r1 10.0.12.2; then
+		ok "r1 sees r2 (10.0.12.2)"
+	else
+		fail "r1 never saw r2, PIM hello is not crossing epair112"
+	fi
+	if wait_for 60 has_neighbor r3 "$OFFPATH_RP_ADDR"; then
+		ok "r3 sees r2 ($OFFPATH_RP_ADDR)"
+	else
+		fail "r3 never saw r2, PIM hello is not crossing epair123"
+	fi
+	if wait_for 60 has_neighbor r1 "$OFFPATH_R3_ADDR"; then
+		ok "r1 sees r3 over the direct link ($OFFPATH_R3_ADDR)"
+	else
+		fail "r1 never saw r3 on epair113, the triangle has no short edge"
+	fi
+	if wait_for 60 has_neighbor r3 "$OFFPATH_R1_ADDR"; then
+		ok "r3 sees r1 over the direct link ($OFFPATH_R1_ADDR)"
+	else
+		fail "r3 never saw r1 on epair113"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# R3 is the router the issue is about: the BSR is an address on a
+	# subnet it is directly connected to, and it is the only router here
+	# for which that is true.  R1 reaches the BSR through R2, so it
+	# learns the RP set over an ordinary routed path either way.
+	print "3. The RP set reaches the router directly connected to the BSR"
+	if wait_for 90 has_rp r1 "$OFFPATH_RP_ADDR"; then
+		ok "r1 learned RP $OFFPATH_RP_ADDR"
+	else
+		fail "r1 never learned RP $OFFPATH_RP_ADDR (BSR/cand-RP path)"
+	fi
+	if wait_for 90 has_rp r3 "$OFFPATH_RP_ADDR"; then
+		ok "r3 learned RP $OFFPATH_RP_ADDR from the BSR on its own subnet"
+	else
+		fail "r3 never learned RP $OFFPATH_RP_ADDR: every Bootstrap from the directly connected BSR is dropped, see $WORKDIR/r3.log"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. ED2's membership gives the last hop router a group entry"
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	if wait_for 60 has_mrt r3 "$GROUP"; then
+		ok "r3 has a ($GROUP) entry for its directly connected member"
+	else
+		fail "r3 never created a ($GROUP) entry, it has no RP to join towards"
+		kill "$receiver" 2>/dev/null || true
+		return 1
+	fi
+
+	print "5. Multicast is forwarded from ED1 to ED2 with the RP off the path"
+	run_stream_and_sample_offpath
+	if [ "$replies" -ge "$MIN_RECEIVED" ]; then
+		ok "ED1 -> $GROUP -> ED2, $replies of $STREAM_PKTS packets delivered and answered"
+	else
+		fail "only $replies of $STREAM_PKTS packets reached ED2, want >= $MIN_RECEIVED"
+	fi
+
+	# The shared tree comes in over R2 and the source is out the direct
+	# link, so the switch has to move the incoming interface between two
+	# ordinary interfaces.  In the chain scenarios both are the same one
+	# and the switch cannot be seen from the outside at all.
+	print "6. The last hop router switches to the shortest path tree"
+	direct=$(vif_index r3 "$OFFPATH_R3_IF")
+	rpt=$(vif_index r3 epair123b)
+	if [ -n "$sg_first" ]; then
+		ok "r3 created an ($SRC_ADDR,$GROUP) entry while the stream was running"
+	else
+		fail "r3 never created an ($SRC_ADDR,$GROUP) entry, it stayed on the (*,G)"
+	fi
+	if [ "$sg_last" = "$direct" ]; then
+		ok "r3 ($SRC_ADDR,$GROUP) pulled its incoming interface onto $OFFPATH_R3_IF (vif $direct)"
+	else
+		fail "r3 ($SRC_ADDR,$GROUP) incoming interface is vif ${sg_last:-none}, want vif $direct ($OFFPATH_R3_IF), the RPT interface is vif $rpt"
+	fi
+
+	print "7. The kernel MFC on the last hop router agrees with pimd"
+	if has_mfc r3 "$SRC_ADDR"; then
+		ok "r3 kernel has an MFC entry for $SRC_ADDR"
+	else
+		fail "r3 kernel MFC has nothing for $SRC_ADDR, pimd never pushed the route down"
+	fi
+
+	echo
+	if [ "$FAILED" -eq 0 ]; then
+		print "RESULT: PASS"
+		return 0
+	fi
+	print "RESULT: FAIL ($FAILED assertion(s))"
+	for r in $ROUTERS; do
+		dprint "--- $r: pimctl show rp ---"
+		pimctl "$r" show rp 2>&1 || true
+		dprint "--- $r: pimctl show mrt detail ---"
+		pimctl "$r" show mrt detail 2>&1 | tail -30 || true
+	done
 	return 1
 }
 
@@ -2569,8 +2867,9 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		for s in rpt keepalive rp-lasthop gif-tunnel gif-tunnel-staticrp \
-			 shared-lan shared-lan-spt ssm ifgone; do
+		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
+			 gif-tunnel-staticrp shared-lan shared-lan-spt ssm \
+			 ifgone; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?
