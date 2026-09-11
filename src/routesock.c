@@ -171,6 +171,22 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	return TRUE;
     }
 
+    /*
+     * Nothing in 169.254/16 is ever routed, RFC 3927 sec. 2.7 forbids
+     * forwarding a link-local packet at all, so whatever the kernel
+     * answers here cannot be a path to it.  config.c gives the SSM range
+     * a static RP of 169.254.0.1, on purpose, precisely because the
+     * address leads nowhere, and every RP lookup asks for it.
+     */
+    if (IN_LINK_LOCAL_RANGE(source)) {
+	IF_DEBUG(DEBUG_RPF) {
+	    logit(LOG_DEBUG, 0, "k_req_incoming: link-local source %s is not routable",
+		  inet_fmt(source, s1, sizeof(s1)));
+	}
+
+	return FALSE;
+    }
+
     /* prepare the routing socket params */
     rtm_addrs |= RTA_DST;
     rtm_addrs |= RTA_IFP;

@@ -118,7 +118,22 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     rpf->source.s_addr      = source;
     rpf->iif                = NO_VIF;     /* Initialize, will be changed in kernel */
     rpf->rpfneighbor.s_addr = INADDR_ANY; /* Initialize */
-    
+
+    /*
+     * Nothing in 169.254/16 is ever routed, RFC 3927 sec. 2.7 forbids
+     * forwarding a link-local packet at all, so whatever the kernel
+     * answers here cannot be a path to it.  config.c gives the SSM range
+     * a static RP of 169.254.0.1, on purpose, precisely because the
+     * address leads nowhere, and every RP lookup asks for it.
+     */
+    if (IN_LINK_LOCAL_RANGE(source)) {
+	IF_DEBUG(DEBUG_RPF)
+	    logit(LOG_DEBUG, 0, "k_req_incoming: link-local source %s is not routable",
+		  inet_fmt(source, s1, sizeof(s1)));
+
+	return FALSE;
+    }
+
     n->nlmsg_type = RTM_GETROUTE;
     n->nlmsg_flags = NLM_F_REQUEST;
     n->nlmsg_len = NLMSG_LENGTH(sizeof(*r));
@@ -136,10 +151,8 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     addr.nl_groups = 0;
     addr.nl_pid = 0;
     
-    if (!IN_LINK_LOCAL_RANGE(rpf->source.s_addr)) {
-	IF_DEBUG(DEBUG_RPF)
-	    logit(LOG_DEBUG, 0, "k_req_incoming: ask path to %s", inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
-    }
+    IF_DEBUG(DEBUG_RPF)
+	logit(LOG_DEBUG, 0, "k_req_incoming: ask path to %s", inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
 
     do {
 	socklen_t alen = sizeof(addr);
@@ -170,13 +183,11 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     if (n->nlmsg_type != RTM_NEWROUTE) {
 	errno = -(*(int*)NLMSG_DATA(n));
 
-	if (!IN_LINK_LOCAL_RANGE(rpf->source.s_addr)) {
-	    if (n->nlmsg_type != NLMSG_ERROR)
-		logit(LOG_WARNING, 0, "Wrong netlink answer type: %d", n->nlmsg_type);
-	    else IF_DEBUG(DEBUG_RPF | DEBUG_KERN)
-		logit(LOG_DEBUG, errno, "Failed getting route for %s",
-		      inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
-	}
+	if (n->nlmsg_type != NLMSG_ERROR)
+	    logit(LOG_WARNING, 0, "Wrong netlink answer type: %d", n->nlmsg_type);
+	else IF_DEBUG(DEBUG_RPF | DEBUG_KERN)
+	    logit(LOG_DEBUG, errno, "Failed getting route for %s",
+		  inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
 
 	return FALSE;
     }
