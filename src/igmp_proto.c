@@ -611,7 +611,7 @@ int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8_t *sou
     for (j = 0, s = sources; j < num_sources; ++j, s += 4) {
 	in_addr_t ina;
 
-	if ((s + 4) > canary) {
+	if (canary - s < (ptrdiff_t)sizeof(struct in_addr)) {
 	    IF_DEBUG(DEBUG_IGMP)
 		logit(LOG_DEBUG, 0, "Invalid IGMPv3 report, too many sources, would overflow.");
 	    return 1;
@@ -664,7 +664,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	int             j, rc;
 	int record_size = 0;
 
-	if ((uint8_t *)record + sizeof(struct igmpv3_grec) > canary) {
+	if (canary - (uint8_t *)record < (ptrdiff_t)sizeof(struct igmpv3_grec)) {
 	    logit(LOG_INFO, 0, "Invalid group report, record header past end of message");
 	    return;
 	}
@@ -673,9 +673,9 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 	/* RFC 3376 sec. 4.2.6: Aux Data Len is in units of 32-bit words */
 	rec_auxdatalen = record->grec_auxwords * 4;
 	record_size = sizeof(struct igmpv3_grec) + sizeof(uint32_t) * rec_num_sources + rec_auxdatalen;
-	if ((uint8_t *)record + record_size > canary) {
-	    logit(LOG_INFO, 0, "Invalid group report %p > %p",
-		  (uint8_t *)record + record_size, canary);
+	if (canary - (uint8_t *)record < record_size) {
+	    logit(LOG_INFO, 0, "Invalid group report, %d bytes of record with %td left",
+		  record_size, canary - (uint8_t *)record);
 	    return;
 	}
 
@@ -755,7 +755,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		for (j = 0; j < num_sources; j++) {
 		    uint8_t *gsrc = (uint8_t *)&record->grec_src[j];
 
-		    if (gsrc + sizeof(record->grec_src[0]) > canary) {
+		    if (canary - gsrc < (ptrdiff_t)sizeof(record->grec_src[0])) {
 			logit(LOG_INFO, 0, "Invalid group record");
 			return;
 		    }
