@@ -1,4 +1,4 @@
-name: Bob the Builder
+name: CI-Linux
 
 # Run on all branches, including all pull requests, except the 'dev'
 # branch since that's where we run Coverity Scan (limited tokens/day)

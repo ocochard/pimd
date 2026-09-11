@@ -2,7 +2,7 @@ name: CI-FreeBSD
 
 # GitHub has no FreeBSD runners, so everything here happens inside a VM on
 # an Ubuntu host.  This is the only workflow that compiles routesock.c and
-# the kern.c BSD branches at all: the Linux job in build.yml selects
+# the kern.c BSD branches at all: the Linux job in ci-linux.yml selects
 # netlink.c instead, through the LINUX/BSD conditionals in src/Makefile.am,
 # so half of the OS glue never sees a compiler there.
 on:

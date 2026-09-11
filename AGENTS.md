@@ -27,7 +27,7 @@ Useful configure flags: `--enable-test` (build `test/` subdir),
 `--with-max-vifs=NUM` (must match kernel `MAXVIFS`), `--disable-exit-on-error`,
 `--enable-kernel-encap` / `--enable-kernel-mfc` (patched BSD kernels only).
 
-CI (`.github/workflows/build.yml`) builds with both gcc and clang using
+CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
 `./configure --prefix= --enable-test`, then `make check`.
 
 ## Tests
