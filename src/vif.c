@@ -485,8 +485,11 @@ static int update_reg_vif(vifi_t register_vifi)
 	return 0;
     }
 
+    /* Not uvifs[vifi]: the loop above ran to completion, so vifi is numvifs
+     * here and indexes one past the last VIF -- past the array itself once
+     * MAXVIFS of them are configured. */
     vifs_down = TRUE;
-    logit(LOG_WARNING, 0, "Cannot start Register VIF: %s", uvifs[vifi].uv_name);
+    logit(LOG_WARNING, 0, "Cannot start Register VIF: %s", uvifs[register_vifi].uv_name);
 
     return -1;
 }
@@ -524,16 +527,26 @@ void check_vif_state(void)
 	    continue;
 
 	/* get the interface flags */
+	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, v->uv_name, sizeof(ifr.ifr_name));
 	if (ioctl(udp_socket, SIOCGIFFLAGS, (char *)&ifr) < 0) {
-           if (errno == ENODEV) {
-              logit(LOG_NOTICE, 0, "Interface %s has gone; VIF #%u taken out of service", v->uv_name, vifi);
-              stop_vif(vifi);
-              vifs_down = TRUE;
-              continue;
-           }
+	    /*
+	     * An interface that has been removed is ENODEV on Linux and
+	     * ENXIO on *BSD.  Any other error leaves ifr_flags unset, so
+	     * there is nothing to decide on either way: take the VIF out
+	     * of service instead, rather than leave the kernel forwarding
+	     * out an interface we can no longer ask about.
+	     */
+	    if (!(v->uv_flags & VIFF_DOWN)) {
+		if (errno != ENODEV && errno != ENXIO)
+		    logit(LOG_WARNING, errno, "%s(): ioctl SIOCGIFFLAGS for %s", __func__, ifr.ifr_name);
 
-	   logit(LOG_ERR, errno, "%s(): ioctl SIOCGIFFLAGS for %s", __func__, ifr.ifr_name);
+		logit(LOG_NOTICE, 0, "Interface %s has gone; VIF #%u taken out of service", v->uv_name, vifi);
+		stop_vif(vifi);
+	    }
+
+	    vifs_down = TRUE;
+	    continue;
 	}
 
 	if (v->uv_flags & VIFF_DOWN) {
@@ -759,17 +772,15 @@ void age_vifs(void)
     struct uvif     *v;
     pim_nbr_entry_t *next, *curr;
 
-    /* XXX: TODO: currently, sending to qe* interface which is DOWN
-     * doesn't return error (ENETDOWN) on my Solaris machine,
-     * so have to check periodically the
-     * interfaces status. If this is fixed, just remove the defs around
-     * the "if (vifs_down)" line.
+    /* The vifs_down flag used to gate this, on the assumption that a send
+     * on a dead interface fails with ENETDOWN and calls check_vif_state()
+     * itself.  It does not: an interface that has been removed altogether
+     * takes its addresses with it, so pimd's IP_MULTICAST_IF is silently
+     * ignored and the Hello leaves by whatever route the kernel picks
+     * instead.  Nothing then ever set vifs_down and the VIF stayed in
+     * service forever, so poll the interfaces unconditionally.
      */
-
-#if (!((defined SunOS) && (SunOS >= 50)))
-    if (vifs_down)
-#endif /* Solaris */
-	check_vif_state();
+    check_vif_state();
 
     /* Age many things */
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
