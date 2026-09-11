@@ -161,6 +161,26 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the limits the man page documents, so an `igmp-query-interval 0` is no
   longer accepted, and both are reset to their defaults on `SIGHUP`, so
   removing either from `pimd.conf` now takes effect on reload
+- Fix a Join scheduled against the wrong routing entry when overriding a
+  neighbor's (\*,G) Prune.  RFC 7761 sec. 4.5.1 has a router that wants to
+  keep receiving traffic override another router's Prune with a Join of
+  its own, and pimd walks the group's (S,G) entries to schedule one per
+  source.  It asked each source whether to join but then read and rearmed
+  the (\*,G) Join/Prune timer instead of that source's, so the per-source
+  override was never scheduled and the (\*,G) timer was rewritten once per
+  source.  The equivalent loop on the (\*,\*,RP) path had it right
+- Fix an undefined shift in the Cand-BSR bootstrap delay.  RFC 5059
+  sec. 5 derives the initial timer from a log base 2, computed here by
+  walking a mask down from the leftmost bit, and `1 << 31` on a signed
+  `int` is signed overflow rather than that bit.  The mask is now built
+  from an unsigned 1, as is the `2^31` the address term divides by
+- Guard the DR election tiebreak against having recorded no neighbor.  A
+  candidate is only kept when it beats the best priority seen so far,
+  which starts at 0, so a segment where every neighbor advertises DR
+  priority 0 leaves none recorded.  Reaching the tiebreak from there also
+  needs our own priority to be 0, which `pimd.conf` currently refuses,
+  so this was latent; the tiebreak now falls back on the head of the
+  neighbor list, the highest address, which is the winner it looks for
 
 
 [v2.3.2][] - 2016-03-10
