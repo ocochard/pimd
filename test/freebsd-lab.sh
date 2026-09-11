@@ -241,6 +241,13 @@ ROUTERS="r1 r2 r3"
 EPAIRS="epair101 epair112 epair123 epair203"
 ED2_IF=epair203b
 
+# Kept so set_scenario() can put them back: "run all" walks the scenarios
+# in one shell, and a shared segment scenario replaces all four
+DEFAULT_BOXES=$BOXES
+DEFAULT_ROUTERS=$ROUTERS
+DEFAULT_EPAIRS=$EPAIRS
+DEFAULT_ED2_IF=$ED2_IF
+
 # shared-lan: the two right hand links become bridged segments, carrying two
 # more routers and a second end device.  Only the "b" end of a bridged epair
 # goes into a jail, its "a" end stays on the host as a bridge member, so
@@ -373,12 +380,20 @@ set_scenario() {
 	esac
 
 	# The shared segment scenarios have a topology of their own, five
-	# routers over two bridges instead of three in a row
+	# routers over two bridges instead of three in a row.  Every other
+	# scenario has to put the three router one back, or it inherits
+	# whatever "run all" left behind: the routers pimd is started on and
+	# asserted against are read from these.
 	if is_shared_lan; then
 		BOXES=$SHARED_BOXES
 		ROUTERS=$SHARED_ROUTERS
 		EPAIRS="epair101 epair112 $SHARED_EPAIRS"
 		ED2_IF=epair510b
+	else
+		BOXES=$DEFAULT_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
+		EPAIRS=$DEFAULT_EPAIRS
+		ED2_IF=$DEFAULT_ED2_IF
 	fi
 
 	# gif-tunnel-staticrp copies the issue down to the addresses: the
