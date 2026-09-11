@@ -454,8 +454,16 @@ static int restart_dr_election(struct uvif *v)
 	    return FALSE;
 	}
 
-	if (best_dr_prio == v->uv_dr_prio)
+	if (best_dr_prio == v->uv_dr_prio) {
+	    /* Nobody outranked a DR priority of 0, so no neighbor was
+	     * recorded above and every one of them ties with us.  The
+	     * list heads on the highest address, which is the winner
+	     * the tiebreak below is looking for. */
+	    if (!best_nbr)
+		best_nbr = v->uv_pim_neighbors;
+
 	    goto tiebreak;
+	}
     } else {
 	best_nbr = v->uv_pim_neighbors;
       tiebreak:
