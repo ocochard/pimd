@@ -199,6 +199,32 @@ pimd on all routers in the same domain.  See issue #93 for details.
   and the touch itself went unchecked, so a failed refresh was still
   reported as a success.  One syscall now does all of it, and a PID file
   that went missing is created again as before
+- Issue #236: Stop the BSD routing socket from filling the log with
+  "Timeout waiting for reply from routing socket", reported from pfSense.
+  Two separate causes, both in `k_req_incoming()`:
+
+  The address in the message, 169.254.0.1, is pimd's own: `config.c`
+  gives the SSM range a static RP there, on purpose, because nothing in
+  169.254/16 is routed and the RP must never be reachable.  pimd then
+  asked the kernel for a route to it on every RP lookup anyway.  Those
+  lookups are now answered directly, as the failure they are, in both
+  backends: the netlink one only knew to keep quiet about them, and still
+  asked.  On a router with a default route the query used to *succeed*
+  and leave the SSM RP entry pointing out of the default route, which is
+  not a path to an address RFC 3927 sec. 2.7 forbids forwarding to; it
+  now keeps no incoming interface, as it already did wherever the query
+  failed.
+
+  The timeouts for real addresses have a different cause.  Nothing reads
+  the routing socket outside a lookup, while the kernel keeps broadcasting
+  every routing change to it, so the receive buffer fills between lookups
+  with messages nobody asked for.  Once it is full the kernel drops the
+  reply to the next `RTM_GET`, and the queued messages are then read in
+  its place until the wait runs out: a busy router that gets there stops
+  resolving RPF entirely, one 100ms stall in the main loop at a time.
+  The socket is now emptied before each query, and the timeout that
+  remains is a debug message under `-d rpf` like every other failure in
+  that function, not a warning
 - Fix the message pimd exits with when no interface is usable.  It chose
   between "no enabled vifs" and "only one enabled vif" on a count that
   starts at one for the register vif and is only ever incremented, so the
