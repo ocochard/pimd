@@ -219,6 +219,20 @@ pimd on all routers in the same domain.  See issue #93 for details.
   and the touch itself went unchecked, so a failed refresh was still
   reported as a success.  One syscall now does all of it, and a PID file
   that went missing is created again as before
+- Issue #211: Fix a BSD router never learning the RP set from a bootstrap
+  router on one of its own subnets, reported from a topology where every
+  router is adjacent to the RP router.  `k_req_incoming()` in
+  `routesock.c` went to the kernel even for an address on a directly
+  connected subnet, and such a route carries no gateway, so the lookup
+  came back with an incoming interface but no RPF neighbor.  Every caller
+  reads that as "no route": `receive_pim_bootstrap()` drops a Bootstrap
+  whose RPF neighbor is 0.0.0.0, so the router next to the BSR was the one
+  router in the domain that never learned where the RP is.  It could not
+  send the (\*,G) Join its receivers needed, and nothing was forwarded to
+  them.  Such an address is now answered from the vif table instead, with
+  the destination as its own RPF neighbor, the way `netlink.c` has always
+  answered it on Linux.  Fix by Sylvain Meygret, now covered by the
+  `rp-offpath` scenario of `test/freebsd-lab.sh`
 - Issue #236: Stop the BSD routing socket from filling the log with
   "Timeout waiting for reply from routing socket", reported from pfSense.
   Two separate causes, both in `k_req_incoming()`:
