@@ -60,10 +60,16 @@ pidfile(const char *basename)
 	atexit_already = 0;
 
 	if (pidfile_path != NULL) {
-		if (!access(pidfile_path, R_OK) && pid == pidfile_pid) {
-			utimensat(0, pidfile_path, NULL, 0);
+		/*
+		 * Let utimensat() be its own existence test.  Asking
+		 * access() first only opens a window for the path to
+		 * change underneath us, answers for the real uid rather
+		 * than the one we touch the file with, and still leaves
+		 * the touch itself unchecked.  A file that went away
+		 * falls through and is created again below.
+		 */
+		if (pid == pidfile_pid && !utimensat(0, pidfile_path, NULL, 0))
 			return (0);
-		}
 		free(pidfile_path);
 		pidfile_path = NULL;
 		__pidfile_name = NULL;
