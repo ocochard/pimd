@@ -146,7 +146,7 @@ uint16_t bootstrap_initial_delay(void)
 	 * from left which is `1`
 	 */
 	log_mask = sizeof(addr_delay) << 3;
-	log_mask = (1 << (log_mask - 1));  /* Set the leftmost bit to `1` */
+	log_mask = (1U << (log_mask - 1));  /* Set the leftmost bit to `1` */
 	for (log_of_2 = (sizeof(addr_delay) << 3) - 1 ; log_of_2; log_of_2--) {
 	    if (addr_delay & log_mask)
 		break;
@@ -155,13 +155,13 @@ uint16_t bootstrap_initial_delay(void)
 	}
 	addr_delay = log_of_2 / 16;
     } else {
-	addr_delay = 2 - (ntohl(my_bsr_address) / ( 1 << 31));
+	addr_delay = 2 - (ntohl(my_bsr_address) / ( 1U << 31));
     }
 
     delay = 1 + best_priority - my_bsr_priority;
     /* Calculate log_2(delay) */
     log_mask = sizeof(delay) << 3;
-    log_mask = (1 << (log_mask - 1));  /* Set the leftmost bit to `1` */
+    log_mask = (1U << (log_mask - 1));  /* Set the leftmost bit to `1` */
     for (log_of_2 = (sizeof(delay) << 3) - 1 ; log_of_2; log_of_2--) {
 	if (delay & log_mask)
 	    break;
