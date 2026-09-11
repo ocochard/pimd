@@ -213,6 +213,18 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     flags |= RTF_UP;
     flags |= RTF_HOST;
     flags |= RTF_GATEWAY;
+
+    /*
+     * Nothing else ever reads this socket and the kernel broadcasts every
+     * routing change to it, so everything that happened since the last
+     * lookup is still queued.  Once that fills the receive buffer the
+     * kernel drops the reply we are about to ask for, and the leftovers
+     * are then read in its place below until the wait times out, so empty
+     * it before asking.
+     */
+    while (read(routing_socket, &m_rtmsg, sizeof(m_rtmsg)) > 0)
+	;
+
     errno = 0;
     memset (&m_rtmsg, 0, sizeof(m_rtmsg));
 
@@ -252,8 +264,10 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 
 	rlen = select(routing_socket + 1, &fdbits, 0, 0, &wtime);
 	if (rlen == 0) {
-	    logit(LOG_WARNING, 0, "Timeout waiting for reply from routing socket for %s",
-		  inet_fmt(source, s1, sizeof(s1)));
+	    IF_DEBUG(DEBUG_RPF | DEBUG_KERN)
+		logit(LOG_DEBUG, 0, "Timeout waiting for reply from routing socket for %s",
+		      inet_fmt(source, s1, sizeof(s1)));
+
 	    return FALSE;
 	}
 
