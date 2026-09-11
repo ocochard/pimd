@@ -256,12 +256,12 @@ typedef void (*ihfunc_t) (int);
 #define bcopy(a, b, c)		memcpy((b), (a), (c))
 #define bzero(s, n)		memset((s), 0, (n))
 #define setlinebuf(s)		setvbuf((s), (NULL), (_IOLBF), 0)
-#define RANDOM()		lrand48()
-#elif defined(BSD)
-#define RANDOM()		arc4random()
-#else
-#define RANDOM()		(uint32_t)random()
 #endif
+
+/* Timer jitter, GenIDs and the BSR fragment tag are all values a
+ * neighbor must not be able to predict, so this is arc4random()
+ * everywhere, with lib/arc4random.c standing in where libc has none. */
+#define RANDOM()		arc4random()
 
 /* NetBSD 6.1, for instance, does not have IPOPT_RA defined. */
 #ifndef IPOPT_RA
@@ -650,6 +650,10 @@ struct rp_hold {
 };
 
 /* compat declarations */
+#ifndef HAVE_ARC4RANDOM
+extern uint32_t	arc4random		(void);
+#endif
+
 #ifndef strlcpy
 extern size_t	strlcpy			(char *, const char *, size_t);
 #endif
