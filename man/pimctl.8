@@ -20,7 +20,14 @@
 .Ar log Op ? | none | LEVEL
 .Pp
 .Nm
+.Ar show summary
+.Pp
+.Nm
 .Ar show igmp
+.Nm
+.Ar show igmp interface
+.Nm
+.Ar show igmp groups
 .Pp
 .Nm
 .Ar show interface
@@ -51,6 +58,28 @@ for example,
 .Cm s in
 for
 .Cm show interface .
+.Pp
+A few spellings people reach for anyway are accepted as aliases, and do
+not appear in
+.Cm help :
+.Cm show if
+and
+.Cm show interfaces
+for
+.Cm show interface ,
+.Cm show routes
+for
+.Cm show mrt ,
+and
+.Cm show groups
+for
+.Cm show igmp groups .
+Note that
+.Cm show if
+is an alias rather than an abbreviation:
+.Cm show i
+on its own is ambiguous and resolves to
+.Cm show igmp .
 .Sh OPTIONS
 This program follows the usual UNIX command line syntax, with long
 options starting with two dashes (`-').  The options are as follows:
@@ -184,8 +213,24 @@ Informational
 .It Cm debug
 Debug-level messages
 .El
+.It Nm Ar show summary
+Show one line per interface with the PIM and the IGMP view side by side:
+state, address, PIM neighbor count, elected DR, IGMP version, elected
+querier and number of groups.  For the case of wanting to know whether an
+interface is doing anything at all, without caring which protocol answers
+for what.  See
+.Cm show interface
+and
+.Cm show igmp interface
+for the per-protocol detail this leaves out.
 .It Nm Ar show igmp
-Show IGMP interface status and group memberships.
+Show IGMP interface status and group memberships, i.e., both tables below.
+.It Nm Ar show igmp interface
+Show IGMP interface status: elected querier, querier timeout, IGMP version
+and number of groups per interface.
+.It Nm Ar show igmp groups
+Show IGMP group memberships, one line per group, or per source for an
+IGMPv3 (S,G) membership.
 .It Nm Ar show interfaces
 Show PIM interface table
 .It Nm Ar show neighbor

@@ -11,29 +11,6 @@ the open entries come first, in the order they should be taken, the
 finished ones follow with a note on where the work landed, and everything
 that should not hold up the tag was moved to the 3.1 list below.
 
-** TODO Add aliases for common pimctl commands
-
-- pimctl show
-- pimctl show if
-- pimctl show routes  --> show pim routes
-- pimctl show groups  --> show igmp groups
-
-Including some summary features
-
-- pimctl show if
-- pimctl show interfaces
-
-Show summary of 'pim int' and 'igmp int', because users don't care about
-the distinction between layer-2 and layer-3.
-
-Open.  The prefix matcher does not cover these: string_match()
-(src/pimctl.c) compares the shorter of the two words, so "show if" is
-tested against "show igmp" as "if" vs "ig" and against "show interface" as
-"if" vs "in", and matches neither.  "show routes" and "show groups" have no
-command to abbreviate at all, the commands are "show mrt" and "show igmp".
-Next after "show mfc": same file, no protocol code, and it is what users
-type first.
-
 ** TODO Check "Ignoring lo, has invalid address 127.0.0.1 and/or netmask 255.0.0.0"
 
 We should allow routing to loopback, just check MULTICAST flag?
@@ -56,6 +33,37 @@ Open, and the only 3.0 entry left that changes forwarding behaviour:
 config_vifs_from_kernel() (src/config.c) drops a second address on an
 interface it already has a vif for, logging "alias for vif#N", and never
 turns it into an altnet.  Wants a test of its own, so take it last.
+
+** DONE Add aliases for common pimctl commands
+
+- pimctl show
+- pimctl show if
+- pimctl show routes  --> show pim routes
+- pimctl show groups  --> show igmp groups
+
+Including some summary features
+
+- pimctl show if
+- pimctl show interfaces
+
+Show summary of 'pim int' and 'igmp int', because users don't care about
+the distinction between layer-2 and layer-3.
+
+Done, as rows in cmds[] (src/ipc.c) with a NULL description, which keeps
+them out of "help" while both matchers still resolve them: "show if" and
+"show interfaces" for "show interface", "show routes" for "show mrt", and
+"show groups" for "show igmp groups".  The prefix matcher could not have
+covered them, string_match() (src/pimctl.c) compares the shorter of the two
+words, so "show if" is tested against "show igmp" as "if" vs "ig" and
+against "show interface" as "if" vs "in", and matches neither.
+
+The summary is "show summary", a visible command rather than a second
+meaning for "show if": having "show if" and "show interface" print
+different tables is the kind of trap the aliases exist to avoid.  It prints
+one line per interface with state, address, PIM neighbor count, DR, IGMP
+version, querier and group count.  "show igmp groups" and "show igmp
+interface" were implemented but commented out of cmds[], and are commands
+of their own again.
 
 ** DONE Add "show mfc" to ipc.c
 Some platforms don't have sufficient tooling installed by default,

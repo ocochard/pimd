@@ -80,6 +80,20 @@ pimd on all routers in the same domain.  See issue #93 for details.
   daemon believes, this shows what the kernel forwards, which until now
   meant reaching for `ip mroute show` or `netstat -g` on the side, and
   neither of those reports the wrong-interface counter
+- New `pimctl show summary` command, one line per interface with the PIM
+  and the IGMP view side by side: state, address, neighbor count, elected
+  DR, IGMP version, elected querier and number of groups.  Users tend not
+  to care which protocol answers for what, and until now that meant
+  reading `show interface` and `show igmp interface` next to each other
+- `pimctl show igmp groups` and `pimctl show igmp interface` are commands
+  of their own now, instead of only being reachable together as `show
+  igmp`.  Both were implemented but commented out of the command table
+- `pimctl` accepts a few spellings people type anyway, as hidden aliases:
+  `show if` and `show interfaces` for `show interface`, `show routes` for
+  `show mrt`, and `show groups` for `show igmp groups`.  The prefix
+  matcher could not help with these, `show if` compares against `show
+  igmp` as "if" vs "ig" and against `show interface` as "if" vs "in", and
+  matches neither
 
 ### Fixes
 - Fix an out-of-bounds read on a long word in `pimd.conf`.  `next_word()`

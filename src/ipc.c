@@ -63,6 +63,7 @@ enum {
 	IPC_IGMP,
 	IPC_IGMP_GRP,
 	IPC_IGMP_IFACE,
+	IPC_SUMMARY,
 	IPC_PIM,
 	IPC_PIM_IFACE,
 	IPC_PIM_NEIGH,
@@ -86,8 +87,9 @@ struct ipcmd {
 	{ IPC_RESTART,    "restart", NULL, "Restart and reload .conf file, like SIGHUP"},
 	{ IPC_VERSION,    "version", NULL, "Show daemon version" },
 	{ IPC_STATUS,     "show status", NULL, "Show router status" },
-//	{ IPC_IGMP_GRP,   "show igmp groups", NULL, "Show IGMP group memberships" },
-//	{ IPC_IGMP_IFACE, "show igmp interface", NULL, "Show IGMP interface status" },
+	{ IPC_SUMMARY,    "show summary", NULL, "Show interface summary, PIM and IGMP" },
+	{ IPC_IGMP_GRP,   "show igmp groups", NULL, "Show IGMP group memberships" },
+	{ IPC_IGMP_IFACE, "show igmp interface", NULL, "Show IGMP interface status" },
 	{ IPC_IGMP,       "show igmp", NULL, "Show interfaces and group memberships" },
 	{ IPC_PIM_IFACE,  "show interface", NULL, "Show router interface table" },
 	{ IPC_PIM_ROUTE,  "show mrt", "[detail]", "Show multicast routing table" },
@@ -97,6 +99,16 @@ struct ipcmd {
 	{ IPC_PIM_CRP,    "show crp", NULL, "Show candidate Rendezvous-Point (CRP) set" },
 	{ IPC_PIM,        "show pim", "[detail]", "Show interfaces, neighbors and routes (default)"},
 	{ IPC_PIM_DUMP,   "show compat", "[detail]", "Show router status, compat mode" },
+
+	/* Aliases for what users type, hidden from help by a NULL description.
+	 * Order matters: ipc_read() takes the first row whose command is a
+	 * prefix of what the client sent, so a short command has to come after
+	 * every longer one it is a prefix of -- the reason "show igmp groups"
+	 * is listed above "show igmp", and "show" last of all. */
+	{ IPC_PIM_IFACE,  "show interfaces", NULL, NULL },
+	{ IPC_PIM_IFACE,  "show if", NULL, NULL },
+	{ IPC_PIM_ROUTE,  "show routes", NULL, NULL },
+	{ IPC_IGMP_GRP,   "show groups", NULL, NULL },
 	{ IPC_PIM,        "show", NULL, NULL }, /* hidden default */
 };
 
@@ -326,6 +338,63 @@ static const char *ifstate(struct uvif *uv)
 	return "Up";
 }
 
+static size_t nbr_count(struct uvif *uv)
+{
+	pim_nbr_entry_t *n;
+	size_t num = 0;
+
+	for (n = uv->uv_pim_neighbors; n; n = n->next)
+		num++;
+
+	return num;
+}
+
+static size_t group_count(struct uvif *uv)
+{
+	struct listaddr *group;
+	size_t num = 0;
+
+	for (group = uv->uv_groups; group; group = group->al_next)
+		num++;
+
+	return num;
+}
+
+/* The DR on this interface, our own address when we are it, 0.0.0.0 when
+ * there is no neighbor to elect one with yet. */
+static uint32_t dr_addr(struct uvif *uv)
+{
+	if (uv->uv_flags & VIFF_DR)
+		return uv->uv_lcl_addr;
+
+	if (uv->uv_pim_neighbor_dr)
+		return uv->uv_pim_neighbor_dr->address;
+
+	return 0;
+}
+
+static int igmp_version(struct uvif *uv)
+{
+	if (uv->uv_flags & VIFF_IGMPV1)
+		return 1;
+
+	if (uv->uv_flags & VIFF_IGMPV2)
+		return 2;
+
+	return 3;
+}
+
+/* The elected IGMP querier, "Local" when this router won the election */
+static char *igmp_querier(struct uvif *uv, char *buf, size_t len)
+{
+	if (!uv->uv_querier)
+		strlcpy(buf, "Local", len);
+	else
+		inet_fmt(uv->uv_querier->al_addr, buf, len);
+
+	return buf;
+}
+
 static int show_neighbor(FILE *fp, struct uvif *uv, pim_nbr_entry_t *n)
 {
 	char tmp[20] = { 0 }, buf[42];
@@ -374,9 +443,6 @@ static int show_neighbors(FILE *fp)
 
 static void show_interface(FILE *fp, struct uvif *uv)
 {
-	pim_nbr_entry_t *n;
-	uint32_t addr = 0;
-	size_t num  = 0;
 	char *pri = "N/A";
 	char tmp[11];
 
@@ -385,23 +451,57 @@ static void show_interface(FILE *fp, struct uvif *uv)
 	if (uv->uv_flags & VIFF_REGISTER)
 		return;
 
-	if (uv->uv_flags & VIFF_DR) {
-		addr = uv->uv_lcl_addr;
-		pri  = tmp;
-	} else if (uv->uv_pim_neighbor_dr) {
-		addr = uv->uv_pim_neighbor_dr->address;
-		pri  = get_dr_prio(uv->uv_pim_neighbor_dr);
-	}
-
-	for (n = uv->uv_pim_neighbors; n; n = n->next)
-		num++;
+	if (uv->uv_flags & VIFF_DR)
+		pri = tmp;
+	else if (uv->uv_pim_neighbor_dr)
+		pri = get_dr_prio(uv->uv_pim_neighbor_dr);
 
 	fprintf(fp, "%-16s  %-8s  %-15s  %4s  %5d  %3zu  %-15s  %4s\n",
 		uv->uv_name,
 		ifstate(uv),
 		inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1)),
-		tmp, pim_timer_hello_interval, num,
-		inet_fmt(addr, s2, sizeof(s2)), pri);
+		tmp, pim_timer_hello_interval, nbr_count(uv),
+		inet_fmt(dr_addr(uv), s2, sizeof(s2)), pri);
+}
+
+/*
+ * One line per interface with the PIM and the IGMP view side by side, for
+ * the common case of wanting to know whether an interface is doing
+ * anything at all.  "show interface" and "show igmp interface" have the
+ * per-protocol detail this leaves out.
+ */
+static int show_summary(FILE *fp)
+{
+	struct uvif *uv;
+	vifi_t vifi;
+
+	fprintf(fp, "Interface Summary_\n");
+	if (numvifs)
+		fprintf(fp, "%-16s  %-8s  %-15s  %4s  %-15s  %4s  %-15s  %6s =\n",
+			"Interface", "State", "Address", "Nbrs", "DR Address",
+			"IGMP", "Querier", "Groups");
+
+	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
+		char querier[20], version[4];
+
+		/* The register vif has neither neighbors nor memberships */
+		if (uv->uv_flags & VIFF_REGISTER)
+			continue;
+
+		snprintf(version, sizeof(version), "v%d", igmp_version(uv));
+
+		fprintf(fp, "%-16s  %-8s  %-15s  %4zu  %-15s  %4s  %-15s  %6zu\n",
+			uv->uv_name,
+			ifstate(uv),
+			inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1)),
+			nbr_count(uv),
+			inet_fmt(dr_addr(uv), s2, sizeof(s2)),
+			version,
+			igmp_querier(uv, querier, sizeof(querier)),
+			group_count(uv));
+	}
+
+	return 0;
 }
 
 /* PIM Interface Table */
@@ -660,7 +760,7 @@ static u_int dump_mfc(FILE *fp, mrtentry_t *r)
 	for (kc = r->kernel_cache; kc; kc = kc->next) {
 		num++;
 
-		fprintf(fp, "%-15s  %-15s  %-10s ",
+		fprintf(fp, "%-15s  %-15s  %-15s ",
 			inet_fmt(kc->source, s1, sizeof(s1)),
 			inet_fmt(kc->group, s2, sizeof(s2)),
 			r->incoming < numvifs ? uvifs[r->incoming].uv_name : "---");
@@ -683,7 +783,7 @@ static int show_mfc(FILE *fp)
 	mrtentry_t *r;
 
 	fprintf(fp, "Kernel Multicast Forwarding Cache_\n");
-	fprintf(fp, "%-15s  %-15s  %-10s %10s %10s %9s  %s =\n",
+	fprintf(fp, "%-15s  %-15s  %-15s %10s %10s %9s  %s =\n",
 		"Source", "Group", "Iif", "Packets", "Bytes", "WrongIf", "Oifs");
 
 	/* TODO: remove the dummy 0.0.0.0 group (first in the chain) */
@@ -798,7 +898,6 @@ static int show_igmp_groups(FILE *fp)
 
 static int show_igmp_iface(FILE *fp)
 {
-	struct listaddr *group;
 	struct uvif *uv;
 	vifi_t vifi;
 
@@ -806,34 +905,20 @@ static int show_igmp_iface(FILE *fp)
 	fprintf(fp, "Interface         State     Querier          Timeout Version  Groups=\n");
 
 	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
-		size_t num = 0;
 		char timeout[10];
-		int version;
 
 		/* The register_vif is never used for IGMP messages */
 		if (uv->uv_flags & VIFF_REGISTER)
 			continue;
 
-		if (!uv->uv_querier) {
-			strlcpy(s1, "Local", sizeof(s1));
+		if (!uv->uv_querier)
 			snprintf(timeout, sizeof(timeout), "None");
-		} else {
-			inet_fmt(uv->uv_querier->al_addr, s1, sizeof(s1));
-			snprintf(timeout, sizeof(timeout), "%u", igmp_querier_timeout - uv->uv_querier->al_timer);
-		}
-
-		for (group = uv->uv_groups; group; group = group->al_next)
-			num++;
-
-		if (uv->uv_flags & VIFF_IGMPV1)
-			version = 1;
-		else if (uv->uv_flags & VIFF_IGMPV2)
-			version = 2;
 		else
-			version = 3;
+			snprintf(timeout, sizeof(timeout), "%u", igmp_querier_timeout - uv->uv_querier->al_timer);
 
-		fprintf(fp, "%-16s  %-8s  %-15s  %7s %7d  %6zd\n", uv->uv_name,
-			ifstate(uv), s1, timeout, version, num);
+		fprintf(fp, "%-16s  %-8s  %-15s  %7s %7d  %6zu\n", uv->uv_name,
+			ifstate(uv), igmp_querier(uv, s1, sizeof(s1)), timeout,
+			igmp_version(uv), group_count(uv));
 	}
 
 	return 0;
@@ -998,6 +1083,10 @@ static void ipc_handle(int sd)
 
 	case IPC_PIM_IFACE:
 		ipc_show(client, show_interfaces, cmd, sizeof(cmd));
+		break;
+
+	case IPC_SUMMARY:
+		ipc_show(client, show_summary, cmd, sizeof(cmd));
 		break;
 
 	case IPC_PIM_NEIGH:
