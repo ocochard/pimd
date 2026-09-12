@@ -226,6 +226,20 @@
 #               The reports come from test/igmpv3.c for that reason - one
 #               report, sent exactly as asked, and nothing after it.
 #               Takes about 90s.
+#   ssm-range   The same topology and the same reports, with the SSM range
+#               moved off 232.0.0.0/8 by an "ssm-range" in pimd.conf, which
+#               is https://github.com/troglobit/pimd/issues/185: routers
+#               that let the operator pick the range, Cisco's "ip pim ssm
+#               range" among them, and interop with them.
+#
+#               The configured range replaces the default rather than
+#               adding to it, again like Cisco, so one scenario can assert
+#               both halves at once: a group in 239.232.0.0/16 has to be
+#               treated as source specific, and a group in 232.0.0.0/8 has
+#               to stop being.  They are told apart by what R3 keeps for
+#               each, per source or a single any-source membership, and by
+#               which range gets the link-local virtual RP that config.c
+#               installs for SSM.  Takes about 30s.
 #   ifgone      The rpt topology again, but ED1's link is destroyed while
 #               pimd is running and the only question is what R1 does about
 #               the VIF that was sitting on it, which is
@@ -263,7 +277,7 @@
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
-# "shared-lan-spt", "ssm", "ifgone", or "all" for run.
+# "shared-lan-spt", "ssm", "ssm-range", "ifgone", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # shared-lan, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -407,6 +421,14 @@ SSM_SRC1=${SSM_SRC1:-10.0.1.10}
 SSM_SRC2=${SSM_SRC2:-10.0.1.11}
 SSM_MAX_SOURCES=${SSM_MAX_SOURCES:-256}
 
+# ssm-range: the range pimd.conf configures, a group inside it, and the
+# group from the default range that has to stop being source specific once
+# the configured one replaces it.
+SSMR_RANGE=${SSMR_RANGE:-239.232.0.0/16}
+SSMR_GROUP=${SSMR_GROUP:-239.232.1.1}
+SSMR_OLD_GROUP=${SSMR_OLD_GROUP:-232.1.1.1}
+SSMR_DEFAULT_RANGE=232.0.0.0/8
+
 # ifgone: the link that is destroyed under R1, named from both ends
 # because an epair can only be destroyed from the jail that owns an end,
 # and both ends of this one live in jails.  IFGONE_KEPT is the address on
@@ -441,7 +463,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|ifgone] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -457,7 +479,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ifgone)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|ifgone)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -492,10 +514,13 @@ set_scenario() {
 	if [ "$SCENARIO" = gif-tunnel-staticrp ]; then
 		GROUP=${STATICRP_GROUP:-224.0.23.12}
 	elif [ "$SCENARIO" = ssm ]; then
-		# 232.0.0.0/8 is the SSM range, IN_PIM_SSM_RANGE() in
-		# src/pimd.h, and the only range where pimd keeps a source
-		# list per group at all
+		# 232.0.0.0/8 is the default SSM range, and the only range
+		# where pimd keeps a source list per group at all
 		GROUP=${SSM_GROUP:-232.1.1.1}
+	elif [ "$SCENARIO" = ssm-range ]; then
+		# Inside the range r3.conf configures, and outside the
+		# default one it replaces
+		GROUP=$SSMR_GROUP
 	else
 		GROUP=$GROUP_DEFAULT
 	fi
@@ -806,6 +831,33 @@ write_configs() {
 		# timeout with it, to $SSM_TIMEOUT.
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: last hop router for the receiver LAN
+		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = ssm-range ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for the reported sources
+		ssm-range $SSMR_RANGE
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point.  It now matters
+		# for the groups of the default range as well: those are
+		# ordinary any-source groups once the configured range has
+		# replaced 232.0.0.0/8, and an any-source group needs an RP.
+		ssm-range $SSMR_RANGE
+		bsr-candidate Epair112b priority 1 interval 10
+		rp-candidate Epair112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# The range is the whole scenario, the query interval is cut
+		# for the same reason the ssm scenario cuts it.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router for the receiver LAN
+		ssm-range $SSMR_RANGE
 		igmp-query-interval $SSM_QUERY_INTERVAL
 		EOF
 		return
@@ -1564,6 +1616,7 @@ check() {
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
 	ssm)        check_ssm; return $? ;;
+	ssm-range)  check_ssm_range; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	esac
 
@@ -1742,23 +1795,116 @@ check_ssm() {
 	return 0
 }
 
-# Send one IGMPv3 report for $GROUP from ED2
-ssm_report() {
-	jrun ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$GROUP" "$@" || \
+# ssm-range: the SSM range moved off 232.0.0.0/8 by pimd.conf.  What makes
+# this worth a scenario of its own rather than an ssm run with another
+# group is the replacement: both the group that becomes source specific and
+# the group that stops being one are asserted, on the same router, from the
+# same pair of reports.
+#
+# A pimd that does not know the keyword never reaches those assertions: an
+# unknown command in pimd.conf sets error_flag in config_vifs_from_file()
+# and the logit(LOG_ERR) that follows is an exit(), so the run fails at
+# assertion 1 with three routers whose pimd is not there to answer.
+check_ssm_range() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# config.c gives every SSM range a static RP at 169.254.0.1, a
+	# link-local address that leads nowhere, so that an SSM group
+	# resolves to an RP entry without any register ever leaving the
+	# router.  Which ranges have one is therefore pimd's own answer to
+	# what it considers source specific, before a single report arrives.
+	print "2. The configured range has the link-local RP, the default one no longer does"
+	if wait_for 30 has_static_rp r3 "$SSMR_RANGE"; then
+		ok "R3 holds the static RP 169.254.0.1 for $SSMR_RANGE"
+	else
+		fail "R3 has no static RP for $SSMR_RANGE, the range was not configured"
+	fi
+	if has_static_rp r3 "$SSMR_DEFAULT_RANGE"; then
+		fail "R3 still has the static RP for $SSMR_DEFAULT_RANGE, the range was added, not replaced"
+	else
+		ok "$SSMR_DEFAULT_RANGE has no static RP left, the configured range replaced it"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. A group in the configured range is source specific"
+	ssm_report -t allow "$SSM_SRC1" "$SSM_SRC2"
+	if wait_for 15 ssm_count_is 2; then
+		ok "R3 holds ($SSM_SRC1,$GROUP) and ($SSM_SRC2,$GROUP)"
+	else
+		fail "R3 holds $(ssm_sources | tr '\n' ' ')for $GROUP instead of both sources"
+	fi
+	if group_has_any "$GROUP"; then
+		fail "R3 also holds an any-source membership for $GROUP"
+	else
+		ok "R3 keeps no any-source membership for $GROUP"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The same report, the same router, a group from the range that is
+	# no longer in effect: pimd has to ignore the sources it names and
+	# keep the one any-source membership it keeps for any other group.
+	print "4. A group in the replaced default range is not"
+	group_report "$SSMR_OLD_GROUP" -t allow "$SSM_SRC1" "$SSM_SRC2"
+	if wait_for 15 group_has_any "$SSMR_OLD_GROUP"; then
+		ok "R3 holds (*,$SSMR_OLD_GROUP), an ordinary any-source membership"
+	else
+		fail "R3 has no any-source membership for $SSMR_OLD_GROUP"
+	fi
+	if group_count_is "$SSMR_OLD_GROUP" 0; then
+		ok "R3 kept no per-source state for $SSMR_OLD_GROUP"
+	else
+		fail "R3 still treats $SSMR_OLD_GROUP as SSM, holding $(group_sources "$SSMR_OLD_GROUP" | tr '\n' ' ')"
+	fi
+
+	[ "$FAILED" -eq 0 ] || return 1
+	return 0
+}
+
+# Send one IGMPv3 report for a group from ED2
+group_report() {
+	grp=$1; shift
+	jrun ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$grp" "$@" || \
 		die "failed sending an IGMPv3 report from ed2"
 }
 
-# Sources R3 holds for $GROUP.  "show igmp" prints one line per (group,
+ssm_report() {
+	group_report "$GROUP" "$@"
+}
+
+# Sources R3 holds for one group.  "show igmp" prints one line per (group,
 # source) and "ANY" in the source column for an any-source membership, so
 # this lists (S,G) memberships only.
-ssm_sources() {
+group_sources() {
 	pimctl r3 -t show igmp 2>/dev/null | \
-		awk -v grp="$GROUP" '$2 == grp && $3 != "ANY" { print $3 }'
+		awk -v grp="$1" '$2 == grp && $3 != "ANY" { print $3 }'
+}
+
+ssm_sources() {
+	group_sources "$GROUP"
+}
+
+# The other half of the same listing: has R3 an any-source membership for
+# this group, the state it keeps for a group that is not source specific
+group_has_any() {
+	pimctl r3 -t show igmp 2>/dev/null | \
+		awk -v grp="$1" '$2 == grp && $3 == "ANY" { found = 1 } END { exit !found }'
 }
 
 # For wait_for(), which needs a command that returns a status
 ssm_count_is() {
 	[ "$(ssm_sources | wc -l | tr -d ' ')" -eq "$1" ]
+}
+
+group_count_is() {
+	[ "$(group_sources "$1" | wc -l | tr -d ' ')" -eq "$2" ]
 }
 
 # State column of one interface in "pimctl show interface", empty if pimd
@@ -2869,7 +3015,7 @@ run() {
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
 			 gif-tunnel-staticrp shared-lan shared-lan-spt ssm \
-			 ifgone; do
+			 ssm-range ifgone; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?
