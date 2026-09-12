@@ -1888,7 +1888,11 @@ static char *next_word(char **s)
 	w++;
 
     *s = w;
-    while (**s != 0 && i < sizeof(token)) {
+    /* Leave room for the terminator: a word of exactly sizeof(token)
+     * characters used to fill the buffer and return it unterminated, and
+     * every caller hands what it gets to strcmp(), inet_parse() or
+     * strtonum(), which then read on into whatever follows. */
+    while (**s != 0 && i < sizeof(token) - 1) {
 	switch (**s) {
 	    case ' ':
 	    case '\t':

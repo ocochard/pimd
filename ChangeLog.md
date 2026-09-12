@@ -75,6 +75,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   and for legacy deployments that never moved to 232/8
 
 ### Fixes
+- Fix an out-of-bounds read on a long word in `pimd.conf`.  `next_word()`
+  filled its 42 byte token buffer up to the last byte and returned it
+  without a terminator, and every caller hands what it gets to
+  `strcmp()`, `inet_parse()` or `strtonum()`, which then read on into
+  whatever follows the buffer.  A 42 character token was enough, e.g. an
+  over-long number, where `strtonum()` scans digits until one is not a
+  digit and walked off the end.  Caught by AddressSanitizer as a
+  `global-buffer-overflow` of `next_word.token`
 - Notice on *BSD when an interface a VIF sits on is removed, issue #218.
   `check_vif_state()` read a removed interface as Linux's `ENODEV` only,
   so on FreeBSD, NetBSD and DragonFly the `SIOCGIFFLAGS` failure, `ENXIO`
