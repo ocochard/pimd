@@ -5,11 +5,85 @@ that came up at the right moment to be written down.
 
 
 * pimd 3.0 release:
-** Check "Ignoring lo, has invalid address 127.0.0.1 and/or netmask 255.0.0.0"
+
+Reconciled against the tree on 2026-09-12 and ordered by what to do next:
+the open entries come first, in the order they should be taken, the
+finished ones follow with a note on where the work landed, and everything
+that should not hold up the tag was moved to the 3.1 list below.
+
+** TODO Add aliases for common pimctl commands
+
+- pimctl show
+- pimctl show if
+- pimctl show routes  --> show pim routes
+- pimctl show groups  --> show igmp groups
+
+Including some summary features
+
+- pimctl show if
+- pimctl show interfaces
+
+Show summary of 'pim int' and 'igmp int', because users don't care about
+the distinction between layer-2 and layer-3.
+
+Open.  The prefix matcher does not cover these: string_match()
+(src/pimctl.c) compares the shorter of the two words, so "show if" is
+tested against "show igmp" as "if" vs "ig" and against "show interface" as
+"if" vs "in", and matches neither.  "show routes" and "show groups" have no
+command to abbreviate at all, the commands are "show mrt" and "show igmp".
+Next after "show mfc": same file, no protocol code, and it is what users
+type first.
+
+** TODO Check "Ignoring lo, has invalid address 127.0.0.1 and/or netmask 255.0.0.0"
 
 We should allow routing to loopback, just check MULTICAST flag?
 
-** Verify if spt-switchover really works ...
+A decision rather than code.  config_vifs_from_kernel() skips anything
+without IFF_MULTICAST (src/config.c), and the warning above is no longer
+printed for an IFF_LOOPBACK interface (src/config.c, in the
+inet_valid_subnet() branch), which is what issue #89 changed.  The
+interface is still skipped though: inet_valid_subnet() (src/inet.c) rejects
+any class A subnet whose first octet is 127, so lo is only usable as a vif
+when it carries a non-127 address, or a /32, which skips the subnet check
+entirely.  That covers the case people actually want, an RP or a source
+address on loopback, so the open question is whether 127/8 should be
+allowed at all, or the entry closed as answered.
+
+** TODO Automatically add IP alias as altnet
+ - Grab code from mrouted, 48a7a11
+
+Open, and the only 3.0 entry left that changes forwarding behaviour:
+config_vifs_from_kernel() (src/config.c) drops a second address on an
+interface it already has a vif for, logging "alias for vif#N", and never
+turns it into an altnet.  Wants a test of its own, so take it last.
+
+** DONE Add "show mfc" to ipc.c
+Some platforms don't have sufficient tooling installed by default,
+so a "pimctl show mfc" would be great to have.  This could also
+show counters to help with debugging flows.
+
+Done.  IPC_PIM_MFC plus show_mfc()/dump_mfc() in src/ipc.c walk the
+kernel_cache list of every routing entry and print one line per (S,G) with
+the iif, the oif list and the kernel counters from k_get_sg_cnt()
+(src/kern.c), read into a local struct so the datarate measurement in
+check_spt_threshold() (src/route.c) is left alone.  Documented in
+man/pimctl.8, which used to send the reader to =ip mroute show= and
+=netstat -g= instead.
+
+** DONE Verify if spt-switchover really works ...
+
+Covered by tests now: test/rp.sh builds an RP plus a last hop router with
+=spt-threshold packets 5 interval 5= and asserts on the forwarded stream,
+and the =shared-lan-spt= scenario of test/freebsd-lab.sh is the case where
+the last hop router is allowed onto the SPT, so switch_shortest_path()
+(src/route.c) and the assert that follows it are both exercised.
+
+** DONE Remove .conf backwards compat
+
+The underscore-era keywords are gone, parse_option() (src/config.c) knows
+only the current spelling of each, and =spt-threshold= replaced
+=switch_register_threshold= (ChangeLog.md).  The other half of this entry,
+the yacc parser from mrouted, moved to the 3.1 list.
 
 ** DONE Fix layouts of =show pim rp= and =show pim crp=
 
@@ -30,38 +104,22 @@ Group Address       RP Address       Prio  Holdtime  Expires
 ** DONE Shared pimctl with pimd-dense
 ** DONE Update man page + split into a pimd.conf(5)
 ** DONE Allow IGMP report from src 0.0.0.0 (RFC)
-** TODO Sync mrouted altnet fixes
-** TODO Sync pimd-dense fixes
-** TODO Add "show mfc" to ipc.c
-Some platforms don't have sufficient tooling installed by default,
-so a "pimctl show mfc" would be great to have.  This could also
-show counters to help with debugging flows.
 
-** TODO Add aliases for common pimctl commands
-
-- pimctl show
-- pimctl show if
-- pimctl show routes  --> show pim routes
-- pimctl show groups  --> show igmp groups
-
-Including some summary features
-
-- pimctl show if
-- pimctl show interfaces
-
-Show summary of 'pim int' and 'igmp int', because users don't care about
-the distinction between layer-2 and layer-3.
-
-** TODO Automatically add IP alias as altnet
- - Grab code from mrouted, 48a7a11
 ** DONE Substring matcher for pimctl
-** TODO Merge patch from Ventus Networks
-** Update ChangeLog
-** .conf file changes?
-- Remove backwards compat?
-- Use yacc implementation from mrouted?
-- Maybe do pimd-dense first? It already has yacc code
-** Add Quagga interface?
+
+match()/string_match() in src/pimctl.c, fed by the command list the daemon
+prints, so "sh rp" resolves to "show rp".
+
+** DONE Update ChangeLog
+
+ChangeLog.md has a populated [v3.0.0][UNRELEASED] section.  It still wants
+the usual pass at release time, to date the section and to fold in whatever
+lands between now and the tag.
+
+** TODO Bump the version in configure.ac
+
+AC_INIT still says 3.0-beta1.  Last step before the tag, listed here so it
+is not the thing everybody assumes somebody else did.
 
 
 * pimd 3.1 release:
@@ -69,6 +127,36 @@ the distinction between layer-2 and layer-3.
 ** Add sparse-dense mode, triggered per group
  - Cisco relies on group joins by the router itself
  - JunOS uses a dedicated syntax
+
+The entries below were on the 3.0 list until 2026-09-12.  None of them can
+be finished from this tree alone, and none is worth holding a release for.
+
+** TODO Sync mrouted altnet fixes
+
+Needs a diff of parse_phyint() (src/config.c) against the mrouted of the
+day.  What is here is the original altnet/masklen parser, unchanged.
+
+** TODO Sync pimd-dense fixes
+
+Same, needs the pimd-dense tree to compare against.
+
+** TODO Merge patch from Ventus Networks
+
+Nothing in this tree or in ChangeLog.md mentions it.  Needs whoever has the
+patch to produce it.
+
+** TODO Use the yacc config parser from mrouted
+ - Maybe do pimd-dense first? It already has yacc code
+
+Still the hand written next_word()/parse_*() scanner in src/config.c.  This
+one rewrites the parsing of a file pimd reads as root, which is not a thing
+to land days before a release.
+
+** Add Quagga interface?
+
+Not started.  Worth deciding whether it survives at all: Quagga is
+unmaintained, so the question today is an FRR interface or none.
+
 
 * Random issues:
 ** Run the code checker sparse harder on the code: CC=cgcc make
