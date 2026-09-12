@@ -8,21 +8,6 @@ that came up at the right moment to be written down.
 
 What is left before the tag, in the order it should be taken.
 
-** Check "Ignoring lo, has invalid address 127.0.0.1 and/or netmask 255.0.0.0"
-
-We should allow routing to loopback, just check MULTICAST flag?
-
-A decision rather than code.  config_vifs_from_kernel() skips anything
-without IFF_MULTICAST (src/config.c), and the warning above is no longer
-printed for an IFF_LOOPBACK interface (src/config.c, in the
-inet_valid_subnet() branch), which is what issue #89 changed.  The
-interface is still skipped though: inet_valid_subnet() (src/inet.c) rejects
-any class A subnet whose first octet is 127, so lo is only usable as a vif
-when it carries a non-127 address, or a /32, which skips the subnet check
-entirely.  That covers the case people actually want, an RP or a source
-address on loopback, so the open question is whether 127/8 should be
-allowed at all, or the entry closed as answered.
-
 ** Automatically add IP alias as altnet
  - Grab code from mrouted, 48a7a11
 

@@ -96,6 +96,23 @@ pimd on all routers in the same domain.  See issue #93 for details.
   matches neither
 
 ### Fixes
+- Never accept a 127/8 address, whatever its netmask.  RFC 1122, section
+  3.2.1.3, bans such an address from appearing outside a host, and the
+  current special-purpose address registry, RFC 6890, records 127/8 as
+  neither forwardable nor globally reachable, so it can never be a
+  neighbor, an RP, a BSR, or a source pimd forwards -- RFC 7761 requires
+  any RP address to be reachable from all routers in the domain, and the
+  source address of a unicast PIM message to be domain-wide reachable.
+  `inet_valid_subnet()` already rejected 127/8, but only as a subnet, and
+  `config_vifs_from_kernel()` skips that check entirely for a /32, which
+  has no subnet or broadcast address to compare against.  A `127.0.0.1/32`
+  on an interface with the multicast flag set therefore became a VIF.  The
+  check now lives in `inet_valid_host()`, which is applied to a /32 as
+  well, so the RP, BSR, `phyint` and altnet addresses read from
+  `pimd.conf`, and the sources taken from received Register and Join/Prune
+  messages, are all covered by it too.  An address outside 127/8 on a
+  loopback interface, the reason people put an RP or a source there, is
+  unaffected
 - Fix an out-of-bounds read on a long word in `pimd.conf`.  `next_word()`
   filled its 42 byte token buffer up to the last byte and returned it
   without a terminator, and every caller hands what it gets to

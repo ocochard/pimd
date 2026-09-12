@@ -27,6 +27,10 @@ char s4[MAX_INET_BUF_LEN];
  * Verify that a given IP address is credible as a host address.
  * (Without a mask, cannot detect addresses of the form {subnet,0} or
  * {subnet,-1}.)
+ *
+ * 127/8 is rejected here, and not only as a subnet below: RFC 1122,
+ * section 3.2.1.3, bans such an address from appearing outside a host, so
+ * it can never be a neighbor, an RP, a BSR, or a source pimd forwards.
  */
 int inet_valid_host(uint32_t naddr)
 {
@@ -36,6 +40,7 @@ int inet_valid_host(uint32_t naddr)
 
     return !(IN_MULTICAST(addr) ||
 	     IN_BADCLASS (addr) ||
+	     (addr & 0xff000000) == 0x7f000000 ||
 	     (addr & 0xff000000) == 0);
 }
 

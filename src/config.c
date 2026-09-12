@@ -305,7 +305,7 @@ void config_vifs_from_kernel(void)
     short flags;
     uint32_t addr, mask, subnet;
     struct ifaddrs *ifaddr, *ifa;
-    int phyint_num, count;
+    int phyint_num, count, valid;
     struct iflist *entry;
 
     /* Query config first for list of enabled interfaces */
@@ -377,14 +377,23 @@ init_vif_list:
 
 	subnet = addr & mask;
 	if (mask != 0xffffffff) {
-	    if ((!inet_valid_subnet(subnet, mask)) || (addr == subnet) || addr == (subnet | ~mask)) {
-		if (!(inet_valid_host(addr) && ((mask == htonl(0xfffffffe)) || is_set(IFF_POINTOPOINT, flags)))) {
-		    if (!is_set(IFF_LOOPBACK, flags))
-			logit(LOG_WARNING, 0, "Ignoring %s, has invalid address %s and/or netmask %s",
-			      ifa->ifa_name, inet_fmt(addr, s1, sizeof(s1)), inet_fmt(mask, s2, sizeof(s2)));
-		    continue;
-		}
-	    }
+	    valid = inet_valid_subnet(subnet, mask) && addr != subnet && addr != (subnet | ~mask);
+	    if (!valid)
+		valid = inet_valid_host(addr) && ((mask == htonl(0xfffffffe)) || is_set(IFF_POINTOPOINT, flags));
+	} else {
+	    /*
+	     * A /32 has neither a subnet nor a broadcast address to compare
+	     * against, so inet_valid_subnet() has nothing to say about it,
+	     * but the address itself must still be one we can talk to.
+	     */
+	    valid = inet_valid_host(addr);
+	}
+
+	if (!valid) {
+	    if (!is_set(IFF_LOOPBACK, flags))
+		logit(LOG_WARNING, 0, "Ignoring %s, has invalid address %s and/or netmask %s",
+		      ifa->ifa_name, inet_fmt(addr, s1, sizeof(s1)), inet_fmt(mask, s2, sizeof(s2)));
+	    continue;
 	}
 
 	/*
