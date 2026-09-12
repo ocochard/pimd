@@ -73,6 +73,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   your own.  `pimctl show status` lists the ranges in effect.  Meant for
   interop with routers whose SSM range is already configured elsewhere,
   and for legacy deployments that never moved to 232/8
+- New `pimctl show mfc` command, showing the multicast forwarding cache
+  pimd has installed in the kernel: one line per (S,G), with the incoming
+  interface, the outgoing interface list and the kernel's packet, byte
+  and wrong-interface counters for that flow.  `show mrt` shows what the
+  daemon believes, this shows what the kernel forwards, which until now
+  meant reaching for `ip mroute show` or `netstat -g` on the side, and
+  neither of those reports the wrong-interface counter
 
 ### Fixes
 - Fix an out-of-bounds read on a long word in `pimd.conf`.  `next_word()`

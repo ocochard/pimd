@@ -67,6 +67,7 @@ enum {
 	IPC_PIM_IFACE,
 	IPC_PIM_NEIGH,
 	IPC_PIM_ROUTE,
+	IPC_PIM_MFC,
 	IPC_PIM_RP,
 	IPC_PIM_CRP,
 	IPC_PIM_DUMP
@@ -90,6 +91,7 @@ struct ipcmd {
 	{ IPC_IGMP,       "show igmp", NULL, "Show interfaces and group memberships" },
 	{ IPC_PIM_IFACE,  "show interface", NULL, "Show router interface table" },
 	{ IPC_PIM_ROUTE,  "show mrt", "[detail]", "Show multicast routing table" },
+	{ IPC_PIM_MFC,    "show mfc", NULL, "Show kernel multicast forwarding cache" },
 	{ IPC_PIM_NEIGH,  "show neighbor", NULL, "Show router neighbor table" },
 	{ IPC_PIM_RP,     "show rp", NULL, "Show Rendezvous-Point (RP) set" },
 	{ IPC_PIM_CRP,    "show crp", NULL, "Show candidate Rendezvous-Point (CRP) set" },
@@ -620,6 +622,83 @@ static int show_pim_mrt(FILE *fp)
 	return 0;
 }
 
+/*
+ * One line per (S,G) the kernel has in its MFC on behalf of this routing
+ * entry.  A (*,G) or an (S,G) on the shared tree mirrors every active
+ * source in its kernel_cache list, so walking that list is what gives the
+ * kernel's view rather than the daemon's.  Counters are read into a local
+ * struct on purpose: check_spt_threshold() (src/route.c) compares the
+ * stored ones against the previous read to measure a datarate, and a
+ * "pimctl show mfc" must not perturb that.
+ */
+static u_int dump_mfc(FILE *fp, mrtentry_t *r)
+{
+	char oifs[MAXVIFS * (IFNAMSIZ + 1)];
+	struct sg_count cnt;
+	kernel_cache_t *kc;
+	u_int num = 0;
+	vifi_t vifi;
+
+	if (!r || !(r->flags & MRTF_KERNEL_CACHE))
+		return 0;
+
+	oifs[0] = 0;
+	for (vifi = 0; vifi < numvifs; vifi++) {
+		/* k_chg_mfc() (src/kern.c) clears the iif before handing the
+		 * list to the kernel, RFC 7761 4.2, so a vif that is both must
+		 * not be listed here either. */
+		if (vifi == r->incoming || !PIMD_VIFM_ISSET(vifi, r->oifs))
+			continue;
+
+		if (oifs[0])
+			strlcat(oifs, ",", sizeof(oifs));
+		strlcat(oifs, uvifs[vifi].uv_name, sizeof(oifs));
+	}
+	if (!oifs[0])
+		strlcpy(oifs, "---", sizeof(oifs));
+
+	for (kc = r->kernel_cache; kc; kc = kc->next) {
+		num++;
+
+		fprintf(fp, "%-15s  %-15s  %-10s ",
+			inet_fmt(kc->source, s1, sizeof(s1)),
+			inet_fmt(kc->group, s2, sizeof(s2)),
+			r->incoming < numvifs ? uvifs[r->incoming].uv_name : "---");
+
+		if (k_get_sg_cnt(udp_socket, kc->source, kc->group, &cnt))
+			fprintf(fp, "%10s %10s %9s  %s\n", "-", "-", "-", oifs);
+		else
+			fprintf(fp, "%10u %10u %9u  %s\n",
+				cnt.pktcnt, cnt.bytecnt, cnt.wrong_if, oifs);
+	}
+
+	return num;
+}
+
+/* Kernel Multicast Forwarding Cache (MFC) */
+static int show_mfc(FILE *fp)
+{
+	u_int number_of_entries = 0;
+	grpentry_t *g;
+	mrtentry_t *r;
+
+	fprintf(fp, "Kernel Multicast Forwarding Cache_\n");
+	fprintf(fp, "%-15s  %-15s  %-10s %10s %10s %9s  %s =\n",
+		"Source", "Group", "Iif", "Packets", "Bytes", "WrongIf", "Oifs");
+
+	/* TODO: remove the dummy 0.0.0.0 group (first in the chain) */
+	for (g = grplist->next; g; g = g->next) {
+		number_of_entries += dump_mfc(fp, g->grp_route);
+
+		for (r = g->mrtlink; r; r = r->grpnext)
+			number_of_entries += dump_mfc(fp, r);
+	}
+
+	fprintf(fp, "\nNumber of MFC entries   : %u\n", number_of_entries);
+
+	return 0;
+}
+
 static int show_pim(FILE *fp)
 {
 	return  show_interfaces (fp) ||
@@ -927,6 +1006,10 @@ static void ipc_handle(int sd)
 
 	case IPC_PIM_ROUTE:
 		ipc_show(client, show_pim_mrt, cmd, sizeof(cmd));
+		break;
+
+	case IPC_PIM_MFC:
+		ipc_show(client, show_mfc, cmd, sizeof(cmd));
 		break;
 
 	case IPC_PIM_RP:

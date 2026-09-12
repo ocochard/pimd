@@ -1,4 +1,4 @@
-.Dd Sep 12, 2021
+.Dd Sep 12, 2026
 .Dt PIMCTL 8 SMM
 .Os
 .Sh NAME
@@ -28,6 +28,8 @@
 .Ar show neighbor
 .Nm
 .Ar show mrt Op detail
+.Nm
+.Ar show mfc
 .Nm
 .Ar show rp
 .Nm
@@ -189,23 +191,29 @@ Show PIM interface table
 .It Nm Ar show neighbor
 Show PIM neighbor table
 .It Nm Ar show mrt
-Show PIM multicast routing table.  To see the actual multicast
-forwarding cache (mfc), see your operating system specific command.  The
-MROUTING stack (used in most UNIX systems today) never developed socket
-options to query the routing table, so every operating system has its
-own method.  On Linux this is
-.Bd -unfilled -offset indent
-ip mroute show
-.Ed
+Show PIM multicast routing table, i.e., the state the daemon itself
+keeps.  For the flows the kernel actually forwards, see
+.Cm show mfc .
+.It Nm Ar show mfc
+Show the multicast forwarding cache (MFC) the daemon has installed in
+the kernel: one line per (S,G), with the incoming interface, the
+outgoing interface list, and the kernel's packet, byte and wrong
+incoming interface counters for that flow.
 .Pp
-on BSD systems it is usually something like
-.Bd -unfilled -offset indent
-netstat -g
-.Ed
+The counters are read per entry when the command runs, so a stream that
+is being forwarded shows a rising packet count between two calls, and a
+non-zero
+.Cm WrongIf
+means traffic for that (S,G) is arriving on an interface that is not the
+RPF interface.  A dash in a counter column means the kernel no longer
+has the entry the daemon is mirroring.
 .Pp
-and on SVR4 systems like Illumos it is
+The MROUTING stack never developed socket options to query the cache, so
+the equivalent OS specific commands remain useful for a second opinion:
 .Bd -unfilled -offset indent
-netstat -M
+ip mroute show      # Linux
+netstat -g          # BSD
+netstat -M          # SVR4, e.g. Illumos
 .Ed
 .It Nm Ar show rp
 Show PIM Rendezvous-Point (RP) set
