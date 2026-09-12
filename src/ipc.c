@@ -664,6 +664,7 @@ static int show_status(FILE *fp)
 	fprintf(fp, "Hello Holdtime       : %d sec\n", pim_timer_hello_holdtime);
 	fprintf(fp, "IGMP query interval  : %d sec\n", igmp_query_interval);
 	fprintf(fp, "IGMP querier timeout : %d sec\n", igmp_querier_timeout);
+	dump_ssm_ranges(fp);
 	fprintf(fp, "SPT Threshold        : %s\n", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
 	if (spt_threshold.mode != SPT_INF) {
 		if (spt_threshold.mode == SPT_RATE) {

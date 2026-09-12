@@ -470,6 +470,8 @@ extern int	timer_get		(int);
 /* config.c */
 extern void	config_vifs_from_kernel	(void);
 extern void	config_vifs_from_file	(void);
+extern int	is_ssm_group		(uint32_t group);
+extern void	dump_ssm_ranges		(FILE *fp);
 
 /* dvmrp_proto.c */
 extern void	dvmrp_accept_probe	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);

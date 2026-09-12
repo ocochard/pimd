@@ -65,6 +65,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   and falls back on `lib/arc4random.c`, which reads the kernel generator
   through `getentropy()` or `/dev/urandom`, since GLIBC only grew an
   `arc4random()` in 2.36 and musl in 1.2.3
+- Issue #185: New `ssm-range` setting in `pimd.conf` for the group range
+  pimd treats as Source Specific Multicast, which used to be 232.0.0.0/8
+  and nothing else.  Ranges given replace that default rather than adding
+  to it, the way Cisco's `ip pim ssm range` does, so an `ssm-range
+  default` line is what keeps 232.0.0.0/8 in service alongside a range of
+  your own.  `pimctl show status` lists the ranges in effect.  Meant for
+  interop with routers whose SSM range is already configured elsewhere,
+  and for legacy deployments that never moved to 232/8
 
 ### Fixes
 - Notice on *BSD when an interface a VIF sits on is removed, issue #218.

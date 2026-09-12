@@ -271,6 +271,40 @@ source tree.  The default is to do the switch-over after the first
 packet, but only after 100 seconds.  If
 .Ar infinity
 is specified the shortest path switch-over is disabled.
+.It Cm ssm-range Oo Cm default | Oo Ar group Ns / Ns Ar len Oc | Oo Ar group Cm masklen Ar len Oc Oc
+The set of multicast groups
+.Nm pimd
+handles as Source Specific Multicast, i.e. groups for which it builds a
+source tree per (S,G) reported by a receiver and never a shared tree.
+The default, when no
+.Cm ssm-range
+is given, is 232.0.0.0/8 from RFC 4607.
+.Bl -tag -offset indent -width 1n
+.It Cm default
+The default range, 232.0.0.0/8.
+.It Ar group Ns / Ns Ar len
+A multicast group, or a range of them in CIDR syntax.
+.It Ar group Cm masklen Ar len
+The same, with the prefix length given separately.
+.El
+.Pp
+Multiple lines of
+.Cm ssm-range
+may be given.  The configured ranges
+.Sy replace
+the default rather than adding to it, like Cisco's
+.Cm ip pim ssm range ,
+so keeping 232.0.0.0/8 alongside a range of your own takes an explicit
+.Cm ssm-range default
+line.  A range covering the link-local groups, 224.0.0.0/24, is rejected.
+.Pp
+.Sy Note:
+this changes how a group behaves, not just how it is named.  Receivers on
+a group that becomes source specific have to ask for their sources, with
+IGMPv3, because an any-source report for an SSM group is ignored, RFC
+4604.  Conversely, groups of a default range that has been replaced go
+back to needing an RP.  All routers in the domain should agree on the
+ranges: nothing in PIM advertises them.
 .El
 .Sh FILES
 .Bl -tag -width /var/lib/pimd.genid -compact

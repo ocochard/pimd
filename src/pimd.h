@@ -499,8 +499,12 @@ typedef struct pim_jp_encod_grp_ {
             PUT_NETLONG((addr), (cp));          \
         } while(0)
 
-/* Check if group is in PIM-SSM range, 232/8, x must be in network byte order */
-#define IN_PIM_SSM_RANGE(x) ((ntohl((unsigned)(x)) & 0xff000000) == 0xe8000000)
+/* The PIM-SSM range pimd uses until pimd.conf configures one, RFC 4607 */
+#define PIM_SSM_RANGE_DEFAULT_GROUP   0xe8000000 /* 232.0.0.0, host byte order */
+#define PIM_SSM_RANGE_DEFAULT_MASKLEN 8
+
+/* Check if group is in a PIM-SSM range, x must be in network byte order */
+#define IN_PIM_SSM_RANGE(x) is_ssm_group(x)
 
 /* Check if address is in link-local range, x must be in network byte order */
 #define IN_LINK_LOCAL_RANGE(x) ((ntohl((unsigned)(x)) & 0xffff0000) == 0xa9fe0000)

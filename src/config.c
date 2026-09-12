@@ -67,6 +67,7 @@
 #define CONF_IGMP_QUERIER_TIMEOUT               15
 #define CONF_HELLO_INTERVAL                     16
 #define CONF_DISABLE_VIFS                       17
+#define CONF_SSM_RANGE                          18
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -87,6 +88,23 @@ struct iflist {
 };
 
 /*
+ * One Source Specific Multicast group range, from an ssm-range in
+ * pimd.conf.  As soon as one is configured the list replaces the
+ * default range, 232.0.0.0/8, rather than adding to it.
+ */
+struct ssm_range {
+    struct ssm_range *next;
+
+    uint32_t  group;		/* Network byte order, masked */
+    uint32_t  mask;		/* Network byte order */
+    uint32_t  masklen;
+};
+
+/* Every ranked lookup of a group walks this list, so it is bounded the
+ * same way the Cand-RP group prefixes are, and for the same reason. */
+#define SSM_MAX_RANGES 255
+
+/*
  * Global settings
  */
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
@@ -102,8 +120,9 @@ static uint32_t	 ifname2addr	(char *s);
 
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
 
-static uint32_t        lineno;
-extern struct rp_hold *g_rp_hold;
+static uint32_t          lineno;
+static struct ssm_range *ssm_list = NULL;
+extern struct rp_hold   *g_rp_hold;
 
 
 /*
@@ -495,6 +514,8 @@ static int parse_option(char *word)
 	return CONF_RP_ADDRESS;
     if (EQUAL(word, "group-prefix"))
 	return CONF_GROUP_PREFIX;
+    if (EQUAL(word, "ssm-range"))
+	return CONF_SSM_RANGE;
     if (EQUAL(word, "spt-threshold"))
 	return CONF_SPT_THRESHOLD;
     if (EQUAL(word, "default-route-metric"))
@@ -540,6 +561,108 @@ static void validate_prefix_len(uint32_t *len)
 	WARN("Too small masklen %u. Defaulting to %d", *len, PIM_GROUP_PREFIX_MIN_MASKLEN);
 	*len = PIM_GROUP_PREFIX_MIN_MASKLEN;
     }
+}
+
+static void reset_ssm_ranges(void)
+{
+    struct ssm_range *range, *next;
+
+    for (range = ssm_list; range; range = next) {
+	next = range->next;
+	free(range);
+    }
+
+    ssm_list = NULL;
+}
+
+static int add_ssm_range(uint32_t group, uint32_t masklen)
+{
+    struct ssm_range *range;
+    size_t num = 0;
+
+    /* VAL_TO_MASK() shifts by 32 - masklen, so a masklen of zero, or one
+     * larger than the address, is undefined behaviour rather than a wrong
+     * answer.  Both callers bound it already, this keeps a third one from
+     * having to remember. */
+    if (masklen < PIM_GROUP_PREFIX_MIN_MASKLEN || masklen > sizeof(uint32_t) * 8) {
+	logit(LOG_WARNING, 0, "Invalid SSM range masklen %u, ignoring", masklen);
+	return FALSE;
+    }
+
+    for (range = ssm_list; range; range = range->next)
+	num++;
+
+    if (num >= SSM_MAX_RANGES) {
+	logit(LOG_WARNING, 0, "Too many SSM group ranges configured, at most %d", SSM_MAX_RANGES);
+	return FALSE;
+    }
+
+    range = calloc(1, sizeof(*range));
+    if (!range) {
+	logit(LOG_WARNING, 0, "Out of memory when adding SSM range %s/%u",
+	      inet_fmt(group, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+    VAL_TO_MASK(range->mask, masklen);
+    range->group   = group & range->mask;
+    range->masklen = masklen;
+
+    range->next = ssm_list;
+    ssm_list = range;
+
+    logit(LOG_INFO, 0, "SSM group range %s/%u",
+	  inet_fmt(range->group, s1, sizeof(s1)), masklen);
+
+    return TRUE;
+}
+
+/*
+ * Fall back to the default SSM range, RFC 4607, when pimd.conf has no
+ * usable ssm-range of its own.  Called both when the file has been read
+ * and, defensively, from is_ssm_group() in case it has not.
+ */
+static void default_ssm_range(void)
+{
+    if (!ssm_list)
+	add_ssm_range(htonl(PIM_SSM_RANGE_DEFAULT_GROUP), PIM_SSM_RANGE_DEFAULT_MASKLEN);
+}
+
+/**
+ * is_ssm_group - Is this group Source Specific Multicast?
+ * @group: Group address, in network byte order
+ *
+ * Returns:
+ * %TRUE if @group falls in one of the SSM ranges in effect, o.w. %FALSE
+ */
+int is_ssm_group(uint32_t group)
+{
+    struct ssm_range *range;
+
+    default_ssm_range();
+
+    for (range = ssm_list; range; range = range->next) {
+	if ((group & range->mask) == range->group)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The SSM ranges in effect, for "pimctl show status".  One line, in the
+ * column layout the rest of that listing uses.
+ */
+void dump_ssm_ranges(FILE *fp)
+{
+    struct ssm_range *range;
+
+    default_ssm_range();
+
+    fprintf(fp, "SSM group ranges     :");
+    for (range = ssm_list; range; range = range->next)
+	fprintf(fp, " %s/%u", inet_fmt(range->group, s1, sizeof(s1)), range->masklen);
+    fprintf(fp, "\n");
 }
 
 
@@ -949,6 +1072,76 @@ int parse_group_prefix(char *s)
     logit(LOG_INFO, 0, "Adding Cand-RP group prefix %s/%d", inet_fmt(group_addr, s1, sizeof(s1)), masklen);
 
     return TRUE;
+}
+
+
+/**
+ * parse_ssm_range - Parse ssm-range configured information.
+ * @s: String token
+ *
+ * The configured ranges replace the default one, 232.0.0.0/8 of RFC 4607,
+ * the way Cisco's 'ip pim ssm range' does.  Keeping the default alongside
+ * a range of your own takes an explicit 'ssm-range default'.
+ *
+ * Syntax:
+ * ssm-range default
+ * ssm-range <group>[/<masklen>]
+ *           <group> [masklen <masklen>]
+ *
+ * Returns:
+ * %TRUE if the parsing was successful, o.w. %FALSE
+ */
+static int parse_ssm_range(char *s)
+{
+    uint32_t masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+    uint32_t group, mask;
+    const char *errstr;
+    long long num;
+    char *w;
+
+    w = next_word(&s);
+    if (EQUAL(w, "")) {
+	WARN("Missing ssm-range group address");
+	return FALSE;
+    }
+
+    if (EQUAL(w, "default")) {
+	group   = htonl(PIM_SSM_RANGE_DEFAULT_GROUP);
+	masklen = PIM_SSM_RANGE_DEFAULT_MASKLEN;
+	goto add;
+    }
+
+    parse_prefix_len (w, &masklen);
+
+    group = inet_parse(w, 4);
+    if (!IN_MULTICAST(ntohl(group))) {
+	WARN("Group address '%s' is not a valid multicast address", inet_fmt(group, s1, sizeof(s1)));
+	return FALSE;
+    }
+
+    if (EQUAL((w = next_word(&s)), "masklen")) {
+	w = next_word(&s);
+	num = strtonum(w, PIM_GROUP_PREFIX_MIN_MASKLEN, sizeof(uint32_t) * 8, &errstr);
+	if (errstr) {
+	    WARN("Invalid ssm-range masklen %s, %s", w, errstr);
+	    return FALSE;
+	}
+
+	masklen = (uint32_t)num;
+    }
+
+    validate_prefix_len(&masklen);
+
+    /* The link-local groups are never source specific, RFC 5771 sec. 4 */
+    VAL_TO_MASK(mask, masklen < 24 ? masklen : 24);
+    if ((group & mask) == (htonl(INADDR_UNSPEC_GROUP) & mask)) {
+	WARN("SSM range %s/%u overlaps the link-local groups 224.0.0.0/24",
+	     inet_fmt(group, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+  add:
+    return add_ssm_range(group, masklen);
 }
 
 
@@ -1506,6 +1699,7 @@ void config_vifs_from_file(void)
     char linebuf[LINE_BUFSIZ];
     char *w, *s;
     uint8_t *data_ptr;
+    struct ssm_range *range;
     int error_flag;
 
     error_flag = FALSE;
@@ -1540,6 +1734,7 @@ void config_vifs_from_file(void)
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
     cand_bsr_flag = FALSE;
+    reset_ssm_ranges();
 
     fp = fopen(config_file, "r");
     if (!fp) {
@@ -1583,6 +1778,10 @@ void config_vifs_from_file(void)
 		parse_group_prefix(s);
 		break;
 
+	    case CONF_SSM_RANGE:
+		parse_ssm_range(s);
+		break;
+
 	    case CONF_BOOTSTRAP_RP:
 		parse_bsr_candidate(s);
 		break;
@@ -1622,10 +1821,15 @@ void config_vifs_from_file(void)
 
   nofile:
     /* A static RP address is needed for SSM.  We use a link-local
-     * address. It is not required to be configured on any interface. */
-    strlcpy(linebuf, "169.254.0.1 232.0.0.0/8\n", sizeof(linebuf));
-    s = linebuf;
-    parse_rp_address(s);
+     * address. It is not required to be configured on any interface.
+     * One per SSM range in effect, the default one included. */
+    default_ssm_range();
+    for (range = ssm_list; range; range = range->next) {
+	snprintf(linebuf, sizeof(linebuf), "169.254.0.1 %s/%u\n",
+		 inet_fmt(range->group, s1, sizeof(s1)), range->masklen);
+	s = linebuf;
+	parse_rp_address(s);
+    }
 
     if (error_flag)
 	logit(LOG_ERR, 0, "%s:%u - Syntax error", config_file, lineno);
