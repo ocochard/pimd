@@ -803,6 +803,15 @@ static int parse_phyint(char *s)
 		    continue;
 		}
 
+		/*
+		 * One phyint line may carry several altnets, and
+		 * parse_prefix_len() only assigns when the token has a
+		 * "/len".  Without this reset the previous altnet's length
+		 * is still in there, and an altnet written without one
+		 * silently inherits it instead of falling back to the
+		 * interface netmask below.
+		 */
+		altnet_masklen = 0;
 		parse_prefix_len (w, &altnet_masklen);
 
 		altnet_addr = ifname2addr(w);
@@ -821,13 +830,25 @@ static int parse_phyint(char *s)
 			continue;
 		    }
 
-		    if (!sscanf(w, "%u", &altnet_masklen)) {
+		    if (sscanf(w, "%u", &altnet_masklen) != 1) {
 			WARN("Invalid altnet masklen '%s' for phyint %s", w, inet_fmt(local, s1, sizeof(s1)));
 			continue;
 		    }
 		} else {
 		    /* Next token was not "masklen", restore s! */
 		    s = t;
+		}
+
+		/*
+		 * VAL_TO_MASK() shifts by 32 - masklen, so anything above 32
+		 * shifts by more than the type is wide.  Zero needs no guard
+		 * here, unlike in the scoped branch below: it never reaches
+		 * the macro, it is how the vif's own netmask is asked for.
+		 */
+		if (altnet_masklen > 32) {
+		    WARN("Too large (%u) altnet masklen for phyint %s", altnet_masklen,
+			 inet_fmt(local, s1, sizeof(s1)));
+		    continue;
 		}
 
 		if (altnet_masklen) {
@@ -843,8 +864,10 @@ static int parse_phyint(char *s)
 		if (added < 0)
 		    return FALSE;
 
-		logit(LOG_DEBUG, 0, "ALTNET: %s/%d%s", inet_fmt(altnet_addr, s1, sizeof(s1)),
-		      altnet_masklen, added ? "" : ", already known");
+		/* netname(), not the masklen off the line: it is zero whenever
+		 * the interface netmask was the one used */
+		logit(LOG_DEBUG, 0, "ALTNET: %s%s", netname(altnet_addr & altnet_mask, altnet_mask),
+		      added ? "" : ", already known");
 	    } /* altnet */
 
 	    /* scoped mcast groups/masklen */
@@ -854,6 +877,9 @@ static int parse_phyint(char *s)
 		    continue;
 		}
 
+		/* Same as the altnet branch above: one per keyword, not one
+		 * per line */
+		scoped_masklen = 0;
 		parse_prefix_len (w, &scoped_masklen);
 
 		scoped_addr = ifname2addr(w);
@@ -883,6 +909,13 @@ static int parse_phyint(char *s)
 		/* Invalid config. VAL_TO_MASK() also requires len > 0 or shift op will fail. */
 		if (!scoped_masklen) {
 		    WARN("Too small (0) scoped masklen for phyint %s", inet_fmt(local, s1, sizeof(s1)));
+		    continue;
+		}
+
+		/* And no more than 32, or it shifts by more than the type is wide. */
+		if (scoped_masklen > 32) {
+		    WARN("Too large (%u) scoped masklen for phyint %s", scoped_masklen,
+			 inet_fmt(local, s1, sizeof(s1)));
 		    continue;
 		}
 

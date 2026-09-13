@@ -102,6 +102,20 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Reject an `altnet` or `scoped` masklen above 32 in `pimd.conf` instead
+  of shifting by it.  `VAL_TO_MASK()` shifts by `32 - masklen`, so a
+  larger value shifted by a number no 32-bit type has, which is undefined
+  behaviour; the resulting mask was whatever the CPU happened to produce.
+  Zero was already rejected for `scoped`, and for `altnet` it never
+  reaches the shift, it is how the interface's own netmask is asked for
+- A second `altnet` or `scoped` on the same `phyint` line, written
+  without a prefix length, no longer inherits the length of the one
+  before it.  The length was parsed into a variable set up once per line
+  while the keywords are read one at a time, and a token with no `/len`
+  left it untouched, so `altnet 10.0.0.0/8 altnet 10.1.2.0` gave the
+  second entry a /8.  Each keyword is now read on its own, and one
+  without a length falls back to the interface netmask, or is rejected
+  for `scoped`, which has no such fallback
 - Never accept a 127/8 address, whatever its netmask.  RFC 1122, section
   3.2.1.3, bans such an address from appearing outside a host, and the
   current special-purpose address registry, RFC 6890, records 127/8 as
