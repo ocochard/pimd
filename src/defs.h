@@ -564,6 +564,7 @@ extern int	join_or_prune		(mrtentry_t *mrtentry_ptr, pim_nbr_entry_t *upstream_r
 extern int	receive_pim_assert	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_assert		(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mrtentry_ptr);
 extern void     send_pim_join           (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
+extern void     send_pim_prune          (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern int	send_periodic_pim_join_prune (vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t holdtime);
 extern int	add_jp_entry		(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group, uint8_t grp_msklen,
                                          uint32_t source, uint8_t src_msklen,  uint16_t addr_flags, uint8_t join_prune);
@@ -578,6 +579,8 @@ extern void	init_route		(void);
 extern int	set_incoming		(srcentry_t *srcentry_ptr, int srctype);
 extern vifi_t	get_iif			(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr	(uint32_t source);
+extern pim_nbr_entry_t *find_pim_nbr_on_vif (vifi_t vifi, uint32_t addr);
+extern void	recalc_local_members	(vifi_t vifi);
 extern int	add_sg_oif		(mrtentry_t *mrtentry_ptr, vifi_t vifi, uint16_t holdtime, int update_holdtime);
 extern void	add_leaf		(vifi_t vifi, uint32_t source, uint32_t group);
 extern void	delete_leaf		(vifi_t vifi, uint32_t source, uint32_t group);

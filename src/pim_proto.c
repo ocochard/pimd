@@ -36,6 +36,7 @@
 
 typedef struct {
     uint16_t  holdtime;
+    int8_t    holdtime_present;
     uint32_t  dr_prio;
     int8_t    dr_prio_present;
     uint32_t  genid;
@@ -44,6 +45,7 @@ typedef struct {
 /*
  * Local functions definitions.
  */
+static int dr_election             (struct uvif *v);
 static int restart_dr_election     (struct uvif *v);
 static int parse_pim_hello         (char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts);
 static void cache_nbr_settings     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
@@ -65,6 +67,48 @@ static void my_assert_metric       (mrtentry_t *mrt,
 
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
+
+/*
+ * t_override: the randomized delay before a triggered Join, so that routers
+ * on a LAN do not all answer in the same instant.  RFC 7761 sec. 4.11 wants
+ * rand(0, Effective_Override_Interval(I)), default 2.5 seconds; the constant
+ * here is RFC 2362's [Random-Delay-Join-Timeout] and the division quantizes
+ * the result to whole seconds.  Both are recorded in
+ * doc/rfc7761-compliance.md; this is the one place that has to change.
+ */
+static uint16_t jp_override_timeout(void)
+{
+    return (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+}
+
+
+/*
+ * A neighbor whose GenID changed has restarted, and with it lost the Join
+ * state we sent it.  RFC 7761 sec. 4.5.4 and 4.5.5 both answer that with
+ * "If the Join Timer is set to expire in more than t_override seconds,
+ * reset it so that it expires after t_override seconds", for every entry
+ * that neighbor is the upstream of.  Left to the periodic timer, the tree
+ * upstream of us is gone for up to a whole Join/Prune period instead.
+ */
+static void refresh_upstream_joins(pim_nbr_entry_t *nbr)
+{
+    uint16_t jp_value = jp_override_timeout();
+    grpentry_t *grp;
+    mrtentry_t *mrt;
+
+    for (grp = grplist; grp; grp = grp->next) {
+	mrt = grp->grp_route;
+	if (mrt && mrt->upstream == nbr && mrt->jp_timer > jp_value)
+	    SET_TIMER(mrt->jp_timer, jp_value);
+
+	for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+	    if (mrt->upstream == nbr && mrt->jp_timer > jp_value)
+		SET_TIMER(mrt->jp_timer, jp_value);
+	}
+    }
+}
+
+
 
 /************************************************************************
  *                        PIM_HELLO
@@ -134,6 +178,7 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 	    if (nbr->genid != opts.genid) {
 		/* Known neighbor rebooted, update info and resend RP-Set */
 		cache_nbr_settings(nbr, &opts);
+		refresh_upstream_joins(nbr);
 		goto rebooted;
 	    }
 
@@ -239,6 +284,44 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
      */
 
     return TRUE;
+}
+
+
+/*
+ * An entry that still names a neighbor on its way out falls back on the next
+ * hop the unicast routing table gives, together with that next hop's metric,
+ * the way RFC 7761 sec. 4.6.1 has RPF'(S,G) revert to the MRIB when the
+ * assert winner's liveness timer expires.  Any assert this neighbor won on
+ * the incoming interface goes with it.
+ */
+static void reset_upstream_router(mrtentry_t *mrt, pim_nbr_entry_t *nbr_delete)
+{
+    srcentry_t *src = NULL;
+
+    if (mrt->upstream != nbr_delete)
+	return;
+
+    if (mrt->assert_winner == nbr_delete->address)
+	mrt->assert_winner = INADDR_ANY_N;
+
+    if (mrt->flags & MRTF_RP) {
+	/* Upstream is toward the RP, not toward the source. */
+	if (mrt->group->active_rp_grp)
+	    src = mrt->group->active_rp_grp->rp->rpentry;
+    } else {
+	src = mrt->source;
+    }
+
+    if (src && src->upstream != nbr_delete) {
+	mrt->upstream   = src->upstream;
+	mrt->metric     = src->metric;
+	mrt->preference = src->preference;
+    } else {
+	/* Nothing better to name; age_routes() picks an upstream up again
+	 * once the unicast routing table has one.
+	 */
+	mrt->upstream = NULL;
+    }
 }
 
 
@@ -378,17 +461,24 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 	}
     }
 
-    /* Fix GitHub issue #22: Crash in (S,G) state when neighbor is lost */
-    for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
-	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
-	    for (grp = rp_grp->grplink; grp; grp = grp->next) {
-		mrt = grp->grp_route;
-		if (mrt && mrt->upstream) {
-		    if (mrt->upstream == nbr_delete)
-			mrt->upstream = NULL;
-		}
-	    }
-	}
+    /*
+     * Fix GitHub issue #22: Crash in (S,G) state when neighbor is lost.
+     *
+     * Every mrtentry_t is linked into a group list, so this sweep sees the
+     * entries the loops above cannot.  One whose upstream came from a
+     * received Assert names the assert winner, and that is by construction
+     * a different neighbor from the one its source or its RP entry points
+     * at -- receive_pim_assert() only takes that branch when the two
+     * differ.  Such an entry is visited by neither loop above, so the
+     * pointer would outlive the free() below and the next Join/Prune pass
+     * would write through it in add_jp_entry().
+     */
+    for (grp = grplist; grp; grp = grp->next) {
+	if (grp->grp_route)
+	    reset_upstream_router(grp->grp_route, nbr_delete);
+
+	for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext)
+	    reset_upstream_router(mrt_srcs, nbr_delete);
     }
 
     free(nbr_delete);
@@ -402,7 +492,7 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
  *
  * Returns TRUE if we lost the DR role, elected another router.
  */
-static int restart_dr_election(struct uvif *v)
+static int dr_election(struct uvif *v)
 {
     int was_dr = 0, use_dr_prio = 1;
     uint32_t best_dr_prio = 0;
@@ -492,6 +582,25 @@ static int restart_dr_election(struct uvif *v)
     return FALSE;
 }
 
+
+/*
+ * Run the election, then let the routing entries follow it: local members
+ * count toward the outgoing interfaces only on an interface where we are the
+ * DR, so gaining or losing the role changes what we forward onto that subnet.
+ */
+static int restart_dr_election(struct uvif *v)
+{
+    int was_dr = (v->uv_flags & VIFF_DR) ? 1 : 0;
+    int result;
+
+    result = dr_election(v);
+
+    if (was_dr != ((v->uv_flags & VIFF_DR) ? 1 : 0))
+	recalc_local_members(v - uvifs);
+
+    return result;
+}
+
 static int validate_pim_opt(uint32_t src, char *str, uint16_t len, uint16_t opt_len)
 {
     if (len != opt_len) {
@@ -505,9 +614,14 @@ static int validate_pim_opt(uint32_t src, char *str, uint16_t len, uint16_t opt_
     return TRUE;
 }
 
+/*
+ * RFC 7761 sec. 4.9.2: unknown options "MUST be ignored and MUST NOT prevent
+ * a neighbor relationship from being formed", and neither must a Hello that
+ * carries no options at all.  Only an option we do understand, arriving with
+ * a length it cannot have, fails the message.
+ */
 static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts)
 {
-    int result = FALSE;
     size_t rec_len;
     uint8_t *data;
     uint16_t opt_type;
@@ -537,23 +651,26 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 
 	switch (opt_type) {
 	    case PIM_HELLO_HOLDTIME:
-		result = validate_pim_opt(src, "Holdtime", PIM_HELLO_HOLDTIME_LEN, opt_len);
-		if (TRUE == result)
-		    GET_HOSTSHORT(opts->holdtime, data);
+		if (validate_pim_opt(src, "Holdtime", PIM_HELLO_HOLDTIME_LEN, opt_len) == FALSE)
+		    return FALSE;
+
+		opts->holdtime_present = 1;
+		GET_HOSTSHORT(opts->holdtime, data);
 		break;
 
 	    case PIM_HELLO_DR_PRIO:
-		result = validate_pim_opt(src, "DR Priority", PIM_HELLO_DR_PRIO_LEN, opt_len);
-		if (TRUE == result) {
-		    opts->dr_prio_present = 1;
-		    GET_HOSTLONG(opts->dr_prio, data);
-		}
+		if (validate_pim_opt(src, "DR Priority", PIM_HELLO_DR_PRIO_LEN, opt_len) == FALSE)
+		    return FALSE;
+
+		opts->dr_prio_present = 1;
+		GET_HOSTLONG(opts->dr_prio, data);
 		break;
 
 	    case PIM_HELLO_GENID:
-		result = validate_pim_opt(src, "GenID", PIM_HELLO_GENID_LEN, opt_len);
-		if (TRUE == result)
-		    GET_HOSTLONG(opts->genid, data);
+		if (validate_pim_opt(src, "GenID", PIM_HELLO_GENID_LEN, opt_len) == FALSE)
+		    return FALSE;
+
+		GET_HOSTLONG(opts->genid, data);
 		break;
 
 	    default:
@@ -561,13 +678,20 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 	}
 
 	/* Move to the next option */
-	if (result == FALSE)
-	    return FALSE;
-
 	msg += rec_len;
     }
 
-    return result;
+    /*
+     * RFC 7761 sec. 4.3.2: the Neighbor Liveness Timer is reset to the
+     * Holdtime option, "or to Default_Hello_Holdtime if the Hello message
+     * does not contain the Holdtime option".  The option is a SHOULD, so a
+     * neighbor may legitimately omit it; reading that as the holdtime 0 of
+     * a router going down deleted such a neighbor on every Hello.
+     */
+    if (!opts->holdtime_present)
+	opts->holdtime = pim_timer_hello_holdtime;
+
+    return TRUE;
 }
 
 static void cache_nbr_settings(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
@@ -625,6 +749,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
     uint32_t is_null;
     mrtentry_t *mrtentry;
     mrtentry_t *mrtentry2;
+    rpentry_t *rp;
     uint8_t oifs[MAXVIFS];
 
     /*
@@ -728,6 +853,25 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	/* TODO: XXX: shouldn't it be inner_src=INADDR_ANY? Not in the spec. */
 	send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
 
+	/*
+	 * Creating the (S,G) here, ahead of the next Register, is what
+	 * saves the DR a retry.  RFC 7761 sec. 4.4.2 allows it only where
+	 * "I_am_RP(G) AND outer.dst == RP(G)" holds though: everywhere else
+	 * a Register is answered with a Register-Stop and nothing more.
+	 * Without the test any host able to unicast to us makes us hold an
+	 * entry, and its source and group entries, for every (S,G) it cares
+	 * to name, each for PIM_DATA_TIMEOUT seconds.
+	 */
+	rp = rp_match(inner_grp);
+	if (!i_am_rp(reg_dst) || !rp || rp->address != reg_dst) {
+	    IF_DEBUG(DEBUG_PIM_REGISTER)
+		logit(LOG_DEBUG, 0, "Not RP in address %s, no state for group %s source %s",
+		      inet_fmt(reg_dst, s1, sizeof(s1)), inet_fmt(inner_grp, s2, sizeof(s2)),
+		      inet_fmt(inner_src, s3, sizeof(s3)));
+
+	    return TRUE;
+	}
+
         mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
         if (!mrtentry || !(mrtentry->flags & MRTF_NEW))
            return TRUE;
@@ -765,7 +909,15 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	if (!(mrtentry->flags & MRTF_SPT)) { /* The SPT bit is not set */
 	    if (!is_null) {
 		calc_oifs(mrtentry, oifs);
-		if (PIMD_VIFM_ISEMPTY(oifs) && (mrtentry->incoming == PIMREG_VIF)) {
+		/* RFC 7761 sec. 4.4.2 asks for an empty inherited_olist(S,G)
+		 * and nothing else.  Requiring the entry's incoming interface
+		 * to be the register vif as well, i.e. that it sits on the
+		 * shared tree, left an (S,G) whose iif points at the source
+		 * matching neither this arm nor the SPT one below: the RP
+		 * then neither forwarded nor suppressed, and the DR went on
+		 * encapsulating the whole stream into a router dropping it.
+		 */
+		if (PIMD_VIFM_ISEMPTY(oifs)) {
 		    IF_DEBUG(DEBUG_PIM_REGISTER)
 			logit(LOG_DEBUG, 0, "No output intefaces found for group %s source %s",
 			      inet_fmt(inner_grp, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)));
@@ -805,7 +957,12 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 		logit(LOG_DEBUG, 0, "No output intefaces found for group %s source %s (*,G)",
 		      inet_fmt(inner_grp, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)));
 
-	    send_pim_register_stop(reg_dst, reg_src, inner_grp, INADDR_ANY_N);
+	    /* Name the source rather than sending the RFC 2362 "stop
+	     * encapsulating every source of this group": RFC 7761 sec. 4.4.1
+	     * says an RP should not send a Register-Stop(*,G), and sec. 4.4.2
+	     * has only Register-Stop(S,G) to send here.
+	     */
+	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
 
 	    return FALSE;
 	} else { /* XXX: TODO: check with the spec again */
@@ -986,17 +1143,56 @@ int send_pim_null_register(mrtentry_t *mrtentry)
 /************************************************************************
  *                        PIM_REGISTER_STOP
  ************************************************************************/
+/* Header, encoded group, encoded source: the whole of what RFC 7761
+ * sec. 4.9.4 puts in a Register-Stop, and everything this function reads.
+ * pim.c only guarantees a PIM header, so without this a Register-Stop
+ * truncated to its header had the parser reading whatever the previous
+ * packet left in the receive buffer, and suppressing registers for the
+ * (S,G) that came out of it.
+ */
+#define PIM_REGISTER_STOP_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN \
+				  + PIM_ENCODE_UNI_ADDR_LEN)
+
+/* Stop encapsulating this source to the RP: restart the Register-Suppression
+ * timer and take the register vif out of the entry's outgoing interfaces.
+ * age_routes() puts it back when the timer runs out.
+ */
+static void suppress_register(mrtentry_t *mrt)
+{
+    uint8_t pruned_oifs[MAXVIFS];
+
+    SET_TIMER(mrt->rs_timer, (0.5 * PIM_REGISTER_SUPPRESSION_TIMEOUT)
+	      + (RANDOM() % (PIM_REGISTER_SUPPRESSION_TIMEOUT + 1)));
+
+    PIMD_VIFM_COPY(mrt->pruned_oifs, pruned_oifs);
+    PIMD_VIFM_SET(PIMREG_VIF, pruned_oifs);
+    change_interfaces(mrt, mrt->incoming,
+		      mrt->joined_oifs, pruned_oifs,
+		      mrt->leaves,
+		      mrt->asserted_oifs, 0);
+}
+
+
 int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t len)
 {
     pim_encod_grp_addr_t egaddr;
     pim_encod_uni_addr_t eusaddr;
     uint8_t *data;
     mrtentry_t *mrtentry;
-    uint8_t pruned_oifs[MAXVIFS];
+    grpentry_t *grp;
 
     /* Checksum */
     if (inet_cksum((uint16_t *)msg, len))
 	return FALSE;
+
+    /* sanity check for the minimum length */
+    if (len < PIM_REGISTER_STOP_MINLEN) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_NOTICE, 0, "Too short Register-Stop message (%zu bytes) from RP %s to %s",
+		  len, inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)));
+
+	return FALSE;
+    }
 
     data = (uint8_t *)(msg + sizeof(pim_header_t));
     GET_EGADDR(&egaddr,  data);
@@ -1009,7 +1205,31 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
 	      inet_fmt(egaddr.mcast_addr, s4, sizeof(s4)));
 
     /* TODO: apply the group mask and do register_stop for all grp addresses */
-    /* TODO: check for SourceAddress == 0 */
+    if (eusaddr.unicast_addr == INADDR_ANY_N) {
+	/* An old RP saying RFC 2362's "stop encapsulating all sources for
+	 * this group".  RFC 7761 sec. 4.4.1 does not have us send these, but
+	 * it does have us accept one, as a Register-Stop(S,G) for every
+	 * (S,G) whose Register state machine is not in NoInfo -- i.e. every
+	 * source we are registering right now, and none that starts later.
+	 */
+	grp = find_group(egaddr.mcast_addr);
+	if (!grp || !grp->active_rp_grp || grp->rpaddr != reg_src)
+	    return FALSE;
+
+	for (mrtentry = grp->mrtlink; mrtentry; mrtentry = mrtentry->grpnext) {
+	    if (!(mrtentry->flags & MRTF_SG))
+		continue;
+
+	    /* Not registering this source, nothing to suppress. */
+	    if (!PIMD_VIFM_ISSET(PIMREG_VIF, mrtentry->joined_oifs))
+		continue;
+
+	    suppress_register(mrtentry);
+	}
+
+	return TRUE;
+    }
+
     mrtentry = find_route(eusaddr.unicast_addr, egaddr.mcast_addr, MRTF_SG, DONT_CREATE);
     if (!mrtentry)
 	return FALSE;
@@ -1020,16 +1240,7 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
     if (check_mrtentry_rp(mrtentry, reg_src) == FALSE)
 	return FALSE;
 
-    /* restart the Register-Suppression timer */
-    SET_TIMER(mrtentry->rs_timer, (0.5 * PIM_REGISTER_SUPPRESSION_TIMEOUT)
-	      + (RANDOM() % (PIM_REGISTER_SUPPRESSION_TIMEOUT + 1)));
-    /* Prune the register_vif from the outgoing list */
-    PIMD_VIFM_COPY(mrtentry->pruned_oifs, pruned_oifs);
-    PIMD_VIFM_SET(PIMREG_VIF, pruned_oifs);
-    change_interfaces(mrtentry, mrtentry->incoming,
-		      mrtentry->joined_oifs, pruned_oifs,
-		      mrtentry->leaves,
-		      mrtentry->asserted_oifs, 0);
+    suppress_register(mrtentry);
 
     return TRUE;
 }
@@ -1267,7 +1478,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     uint16_t jp_value;
     pim_nbr_entry_t *upstream_router;
     int my_action;
-    int ignore_group;
     rp_grp_entry_t *rp_grp;
     uint8_t *data_group_j_start;
     uint8_t *data_group_p_start;
@@ -1279,7 +1489,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	 */
 	if (local_address(src) == NO_VIF) {
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_INFO, 0, "Ignoring PIM_JOIN_PRUNE from non-neighbor router %s",
+		logit(LOG_INFO, 0, "Ignoring PIM_JOIN_PRUNE from non-directly connected router %s",
 		      inet_fmt(src, s1, sizeof(s1)));
 	}
 
@@ -1293,6 +1503,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     v = &uvifs[vifi];
     if (uvifs[vifi].uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_NONBRS | VIFF_REGISTER))
 	return FALSE;    /* Shoudn't come on this interface */
+
+    /* RFC 7761 sec. 4.5: a Join/Prune from an address we have had no PIM
+     * Hello from is discarded without further processing.  Being on one of
+     * our subnets is not the question, any host there can send this.
+     */
+    if (!find_pim_nbr_on_vif(vifi, src)) {
+	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, no PIM Hello seen from it",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
 
     /* sanity check for the minimum length */
     if (len < PIM_JOIN_PRUNE_MINLEN) {
@@ -1461,7 +1683,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    }
 			} else if (my_action == PIM_ACTION_JOIN) {
 			    /* Override the Prune by scheduling a Join */
-			    jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+			    jp_value = jp_override_timeout();
 			    /* TODO: XXX: TIMER implem. dependency! */
 			    if (mrt_rp->jp_timer > jp_value)
 				SET_TIMER(mrt_rp->jp_timer, jp_value);
@@ -1474,7 +1696,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			for (grp = rpentry->cand_rp->rp_grp_next->grplink; grp; grp = grp->rpnext) {
 			    my_action = join_or_prune(grp->grp_route, upstream_router);
 			    if (my_action == PIM_ACTION_JOIN) {
-				jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+				jp_value = jp_override_timeout();
 				/* TODO: XXX: TIMER implem. dependency! */
 				if (grp->grp_route->jp_timer > jp_value)
 				    SET_TIMER(grp->grp_route->jp_timer, jp_value);
@@ -1482,7 +1704,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
 				my_action = join_or_prune(mrt_srcs, upstream_router);
 				if (my_action == PIM_ACTION_JOIN) {
-				    jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+				    jp_value = jp_override_timeout();
 				    /* TODO: XXX: TIMER implem. dependency! */
 				    if (mrt_srcs->jp_timer > jp_value)
 					SET_TIMER(mrt_srcs->jp_timer, jp_value);
@@ -1590,7 +1812,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    }
 		    else if (my_action == PIM_ACTION_JOIN) {
 			/* Override the Prune by scheduling a Join */
-			jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+			jp_value = jp_override_timeout();
 			/* TODO: XXX: TIMER implem. dependency! */
 			if (mrt->jp_timer > jp_value)
 			    SET_TIMER(mrt->jp_timer, jp_value);
@@ -1603,7 +1825,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    for (mrt_srcs = mrt->group->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
 			my_action = join_or_prune(mrt_srcs, upstream_router);
 			if (my_action == PIM_ACTION_JOIN) {
-			    jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+			    jp_value = jp_override_timeout();
 			    /* TODO: XXX: TIMER implem. dependency! */
 			    if (mrt_srcs->jp_timer > jp_value)
 				SET_TIMER(mrt_srcs->jp_timer, jp_value);
@@ -1631,7 +1853,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		}
 		else if (my_action == PIM_ACTION_JOIN) {
 		    /* Override the Prune by scheduling a Join */
-		    jp_value = (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+		    jp_value = jp_override_timeout();
 		    /* TODO: XXX: TIMER implem. dependency! */
 		    if (mrt->jp_timer > jp_value)
 			SET_TIMER(mrt->jp_timer, jp_value);
@@ -1694,11 +1916,13 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    continue;
 	}
 
+	/* May be NULL, and that is not a reason to drop the group set: only
+	 * a (*,G) Join needs to agree with us on the RP.  Skipping the whole
+	 * set here threw away the (S,G) Joins and every Prune along with it,
+	 * so a router with no RP-map yet, or one whose map had just changed,
+	 * quietly stopped building downstream state at all.
+	 */
 	rpentry = rp_match(group);
-	if (!rpentry) {
-	    data += (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
-	    continue;
-	}
 
 	data_group_j_start = data;
 	data_group_p_start = data + num_j_srcs * sizeof(pim_encod_src_addr_t);
@@ -1706,22 +1930,16 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	/* Scan the Join part for (*,G) Join and then clear the
 	 * particular interface from pruned_oifs for all (S,G).
-	 * If the RP address in the Join message is different from
-	 * the local match, ignore the whole group.
+	 * A (*,G) Join naming an RP that is not ours is dropped on its own,
+	 * further down; here it only means there is no shared tree of ours
+	 * to lift the (S,G) prunes off.
 	 */
 	num_j_srcs_tmp = num_j_srcs;
-	ignore_group = FALSE;
 	while (num_j_srcs_tmp--) {
 	    GET_ESADDR(&esaddr, data);
 	    if ((esaddr.flags & USADDR_RP_BIT) && (esaddr.flags & USADDR_WC_BIT)) {
-		/* This is the RP address, i.e. (*,G) Join.
-		 * Check if the RP-mapping is consistent and if "yes",
-		 * then Reset the pruned_oifs for all (S,G) entries.
-		 */
-		if (rpentry->address != esaddr.src_addr) {
-		    ignore_group = TRUE;
+		if (!rpentry || rpentry->address != esaddr.src_addr)
 		    break;
-		}
 
 		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		if (mrt) {
@@ -1732,11 +1950,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		}
 		break;
 	    }
-	}
-
-	if (ignore_group == TRUE) {
-	    data += (num_j_srcs_tmp + num_p_srcs) * sizeof(pim_encod_src_addr_t);
-	    continue;
 	}
 
 	data = data_group_p_start;
@@ -1840,14 +2053,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		if (mrt) {
 		    if (mrt->flags & MRTF_WC) {
-			/* TODO: XXX: Should check the whole Prune list in
-			 * advance for (*,G) prune and if the RP address
-			 * does not match the local RP-map, then ignore the
-			 * whole group, not only this particular (*,G) prune.
+			/* No RP check here, deliberately: RFC 7761 sec. 4.5.1 has
+			 * received Prune(*,G) messages "processed even if the RP
+			 * in the message does not match RP(G)".  That is the case
+			 * the sentence exists for -- a router tearing down the old
+			 * shared tree still names the old RP -- and ignoring it
+			 * left us forwarding to that router for the whole expiry
+			 * time.
 			 */
-			if (mrt->group->active_rp_grp->rp->rpentry->address != source)
-			    continue; /* The RP address doesn't match. */
-
 			if (v->uv_flags & VIFF_POINT_TO_POINT) {
 			    FIRE_TIMER(mrt->vif_timers[vifi]);
 			} else {
@@ -1906,15 +2119,19 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    s_flags = esaddr.flags;
 	    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
 	    if ((s_flags & USADDR_WC_BIT) && (s_flags & USADDR_RP_BIT)) {
-		/* (*,G) Join toward RP */
-		/* It has been checked already that this RP address is
-		 * the same as the local RP-maping.
+		/* (*,G) Join toward RP.  RFC 7761 sec. 4.5.1: "If the RP in
+		 * the message does not match RP(G), the Join(*,G) should be
+		 * silently dropped", and only it -- the (S,G) and (S,G,rpt)
+		 * entries of the same group set are still processed, above
+		 * and below.
 		 */
+		if (!rpentry || rpentry->address != source)
+		    continue;
+
 		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, CREATE);
 		if (!mrt)
 		    continue;
 
-		new_join = (PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) == 0);
 		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
 		PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
@@ -1939,34 +2156,25 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		 * cleaning of the pruned_oifs. The reason is that if the
 		 * oifs for (*,G) weren't changed, the (S,G) entries won't
 		 * be updated by change_interfaces()
+		 *
+		 * Recomputing them is the whole of it.  A Join(*,G) used to
+		 * also send a Join(S,G) to every source of the group, record
+		 * the interface in each one's joined_oifs and set MRTF_SPT on
+		 * them, which RFC 7761 sec. 4.5.1 does not ask for: it gives
+		 * "Receive Join(*,G)" two actions, both on the (*,G)
+		 * downstream state machine.  The interface reaches the (S,G)
+		 * outgoing interfaces through inherited_olist() -- which is
+		 * what calc_oifs() computes -- without being join state of
+		 * its own, and an (S,G) still sitting on the shared tree must
+		 * not claim the shortest path tree in an assert.
 		 */
-		for (mrt_srcs = mrt->group->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
-		    if (new_join) {
-			send_pim_join(mrt_srcs->upstream, mrt_srcs, MRTF_SG, PIM_JOIN_PRUNE_HOLDTIME);
-			PIMD_VIFM_SET(vifi, mrt_srcs->joined_oifs);
-			PIMD_VIFM_CLR(vifi, mrt_srcs->pruned_oifs);
-			PIMD_VIFM_CLR(vifi, mrt_srcs->asserted_oifs);
-			change_interfaces(mrt_srcs,
-					  mrt_srcs->incoming,
-					  mrt_srcs->joined_oifs,
-					  mrt_srcs->pruned_oifs,
-					  mrt_srcs->leaves,
-					  mrt_srcs->asserted_oifs, 0);
-			add_kernel_cache(mrt_srcs, mrt_srcs->source->address, mrt_srcs->group->group,
-					 MFC_MOVE_FORCE);
-			mrt_srcs->flags |= MRTF_SPT;
-			k_chg_mfc(igmp_socket, mrt_srcs->source->address, mrt_srcs->group->group,
-				  mrt_srcs->incoming, mrt_srcs->oifs, mrt_srcs->source->address);
-		    }
-		   else {
-			change_interfaces(mrt_srcs,
-					  mrt_srcs->incoming,
-					  mrt_srcs->joined_oifs,
-					  mrt_srcs->pruned_oifs,
-					  mrt_srcs->leaves,
-					  mrt_srcs->asserted_oifs, 0);
-		    }
-		}
+		for (mrt_srcs = mrt->group->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext)
+		    change_interfaces(mrt_srcs,
+				      mrt_srcs->incoming,
+				      mrt_srcs->joined_oifs,
+				      mrt_srcs->pruned_oifs,
+				      mrt_srcs->leaves,
+				      mrt_srcs->asserted_oifs, 0);
 		continue;
 	    }
 
@@ -2042,6 +2250,38 @@ void send_pim_join(pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, ui
         add_jp_entry(pim_nbr, holdtime, mrt->group->group,
                      SINGLE_GRP_MSKLEN, mrt->group->rpaddr,
                      SINGLE_SRC_MSKLEN, flags, PIM_ACTION_JOIN);
+    pack_and_send_jp_message(pim_nbr);
+}
+
+/*
+ * The other half of a change of upstream router: RFC 7761 sec. 4.5.4 and
+ * 4.5.5 pair the Join to the new RPF' with a Prune to the old one, so that
+ * the router we no longer take this group from stops forwarding it now
+ * rather than when its own downstream state expires, up to a J/P holdtime
+ * later.  Not for a change caused by an Assert: there the loser is on the
+ * same link and the assert itself has already settled who forwards.
+ */
+void send_pim_prune(pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime)
+{
+    if (!pim_nbr || !mrt)
+	return;
+
+    /* A (*,G) entry carries no source entry, so naming a source off one
+     * would read through NULL.  The callers derive the flags from the entry
+     * and cannot ask for that today; do not make them the only thing
+     * standing between a future caller and a crash.
+     */
+    if ((flags & MRTF_SG) && !mrt->source)
+	return;
+
+    if (flags & MRTF_SG)
+	add_jp_entry(pim_nbr, holdtime, mrt->group->group,
+		     SINGLE_GRP_MSKLEN, mrt->source->address,
+		     SINGLE_SRC_MSKLEN, 0, PIM_ACTION_PRUNE);
+    else
+	add_jp_entry(pim_nbr, holdtime, mrt->group->group,
+		     SINGLE_GRP_MSKLEN, mrt->group->rpaddr,
+		     SINGLE_SRC_MSKLEN, flags, PIM_ACTION_PRUNE);
     pack_and_send_jp_message(pim_nbr);
 }
 
@@ -2561,6 +2801,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     uint32_t local_metric;
     uint32_t local_preference;
     uint8_t  local_wins;
+    uint16_t jp_value;
     pim_nbr_entry_t *original_upstream_router;
     rpentry_t *rpentry;
 
@@ -2573,7 +2814,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	 */
 	if (local_address(src) == NO_VIF) {
 	    IF_DEBUG(DEBUG_PIM_ASSERT)
-		logit(LOG_INFO, 0, "Ignoring PIM_ASSERT from non-neighbor router %s",
+		logit(LOG_INFO, 0, "Ignoring PIM_ASSERT from non-directly connected router %s",
 		      inet_fmt(src, s1, sizeof(s1)));
 	}
 
@@ -2587,6 +2828,18 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     v = &uvifs[vifi];
     if (uvifs[vifi].uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_NONBRS | VIFF_REGISTER))
 	return FALSE;    /* Shoudn't come on this interface */
+
+    /* RFC 7761 sec. 4.6: an Assert from an address we have had no PIM Hello
+     * from is discarded without further processing.  Otherwise any host on
+     * the LAN can win an election it is not even taking part in.
+     */
+    if (!find_pim_nbr_on_vif(vifi, src)) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, no PIM Hello seen from it",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
 
     /* sanity check for the minimum length */
     if (len < PIM_ASSERT_MINLEN) {
@@ -2765,7 +3018,16 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (mrt->upstream == NULL)
 	    return FALSE;
 
-	my_assert_metric(mrt, &local_preference, &local_metric);
+	if (mrt->assert_winner == mrt->upstream->address) {
+	    /* Already lost this interface, so the assert to beat is the
+	     * winner's, per the Loser state of RFC 7761 sec. 4.6.1, not a
+	     * metric of our own.
+	     */
+	    local_preference = mrt->assert_winner_preference;
+	    local_metric     = mrt->assert_winner_metric;
+	} else {
+	    my_assert_metric(mrt, &local_preference, &local_metric);
+	}
 
 	local_wins = compare_metrics(local_preference, local_metric,
 				     mrt->upstream->address,
@@ -2774,10 +3036,28 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (local_wins == TRUE)
 	    return TRUE; /* return whatever */
 
-	/* The upstream must be changed to the winner */
-	mrt->preference = assert_preference;
-	mrt->metric = assert_metric;
+	/* The upstream must be changed to the winner.  Keep what it won
+	 * with as the winner's, not as this entry's own metric: sec. 4.6.3
+	 * has us assert with the metric the unicast routing table gives,
+	 * and copying the winner's into `metric` had us advertise it as
+	 * ours on every other interface, where it beat routers that really
+	 * are closer to the source.
+	 */
+	mrt->assert_winner_preference = assert_preference;
+	mrt->assert_winner_metric     = assert_metric;
+	mrt->assert_winner            = src;
 	mrt->upstream = find_pim_nbr(src);
+
+	/* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If the
+	 * Join Timer is set to expire in more than t_override seconds, reset
+	 * it so that it expires after t_override seconds."  Our downstream
+	 * receivers are behind the assert winner now, and it does not know
+	 * about them until we say so; waiting for the periodic Join left
+	 * them without the group for up to a whole period.
+	 */
+	jp_value = jp_override_timeout();
+	if (mrt->jp_timer > jp_value)
+	    SET_TIMER(mrt->jp_timer, jp_value);
 
 	/* Check if the upstream router is different from the original one */
 	{
@@ -2791,6 +3071,9 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    mrt->flags |= MRTF_ASSERTED;
 	    SET_TIMER(mrt->assert_timer, PIM_ASSERT_TIMEOUT);
 	} else {
+	    /* Back on the upstream the routing table names, so there is no
+	     * winner to keep a metric for. */
+	    mrt->assert_winner = INADDR_ANY_N;
 	    mrt->flags &= ~MRTF_ASSERTED;
 	}
     }
@@ -2882,23 +3165,35 @@ static void my_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *me
     mrtentry_t *mrp = NULL;
 
     if (mrt->flags & MRTF_SPT) {
-	/* spt_assert_metric(S,I), the metric towards the source.  The bit
-	 * is masked off rather than assumed clear: losing an assert on the
-	 * iif copies the winner's preference, bit and all, into ours. */
-	*preference = mrt->preference & ~PIM_ASSERT_RPT_BIT;
-	*metric     = mrt->metric;
+	/* spt_assert_metric(S,I) is MRIB.pref(S)/MRIB.metric(S), so it comes
+	 * off the source entry rather than off this entry: sec. 4.6.3 has us
+	 * assert with what the unicast routing table says, never with a
+	 * value another router asserted at us. */
+	if (mrt->source) {
+	    *preference = mrt->source->preference & ~PIM_ASSERT_RPT_BIT;
+	    *metric     = mrt->source->metric;
+	} else {
+	    *preference = mrt->preference & ~PIM_ASSERT_RPT_BIT;
+	    *metric     = mrt->metric;
+	}
 
 	return;
     }
 
-    /* rpt_assert_metric(G,I), the metric towards the RP.  On an (S,G) that
-     * never left the shared tree that lives on the (*,G), not on the entry
-     * we happen to be forwarding off. */
-    if (mrt->group) {
-	mrp = mrt->group->grp_route;
-	if (!mrp && mrt->group->active_rp_grp && mrt->group->active_rp_grp->rp)
-	    mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
+    /* rpt_assert_metric(G,I) is MRIB.pref(RP(G))/MRIB.metric(RP(G)), for the
+     * same reason.  On an (S,G) that never left the shared tree that is the
+     * RP's metric, not that of the entry we happen to be forwarding off. */
+    if (mrt->group && mrt->group->active_rp_grp && mrt->group->active_rp_grp->rp) {
+	rpentry_t *rp = mrt->group->active_rp_grp->rp->rpentry;
+
+	*preference = rp->preference | PIM_ASSERT_RPT_BIT;
+	*metric     = rp->metric;
+
+	return;
     }
+
+    if (mrt->group)
+	mrp = mrt->group->grp_route;
     if (!mrp)
 	mrp = mrt;
 

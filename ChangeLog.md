@@ -47,7 +47,9 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - Issue #67: Stream optimization, by Mika Joutsenvirta:
   - Switch directly to shortest path only in the case of PIM-SSM
   - For new IGMP group reports, send PIM Join immediately, saves 0-5 sec
-  - Forward PIM Join messages immediately
+  - Forward PIM Join messages immediately.  One part of this was undone
+    again, see the Fixes below: a new (\*,G) Join no longer builds
+    forwarding state for every source of the group
 - Issue #89: Allow use of loopback interface as long as MULTICAST
   flag is set, by Vincent Bernat
 - Revert changes made for issue #66 and #73, no more implicit behavior
@@ -333,6 +335,243 @@ pimd on all routers in the same domain.  See issue #93 for details.
   The socket is now emptied before each query, and the timeout that
   remains is a debug message under `-d rpf` like every other failure in
   that function, not a warning
+- Form the PIM adjacency with a neighbor whose Hello carries an option
+  pimd does not know, or no options at all.  RFC 7761 sec. 4.9.2 requires
+  that unknown options "be ignored and MUST NOT prevent a neighbor
+  relationship from being formed"; `parse_pim_hello()` instead returned
+  failure unless the last option it looked at was one of the three it
+  implements, so a Hello that led with LAN Prune Delay, Address List,
+  State Refresh, Bidir Capable or any private type was discarded whole
+  and the adjacency silently never formed -- taking that neighbor's
+  Join/Prune and Assert messages with it.  Only an option pimd does
+  understand, arriving with a length it cannot have, now fails the Hello
+- Treat a Hello with no Holdtime option as RFC 7761 sec. 4.3.2 says, by
+  holding the neighbor for `Default_Hello_Holdtime`, rather than as the
+  holdtime 0 of a router announcing it is going down.  The option block
+  is zeroed before parsing, so "absent" and "zero" were the same value
+  and a neighbor that omits the option -- which it may, the option is a
+  SHOULD -- was deleted and re-created on every one of its Hellos,
+  flapping the DR election and resetting the upstream neighbor of every
+  routing entry pointing at it
+- Notice when an interface is renumbered under pimd.  The addresses were
+  read once, at start-up and on `SIGHUP`, while the periodic interface poll
+  only ever looked at the flags, so after a renumbering -- a DHCP lease
+  change, an `ifconfig` edit, a failover address moving -- pimd went on
+  announcing and sourcing PIM from an address the kernel no longer had.
+  Neighbors held that address for the full 105 second holdtime and could
+  elect it DR, while pimd's own sends left by whatever route the kernel
+  picked, so PIM on that interface stayed broken until someone reloaded.
+  The poll now compares each VIF against the first address its interface
+  carries, the same one `config_vifs_from_kernel()` builds the VIF on, and
+  on a change says goodbye with a zero-holdtime Hello, takes the VIF out of
+  service, updates the address, subnet, netmask and broadcast address, and
+  puts it back in service -- which announces the new address, as RFC 7761
+  sec. 4.3.1 requires.  Point-to-point links are left out: they carry a
+  peer address too, and renumbering one still wants a `SIGHUP`
+- Forward to local members only on an interface where this router is the
+  DR, as `pim_include()` in RFC 7761 sec. 4.1.5 has it.  An IGMP report is
+  heard by every PIM router on the subnet, and each of them added the
+  interface to its outgoing interfaces, so on a LAN with two routers that
+  both had state for the group the receivers got every packet twice until
+  an assert election sorted it out -- and that election is only triggered
+  by data arriving on the wrong interface.  The membership itself is still
+  recorded whoever hears it; what is now conditional is whether it makes
+  the interface an outgoing one.  A change of DR recomputes the entries
+  with members on that interface, so the role moving does not leave the
+  new DR waiting for an unrelated event to start forwarding
+- Stop the Register storm two pimd routers could fall into.  RFC 7761
+  sec. 4.4.1 says an RP should not send a Register-Stop with the source
+  address zeroed, RFC 2362's "stop encapsulating every source of this
+  group", and that a DR should nevertheless accept one, as a
+  Register-Stop(S,G) for every source it is registering at the time.  pimd
+  had both halves backwards: the RP sent the wildcard whenever a (\*,G)
+  entry ran out of outgoing interfaces, and the DR handed the zero address
+  to `find_route()`, which rejects it, so the message was dropped.  A DR
+  and an RP that both ran pimd could therefore encapsulate and answer at
+  data rate indefinitely.  The RP now names the source, and a wildcard
+  Register-Stop from an older RP is applied to every (S,G) of the group
+  that has the register vif in its outgoing interfaces
+- Send the Register-Stop when the RP has nowhere to forward a source,
+  whatever the entry's incoming interface.  RFC 7761 sec. 4.4.2 asks for
+  an empty `inherited_olist(S,G)`; pimd also required the entry to be on
+  the shared tree, which an (S,G) whose incoming interface points at the
+  source is not.  Such an entry, what a downstream (S,G) Join leaves
+  behind once it is pruned, matched neither that arm nor the one for an
+  entry already on the shortest path tree, so the RP said nothing and the
+  DR went on encapsulating the whole stream into a router that drops it
+- Resume registering when the group-to-RP mapping changes.  RFC 7761
+  sec. 4.4.1 has a DR cancel its Register-Suppression timer and re-add the
+  register tunnel when the RP changes.  `remap_grpentry()` did neither,
+  and its loop skipped exactly the entries a DR registers with, so a DR
+  that was suppressing when the mapping changed stayed silent until the
+  timer of an RP that is no longer ours ran out, up to 90 seconds.  A new
+  receiver joining the new shared tree heard nothing for that long
+- Only build routing state from a received Register where this router is
+  in fact the RP for the group.  RFC 7761 sec. 4.4.2 puts everything but
+  "send Register-Stop" inside its `I_am_RP(G) AND outer.dst == RP(G)` arm.
+  pimd creates the (S,G) entry as soon as it sees a Register for a group
+  it holds no (\*,G) for, deliberately, to save the DR a retry, but it did
+  so before asking whether it is the RP.  Any host that could unicast to
+  the daemon therefore made it allocate a source, a group and a routing
+  entry for every (S,G) it named, each held for 210 seconds, with nothing
+  rate limiting it.  The group-to-RP mapping and the address the Register
+  was sent to are now both checked first; a Register that fails either is
+  still answered with a Register-Stop, as the spec's other arm requires
+- Stop advertising an assert metric learned from another router.  RFC 7761
+  sec. 4.6.3 says the metric preference and metric a router puts in its own
+  Assert are the unicast routing table's, for the source or for the RP;
+  sec. 4.6.1 keeps what a winner asserted separately, as
+  `AssertWinnerMetric`.  pimd had one pair of fields for both, so losing an
+  assert on the incoming interface overwrote the entry's own metric with
+  the winner's -- a metric that is, by construction, at least as good as
+  ours, since it just beat it.  The router then offered that metric on
+  every *other* interface and won elections it should have lost, taking
+  over forwarding from a router genuinely closer to the source, and the
+  assert timer running out did not put the metric back.  The winner's
+  metric is now kept beside the entry's own and used only where the spec
+  uses it, comparing the next Assert on that interface
+- Keep the rest of a Join/Prune group set when its RP does not match ours.
+  RFC 7761 sec. 4.5.1 drops a Join(*,G) naming the wrong RP on its own and
+  says the "other source list entries, such as (S,G,rpt) or (S,G), in the
+  same Group-Specific Set should still be processed"; it also has received
+  Prune(*,G) messages "processed even if the RP in the message does not
+  match RP(G)".  pimd discarded the group set three ways instead: when no
+  RP-map covered the group at all, when the Join named an RP that was not
+  the local match, and it ignored a Prune(*,G) whose RP differed.  During
+  an RP change, which is exactly when a downstream router still advertises
+  the old RP, that threw away that router's (S,G) Joins and all of its
+  Prunes, so established shortest-path state on the interface expired and
+  the source stopped; a router that had not learned an RP-map yet built no
+  downstream state at all, not even for plain (S,G) Joins
+- Send the Join when the upstream router changes, in the three cases where
+  RFC 7761 asks for one and pimd sent nothing.  A next hop that moves to a
+  different router on the same interface was retargeted silently, because
+  the (\*,G) path asks `change_interfaces()` to flush a change it cannot
+  see -- same incoming interface, same outgoing interfaces -- so the Joins
+  kept going to the router no longer in use until the periodic timer came
+  round.  An Assert that moves `RPF'(S,G)` to the winner left our
+  downstream receivers unknown to it for the same period, where sec. 4.5.5
+  shortens the Join Timer to `t_override`.  And a neighbor whose GenID
+  changed has restarted and lost the Join state we sent it, which
+  sec. 4.5.4 and 4.5.5 answer the same way; pimd noticed the GenID, said
+  hello back, re-sent the RP-Set and left the trees alone.  Each of the
+  three cost up to a full Join/Prune period of black-holed traffic, the
+  GenID one on every upstream restart, in every topology
+- Prune the old upstream router when the next hop changes.  RFC 7761
+  sec. 4.5.4 and 4.5.5 pair the Join to the new `RPF'` with a Prune to the
+  old one; pimd overwrote the neighbor and said nothing, at all three sites
+  that retarget an entry, so after a unicast reconvergence or an RP remap
+  the router we no longer use kept forwarding the group down our branch
+  until its own downstream state expired -- the advertised holdtime, 210
+  seconds.  On a topology with two paths that is three and a half minutes
+  of duplicate delivery and an assert election to clear it.  A change
+  caused by an Assert is deliberately left out, as the spec does: there the
+  other router is on the same link and the assert has already settled who
+  forwards.  The Prune is also skipped where the old upstream is a router
+  that has just gone away, the teardown paths reaching the same code
+- Move a routing entry onto the shortest path tree when the switch is
+  made, instead of only marking it.  Data from S arriving on
+  `RPF_interface(S)` while the entry still points at the RP is the switch,
+  and pimd set the SPTbit, cleared the RP bit and reprogrammed the kernel
+  with the new incoming interface -- but left the entry's own incoming
+  interface and upstream router pointing at the RP.  The kernel was then
+  right and pimd was not: the Join(S,G) it triggers went to the RP-ward
+  neighbor and left by the RP-facing interface, and the next change to the
+  outgoing interfaces pushed the RP-ward parent back down to the kernel,
+  after which every packet from S arrived on a non-parent interface and
+  was dropped until the unicast route to S changed.  Reached wherever the
+  path to the source and the path to the RP leave by different interfaces,
+  which in the test suite is the `rp-offpath` scenario.  The switch now
+  goes through the same `Update_SPTbit()` conditions as every other, so a
+  router that has to wait for an Assert(S,G) waits here too and sends one
+- Stop a received Join(\*,G) from switching every source of the group onto
+  its own tree.  RFC 7761 sec. 4.5.1 gives "Receive Join(\*,G)" two actions,
+  both on the (\*,G) downstream state machine; pimd also walked the group's
+  (S,G) entries and, for each, sent a Join(S,G) upstream, recorded the
+  interface as (S,G) join state and set the SPTbit.  Three things came of
+  that.  A router configured with `spt-threshold infinity`, which is how
+  you ask to stay on the shared tree, switched to per-source trees anyway,
+  since this path never consults it.  Entries whose incoming interface
+  still pointed at the RP were marked as being on the shortest path tree,
+  and an assert metric is chosen by that bit, so they asserted with the RPT
+  bit clear and the metric of the route to the RP and beat the router that
+  really was on the source tree.  And the join state it recorded had no
+  timer to age it, so the next pass cleared the interface again and
+  reprogrammed the forwarding cache, once per source per Join.  The
+  interface reaches those entries through `inherited_olist()` without any
+  of that; recomputing them, which is what the code says it is there to do,
+  is all that is left.  This undoes half of the issue #67 optimization
+  above, the half that built forwarding state for the inherited (S,G)
+  entries; Joins for the entry the message is actually about are still
+  sent without waiting for the timer
+- Decide the (S,G) SPTbit by the conditions RFC 7761 sec. 4.2.2 gives for
+  `Update_SPTbit()`, one of which pimd had the wrong way round.  The spec
+  raises the bit when the packet arrives on `RPF_interface(S)`, the router
+  wants the source, and -- among other alternatives -- the upstream router
+  toward the source and the one toward the RP are *the same*.  pimd raised
+  it when they *differ*, which is the one case the spec singles out to wait
+  for an Assert(S,G) instead, so the router claimed the shortest path tree
+  before the state upstream existed and asserted with a metric for a tree
+  it had not joined.  The matching gap was at the other end: where the two
+  agree, which is every chain topology, the bit was never raised at all
+  unless the router had a downstream Join of its own, so a last-hop router
+  whose receivers are local IGMP members never sent the (S,G,rpt) Prune,
+  and the RP and every router on the shared tree carried that source
+  forever.  Both now follow the pseudocode, together with the
+  directly-connected, differing-RPF-interface and assert-loser
+  alternatives; the one left out is `inherited_olist(S,G,rpt)`, which needs
+  (S,G,rpt) state pimd does not keep
+- Clear the (S,G) SPTbit when the entry has nowhere left to forward,
+  instead of when a routing change points its incoming interface back at
+  the RP.  The second rule is RFC 2362 sec. 2.10's; RFC 7761 sec. 4.2.2
+  leaves `JoinDesired(S,G)` going false as the only thing that clears the
+  bit, and its own condition 4 would in fact *set* the bit in the case
+  pimd used it to clear it -- where the path to the source and the path to
+  the RP leave by the same interface.  So a unicast reconvergence dragged
+  an established shortest-path entry back onto the shared tree: the assert
+  metric flipped from the source's to the RP's mid-election, the
+  (S,G,rpt) Prune already sent was never refreshed, and the group
+  re-flooded down the shared tree.  An entry whose outgoing interface list
+  has just emptied now clears the bit instead, so it stops claiming a tree
+  it is about to prune itself off
+- Bound a received Register-Stop before parsing it.  RFC 7761 sec. 4.9.4
+  gives the message an encoded group and an encoded unicast source after
+  the PIM header, 18 bytes in all, and `receive_pim_register_stop()` read
+  all of them; `pim.c` guarantees only the 4 byte header, and the checksum
+  over a 4 byte message covers just that header, so a Register-Stop
+  truncated to its header passed every check and the (S,G) it named was
+  read from whatever the previous packet had left in the receive buffer.
+  A sender able to place a larger PIM packet in that buffer first chose
+  the pair that came out, and where it matched a live entry and the
+  source address was that group's RP, registering for that source was
+  suppressed for the next 30 to 90 seconds.  Now checked against a
+  `PIM_REGISTER_STOP_MINLEN` spelled as the fields being read, like the
+  Assert, Join/Prune, Bootstrap and Cand-RP-Adv parsers next to it
+- Only accept a Join/Prune or an Assert from a router a PIM Hello has been
+  seen from, as RFC 7761 sec. 4.5 and sec. 4.6 both ask.  The one check
+  either path made was that the sender sits on one of our subnets, which
+  any host there does: a forged Join pulled a group onto the link for the
+  210 seconds of its holdtime, a forged Prune removed an outgoing
+  interface real routers still wanted, and a forged Assert claiming
+  metric 0 took a group off the LAN for the 180 seconds of the assert
+  timeout, all repeatable and none of it requiring a PIM adjacency.  Note
+  that the configuration option both sections recommend, for peers that
+  fail to send Hellos on point-to-point links, is not implemented; such a
+  peer's Join/Prune and Assert messages are now ignored
+- Fix a routing entry left naming a PIM neighbor that has just been freed.
+  A router that loses an Assert on its incoming interface points the entry
+  at the assert winner, which is by construction a different neighbor from
+  the one its source or RP entry names -- that difference is the branch
+  condition.  `delete_pim_nbr()` repaired only the entries reachable
+  through the source or the RP, plus one (\*,G) case, so the winner's own
+  entries kept a pointer into freed memory and the next Join/Prune pass
+  wrote through it.  A neighbor on the LAN could arrange both halves: win
+  an assert, then leave, or simply send a Hello with holdtime 0.  The
+  repair now walks every entry, by way of the group list every entry is
+  linked into, and puts back the next hop the unicast routing table gives,
+  as RFC 7761 sec. 4.6.1 asks when the assert winner's liveness timer
+  expires.  The assert metric goes back with it, so the router stops
+  advertising a metric it copied from the winner
 - Fix the message pimd exits with when no interface is usable.  It chose
   between "no enabled vifs" and "only one enabled vif" on a count that
   starts at one for the register vif and is only ever incremented, so the

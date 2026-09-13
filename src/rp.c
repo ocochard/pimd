@@ -769,8 +769,31 @@ int remap_grpentry(grpentry_t *grpentry_ptr)
     }
 
     for (mrtentry_ptr = grpentry_ptr->mrtlink; mrtentry_ptr; mrtentry_ptr = mrtentry_ptr->grpnext) {
-	if (!(mrtentry_ptr->flags & MRTF_RP))
+	int resumed = FALSE;
+
+	/* RFC 7761 sec. 4.4.1, the "RP changed" column of the Register
+	 * state machine: a DR that stopped encapsulating has to start
+	 * again, now toward the new RP, so cancel the suppression and put
+	 * the register vif back among the outgoing interfaces.  Without
+	 * this the source stays unregistered until the timer of an RP that
+	 * is no longer ours runs out, up to 90 seconds during which nobody
+	 * joining the new shared tree hears anything.
+	 */
+	if (PIMD_VIFM_ISSET(PIMREG_VIF, mrtentry_ptr->pruned_oifs)) {
+	    RESET_TIMER(mrtentry_ptr->rs_timer);
+	    PIMD_VIFM_CLR(PIMREG_VIF, mrtentry_ptr->pruned_oifs);
+	    resumed = TRUE;
+	}
+
+	if (!(mrtentry_ptr->flags & MRTF_RP)) {
+	    if (resumed)
+		change_interfaces(mrtentry_ptr, mrtentry_ptr->incoming,
+				  mrtentry_ptr->joined_oifs,
+				  mrtentry_ptr->pruned_oifs,
+				  mrtentry_ptr->leaves,
+				  mrtentry_ptr->asserted_oifs, MFC_UPDATE_FORCE);
 	    continue;
+	}
 
 	mrtentry_ptr->upstream = rpentry_ptr->upstream;
 	mrtentry_ptr->metric   = rpentry_ptr->metric;

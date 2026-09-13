@@ -202,6 +202,15 @@ typedef struct mrtentry {
 					 */
     uint32_t		 metric;	/* Routing Metric for this entry    */
     uint32_t		 preference;	/* The metric preference value	    */
+    uint32_t		 assert_winner;	/* Assert winner on the iif, or 0.
+					 * Its metric is what a further
+					 * Assert on the iif is compared
+					 * against, and is not ours to
+					 * advertise -- see RFC 7761
+					 * sec. 4.6.3.
+					 */
+    uint32_t		 assert_winner_preference;
+    uint32_t		 assert_winner_metric;
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint16_t		*vif_deletion_delay; /* vifs deletion delay list    */
     uint16_t		 flags;		/* The MRTF_* flags		    */

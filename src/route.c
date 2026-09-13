@@ -192,6 +192,25 @@ pim_nbr_entry_t *find_pim_nbr(uint32_t source)
     return NULL;
 }
 
+/* Return the neighbor with that address on that interface, i.e. the one we
+ * have had a PIM Hello from.  Unlike find_pim_nbr() above this asks nothing
+ * of the unicast routing table: it answers whether an address is a neighbor,
+ * not which neighbor leads to an address.
+ */
+pim_nbr_entry_t *find_pim_nbr_on_vif(vifi_t vifi, uint32_t addr)
+{
+    pim_nbr_entry_t *nbr;
+
+    if (vifi >= numvifs)
+	return NULL;
+
+    for (nbr = uvifs[vifi].uv_pim_neighbors; nbr; nbr = nbr->next)
+	if (nbr->address == addr)
+	    return nbr;
+
+    return NULL;
+}
+
 
 /* TODO: check again the exact setup if the source is local or directly
  * connected!!!
@@ -484,6 +503,145 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 }
 
 
+/*
+ * RFC 7761 sec. 4.2.2, Update_SPTbit(S,G,iif), called as the spec calls it,
+ * when a packet arrives:
+ *
+ *   if ( iif == RPF_interface(S) AND JoinDesired(S,G) == TRUE
+ *         AND ( DirectlyConnected(S) == TRUE
+ *               OR RPF_interface(S) != RPF_interface(RP(G))
+ *               OR inherited_olist(S,G,rpt) == NULL
+ *               OR ( ( RPF'(S,G) == RPF'(*,G) ) AND ( RPF'(S,G) != NULL ) )
+ *               OR ( I_Am_Assert_Loser(S,G,iif) ) ) )
+ *      Set SPTbit(S,G) to TRUE
+ *
+ * The fourth alternative used to be written the other way round here, as
+ * "the two upstream routers differ", which is the one case the spec singles
+ * out to *wait* for an Assert(S,G) rather than claim the tree: raising the
+ * bit there is what sec. 4.2.2 calls the temporary black hole it exists to
+ * prevent.  The assert that resolves it is now the fifth alternative, which
+ * pimd can answer since it keeps the assert winner for the incoming
+ * interface.
+ *
+ * The third alternative is the one still missing: it asks whether anything is
+ * being forwarded off the shared tree for this source, and pimd has no
+ * (S,G,rpt) state to ask.  A missing alternative only delays the bit; where
+ * there is no (*,G) at all there is nothing to inherit either, which is the
+ * part of it that can be answered.
+ */
+static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
+{
+    int directly_connected, different_iif, no_rpt_olist, same_rpf_nbr, assert_loser;
+    rpentry_t *rp = NULL;
+    mrtentry_t *mwc;
+    uint8_t oifs[MAXVIFS];
+
+    if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_SPT))
+	return;
+
+    if (!mrt->source || iif != mrt->source->incoming)
+	return;			/* Not RPF_interface(S) */
+
+    /* JoinDesired(S,G): an inherited olist to forward to, and the entry is
+     * alive, entry_timer being the KeepaliveTimer pimd keeps. */
+    calc_oifs(mrt, oifs);
+    if (PIMD_VIFM_ISEMPTY(oifs))
+	return;
+
+    if (mrt->group->active_rp_grp)
+	rp = mrt->group->active_rp_grp->rp->rpentry;
+    mwc = mrt->group->grp_route;
+
+    directly_connected = !mrt->source->upstream;
+    different_iif      = !rp || mrt->source->incoming != rp->incoming;
+    no_rpt_olist       = !mwc;
+    same_rpf_nbr       = mwc && mrt->upstream && mrt->upstream == mwc->upstream;
+    assert_loser       = mrt->assert_winner != INADDR_ANY_N;
+
+    if (directly_connected || different_iif || no_rpt_olist || same_rpf_nbr || assert_loser) {
+	mrt->flags |= MRTF_SPT;
+	mrt->flags &= ~MRTF_RP;
+    }
+}
+
+
+
+/*
+ * Half of a change of upstream router: RFC 7761 sec. 4.5.4 and 4.5.5 pair the
+ * Join to the new RPF' with a Prune to the old one, so that the router we no
+ * longer take this group from stops forwarding it now rather than when its own
+ * downstream state expires.  Only while it is still a neighbor, though: the
+ * paths that tear a neighbor or a VIF down reach change_interfaces() too, and
+ * there the old upstream is a router that has already gone.
+ */
+static void prune_old_upstream(mrtentry_t *mrt, pim_nbr_entry_t *old, uint16_t flags)
+{
+    if (!old || old == mrt->upstream)
+	return;
+
+    if (!find_pim_nbr_on_vif(old->vifi, old->address))
+	return;
+
+    send_pim_prune(old, mrt, flags, PIM_JOIN_PRUNE_HOLDTIME);
+}
+
+/*
+ * Local members on a subnet are ours to forward to only while we are the DR
+ * there, so a change of that role changes what every entry with a member on
+ * that interface forwards.  Nothing else recomputes them: `leaves` itself is
+ * unchanged, only what it contributes to the outgoing interfaces.
+ */
+void recalc_local_members(vifi_t vifi)
+{
+    grpentry_t *grp;
+    mrtentry_t *mrt;
+
+    for (grp = grplist; grp; grp = grp->next) {
+	mrt = grp->grp_route;
+	if (mrt && PIMD_VIFM_ISSET(vifi, mrt->leaves))
+	    change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
+			      mrt->pruned_oifs, mrt->leaves,
+			      mrt->asserted_oifs, MFC_UPDATE_FORCE);
+
+	for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+	    if (PIMD_VIFM_ISSET(vifi, mrt->leaves))
+		change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
+				  mrt->pruned_oifs, mrt->leaves,
+				  mrt->asserted_oifs, MFC_UPDATE_FORCE);
+	}
+    }
+}
+
+/*
+ * Add the interfaces with local members to the outgoing interfaces, which
+ * RFC 7761 sec. 4.1.5 does only where we are the DR:
+ *
+ *   pim_include(*,G) = { all interfaces I such that:
+ *      ( ( I_am_DR( I ) AND lost_assert(*,G,I) == FALSE )
+ *        OR AssertWinner(*,G,I) == me ) AND local_receiver_include(*,G,I) }
+ *
+ * The lost_assert() half is the `asserted_oifs` that calc_oifs() subtracts
+ * just after this.  The AssertWinner() half needs per-interface winner state
+ * pimd does not keep, and its absence costs nothing here: an interface a
+ * non-DR forwards on for a reason of its own is in `joined_oifs`, and one it
+ * forwards on for no other reason than a local member is one it no longer
+ * forwards on at all, so it cannot be in an assert to begin with.
+ */
+static void merge_local_members(uint8_t *oifs, uint8_t *leaves)
+{
+    vifi_t vifi;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (!PIMD_VIFM_ISSET(vifi, leaves))
+	    continue;
+
+	if (!(uvifs[vifi].uv_flags & VIFF_DR))
+	    continue;
+
+	PIMD_VIFM_SET(vifi, oifs);
+    }
+}
+
 void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
 {
     uint8_t oifs[MAXVIFS];
@@ -510,7 +668,7 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
 	if (grp) {
 	    PIMD_VIFM_MERGE(oifs, grp->joined_oifs, oifs);
 	    PIMD_VIFM_CLR_MASK(oifs, grp->pruned_oifs);
-	    PIMD_VIFM_MERGE(oifs, grp->leaves, oifs);
+	    merge_local_members(oifs, grp->leaves);
 	    PIMD_VIFM_CLR_MASK(oifs, grp->asserted_oifs);
 	}
     }
@@ -518,7 +676,7 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
     /* Calculate my own stuff */
     PIMD_VIFM_MERGE(oifs, mrt->joined_oifs, oifs);
     PIMD_VIFM_CLR_MASK(oifs, mrt->pruned_oifs);
-    PIMD_VIFM_MERGE(oifs, mrt->leaves, oifs);
+    merge_local_members(oifs, mrt->leaves);
     PIMD_VIFM_CLR_MASK(oifs, mrt->asserted_oifs);
 
     PIMD_VIFM_COPY(oifs, oifs_ptr);
@@ -567,8 +725,13 @@ int change_interfaces(mrtentry_t *mrt,
 	return 0;
 
     /* When iif changes, discover new upstream pim nbr */
-    if (new_iif != mrt->incoming && mrt->source && mrt->source->address)
-        mrt->upstream = find_pim_nbr(mrt->source->address);
+    if (new_iif != mrt->incoming && mrt->source && mrt->source->address) {
+	pim_nbr_entry_t *old_upstream = mrt->upstream;
+
+	mrt->upstream = find_pim_nbr(mrt->source->address);
+	prune_old_upstream(mrt, old_upstream,
+			   (mrt->flags & MRTF_WC) ? (MRTF_RP | MRTF_WC) : MRTF_SG);
+    }
 
     PIMD_VIFM_COPY(new_joined_oifs_, new_joined_oifs);
     PIMD_VIFM_COPY(new_leaves_, new_leaves);
@@ -703,6 +866,15 @@ int change_interfaces(mrtentry_t *mrt,
 
 	if (PIMD_VIFM_ISEMPTY(new_real_oifs)) {
 	    delete_mrt_flag = TRUE;
+
+	    /* Nowhere left to forward this source, so we no longer want it:
+	     * JoinDesired(S,G) has gone false, which RFC 7761 sec. 4.2.2
+	     * gives as the one event that clears the SPTbit.  Leaving it set
+	     * on an entry we are about to prune had the entry keep claiming
+	     * the shortest path tree in an assert, and keep asking the RP to
+	     * prune a source it no longer forwards.
+	     */
+	    mrt->flags &= ~MRTF_SPT;
 	} else {
 	    delete_mrt_flag = FALSE;
 	}
@@ -733,12 +905,13 @@ int change_interfaces(mrtentry_t *mrt,
 
 	    if ((mwc && mwc->incoming == new_iif) ||
 		(mrp && mrp->incoming == new_iif)) {
-		/* If the new iif points toward the RP, reset the SPT flag.
-		 * (PIM-SM-spec-10.ps pp. 11, 2.10, last sentence of first
-		 * paragraph. */
-
-		/* TODO: XXX: check again! */
-		mrt->flags &= ~MRTF_SPT;
+		/* The new iif points toward the RP, so this entry is back on
+		 * the shared tree.  It does not clear the SPTbit with it: RFC
+		 * 2362 sec. 2.10 had a routing change do that, RFC 7761
+		 * sec. 4.2.2 leaves JoinDesired(S,G) going false as the only
+		 * thing that does, and its sec. 4.2.2 condition 4 would in
+		 * fact *set* the bit where the two RPF neighbors agree.
+		 */
 		mrt->flags |= MRTF_RP;
 	    }
 	}
@@ -869,44 +1042,7 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	if (!PIMD_VIFM_ISEMPTY(mrt->oifs)) {
 	    uint32_t rp_addr;
 
-	    if (mrt->flags & MRTF_SG) {
-		if (!(mrt->flags & MRTF_SPT)) {
-		    /* RFC 7761 sec. 4.2.2: the SPTbit goes up once (S,G)
-		     * traffic arrives on RPF_interface(S) while we hold
-		     * (S,G) join state of our own, whether or not that is
-		     * also the interface the (*,G) uses.  The comparison
-		     * below cannot see that case: where the path to the
-		     * source and the path to the RP leave by the same
-		     * interface the two iifs are equal however genuinely we
-		     * joined the shortest path tree, and the entry then
-		     * advertises an RPT assert metric for a tree it is on.
-		     * joined_oifs is what tells the two apart: an (S,G)
-		     * that a cache miss built underneath a (*,G) has none
-		     * of its own, it forwards on the (*,G)'s leaves.
-		     */
-		    if (mrt->incoming == mrt->source->incoming &&
-			!PIMD_VIFM_ISEMPTY(mrt->joined_oifs)) {
-			mrt->flags |= MRTF_SPT;
-			mrt->flags &= ~MRTF_RP;
-		    }
-		}
-
-		if (!(mrt->flags & MRTF_SPT)) {
-		    mrp = mrt->group->grp_route;
-		    if (!mrp)
-			mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-
-		    if (mrp) {
-			/* Check if the (S,G) iif is different from
-			 * the (*,G) or (*,*,RP) iif */
-			if ((mrt->incoming != mrp->incoming) ||
-			    (mrt->upstream != mrp->upstream)) {
-			    mrt->flags |= MRTF_SPT;
-			    mrt->flags &= ~MRTF_RP;
-			}
-		    }
-		}
-	    }
+	    update_sptbit(mrt, iif);
 
 	    rp_addr = mrt->group->rpaddr;
 
@@ -997,19 +1133,55 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
     /*
      * TODO: check again!
      */
-    if (mrt->flags & MRTF_SG) {
-	if (!(mrt->flags & MRTF_SPT)) {
-	    if (mrt->source->incoming == iif) {
-		/* Switch to the Shortest Path */
-		mrt->flags |= MRTF_SPT;
-		mrt->flags &= ~MRTF_RP;
-		add_kernel_cache(mrt, source, group, MFC_MOVE_FORCE);
-		k_chg_mfc(igmp_socket, source, group, iif,
-			  mrt->oifs, mrt->group->rpaddr);
-		FIRE_TIMER(mrt->jp_timer);
+    if ((mrt->flags & MRTF_SG) && !(mrt->flags & MRTF_SPT) &&
+	mrt->source->incoming == iif) {
+	/* Data from S arriving on RPF_interface(S) while the entry still
+	 * points at the RP: this is the switch to the shortest path, and
+	 * RFC 7761 sec. 4.2.2 decides it like any other, so a router that
+	 * has to wait for an Assert(S,G) waits here too and falls through
+	 * to sending one.
+	 */
+	update_sptbit(mrt, iif);
 
-		return;
+	if (mrt->flags & MRTF_SPT) {
+	    /* Move the entry onto that tree rather than only marking it:
+	     * the incoming interface, the upstream router and the kernel's
+	     * parent vif belong together.  Marking it alone left the Join
+	     * fired below going out of the RP-facing interface, and the
+	     * next change of the outgoing interfaces pushing the RP-ward
+	     * parent back to the kernel, after which every packet from S
+	     * arrived on a non-parent vif and was dropped until the unicast
+	     * route to S changed.
+	     */
+	    add_kernel_cache(mrt, source, group, MFC_MOVE_FORCE);
+	    k_chg_mfc(igmp_socket, source, group, iif,
+		      mrt->oifs, mrt->group->rpaddr);
+
+	    /* The kernel is what this upcall is about: its parent vif is
+	     * the stale one, and pimd's own may or may not be.  Where it is
+	     * too, move it -- the incoming interface, the upstream router
+	     * and the kernel's parent belong together, and marking the
+	     * entry alone left the Join fired below going out of the
+	     * RP-facing interface and the next change of the outgoing
+	     * interfaces pushing the RP-ward parent back down to the
+	     * kernel.  MFC_UPDATE_FORCE because change_interfaces() has
+	     * nothing of its own to see here: the oifs do not change, and
+	     * where the two interfaces already agree it would return
+	     * without programming anything at all.
+	     */
+	    if (mrt->incoming != mrt->source->incoming) {
+		change_interfaces(mrt,
+				  mrt->source->incoming,
+				  mrt->joined_oifs,
+				  mrt->pruned_oifs,
+				  mrt->leaves,
+				  mrt->asserted_oifs, MFC_UPDATE_FORCE);
+		mrt->upstream = mrt->source->upstream;
 	    }
+
+	    FIRE_TIMER(mrt->jp_timer);
+
+	    return;
 	}
     }
 
@@ -1318,11 +1490,14 @@ void age_routes(void)
 			if (assert_timer_expired) {
 			    PIMD_VIFM_CLR(vifi, mrt_grp->asserted_oifs);
 			    change_flag = TRUE;
+			    mrt_grp->assert_winner = INADDR_ANY_N;
 			    mrt_grp->flags &= ~MRTF_ASSERTED;
 			}
 		    }
 
 		    if ((change_flag == TRUE) || (update_rp_iif == TRUE)) {
+			pim_nbr_entry_t *old_upstream = mrt_grp->upstream;
+
 			change_interfaces(mrt_grp,
 					  rp->incoming,
 					  mrt_grp->joined_oifs,
@@ -1330,6 +1505,20 @@ void age_routes(void)
 					  mrt_grp->leaves,
 					  mrt_grp->asserted_oifs, 0);
 			mrt_grp->upstream = rp->upstream;
+
+			/* RFC 7761 sec. 4.5.4, "RPF'(*,G) changes not due to
+			 * an Assert": Join the new upstream router.  When the
+			 * next hop moves to a different router on the same
+			 * interface, change_interfaces() above sees the same
+			 * iif and the same oifs and returns without firing
+			 * anything, so the Joins went on going to the router
+			 * we no longer use until the periodic timer came
+			 * round, up to a minute of nothing for that group.
+			 */
+			if (mrt_grp->upstream != old_upstream) {
+			    prune_old_upstream(mrt_grp, old_upstream, MRTF_RP | MRTF_WC);
+			    FIRE_TIMER(mrt_grp->jp_timer);
+			}
 		    }
 
 		    /* Check the sources activity */
@@ -1397,6 +1586,7 @@ void age_routes(void)
 			if (assert_timer_expired) {
 			    PIMD_VIFM_CLR(vifi, mrt_srcs->asserted_oifs);
 			    change_flag = TRUE;
+			    mrt_srcs->assert_winner = INADDR_ANY_N;
 			    mrt_srcs->flags &= ~MRTF_ASSERTED;
 			}
 		    }
@@ -1419,19 +1609,30 @@ void age_routes(void)
 			    /* iif info found */
 			    if ((srcentry_save.incoming != mrt_srcs->source->incoming) ||
 				(srcentry_save.upstream != mrt_srcs->source->upstream)) {
+				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
+
 				/* Route change has occur */
 				update_src_iif = TRUE;
 				mrt_srcs->incoming = mrt_srcs->source->incoming;
 				mrt_srcs->upstream = mrt_srcs->source->upstream;
+
+				/* Prune the router we used to take S from, the
+				 * half of RFC 7761 sec. 4.5.5 that pairs with
+				 * the Join to the new one. */
+				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
 			    }
 			} else {
 			    /* (S,G)RPBit with iif toward RP */
 			    if ((rpentry_save.upstream != mrt_srcs->upstream) ||
 				(rpentry_save.incoming != mrt_srcs->incoming)) {
+				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
+
 				update_src_iif = TRUE; /* XXX: a hack */
 				/* XXX: setup the iif now! */
 				mrt_srcs->incoming = rp->incoming;
 				mrt_srcs->upstream = rp->upstream;
+
+				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
 			    }
 			}
 		    }

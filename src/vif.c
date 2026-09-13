@@ -504,6 +504,115 @@ static int update_reg_vif(vifi_t register_vifi)
 
 
 /*
+ * An interface renumbered under us leaves the VIF naming an address the
+ * kernel no longer has.  pimd goes on sourcing PIM from it, and neighbors
+ * hold it, and may elect it DR, for the whole holdtime.  RFC 7761 sec. 4.3.1
+ * asks for a Hello with a zero HoldTime carrying the old address, and a Hello
+ * carrying the new one once the change has happened.  Taking the VIF out of
+ * service and back in is what makes the rest of the state follow: the group
+ * memberships, the kernel VIF and the routing entries are all keyed on the
+ * address that has just gone.
+ *
+ * A poll cannot send that first Hello "before the interface changes address",
+ * the way the spec puts it, since the address is already gone by the time we
+ * look.  It is sent on the chance that the kernel still accepts it -- a
+ * netmask change leaves the address in place -- and costs nothing when it
+ * does not.
+ */
+static void renumber_vif(vifi_t vifi, uint32_t addr, uint32_t mask)
+{
+    struct uvif *v = &uvifs[vifi];
+    uint32_t subnet;
+
+    if (addr == v->uv_lcl_addr && mask == v->uv_subnetmask)
+	return;			/* Still the address the VIF was built on */
+
+    /* Leave a VIF on a stale address rather than on one we would have
+     * refused at startup; the address may be on its way somewhere. */
+    if (!inet_valid_host(addr)) {
+	IF_DEBUG(DEBUG_IF)
+	    logit(LOG_DEBUG, 0, "Ignoring %s on %s, not a valid host address",
+		  inet_fmt(addr, s1, sizeof(s1)), v->uv_name);
+	return;
+    }
+
+    subnet = addr & mask;
+    logit(LOG_NOTICE, 0, "VIF #%u: interface %s renumbered from %s to %s",
+	  vifi, v->uv_name, inet_fmt(v->uv_lcl_addr, s1, sizeof(s1)),
+	  inet_fmt(addr, s2, sizeof(s2)));
+
+    /* Say goodbye while the old address is still the one we send from. */
+    send_pim_hello(v, 0);
+
+    stop_vif(vifi);
+
+    v->uv_lcl_addr   = addr;
+    v->uv_subnet     = subnet;
+    v->uv_subnetmask = mask;
+    if (mask != htonl(0xfffffffe))
+	v->uv_subnetbcast = subnet | ~mask;
+    else
+	v->uv_subnetbcast = 0xffffffff;
+
+    /* Back in service, and the Hello it sends carries the new address. */
+    start_vif(vifi);
+}
+
+
+/*
+ * Compare each VIF against the address the kernel has for its interface now.
+ * The first address of an interface is the one config_vifs_from_kernel()
+ * builds the VIF on -- the others become altnets -- so the same walk is used
+ * here, rather than SIOCGIFADDR, to be sure the two agree on an interface
+ * carrying several addresses.  Otherwise a VIF whose address merely came
+ * second in somebody's list would be restarted on every poll.
+ */
+static void check_vif_addrs(void)
+{
+    struct ifaddrs *ifap, *ifa;
+    struct uvif *v;
+    vifi_t vifi;
+
+    if (getifaddrs(&ifap) < 0) {
+	logit(LOG_WARNING, errno, "%s(): getifaddrs()", __func__);
+	return;
+    }
+
+    for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
+	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_TUNNEL))
+	    continue;
+
+	/* A point-to-point link carries a peer address as well, and what a
+	 * netmask means on one differs per OS; renumbering one is left to a
+	 * SIGHUP rather than guessed at here. */
+	if (v->uv_flags & VIFF_POINT_TO_POINT)
+	    continue;
+
+	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+	    uint32_t addr, mask;
+
+	    if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+		continue;
+
+	    if (strcmp(ifa->ifa_name, v->uv_name))
+		continue;
+
+	    addr = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+	    if (ifa->ifa_netmask)
+		mask = ((struct sockaddr_in *)ifa->ifa_netmask)->sin_addr.s_addr;
+	    else
+		mask = 0xffffffff;
+
+	    renumber_vif(vifi, addr, mask);
+	    break;		/* Only the first address of the interface */
+	}
+    }
+
+    freeifaddrs(ifap);
+}
+
+
+/*
  * See if any interfaces have changed from up state to down, or vice versa,
  * including any non-multicast-capable interfaces that are in use as local
  * tunnel end-points.  Ignore interfaces that have been administratively
@@ -570,6 +679,11 @@ void check_vif_state(void)
 	    }
 	}
     }
+
+    /* An interface that is still up may have been renumbered.  Do this
+     * before the register vif check below, which re-points that vif when
+     * its address matches no phyint any more. */
+    check_vif_addrs();
 
     /* Check the register(s) vif(s) */
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
