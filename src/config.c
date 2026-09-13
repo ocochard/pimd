@@ -253,6 +253,44 @@ static int getifmtu(char *ifname)
     return ifr.ifr_mtu;
 }
 
+/*
+ * Record subnet/mask as an extra subnet ("altnet") of vif v, so that RPF
+ * lookups treat a source on it as directly connected.  Both the kernel
+ * scan and an altnet in pimd.conf can offer the same subnet, and the vif
+ * already covers its own, so duplicates are dropped here rather than at
+ * each caller.
+ *
+ * Returns 1 if the subnet was added, 0 if the vif already had it, and -1
+ * on allocation failure.
+ */
+static int install_altnet(struct uvif *v, uint32_t subnet, uint32_t mask)
+{
+    struct phaddr *ph;
+
+    if (v->uv_subnet == subnet && v->uv_subnetmask == mask)
+	return 0;
+
+    for (ph = v->uv_addrs; ph; ph = ph->pa_next) {
+	if (ph->pa_subnet == subnet && ph->pa_subnetmask == mask)
+	    return 0;
+    }
+
+    ph = calloc(1, sizeof(*ph));
+    if (!ph) {
+	logit(LOG_WARNING, errno, "Failed allocating altnet for %s", v->uv_name);
+	return -1;
+    }
+
+    ph->pa_subnet      = subnet;
+    ph->pa_subnetmask  = mask;
+    ph->pa_subnetbcast = subnet | ~mask;
+
+    ph->pa_next = v->uv_addrs;
+    v->uv_addrs = ph;
+
+    return 1;
+}
+
 static int compare_requested_with_kernel(struct ifaddrs *ifaddr, int num)
 {
     int count = 0;
@@ -305,7 +343,7 @@ void config_vifs_from_kernel(void)
     short flags;
     uint32_t addr, mask, subnet;
     struct ifaddrs *ifaddr, *ifa;
-    int phyint_num, count, valid;
+    int phyint_num, count, valid, added;
     struct iflist *entry;
 
     /* Query config first for list of enabled interfaces */
@@ -403,8 +441,20 @@ init_vif_list:
 	 */
 	for (vifi = 1, v = &uvifs[1]; vifi < numvifs; ++vifi, ++v) {
 	    if (strcmp(v->uv_name, ifa->ifa_name) == 0) {
-		logit(LOG_DEBUG, 0, "Ignoring %s (%s on subnet %s) (alias for vif#%u?)",
-		      v->uv_name, inet_fmt(addr, s1, sizeof(s1)), netname(subnet, mask), vifi);
+		/*
+		 * A second address on an interface that already has a vif.
+		 * There can only be one vif per interface, so keep its
+		 * subnet as an extra one on that vif, exactly like an
+		 * "altnet" in pimd.conf: without it no RPF lookup sees a
+		 * source on the alias as directly connected.
+		 */
+		added = install_altnet(v, subnet, mask);
+		if (added > 0)
+		    logit(LOG_INFO, 0, "VIF #%u: Adding %s (%s) as altnet %s",
+			  vifi, v->uv_name, inet_fmt(addr, s1, sizeof(s1)), netname(subnet, mask));
+		else if (!added)
+		    logit(LOG_DEBUG, 0, "Ignoring %s (%s on subnet %s), vif#%u already has it",
+			  v->uv_name, inet_fmt(addr, s1, sizeof(s1)), netname(subnet, mask), vifi);
 		break;
 	    }
 	    /* we don't care about point-to-point links in same subnet */
@@ -699,9 +749,9 @@ static int parse_phyint(char *s)
     uint32_t local, altnet_addr, scoped_addr;
     vifi_t vifi;
     struct uvif *v;
-    uint32_t n, altnet_masklen = 0, scoped_masklen = 0;
-    struct phaddr *ph;
+    uint32_t n, altnet_mask, altnet_masklen = 0, scoped_masklen = 0;
     struct vif_acl *v_acl;
+    int added;
 
     if (EQUAL((w = next_word(&s)), "")) {
 	WARN("Missing phyint address");
@@ -780,24 +830,21 @@ static int parse_phyint(char *s)
 		    s = t;
 		}
 
-		ph = calloc(1, sizeof(struct phaddr));
-		if (!ph)
-		    return FALSE;
-
 		if (altnet_masklen) {
-		    VAL_TO_MASK(ph->pa_subnetmask, altnet_masklen);
+		    VAL_TO_MASK(altnet_mask, altnet_masklen);
 		} else {
-		    ph->pa_subnetmask = v->uv_subnetmask;
+		    altnet_mask = v->uv_subnetmask;
 		}
 
-		ph->pa_subnet = altnet_addr & ph->pa_subnetmask;
-		ph->pa_subnetbcast = ph->pa_subnet | ~ph->pa_subnetmask;
-		if (altnet_addr & ~ph->pa_subnetmask)
+		if (altnet_addr & ~altnet_mask)
 		    WARN("Extra subnet %s/%d has host bits set", inet_fmt(altnet_addr, s1, sizeof(s1)), altnet_masklen);
 
-		ph->pa_next = v->uv_addrs;
-		v->uv_addrs = ph;
-		logit(LOG_DEBUG, 0, "ALTNET: %s/%d", inet_fmt(altnet_addr, s1, sizeof(s1)), altnet_masklen);
+		added = install_altnet(v, altnet_addr & altnet_mask, altnet_mask);
+		if (added < 0)
+		    return FALSE;
+
+		logit(LOG_DEBUG, 0, "ALTNET: %s/%d%s", inet_fmt(altnet_addr, s1, sizeof(s1)),
+		      altnet_masklen, added ? "" : ", already known");
 	    } /* altnet */
 
 	    /* scoped mcast groups/masklen */

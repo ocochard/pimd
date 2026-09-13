@@ -6,15 +6,7 @@ that came up at the right moment to be written down.
 
 * pimd 3.0 release:
 
-What is left before the tag, in the order it should be taken.
-
-** Automatically add IP alias as altnet
- - Grab code from mrouted, 48a7a11
-
-The only entry left here that changes forwarding behaviour:
-config_vifs_from_kernel() (src/config.c) drops a second address on an
-interface it already has a vif for, logging "alias for vif#N", and never
-turns it into an altnet.  Wants a test of its own, so take it last.
+What is left before the tag.
 
 ** Update the ChangeLog and bump the version in configure.ac
 

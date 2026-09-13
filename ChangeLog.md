@@ -94,6 +94,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   matcher could not help with these, `show if` compares against `show
   igmp` as "if" vs "ig" and against `show interface` as "if" vs "in", and
   matches neither
+- Every address on an interface is now kept, not just the first one.  A
+  second address is added as an `altnet` of the VIF the first one made,
+  so a source or a neighbor on it counts as directly connected without
+  anyone having to write the subnet out in `pimd.conf`.  Until now
+  `config_vifs_from_kernel()` dropped it with an "alias for vif#N?" at
+  debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
 - Never accept a 127/8 address, whatever its netmask.  RFC 1122, section

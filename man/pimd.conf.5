@@ -185,6 +185,13 @@ The cost of sending data through this interface.  Defaults to
 Alternative host(s)/network(s) to accept as locally attached multicast
 sources on a given interface. If a phyint is attached to multiple IP
 subnets, describe each additional subnet with the altnet keyword.
+.Pp
+Every address the interface already carries is added this way on its own:
+.Nm pimd
+can only create one VIF per interface, so when it finds a second address
+it keeps that subnet as an altnet of the VIF the first one made.  This
+setting is for subnets reached over the interface without an address on
+it, and for overriding the prefix length of one that has.
 .It Cm scoped Ar <network/len>
 Optional scoping of multicast groups.  This allows interfaces to be
 configured as an administrative boundary for the specified group(s).

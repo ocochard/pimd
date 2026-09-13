@@ -155,6 +155,14 @@ void init_vifs(void)
  */
 void zero_vif(struct uvif *v, int t)
 {
+    struct phaddr *pa, *next;
+
+    /* Extra subnets are allocated, and init_vifs() runs again on restart */
+    for (pa = v->uv_addrs; pa; pa = next) {
+	next = pa->pa_next;
+	free(pa);
+    }
+
     v->uv_flags		= 0;	/* Default to IGMPv3 */
     v->uv_metric	= DEFAULT_METRIC;
     v->uv_admetric	= 0;

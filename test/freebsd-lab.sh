@@ -39,11 +39,12 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Ten scenarios are built on that topology.  Most differ only in which
+# Twelve scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
-# right hand links as bridged segments and hang two more routers off them:
+# right hand links as bridged segments and hang two more routers off them;
+# alias gives one interface a second address and moves the sender onto it:
 #
 #   rpt         R2 is BSR and RP, ED2 joins, traffic has to reach it over
 #               the shared tree.  Takes about 90s.
@@ -240,6 +241,37 @@
 #               each, per source or a single any-source membership, and by
 #               which range gets the link-local virtual RP that config.c
 #               installs for SSM.  Takes about 30s.
+#   alias       The rpt topology with a second address on R1's interface
+#               facing the sender, on a subnet of its own, and a sender
+#               that only has an address out of that second subnet.  The
+#               only scenario where an interface carries more than one
+#               address, so the only one that reaches the alias branch of
+#               config_vifs_from_kernel() (src/config.c).
+#
+#                 ED1 ------------- R1 --- R2 --- R3 --- ED2
+#                 10.0.101.10/24    |      (BSR + RP)
+#                                   +- 10.0.1.1/24 (the vif)
+#                                   +- 10.0.101.1/24 (alias)
+#
+#               There is one VIF per interface and no more, so the second
+#               subnet has nowhere to go except onto the VIF the first one
+#               made, as one of the extra subnets pimd.conf calls an
+#               "altnet".  pimd used to drop it, with an "alias for vif#N?"
+#               at debug level, and never look at the address again.
+#
+#               On BSD that decides whether anything is forwarded at all.
+#               k_req_incoming() (src/routesock.c) asks the VIF table,
+#               altnets included, before it asks the kernel, because a
+#               route to a connected subnet carries no gateway and the
+#               routing socket answers such a lookup with an RPF neighbour
+#               of 0.0.0.0 - which every caller reads as "not directly
+#               connected".  With the alias dropped, R1 is the designated
+#               router for a sender it does not believe is on its LAN:
+#               check_register() (src/route.c) never encapsulates, the RP
+#               never hears of the source, and the stream dies at the
+#               first hop.  Linux cannot show this, netlink.c answers a
+#               connected lookup with the destination as its own RPF
+#               neighbour.  Takes about 90s.
 #   ifgone      The rpt topology again, but ED1's link is destroyed while
 #               pimd is running and the only question is what R1 does about
 #               the VIF that was sitting on it, which is
@@ -277,7 +309,7 @@
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
-# "shared-lan-spt", "ssm", "ssm-range", "ifgone", or "all" for run.
+# "shared-lan-spt", "ssm", "ssm-range", "alias", "ifgone", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # shared-lan, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -356,9 +388,21 @@ OFFPATH_RP_ADDR=10.0.23.2
 ALL_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
 ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS epair113"
 
-# Source and RP addresses the assertions expect
+# Source and RP addresses the assertions expect.  set_scenario() puts
+# SRC_ADDR back from the default, the alias scenario moves it.
 SRC_ADDR=10.0.1.10
+SRC_ADDR_DEFAULT=$SRC_ADDR
 RP_ADDR=10.0.12.2
+
+# alias: a second address on R1's interface facing ED1, on a subnet of its
+# own, and a sender that only has an address out of that subnet.  The vif
+# keeps the primary address, so reaching the sender at all depends on
+# config_vifs_from_kernel() (src/config.c) keeping the second subnet as an
+# altnet of the same vif.
+ALIAS_IF=epair101b
+ALIAS_ADDR=10.0.101.1
+ALIAS_NET=10.0.101.0/24
+ALIAS_SRC_ADDR=10.0.101.10
 
 # rp-lasthop: the RP moves to R3, on the interface facing the receiver, so
 # the router that is RP is also the one with the directly connected member.
@@ -463,7 +507,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|ifgone] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -479,7 +523,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|ifgone)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -523,6 +567,15 @@ set_scenario() {
 		GROUP=$SSMR_GROUP
 	else
 		GROUP=$GROUP_DEFAULT
+	fi
+
+	# alias: the sender moves onto the aliased subnet, which is the
+	# whole scenario.  Every assertion keyed on the source, and the
+	# pimd.conf comments generated for it, read this.
+	if [ "$SCENARIO" = alias ]; then
+		SRC_ADDR=$ALIAS_SRC_ADDR
+	else
+		SRC_ADDR=$SRC_ADDR_DEFAULT
 	fi
 }
 
@@ -609,12 +662,40 @@ addrs() {
 		return
 	fi
 
+	if [ "$SCENARIO" = alias ]; then
+		case $1 in
+		ed1) echo "epair101a $ALIAS_SRC_ADDR/24" ;;
+		r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24" ;;
+		r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
+		r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24" ;;
+		ed2) echo "epair203b 10.0.3.10/24" ;;
+		esac
+		return
+	fi
+
 	case $1 in
 	ed1) echo "epair101a 10.0.1.10/24" ;;
 	r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24" ;;
 	r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
 	r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24" ;;
 	ed2) echo "epair203b 10.0.3.10/24" ;;
+	esac
+}
+
+# Extra addresses to add on an interface that addrs() already gave one,
+# "<interface> <address>/<prefixlen>" pairs.  These are what "ifconfig
+# alias" makes: a second address on the same interface, which the kernel
+# hands to getifaddrs() as another entry with the same ifa_name, and which
+# pimd cannot give a VIF of its own.
+#
+# Only the alias scenario has any.  The order matters: addrs() runs first,
+# so the address the vif ends up with is 10.0.1.1 and the aliased subnet
+# is the one that has to survive as an altnet.
+aliases() {
+	[ "$SCENARIO" = alias ] || return 0
+
+	case $1 in
+	r1) echo "$ALIAS_IF $ALIAS_ADDR/24" ;;
 	esac
 }
 
@@ -701,6 +782,18 @@ routes() {
 		r5)  echo "10.0.1.0/24 $SL_R3_ADDR 10.0.12.0/24 $SL_R3_ADDR 10.0.23.0/24 $SL_R3_ADDR" ;;
 		ed2) echo "default 10.0.5.1" ;;
 		ed3) echo "default $SL_DR_ADDR" ;;
+		esac
+		return ;;
+	alias)
+		# The sender only lives on the aliased subnet, so that is the
+		# prefix the rest of the domain has to route towards R1 and
+		# the one every RPF lookup for the source asks about.
+		case $1 in
+		ed1) echo "default $ALIAS_ADDR" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2" ;;
+		r2)  echo "$ALIAS_NET 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
+		r3)  echo "$ALIAS_NET 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
+		ed2) echo "default 10.0.3.1" ;;
 		esac
 		return ;;
 	esac
@@ -1252,6 +1345,14 @@ create_box() {
 		shift 2
 	done
 
+	# After the addresses: "alias" is what keeps the kernel from
+	# replacing the address the interface already has
+	set -- $(aliases "$box")
+	while [ $# -ge 2 ]; do
+		jrun "$box" ifconfig "$1" inet "$2" alias
+		shift 2
+	done
+
 	# Before the routes: gif-tunnel points some of them at $GIF_R1/$GIF_R3
 	set -- $(tunnels "$box")
 	while [ $# -ge 5 ]; do
@@ -1617,6 +1718,7 @@ check() {
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
+	alias)      check_alias; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	esac
 
@@ -1927,6 +2029,150 @@ kern_vif_addr() {
 
 logged() {
 	${SUDO} grep -q "$2" "$WORKDIR/$1.log" 2>/dev/null
+}
+
+# Address column of one interface in "pimctl show interface", i.e. the
+# address pimd gave the VIF out of the several the interface may carry
+iface_addr() {
+	pimctl "$1" -t show interface 2>/dev/null | awk -v i="$2" '$1 == i { print $3 }'
+}
+
+# alias: R1's interface facing the sender carries two addresses, and the
+# sender only has one out of the second subnet.  There can be one VIF per
+# interface and no more -- MRT_ADD_VIF is keyed on the ifnet, and the VIF
+# holds a single local address -- so the second subnet has nowhere to go
+# except onto the VIF the first one made, as one of the extra subnets
+# pimd.conf calls an "altnet".  config_vifs_from_kernel() (src/config.c)
+# used to drop it instead, with an "alias for vif#N?" at debug level, and
+# nothing else ever looked at the address again.
+#
+# That is not cosmetic on BSD.  find_vif_direct_local() (src/vif.c) walks
+# the VIF subnets and their altnets, and k_req_incoming()
+# (src/routesock.c) asks it before it asks the kernel, precisely because
+# a route to a connected subnet carries no gateway: the routing socket
+# answers such a lookup with an RPF neighbour of 0.0.0.0, and every
+# caller compares that against the source and concludes the source is not
+# directly connected.  So with the second subnet dropped, R1 -- the
+# designated router for a sender sitting on it -- decides it is not the
+# first hop router for that sender at all.  check_register() (src/route.c)
+# never encapsulates a thing, no Register reaches the RP, and nothing the
+# sender sends is forwarded anywhere.  Assertion 5 is the one that says
+# so; assertions 2 and 3 say which of the two subnets became the VIF and
+# which became the altnet, so a failure downstream can be read.
+#
+# Linux is not a witness here: netlink.c answers an RPF lookup for a
+# connected destination with the destination as its own RPF neighbour, so
+# the whole path is hidden behind the unicast lookup and the scenario
+# would pass there whether pimd keeps the alias or not.
+check_alias() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R1 has one VIF on $ALIAS_IF, holding the primary address"
+	addr=$(iface_addr r1 "$ALIAS_IF")
+	if [ "$addr" = 10.0.1.1 ]; then
+		ok "$ALIAS_IF is vif $(vif_index r1 "$ALIAS_IF") with address $addr"
+	else
+		fail "$ALIAS_IF has address '$addr', want 10.0.1.1"
+	fi
+
+	count=$(pimctl r1 -t show interface 2>/dev/null | \
+		awk -v i="$ALIAS_IF" '$1 == i { n++ } END { print n + 0 }')
+	if [ "$count" -eq 1 ]; then
+		ok "no second vif was made for $ALIAS_ADDR"
+	else
+		fail "$count vifs named $ALIAS_IF, want exactly 1"
+	fi
+
+	print "3. R1 kept the aliased subnet as an altnet of that VIF"
+	if logged r1 "as altnet $ALIAS_NET"; then
+		ok "r1 added $ALIAS_NET as an altnet of $ALIAS_IF"
+	else
+		fail "r1 never logged an altnet for $ALIAS_NET, see $WORKDIR/r1.log"
+	fi
+
+	# Only a domain that never converged is reason to stop here.  A
+	# missing altnet is exactly what the rest of the run is about, so it
+	# must not take assertion 5 down with it.
+	converged=$FAILED
+
+	print "4. PIM converges: neighbors and the RP set"
+	if wait_for 60 has_neighbor r1 10.0.12.2; then
+		ok "r1 sees r2 (10.0.12.2)"
+	else
+		fail "r1 never saw r2, PIM hello is not crossing epair112"
+	fi
+	for r in $ROUTERS; do
+		if wait_for 90 has_rp "$r" "$RP_ADDR"; then
+			ok "$r learned RP $RP_ADDR"
+		else
+			fail "$r never learned RP $RP_ADDR (BSR/cand-RP path)"
+		fi
+	done
+	[ "$FAILED" -eq "$converged" ] || return 1
+
+	print "5. Multicast from a sender on the aliased subnet reaches ED2"
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	sleep 2
+	jrun ed1 "$MPING" -s -i epair101a -t 5 -c 40 -w 60 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 || true
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED1 ($SRC_ADDR) -> $GROUP -> ED2, $replies replies"
+	else
+		fail "only $replies replies, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
+	fi
+
+	print "6. R1 is the first hop router for the aliased source"
+	if has_mrt r1 "$SRC_ADDR"; then
+		ok "r1 has an (S,G) for source $SRC_ADDR"
+	else
+		fail "r1 has no (S,G) for $SRC_ADDR"
+	fi
+
+	# The incoming interface is the point: the register vif is index 0,
+	# and an (S,G) that came in anywhere but $ALIAS_IF means the RPF
+	# answer for the source was not the LAN it is actually on.
+	iif=$(route_iif r1 "$SRC_ADDR" "$GROUP")
+	want=$(vif_index r1 "$ALIAS_IF")
+	if [ -n "$iif" ] && [ "$iif" = "$want" ]; then
+		ok "r1 (S,G) incoming interface is $ALIAS_IF (vif $iif)"
+	else
+		fail "r1 (S,G) incoming interface is vif '$iif', want $want ($ALIAS_IF)"
+	fi
+
+	if has_mfc r1 "$GROUP"; then
+		ok "r1 kernel has an MFC entry for $GROUP"
+	else
+		fail "r1 kernel MFC is empty, pimd never pushed the route down"
+	fi
+
+	echo
+	if [ "$FAILED" -eq 0 ]; then
+		print "RESULT: PASS"
+		return 0
+	fi
+	print "RESULT: FAIL ($FAILED assertion(s))"
+	dprint "--- r1: ifconfig $ALIAS_IF ---"
+	jrun r1 ifconfig "$ALIAS_IF" 2>&1 || true
+	for r in $ROUTERS; do
+		dprint "--- $r: pimctl show pim detail ---"
+		pimctl "$r" show pim detail 2>&1 | tail -40 || true
+	done
+	return 1
 }
 
 check_ifgone() {
@@ -3015,7 +3261,7 @@ run() {
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
 			 gif-tunnel-staticrp shared-lan shared-lan-spt ssm \
-			 ssm-range ifgone; do
+			 ssm-range alias ifgone; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?
