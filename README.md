@@ -378,7 +378,17 @@ glue rather than merely compiling it.  It needs root, a VIMAGE kernel and
 
     sh test/freebsd-lab.sh run all
 
-See the header of each script for its topology, and the [Linux][] and
+A third suite, `test/freebsd-interop.sh`, runs pimd against an Arista
+vEOS under bhyve.  The other two have pimd at both ends of every
+exchange, so a message pimd encodes wrongly is a message pimd decodes
+wrongly in the same way and the run stays green; this one is what
+catches that.  It needs a licensed vEOS image, so it too is run by hand:
+
+    sh test/freebsd-interop.sh run all
+
+**[test/README.md][tests]** describes all three: what every scenario
+covers, what only it covers, and what each suite requires.  See also the
+header of each script for its topology, and the [Linux][] and
 [FreeBSD][] workflows for how CI runs them.
 
 
@@ -416,6 +426,7 @@ Stanford Junior University.
 [releases page]:   https://github.com/troglobit/pimd/releases
 [buildsystem]:     https://autotools.io/
 [contrib]:         https://github.com/ocochard/pimd/blob/master/.github/CONTRIBUTING.md
+[tests]:           https://github.com/ocochard/pimd/blob/master/test/README.md
 [Joachim Wiberg]:  https://troglobit.com
 [Linux]:           https://github.com/ocochard/pimd/actions/workflows/ci-linux.yml
 [Linux Status]:    https://github.com/ocochard/pimd/actions/workflows/ci-linux.yml/badge.svg

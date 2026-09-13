@@ -1,0 +1,232 @@
+pimd Test Suites
+================
+
+Three suites live in this directory.  They are not three ways of running
+the same tests: each one reaches code and situations the other two
+cannot, and a change is only really covered when the suite that can see
+it has run.
+
+* The **Linux suite** is `make check`.  It builds router topologies out
+  of network namespaces and veth pairs, and it is the one CI runs on
+  every push.  It exercises `netlink.c` and the Linux kernel glue.
+* The **FreeBSD vnet jail lab** builds the same kind of topologies out
+  of vnet jails and epairs, and is the only thing that exercises
+  `routesock.c` and the BSD branches of `kern.c` rather than merely
+  compiling them.  It also holds the scenarios that reproduce specific
+  upstream issues.
+* The **Arista vEOS interoperability lab** puts a foreign PIM
+  implementation on the wire.  The other two have pimd on both ends of
+  every exchange, so a message pimd encodes wrongly is a message pimd
+  decodes wrongly in the same way and the run stays green.  This one
+  catches that.
+
+Only the first is part of `make check`.  The other two need root, a
+specific kernel and, for the third, a licensed VM image, so they are
+run by hand.
+
+
+Table of Contents
+-----------------
+
+* [Shared tools](#shared-tools)
+* [The Linux suite](#the-linux-suite)
+* [The FreeBSD vnet jail lab](#the-freebsd-vnet-jail-lab)
+* [The Arista vEOS interoperability lab](#the-arista-veos-interoperability-lab)
+* [Which suite sees what](#which-suite-sees-what)
+
+
+Shared tools
+------------
+
+| File        | What it is                                                  |
+|-------------|-------------------------------------------------------------|
+| `mping.c`   | Multicast ping.  `-s` sends to a group, `-r` joins it and answers each packet by sending to the same group, so one run builds a tree in each direction.  The sender's "packets transmitted" line counts the replies that came back, which is how every forwarding assertion is measured. |
+| `igmpv3.c`  | Sends exactly one IGMPv3 membership report and exits.  Needed wherever a test has to watch a membership *age out*: a kernel that joined a group answers every query afterwards, so the membership never expires while the emulated device is on the LAN. |
+| `lib.sh`    | Helpers for the Linux suite: `topo()` builds the namespaces and links, `ifsetup()` addresses them, `emitter()`/`collect()` wrap `mping`. |
+
+`mping` and `igmpv3` are built by `configure --enable-test`; the two
+FreeBSD labs compile them on their own when they start.
+
+
+The Linux suite
+---------------
+
+Automake test suite, driven by `TESTS_ENVIRONMENT = unshare -mrun`.
+Every script builds its topology from network namespaces, veth pairs and
+bridges, starts one pimd per namespace, and asserts on forwarded
+traffic.  The ASCII diagram in each script header is the topology.
+
+    ./configure --enable-test
+    make check                       # all of them
+    make check TESTS=rp.sh           # one, from test/ or the top directory
+    make check || cat test/test-suite.log
+
+Needs root plus `ethtool`, `tshark` and `bird`.  `bird` runs OSPF, which
+is what builds the unicast RPF tree PIM depends on; `ethtool` disables
+UDP checksum offloading, since frames leave kernel space on these veth
+pairs.  A missing dependency makes a test **SKIP** (exit 77), not fail,
+so a green run on a machine without them has tested nothing — check the
+log.
+
+Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs
+and runtime `pimctl` dumps.
+
+| Test        | Topology                    | What it asserts                          |
+|-------------|-----------------------------|------------------------------------------|
+| `single.sh` | One router, two end devices | Forwarding between two LANs on one router, and an IGMPv3 query on both. |
+| `two.sh`    | Two routers in a row        | The same, with the sender starting *before* the receiver joins — the other tests do it the other way round. |
+| `three.sh`  | Three routers in a row      | Forwarding across two transit hops. |
+| `rp.sh`     | Triangle, R2 is the RP      | Rendez-vous Point operation and the switch to the shortest path tree.  R2 is the RP and R3 the last hop router, on separate routers. |
+| `shared.sh` | Two routers, both LANs bridged | Two routers on one shared segment at each end. |
+| `pod.sh`    | Four routers, redundant paths | Two disjoint paths between the same pair of LANs. |
+| `ssm.sh`    | One router, one end device  | IGMPv3 (S,G) membership state, not forwarding: two sources reported for one SSM group, one blocked, and the survivor still ageing out once the reports stop.  Driven by `igmpv3.c`, for the reason given above. |
+
+
+The FreeBSD vnet jail lab
+-------------------------
+
+    sh test/freebsd-lab.sh run all          # every scenario, one after another
+    sh test/freebsd-lab.sh run rp-offpath   # one of them
+    sh test/freebsd-lab.sh start rpt        # build it and leave it up
+    sh test/freebsd-lab.sh check rpt        # assertions against a running lab
+    sh test/freebsd-lab.sh stop
+
+Deliberately **not** in `TESTS`: it needs root (via sudo), a VIMAGE
+kernel, `ip_mroute.ko`, and `if_bridge.ko` for the shared segment
+scenarios.  The Linux suite cannot run on FreeBSD at all — it is built
+on `unshare`, veth and namespaces — so without this lab the BSD half of
+the tree is compiled but never executed.
+
+What makes it possible: `sys/netinet/ip_mroute.c` is fully VNET-ized, so
+each vnet jail owns a private forwarding cache and vif table, and
+`prison_priv_check()` grants `PRIV_NETINET_MROUTE`, `PRIV_NETINET_RAW`
+and `PRIV_NET_BPF` to jails with their own network stack, so pimd's raw
+sockets and `MRT_INIT` work inside one.  `ip_mroute.ko` has to be loaded
+from the host, a jail may not `kldload`.
+
+Most scenarios share one topology, a chain of three routers with an end
+device at each end; the ones that do not say so below.  Unicast routing
+is static on purpose — pimd reads distance and metric from `pimd.conf`,
+not from the kernel, so a routing daemon here would only add a
+dependency and a second thing to debug.
+
+An assertion that reproduces a known deviation reports **KNOWN** through
+`xfail()` instead of failing the run, and turns into an `ok` the day
+pimd starts doing the right thing.
+
+The scenarios cannot run in parallel: they share jail names, epair names
+and the host-global `net.inet.ip.mcast.loop` sysctl.
+
+| Scenario              | Time | What only this one covers |
+|-----------------------|------|---------------------------|
+| `rpt`                 | ~90s | The baseline: R2 is BSR and RP, the receiver joins, traffic has to arrive over the shared tree. |
+| `keepalive`           | ~5m  | An (S,G) with an empty outgoing interface list, kept alive while its source sends — [issue #251][251].  Runs long on purpose, it has to outlive `PIM_DATA_TIMEOUT` (210s). |
+| `rp-lasthop`          | ~2m  | The RP *is* the last hop router for the only receiver — [issue #243][243].  `rp.sh` keeps those two roles on separate routers, so the RP there never has a directly connected member. |
+| `rp-offpath`          | ~2m  | The only topology that is not a chain.  A triangle puts the RP off the path the traffic takes once the SPT is up, so the shared tree and the shortest path tree leave a router by different interfaces, and the last hop router is directly connected to the BSR — [issue #211][211]. |
+| `gif-tunnel`          | ~2m  | Two PIM routers either side of a plain unicast transit router, joined by a `gif` tunnel.  A gif is `IFF_POINTOPOINT`, so this is the only scenario reaching the point-to-point branch of `config_vifs_from_kernel()`. |
+| `gif-tunnel-staticrp` | ~3m  | The same tunnel with a static `rp-address` instead of an elected RP.  A different code path, not another route to the same state: `my_cand_rp_address` is only ever set while parsing `cand_rp`, so with a static RP the router that *is* the RP answers "no" to every internal test of whether it is. |
+| `shared-lan`          | ~3m  | Five routers over two bridges, three of them on one segment.  The only scenario with more than one PIM router on a link, so the only one where DR election, IGMP querier election and the assert election run at all.  Its addresses put the DR and the querier on different routers, the two elections taking opposite ends of the address range. |
+| `shared-lan-spt`      | ~3m  | The same LAN with the last hop router allowed onto the SPT, which by RFC 7761 4.6.1 must decide the assert on the RPT bit before either address is looked at.  Holds the one `xfail()` written so far — pimd took the bit straight from `MRTF_RP` and lost a comparison it should have won.  Now reports `ok`, fixed in `4cb79f1`. |
+| `ssm`                 | ~90s | IGMPv3 (S,G) membership on the last hop router, the FreeBSD counterpart to `ssm.sh`. |
+| `ssm-range`           | ~30s | The SSM range moved off 232.0.0.0/8 by `ssm-range` in `pimd.conf` — [issue #185][185].  The configured range *replaces* the default, like Cisco's, so both halves are asserted at once: a group in the new range becomes source specific and one in 232/8 stops being. |
+| `alias`               | ~90s | An interface carrying a second address, on a subnet of its own, with the sender on that second subnet.  The only scenario reaching the alias branch of `config_vifs_from_kernel()`, and one Linux cannot show: on BSD a dropped alias means the DR does not believe the sender is on its LAN and never registers it. |
+| `ifgone`              | ~30s | An interface destroyed under a running pimd — [issue #218][218].  FreeBSD answers `ENXIO` where Linux answers `ENODEV`, and `check_vif_state()` used to know only the Linux one. |
+| `renumber`            | ~30s | The counterpart: the interface stays and its address moves, inside its own subnet.  Asserts that pimd notices, takes the VIF out of service and back in, and that the neighbour on the far side sees the new address without waiting for a periodic Hello. |
+
+Set `DEBUG` at the top of the script for pimd logs; each router's log
+and control socket land in `/tmp/pimd-test`.
+
+
+The Arista vEOS interoperability lab
+------------------------------------
+
+    sh test/freebsd-interop.sh run all         # both scenarios
+    sh test/freebsd-interop.sh run pimd-rp     # one of them
+    sh test/freebsd-interop.sh start arista-rp # build it and leave it up
+    sh test/freebsd-interop.sh stop
+
+This is the only test that puts a second implementation on the wire.
+Everything else here has pimd at both ends of every exchange, which
+answers "does pimd still do what it did yesterday" and never "does pimd
+do what the RFC says".  Bootstrap and Candidate-RP-Advertisement are the
+worst case: `src/pim_proto.c` both writes and reads them, and nothing
+else ever has.
+
+Two pimd routers run in vnet jails and an Arista vEOS runs under bhyve
+between them, over host bridges — one end of each middle link is a bhyve
+tap and the other is a jail, and a bridge is the only thing that joins
+the two.  What the Arista believes is read over eAPI, so those
+assertions are the switch's own view of the exchange rather than an
+inference from pimd's logs.
+
+The two scenarios are each other's mirror, and running both is the
+point: a parser that is wrong in the same way as its encoder passes one
+and fails the other.
+
+| Scenario    | Time | Roles                                       | What it reverses |
+|-------------|------|---------------------------------------------|------------------|
+| `arista-rp` | ~3m  | Arista is BSR, RP and the router in the middle; R1 is first hop, R3 last hop. | pimd parses a Bootstrap and Candidate-RP-Advertisement written by EOS; EOS has to believe pimd's (\*,G) Join and decapsulate its Register.  DR election is asserted on two links and from both sides, pimd losing one and winning the other. |
+| `pimd-rp`   | ~4m  | R1 is BSR and RP; the Arista is first *and* last hop router, for a LAN of its own. | EOS parses pimd's Bootstrap — address, priority and hash mask length asserted separately — R3 has to learn the same RP set *through* the Arista, and pimd has to believe an EOS-built Join and decapsulate an EOS Register, then get off the register vif and have its Register-Stop honoured. |
+
+Requirements, on top of the vnet jail lab's: `bhyve` with a VIMAGE
+kernel, `sysutils/grub2-bhyve`, `emulators/qemu-tools`,
+`sysutils/e2fsprogs`, `python3` (eAPI is JSON), and a vEOS-lab qcow2
+image plus its Aboot ISO.  The image is a licensed Arista download and
+is not, and cannot be, in this tree; point `VEOS_QCOW` at it.
+
+It cannot run beside `freebsd-lab.sh` — the two share
+`net.inet.ip.mcast.loop` and the 10.0.0.0/8 addresses — and says so on
+startup.  Their jails, epairs and bridges are named apart, so both can
+be built in one tree.
+
+### The VM runner
+
+`veos-bhyve.sh` boots the vEOS and knows nothing about PIM.  The
+interoperability lab drives it, and it is useful on its own:
+
+    sudo ./test/veos-bhyve.sh -t tap100:br0 -D start   # boot it detached
+    sudo ./test/veos-bhyve.sh console                  # attach to the console
+    sudo ./test/veos-bhyve.sh cli 'show ip pim neighbor'
+    sudo ./test/veos-bhyve.sh inject startup-config    # write it to the flash
+    sudo ./test/veos-bhyve.sh cloudinit startup-config # or use a config drive
+    sudo ./test/veos-bhyve.sh stop
+
+It is `bash`, not `sh`, and every subcommand needs root.
+
+Its header documents what booting a vEOS under bhyve actually takes, all
+of it learned the hard way: the disk holds no bootloader and the kexec
+Aboot would do does not survive bhyve, so the kernel and initrd are
+loaded out of the SWI by `grub-bhyve`; the initrd's `flashrom` probe
+faults the VM and is stubbed out; bhyve exits when the guest reboots, so
+the VM runs in a restart loop; and a fresh image boots into Zero Touch
+Provisioning, out of which there are two ways — a `startup-config`
+written onto the guest ext4 with `debugfs`, or the vendor's
+`ARISTA_CONFIG_DRIVE` day0 path, which does work under bhyve once
+`EosCloudInit` is told which platform it is on.
+
+
+Which suite sees what
+---------------------
+
+| | Linux suite | vnet jail lab | vEOS lab |
+|---|---|---|---|
+| Runs in `make check`        | yes | no  | no  |
+| Unicast RPF lookups         | `netlink.c` | `routesock.c` | `routesock.c` |
+| Kernel glue                 | Linux `kern.c` | BSD `kern.c` | BSD `kern.c` |
+| Unicast routing             | OSPF, via bird | static | static |
+| Several PIM routers per link| `shared.sh`, `pod.sh` | `shared-lan*` | no |
+| Point-to-point vifs         | no | `gif-tunnel*` | no |
+| Interfaces changing at runtime | no | `ifgone`, `renumber` | no |
+| A foreign implementation    | no | no | yes |
+
+A change to `src/pim_proto.c` or `src/route.c` wants at least the Linux
+suite and the vnet jail lab.  A change to how a message is *encoded* —
+Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert —
+wants the vEOS lab too, because it is the only one that can tell a wrong
+encoding from a matching pair of wrong ones.
+
+[185]: https://github.com/troglobit/pimd/issues/185
+[211]: https://github.com/troglobit/pimd/issues/211
+[218]: https://github.com/troglobit/pimd/issues/218
+[243]: https://github.com/troglobit/pimd/issues/243
+[251]: https://github.com/troglobit/pimd/issues/251
