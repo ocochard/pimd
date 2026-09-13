@@ -76,6 +76,28 @@ and turn into an `ok` once pimd is fixed;
 `shared-lan-spt` has the only one written so far, for the assert RPT bit of RFC 7761 4.6.1, and it
 now reports `ok` -- the deviation it guards was fixed in `4cb79f1`.
 
+`test/freebsd-interop.sh` is the only test that puts a second PIM implementation on the wire: an
+Arista vEOS in bhyve, between two pimd routers in vnet jails. Every other test has pimd on both
+ends, so a message pimd encodes wrongly it also decodes wrongly and the run stays green. Its two
+scenarios are each other's mirror, and running both is the point -- a parser that is wrong in the
+same way as its encoder passes one and fails the other:
+
+- `arista-rp`, the Arista is the BSR, the RP and the router in the middle. pimd parses a Bootstrap
+  and Candidate-RP-Advertisement written by EOS, and EOS has to believe pimd's `(*,G)` Join and
+  decapsulate its Register. Also asserts DR election on two links from both sides, with pimd losing
+  one and winning the other.
+- `pimd-rp`, the roles reversed: R1 is the BSR and RP, the Arista is the first and last hop router
+  for a LAN of its own. EOS parses pimd's Bootstrap (address, priority and hash mask length are
+  asserted separately), R3 has to learn the same RP set *through* the Arista, and pimd has to
+  believe an EOS-built Join and decapsulate an EOS Register -- then get off the register vif and
+  have its Register-Stop honoured, measured over a second stream once the tree is up.
+
+`run all` walks both. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image.
+`test/veos-bhyve.sh` is the VM runner it drives (see its header for how a vEOS boots under bhyve at
+all), usable on its own: `start`/`stop`/`console`, `inject` to write a startup-config onto the guest
+flash with `debugfs`, `cloudinit` for the vendor `ARISTA_CONFIG_DRIVE` day0 path, and `cli` to run
+EOS commands over eAPI.
+
 ## Running
 
 Needs root and a multicast-capable kernel (`CONFIG_IP_MROUTE`/`CONFIG_IP_PIMSM_V2` on Linux,
