@@ -54,7 +54,13 @@ question today is an FRR interface or none.
 * Random issues:
 ** Run the code checker sparse harder on the code: CC=cgcc make
 
-** Start work on ironing out a TODO list for RFC 7761 compliancy.
+** Work through doc/rfc7761-compliance.md
+
+The list itself is done: sections 4.2 to 4.6 and 4.10/4.11 were read against
+the code and what disagrees is written up there, with a file:line and an
+effort estimate per entry.  Three of them are input validation or trust
+issues and are listed first.  Still unread: 4.7 (BSR, and RFC 5059), 4.8
+(SSM), 4.9 as a whole, and the security considerations.
 
 ** Look into updates RFC 5059 and RFC 5796
 
@@ -72,8 +78,6 @@ question today is an FRR interface or none.
 
 ** The code should use the _PIM_VT handling of the 'struct pim'
 
-** Check 2.10 from the spec "Unicast Routing Changes", and verify
-   that it is properly implemented
 
 ** <masklen> in pimd.conf should be mandatory, instead of relaying
    of its default value (16)
@@ -81,10 +85,6 @@ question today is an FRR interface or none.
 ** Candidate RP priority configuration in pimd.conf should be per
    prefix, instead of a single priority for the whole RP.
 
-** Check whether Asserts received on the iif are really evaluated
-   by using the metrics of other asserts received on that iif, or
-   the comparison uses the local metric and preference info (it must
-   be the former!).
 
 ** Experimental kernel MFC (*,G) related:
    If the (S,G) iif or oifs are different from the (*,G) or (*,*,RP)
