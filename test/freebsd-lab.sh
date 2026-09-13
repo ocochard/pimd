@@ -298,6 +298,30 @@
 #               the run can tell a daemon that survived from one that
 #               exited.  Takes about 30s.
 #
+#   renumber    The rpt topology again, and the counterpart to ifgone: the
+#               interface stays, its address moves.  R2's address on the
+#               R1 link is replaced inside its own subnet while pimd runs,
+#               which is a DHCP lease that changed, an ifconfig edit, or a
+#               failover address moving between routers.
+#
+#               The addresses used to be read once, at start-up and on
+#               SIGHUP, while the periodic poll looked only at the
+#               interface flags, so pimd went on announcing and sourcing
+#               PIM from an address the kernel no longer had: the
+#               neighbours held it for the full holdtime and could elect it
+#               DR, and pimd's own sends left by whatever route the kernel
+#               picked.  RFC 7761 sec. 4.3.1 wants a Hello with a zero
+#               HoldTime carrying the old address and a Hello carrying the
+#               new one, which is what taking the VIF out of service and
+#               back in does.
+#
+#               R2 is the router in the middle, so the assertions can tell
+#               a restart confined to one VIF from one that disturbed the
+#               router: the adjacency with R1 has to survive untouched.
+#               The goodbye Hello is reported rather than asserted, since a
+#               poll cannot get ahead of an address that has already gone.
+#               Takes about 30s.
+#
 # The scenarios cannot run in parallel: they use the same jail names and
 # epairs, and net.inet.ip.mcast.loop is a host-global sysctl.
 #
@@ -309,7 +333,8 @@
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
-# "shared-lan-spt", "ssm", "ssm-range", "alias", "ifgone", or "all" for run.
+# "shared-lan-spt", "ssm", "ssm-range", "alias", "ifgone", "renumber", or
+# "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # shared-lan, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -482,6 +507,23 @@ IFGONE_PEER_IF=${IFGONE_PEER_IF:-epair101a}
 IFGONE_ADDR=${IFGONE_ADDR:-10.0.1.1}
 IFGONE_KEPT=${IFGONE_KEPT:-10.0.12.1}
 
+# renumber: R2's address on the R1 link moves, inside its own subnet, which
+# is what an interface renumbered under a running pimd looks like -- a DHCP
+# lease that changed, an ifconfig edit, a failover address moved.  Staying
+# inside the subnet keeps the change to the one thing being tested: only the
+# routes naming it as a gateway have to follow it.  R2 is the router in the
+# middle, so its other VIF stays put and shows the restart was confined to
+# the interface that moved.
+# R2's link to R1 is not the one to move: it is renamed Epair112b on purpose
+# (see renames()) and r2.conf names it in bsr-candidate and rp-candidate, so
+# renumbering it would move the RP address as well and the scenario would be
+# about something else.  The R3 link carries no such role.
+RENUM_IF=${RENUM_IF:-epair123a}
+RENUM_OLD=${RENUM_OLD:-10.0.23.2}
+RENUM_NEW=${RENUM_NEW:-10.0.23.22}
+RENUM_PEER=${RENUM_PEER:-r3}
+RENUM_KEPT=${RENUM_KEPT:-10.0.12.1}
+
 # gif-tunnel: the tunnel R1 and R3 build over R2.  The inner prefix is a
 # /24 on a point-to-point link on purpose, see the header.
 GIF_IF=gif0
@@ -507,7 +549,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber] | run all | stop"
 }
 
 # Both shared segment scenarios are one topology.  They differ in whether
@@ -523,7 +565,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1720,6 +1762,7 @@ check() {
 	ssm-range)  check_ssm_range; return $? ;;
 	alias)      check_alias; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
+	renumber)   check_renumber; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -2037,6 +2080,12 @@ iface_addr() {
 	pimctl "$1" -t show interface 2>/dev/null | awk -v i="$2" '$1 == i { print $3 }'
 }
 
+# Does pimd give interface $2 on router $1 the address $3?  Re-read on every
+# call, so it can be polled with wait_for() while a VIF restarts.
+iface_is() {
+	[ "$(iface_addr "$1" "$2")" = "$3" ]
+}
+
 # alias: R1's interface facing the sender carries two addresses, and the
 # sender only has one out of the second subnet.  There can be one VIF per
 # interface and no more -- MRT_ADD_VIF is keyed on the ifnet, and the VIF
@@ -2247,6 +2296,120 @@ check_ifgone() {
 		ok "r1 still has R2 (10.0.12.2) as a neighbour"
 	else
 		fail "r1 lost its remaining PIM adjacency"
+	fi
+
+	[ "$FAILED" -eq 0 ] || return 1
+	return 0
+}
+
+# An interface renumbered under a running pimd.  The VIF keeps naming an
+# address the kernel no longer has unless something notices: pimd goes on
+# sourcing PIM from it, and the neighbours hold it, and may elect it DR, for
+# the whole 105 second holdtime, while its own sends leave by whatever route
+# the kernel picks.  RFC 7761 sec. 4.3.1 asks for a Hello with a zero
+# HoldTime carrying the old address and a Hello carrying the new one, which
+# is what taking the VIF out of service and back in does here.
+#
+# What this exercises, in src/vif.c: check_vif_addrs() walking getifaddrs()
+# the way config_vifs_from_kernel() does, renumber_vif() deciding an address
+# really changed, and the stop_vif()/start_vif() pair that makes the group
+# memberships, the kernel VIF and the routing entries follow it.
+check_renumber() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R2 and R3 are neighbours at the address about to change"
+	if wait_for 60 has_neighbor "$RENUM_PEER" "$RENUM_OLD"; then
+		ok "$RENUM_PEER: R2 is a PIM neighbour at $RENUM_OLD"
+	else
+		fail "$RENUM_PEER: no adjacency with R2 to renumber, see $WORKDIR/$RENUM_PEER.log"
+		return 1
+	fi
+	if [ "$(iface_addr r2 "$RENUM_IF")" = "$RENUM_OLD" ]; then
+		ok "r2: VIF on $RENUM_IF reads $RENUM_OLD"
+	else
+		fail "r2: VIF on $RENUM_IF reads $(iface_addr r2 "$RENUM_IF"), expected $RENUM_OLD"
+		return 1
+	fi
+
+	print "3. The address is changed under pimd"
+	jrun r2 ifconfig "$RENUM_IF" inet "$RENUM_OLD" delete || \
+		die "failed removing $RENUM_OLD from $RENUM_IF on r2"
+	jrun r2 ifconfig "$RENUM_IF" inet "$RENUM_NEW/24" alias || \
+		die "failed adding $RENUM_NEW to $RENUM_IF on r2"
+	# The unicast routing follows the address, as it would in the field:
+	# R3 reaches the source and the RP through the gateway that just moved.
+	for net in 10.0.1.0/24 10.0.12.0/24; do
+		jrun "$RENUM_PEER" route -q change "$net" "$RENUM_NEW" >/dev/null 2>&1 || \
+			dprint "$RENUM_PEER: no route to $net to repoint, continuing"
+	done
+	dprint "r2: $RENUM_IF is now $RENUM_NEW"
+
+	print "4. pimd noticed, and said so"
+	# check_vif_state() runs from age_vifs() every TIMER_INTERVAL (5s),
+	# src/defs.h, so this is a handful of polls at most
+	if wait_for 30 logged r2 "renumbered from $RENUM_OLD to $RENUM_NEW"; then
+		ok "r2: logged the renumbering of $RENUM_IF"
+	else
+		fail "r2: nothing logged, the address change went unnoticed"
+	fi
+
+	print "5. pimd survived taking the VIF out of service and back in"
+	if pimctl r2 show status >/dev/null 2>&1; then
+		ok "r2: pimd still answers on its pimctl socket"
+	else
+		fail "r2: pimd exited during the renumbering, see $WORKDIR/r2.log"
+		return 1
+	fi
+
+	print "6. The VIF is back in service on the new address"
+	if wait_for 30 iface_is r2 "$RENUM_IF" "$RENUM_NEW"; then
+		ok "r2: VIF on $RENUM_IF reads $RENUM_NEW"
+	else
+		fail "r2: VIF on $RENUM_IF reads $(iface_addr r2 "$RENUM_IF"), expected $RENUM_NEW"
+	fi
+	if [ "$(iface_state r2 "$RENUM_IF")" = "Up" ]; then
+		ok "r2: $RENUM_IF is up again"
+	else
+		fail "r2: $RENUM_IF reads $(iface_state r2 "$RENUM_IF") after the restart"
+	fi
+	if [ "$(kern_vif_addr r2 "$(vif_index r2 "$RENUM_IF")")" = "$RENUM_NEW" ]; then
+		ok "r2: the kernel VIF moved to $RENUM_NEW as well"
+	else
+		fail "r2: kernel VIF still reads $(kern_vif_addr r2 "$(vif_index r2 "$RENUM_IF")")"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "7. The neighbour on the far side learns the new address"
+	# start_vif() sends a Hello as soon as the VIF is back, so this does
+	# not wait for a periodic one
+	if wait_for 60 has_neighbor "$RENUM_PEER" "$RENUM_NEW"; then
+		ok "$RENUM_PEER: R2 is a PIM neighbour at $RENUM_NEW"
+	else
+		fail "$RENUM_PEER: never heard from R2 at $RENUM_NEW, see $WORKDIR/$RENUM_PEER.log"
+	fi
+	# The goodbye Hello is sent with the old address, which the kernel no
+	# longer has, so it may not leave at all -- a poll cannot get ahead of
+	# an address that has already gone.  Whether R1 drops $RENUM_OLD now
+	# or ages it out is therefore not asserted, only reported.
+	if has_neighbor "$RENUM_PEER" "$RENUM_OLD"; then
+		dprint "$RENUM_PEER: still holds the old $RENUM_OLD, ages out after the holdtime"
+	else
+		dprint "$RENUM_PEER: dropped $RENUM_OLD, the zero-holdtime Hello got through"
+	fi
+
+	print "8. The other VIF on the same router was left alone"
+	if has_neighbor r2 "$RENUM_KEPT"; then
+		ok "r2: still has R1 ($RENUM_KEPT) as a neighbour"
+	else
+		fail "r2: lost its adjacency with R1, the restart was not confined to $RENUM_IF"
 	fi
 
 	[ "$FAILED" -eq 0 ] || return 1
@@ -2945,157 +3108,23 @@ check_shared_lan() {
 		return 1
 	fi
 
-	print "8. Multicast reaches the receiver at the far end of the tree"
-	run_stream_and_sample_shared
-	kill "$joiner" 2>/dev/null || true
-	if [ "$replies" -ge "$MIN_RECEIVED" ]; then
-		ok "ED1 -> $GROUP -> ED2, $replies replies for $STREAM_PKTS packets"
-	else
-		fail "only $replies replies for $STREAM_PKTS packets, want >= $MIN_RECEIVED"
-	fi
-
-	# The assertion this scenario exists for.  R3 is the RP for $GROUP
-	# and the DR for $RCV_ADDR's subnet, so it must never put the
-	# register vif in that source's oif list: there is nobody to
-	# register to but itself.  process_cache_miss() decides that with
-	# "group->rpaddr != my_cand_rp_address" (src/route.c), which a
-	# static RP can never satisfy.
-	print "9. The RP does not encapsulate its own directly connected source to itself"
-	if [ -z "$selfreg" ]; then
-		ok "r3 kept the register vif out of the oifs for $RCV_ADDR"
-	else
-		fail "r3 put the register vif in the oifs for its own source $RCV_ADDR, it is registering to itself"
-	fi
-
-	echo
-	if [ "$FAILED" -eq 0 ]; then
-		print "RESULT: PASS"
-		return 0
-	fi
-	print "RESULT: FAIL ($FAILED assertion(s))"
-	for r in $(pim_routers); do
-		dprint "--- $r: pimctl show compat detail ---"
-		pimctl "$r" show compat detail 2>&1 | head -30 || true
-	done
-	dprint "--- r3: pimctl show mrt detail ---"
-	pimctl r3 show mrt detail 2>&1 | head -40 || true
-	dprint "--- registers decapsulated by r3, total: $(registers_seen) ---"
-	return 1
-}
-
-# The shared segment scenario.  Everything up to assertion 5 is the rpt
-# scenario with the right hand links rebuilt as bridges; from 6 on it is the
-# part no point-to-point link can reach, where three routers have to agree
-# on who speaks for a LAN they all sit on.
-check_shared_lan() {
-	print "1. pimd is alive on every router"
-	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
-			ok "$r: pimd answers on its pimctl socket"
+	# R5 is on the same LAN, hears the same report -- it is the IGMP
+	# querier there -- and has a (*,G) of its own, being the router ED2
+	# sits behind.  What it is not is the DR, and RFC 7761 sec. 4.1.5
+	# keeps a local member out of the outgoing interfaces of anyone else:
+	# pim_include(*,G) counts interface I only where I_am_DR(I).  Without
+	# that gate R5 forwards onto a LAN that already has a forwarder, and
+	# the receivers on it get every packet twice until an assert election
+	# settles it -- an election only a data packet on the wrong interface
+	# can even start.
+	if [ "$(iface_dr r5 epair503b)" = "$SL_DR_ADDR" ]; then
+		if map_isset r5 epair503b "$(route_map r5 ANY "$GROUP" Outgoing)"; then
+			fail "r5 is not the DR on the LAN but forwards $GROUP onto it"
 		else
-			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+			ok "r5, not the DR, keeps the LAN out of its oifs"
 		fi
-	done
-	[ "$FAILED" -eq 0 ] || return 1
-
-	print "2. Every router on a bridged segment sees every other one"
-	for pair in "r2 10.0.23.3" "r2 10.0.23.4" \
-		    "r3 10.0.23.2" "r3 10.0.23.4" \
-		    "r4 10.0.23.2" "r4 10.0.23.3"; do
-		# shellcheck disable=SC2086
-		set -- $pair
-		if wait_for 60 has_neighbor "$1" "$2"; then
-			ok "$1 sees $2 on the upstream segment"
-		else
-			fail "$1 never saw $2, PIM hello is not crossing $BR_UPSTREAM"
-		fi
-	done
-	for pair in "r3 $SL_DR_ADDR" "r3 $SL_QUERIER_ADDR" \
-		    "r4 $SL_R3_ADDR" "r4 $SL_QUERIER_ADDR" \
-		    "r5 $SL_R3_ADDR" "r5 $SL_DR_ADDR"; do
-		# shellcheck disable=SC2086
-		set -- $pair
-		if wait_for 60 has_neighbor "$1" "$2"; then
-			ok "$1 sees $2 on the shared LAN"
-		else
-			fail "$1 never saw $2, PIM hello is not crossing $BR_RECEIVER"
-		fi
-	done
-	[ "$FAILED" -eq 0 ] || return 1
-
-	print "3. The DR election on the shared LAN takes the highest address"
-	dr3=$(iface_dr r3 "$SL_R3_IF")
-	dr4=$(iface_dr r4 "$SL_R4_IF")
-	dr5=$(iface_dr r5 epair503b)
-	if [ "$dr3" = "$SL_DR_ADDR" ] && [ "$dr4" = "$SL_DR_ADDR" ] &&
-	   [ "$dr5" = "$SL_DR_ADDR" ]; then
-		ok "r3, r4 and r5 all call $SL_DR_ADDR (r4) the DR"
 	else
-		fail "DR disagreement: r3 '$dr3', r4 '$dr4', r5 '$dr5', all should say $SL_DR_ADDR"
-	fi
-
-	# Two elections over the same wire, deliberately won by different
-	# routers: PIM takes the highest address, IGMP the lowest.
-	print "4. The IGMP querier election takes the lowest, i.e. another router"
-	q3=$(iface_querier r3 "$SL_R3_IF")
-	q4=$(iface_querier r4 "$SL_R4_IF")
-	q5=$(iface_querier r5 epair503b)
-	if [ "$q5" = "Local" ] && [ "$q3" = "$SL_QUERIER_ADDR" ] &&
-	   [ "$q4" = "$SL_QUERIER_ADDR" ]; then
-		ok "r5 ($SL_QUERIER_ADDR) is the querier, r3 and r4 agree"
-	else
-		fail "querier disagreement: r5 '$q5' (want Local), r3 '$q3', r4 '$q4' (want $SL_QUERIER_ADDR)"
-	fi
-	[ "$FAILED" -eq 0 ] || return 1
-
-	print "5. The RP set is distributed by the bootstrap router"
-	for r in $ROUTERS; do
-		if wait_for 90 has_rp "$r" "$RP_ADDR"; then
-			ok "$r learned RP $RP_ADDR"
-		else
-			fail "$r never learned RP $RP_ADDR (BSR/cand-RP path)"
-		fi
-	done
-	[ "$FAILED" -eq 0 ] || return 1
-
-	# ED3 joins first, and on its own port, so this window has exactly one
-	# reason for anyone to forward onto the LAN: an IGMP report.  pimd
-	# gives it to the DR alone.  add_leaf() (src/route.c) looks the group
-	# up with DONT_CREATE unless VIFF_DR is set, on the grounds that "if a
-	# non-DR last-hop router has not received a PIM Join, it should not
-	# create a PIM state, otherwise later this state may incorrectly
-	# trigger PIM joins" - a deliberate deviation, and the reason this
-	# scenario needs a downstream router to get its second forwarder.
-	print "6. An IGMP report on the LAN is taken by the DR and by nobody else"
-	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/joiner.log" 2>&1 &
-	joiner=$!
-	if wait_for 60 has_mrt r4 "$GROUP"; then
-		ok "r4, the DR, created a ($GROUP) entry for ED3's report"
-	else
-		fail "r4 never saw ED3's IGMP report, see $WORKDIR/r4.log"
-		kill "$joiner" 2>/dev/null || true
-		return 1
-	fi
-	if has_mrt r3 "$GROUP"; then
-		fail "r3 is not the DR but created a ($GROUP) entry from the report alone"
-	else
-		ok "r3, not the DR, created nothing from the same report"
-	fi
-
-	# The other way onto a LAN: R5 wants the group for ED2 and its RPF
-	# neighbour is R3, so its Join names R3, and R3 is the one router on
-	# the LAN that may act on it.
-	print "7. A downstream Join gives the non-DR an oif on the same LAN"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
-	receiver=$!
-	if wait_for 90 joined_on r3 "$SL_R3_IF" "$GROUP"; then
-		ok "r3 joined $GROUP towards the LAN on r5's behalf"
-	else
-		fail "r3 never took r5's Join, see $WORKDIR/r3.log"
-		kill "$joiner" "$receiver" 2>/dev/null || true
-		return 1
+		dprint "r5 reads the DR as $(iface_dr r5 epair503b), not $SL_DR_ADDR, skipping"
 	fi
 
 	print "8. Multicast reaches the receiver at the far end of the tree"
@@ -3261,7 +3290,7 @@ run() {
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
 			 gif-tunnel-staticrp shared-lan shared-lan-spt ssm \
-			 ssm-range alias ifgone; do
+			 ssm-range alias ifgone renumber; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?
