@@ -414,6 +414,19 @@ AL_FWD_WAIT=${AL_FWD_WAIT:-150}
 # one.  Still far short of the Assert_Time a loser waits out otherwise,
 # which is the whole point of the message.
 AL_CANCEL_WAIT=${AL_CANCEL_WAIT:-75}
+
+# What R5 queries with on the contested LAN, and the reason the
+# AssertCancel case can run at all.  The Arista's reason to forward there
+# is ED3's membership, and a non-querier derives its group membership
+# interval from the Querier's Query Interval the queries carry -- QQIC,
+# RFC 3376 sec. 4.1.7 -- so the querier sets how long that leaf outlives
+# the last report.  R5 is the querier here, and on the RFC default of 125s
+# the Arista holds the group for 2 x 125 + 10 = 260s, three times the wait
+# below: measured on the lab, "show ip igmp groups" reporting Expires
+# 0:04:20 with the default and 0:00:17 with this.  The winner then never
+# deletes the state sec. 4.6.4 has it send the cancel for, and the case
+# reported pimd ignoring a message the Arista had never sent.
+AL_QUERY_INTERVAL=${AL_QUERY_INTERVAL:-5}
 AL_ELECTION_WAIT=${AL_ELECTION_WAIT:-30}
 
 # How long every stream in this scenario has to stay up for, worked out
@@ -760,8 +773,11 @@ write_case_confs() {
 
 	cat <<-EOF > "$WORKDIR/r5.conf"
 	# R5: last hop router for ED2 and IGMP querier on the shared LAN,
-	# never a contender on it.  Sub-case $1.
+	# never a contender on it.  Sub-case $1.  It queries often because
+	# the Arista ages ED3's membership by what the querier asks for, and
+	# the AssertCancel case needs that leaf to expire while it watches.
 	hello-interval 10
+	igmp-query-interval $AL_QUERY_INTERVAL
 	$spt
 	EOF
 }
@@ -2042,28 +2058,54 @@ check_assert_cancel() {
 		return
 	fi
 
-	# Take the winner's reason to forward away.  Shutting Ethernet2 down
-	# would take the whole LAN with it, so the membership goes instead:
-	# ED3 stops reporting, the Arista's only leaf expires, and it is
-	# then a winner that has deleted the forwarding state which caused
-	# the assert -- the exact trigger sec. 4.6.4 names.
-	kill "$joiner" 2>/dev/null
-	wait "$joiner" 2>/dev/null
+	# Take away every reason the winner has to forward on this LAN, which
+	# is more than ED3's membership, and finding that out cost a run.
+	# Shutting Ethernet2 down would take the whole LAN with it, so the
+	# receivers go instead -- but stopping ED3 alone leaves the Arista
+	# with R3's old downstream state: sec. 4.5.5 has R5 send its Join to
+	# RPF'(*,G), which is the assert winner now, and the log says it does
+	# ("Assert lost on epair853b ... winner 10.0.3.3", then its Joins go
+	# there).  A winner still holding a Join on the interface has not
+	# deleted the forwarding state that caused the assert and owes
+	# nobody a cancel, and the case used to read pimd's silence as it
+	# ignoring a message that was never sent.  ED2 goes too, so that R5
+	# stops joining at all and the Arista's outgoing list on Ethernet2
+	# really empties -- the trigger sec. 4.6.4 names.
+	kill "$joiner" "$receiver" 2>/dev/null
+	wait "$joiner" "$receiver" 2>/dev/null
+	receiver=
 
-	# Long enough for the membership to expire and the cancel to be sent
-	# and acted on, and far short of the Assert_Time a loser would
-	# otherwise have to wait out.
+	# Long enough for both memberships to expire, R5's Join to stop, the
+	# cancel to be sent and acted on, and far short of the Assert_Time a
+	# loser would otherwise have to wait out.  What makes it long enough
+	# for the memberships is AL_QUERY_INTERVAL; see it.
 	sleep "$AL_CANCEL_WAIT"
 	sample_assert
 
-	if [ -n "$al_pimd_fwd" ] && [ -z "$al_pimd_asserted" ]; then
-		ok "pimd returned to forwarding after the AssertCancel"
-	else
-		xfail "pimd ignored the AssertCancel and stayed off the LAN (M3 is back, src/pim_proto.c:3203)"
+	# The premise, checked rather than assumed.
+	if [ -n "$al_eos_fwd" ]; then
+		fail "the Arista still forwards $GROUP onto the LAN after ${AL_CANCEL_WAIT}s, so no AssertCancel was ever due"
+		dprint "$(eos "show ip mroute $GROUP")"
+		dprint "$(eos "show ip igmp groups")"
+		kill "$sender" "$joiner6" 2>/dev/null
+		wait "$sender" "$joiner6" 2>/dev/null
+		return
 	fi
 
-	kill "$sender" "$receiver" "$joiner6" 2>/dev/null
-	wait "$sender" "$receiver" "$joiner6" 2>/dev/null
+	# Back to NoInfo is what sec. 4.6.4 asks of the loser, and it is the
+	# observable here: with both receivers gone nobody forwards onto this
+	# LAN whatever the assert state says, so "pimd forwards again" would
+	# measure the receivers rather than the cancel.  Either entry counts,
+	# the loss having landed on the (*,G) -- M14.
+	if [ -z "$al_pimd_asserted$al_pimd_asserted_wc" ]; then
+		ok "pimd returned to NoInfo on $AL_R3_LAN_IF, as sec. 4.6.4 asks, rather than waiting out Assert_Time"
+	else
+		xfail "pimd ignored the AssertCancel and stayed the assert loser on $AL_R3_LAN_IF (M3 is back, src/pim_proto.c:3203)"
+		dprint "$(pimctl r3 show mrt detail)"
+	fi
+
+	kill "$sender" "$joiner6" 2>/dev/null
+	wait "$sender" "$joiner6" 2>/dev/null
 }
 
 # The winner's resend of sec. 4.6.1 Actions A3.
