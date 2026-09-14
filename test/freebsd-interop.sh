@@ -350,25 +350,25 @@ AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
 #                freebsd-lab.sh, whose xfail() the fix in 4cb79f1 cleared
 #                against pimd's own encoder.
 #
-#                Read a failure here carefully, because the premise is
-#                weaker than it looks.  What holds pimd on the shared tree
-#                is spt-threshold infinity, and that is a policy about
-#                sending Join(S,G), not about SPTbit: Update_SPTbit
-#                (sec. 4.2.2, doc/rfc7761.txt:1522) sets the bit when data
-#                from S arrives on RPF_interface(S) with a non-empty olist
-#                and RPF'(S,G) == RPF'(*,G), and all three are true of R3
-#                here -- ED6 supplies the olist and R1 is the upstream for
-#                the source and for the RP both.  Whether R3 ends up with
-#                an (S,G) entry to set the bit on depends on what the
-#                Arista asserts with, so the sub-case is order dependent:
-#                run on its own it stays on the shared tree and the Arista
-#                wins it, run after the other three R3 has been seen to
-#                reach SPTbit, after which sec. 4.6.1 compares the
-#                preference and pimd's 50 must beat the Arista's 100.
-#                That outcome is not pimd getting the bit wrong; closing
-#                it means a topology where the source and the RP are not
-#                reached through the same neighbour, the way rp-offpath is
-#                built in freebsd-lab.sh.
+#                What holds pimd on the shared tree is spt-threshold
+#                infinity, and this sub-case used to be order dependent
+#                because of it: the setting is a policy about sending
+#                Join(S,G), and pimd read the SPTbit off the outgoing
+#                interfaces alone, three of whose conditions R3 meets here
+#                -- data from S on RPF_interface(S), an olist from ED6, and
+#                RPF'(S,G) == RPF'(*,G), R1 being the upstream for the
+#                source and for the RP both.  Whether it had an (S,G) entry
+#                to set the bit on then depended on what the Arista had
+#                asserted with earlier in the run.  That was deviation M13:
+#                the fourth condition is JoinDesired(S,G) (sec. 4.5.5,
+#                doc/rfc7761.txt:3738), which is source specific state --
+#                joins(S,G), an IGMPv3 source-specific membership, or a
+#                Keepalive Timer -- and R3 has none of it, spt-threshold
+#                infinity being exactly what stops sec. 4.2.1 from starting
+#                the timer.  join_desired() (src/route.c) answers it now,
+#                so the sub-case stands on its own in either order and a
+#                failure here means pimd is back to claiming a tree it is
+#                not on.
 #
 # route_metric is held equal throughout and only metric_preference is
 # moved, so no sub-case can be decided by a field it is not about.
@@ -1378,14 +1378,15 @@ forwards_on() {
 	'
 }
 
-# Has router $1 been asserted off interface $2 for the (S,G) under test?
+# Has router $1 been asserted off interface $2, on the entry $3 names?
 #
-# The (S,G) entry only, not the (*,G).  They are separate elections and
-# this scenario routinely splits them: R3 asserts from (*,G) state in the
-# first round, with the RPT bit set, and loses that one for good, then
-# reaches SPTbit and wins the (S,G) round on its metric.  A winner that is
-# still marked asserted on its (*,G) is that split, not a failure, and
-# reading both entries here would report every metric win as a loss.
+# One entry, never both.  They are separate elections and this scenario
+# routinely splits them: R3 asserts from (*,G) state in the first round,
+# with the RPT bit set, and loses that one for good, then reaches SPTbit
+# and wins the (S,G) round on its metric.  A winner that is still marked
+# asserted on its (*,G) is that split, not a failure, and reading both
+# entries here would report every metric win as a loss.  Which one the
+# sub-case is about is establish_election()'s AL_ASSERT_ENTRY.
 asserted_on() {
 	map_isset "$1" "$2" "$(route_map "$1" "${3:-$SRC_ADDR}" "$GROUP" Asserted)"
 }
@@ -1424,15 +1425,19 @@ sample_assert() {
 	al_pimd_fwd=
 	al_eos_fwd=
 	al_pimd_asserted=
+	al_pimd_asserted_wc=
 
 	forwards_on r3 "$AL_R3_LAN_IF" && al_pimd_fwd=yes
 	eos_forwards_on_lan && al_eos_fwd=yes
 
-	# The loss is recorded on the (S,G), in every sub-case: the Arista is
-	# the router on the shortest path tree here, so its Assert always
-	# carries the RPT bit clear, and RFC 7761 sec. 4.6.2 gives such a
-	# message to the (S,G) machine of sec. 4.6.1 alone.
+	# The (S,G) is where sec. 4.6.1 keeps the state of the machine every
+	# Assert in this scenario belongs to, the Arista's carrying the RPT
+	# bit clear.  The (*,G) is sampled beside it, and only so that the
+	# loser branch can tell M14 -- the loss recorded on the shared tree's
+	# entry, because pimd could not reach the (S,G) machine -- from no
+	# loss recorded at all.
 	asserted_on r3 "$AL_R3_LAN_IF" "$AL_ASSERT_ENTRY" && al_pimd_asserted=yes
+	asserted_on r3 "$AL_R3_LAN_IF" ANY && al_pimd_asserted_wc=yes
 }
 
 # Does router $1 have a local member on interface $2, i.e. did an IGMP
@@ -1685,13 +1690,28 @@ establish_election() {
 
 	# Where the loss is recorded is not pimd's bookkeeping to choose: the
 	# RPT bit of the Assert says which of the two state machines it
-	# belongs to, sec. 4.6.2, and the Arista's always has the bit clear
-	# because it is the router on the shortest path tree.  So the (S,G)
-	# machine takes every Assert in this scenario, rpt-bit included, and
-	# the (S,G) entry is where the state lands -- pimd creating one for
-	# it if it was holding the group on the shared tree.  This used to
-	# accept the (*,G) as well, which is what pimd recorded it on when
+	# belongs to, sec. 4.6.2.  In the three metric sub-cases R3 is on the
+	# shortest path tree and trades Asserts with the bit clear, which is
+	# the (S,G) machine of sec. 4.6.1, so the (S,G) entry is where the
+	# state lands -- pimd creating one for it if it had none.  This used
+	# to accept the (*,G) as well, which is what pimd recorded it on when
 	# one election ran on whichever entry the lookup returned.
+	#
+	# rpt-bit asks for the same entry and may not get it, depending on the
+	# order the run walks the sub-cases in.  R3 is held on the shared tree
+	# there, so it holds no (S,G) state of its own; run on its own, the
+	# first Assert it hears from the Arista is the (*,G) one of sec. 4.6.2,
+	# source 0.0.0.0 on the wire, and losing that takes the LAN away.  The
+	# Arista's (S,G) Assert arrives behind it and should put the (S,G)
+	# machine into Loser as well, sec. 4.6.1 asking only for
+	# AssertTrackingDesired(S,G,I), but pimd can no longer reach that
+	# machine once the shared tree has lost the interface, so the loss
+	# stays on the (*,G) -- M14 in doc/rfc7761-compliance.md.  In the full
+	# walk the Arista has three elections behind it and its (S,G) Assert
+	# gets there first, the (S,G) machine takes it, and the assertion
+	# below reports ok.  Either way it asks for the entry sec. 4.6.1 names
+	# and reports KNOWN when it lands elsewhere, rather than being
+	# rewritten to match whichever pimd does.
 	AL_ASSERT_ENTRY=$SRC_ADDR
 
 	switch_case "$case_name"
@@ -1852,8 +1872,11 @@ assert_case() {
 		fi
 		if [ -n "$al_pimd_asserted" ]; then
 			ok "$case_name: pimd recorded $AL_R3_LAN_IF as asserted, as the loser"
+		elif [ -n "$al_pimd_asserted_wc" ]; then
+			xfail "$case_name: pimd recorded the loss on its (*,G), not on the (S,G) machine the Arista's Assert belongs to (M14, src/pim_proto.c)"
 		else
 			fail "$case_name: pimd lost the LAN but never marked $AL_R3_LAN_IF asserted"
+			dprint "$(pimctl r3 show mrt detail)"
 		fi ;;
 	esac
 
@@ -2012,7 +2035,7 @@ check_assert_cancel() {
 	# the same job now that pimd reaches the SPT, and is what this used
 	# before M10 was understood.
 	establish_election rpt-bit || return
-	if [ -z "$al_pimd_asserted" ] || [ -n "$al_pimd_fwd" ]; then
+	if [ -z "$al_pimd_asserted$al_pimd_asserted_wc" ] || [ -n "$al_pimd_fwd" ]; then
 		fail "could not make pimd the assert loser, the cancel case cannot run"
 		kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
 		wait "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
