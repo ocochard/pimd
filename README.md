@@ -71,12 +71,15 @@ sources.  This information is necessary in setups with more than one
 route between a multicast sender and a receiver to figure out which PIM
 router should be the active forwarder.
 
-However, pimd currently cannot retrieve the unicast routing distance
-(preference) and metric of routes from the system, not from the kernel
-nor a route manager like zebra.  Hence, pimd currently needs to be setup
-statically on each router using the desired distance and metric for each
-active interface.  If either the distance and/or the metric is missing
-in an interface configuration, the following two defaults will be used:
+pimd reads the metric of a route from the kernel routing table, the
+route priority on Linux and the per route metric on FreeBSD, so an
+Assert election follows the unicast routing table there.  The distance
+(preference) that RFC 7761 compares before it is another matter: it
+belongs to the routing protocol that provided the route, which the
+routing socket does not report, so it has to be configured per active
+interface.  If either the distance and/or the metric is missing in an
+interface configuration, the following two defaults will be used, the
+metric only where the system reports none of its own:
 
     default-route-distance   <1-255>     default: 101
     default-route-metric     <1-1024>    default: 1024
@@ -103,7 +106,8 @@ its name, e.g., eth0.  Some common interface settings are:
      forwarding router.  Defaults to `default-route-distance`
 
    * `metric <1-1024>`: The cost for traversing this router.  Used with
-     the `preference` value above. Defaults to `default-route-metric`
+     the `preference` value above, and only where the kernel reports no
+     metric for the route itself.  Defaults to `default-route-metric`
 
 More interface settings are available, see the pimd(8) manual page for
 the full details.

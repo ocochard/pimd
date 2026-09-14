@@ -118,6 +118,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     rpf->source.s_addr      = source;
     rpf->iif                = NO_VIF;     /* Initialize, will be changed in kernel */
     rpf->rpfneighbor.s_addr = INADDR_ANY; /* Initialize */
+    rpf->metric             = RPF_METRIC_UNKNOWN;
 
     /*
      * Nothing in 169.254/16 is ever routed, RFC 3927 sec. 2.7 forbids
@@ -192,7 +193,9 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	return FALSE;
     }
 
-    return getmsg(NLMSG_DATA(n), l - sizeof(*n), rpf);
+    /* Cast, so that a reply shorter than the header it announces stays a
+     * negative length here rather than becoming a huge unsigned one */
+    return getmsg(NLMSG_DATA(n), l - (int)sizeof(*n), rpf);
 }
 
 static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
@@ -207,8 +210,19 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
 	return FALSE;
     }
 
+    /* The header this reads, before the attribute walk below is told how
+     * much is left: that length is `msglen - sizeof(*rtm)`, a subtraction
+     * against a size_t, so a reply too short to hold the header would not
+     * come out negative there, it would come out as the address space.
+     */
+    if (msglen < (int)sizeof(*rtm)) {
+	logit(LOG_WARNING, 0, "Short netlink reply, %d bytes", msglen);
+	return FALSE;
+    }
+
     rpf->iif = NO_VIF;
     rpf->rpfneighbor.s_addr = INADDR_ANY;
+    rpf->metric = RPF_METRIC_UNKNOWN;
 
     if (rtm->rtm_type == RTN_LOCAL) {
 	IF_DEBUG(DEBUG_RPF)
@@ -263,6 +277,19 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     } else {
 	rpf->rpfneighbor.s_addr = rpf->source.s_addr;
     }
+
+    /* MRIB.metric, which RFC 7761 sec. 4.6.3 wants in the Assert: on Linux
+     * that is the route's priority, what `ip route` prints as "metric".  The
+     * kernel leaves the attribute out when it is zero, and zero is what an
+     * ordinary route has, so an absent one is the metric and not a missing
+     * answer.
+     */
+    rpf->metric = 0;
+    if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))
+	rpf->metric = *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
+
+    IF_DEBUG(DEBUG_RPF)
+	logit(LOG_DEBUG, 0, "netlink: metric is %u", rpf->metric);
 
     return TRUE;
 }

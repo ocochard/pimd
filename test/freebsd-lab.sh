@@ -27,11 +27,15 @@
 #      .10        .1   .1        .2   .2        .3   .1        .10
 #     epair101a/b     epair112a/b    epair123a/b    epair203a/b
 #
-# Unicast routing is static on purpose: pimd cannot read distance/metric
-# from the kernel anyway (it uses the values from pimd.conf), so adding
-# bird or frr here would only add a dependency and a second thing to
-# debug.  The RP is pinned to R1's side of the R1-R2 link (10.0.12.2) so
-# the expected RP address is deterministic instead of "highest active IP".
+# Unicast routing is static on purpose: a static route carries a metric of
+# its own, which `route change -metric` moves and pimd reads back out of
+# the kernel for its Asserts, so bird or frr here would only add a
+# dependency and a second thing to debug.  The administrative distance
+# pimd puts beside that metric does still come from pimd.conf, and no
+# routing daemon would change that either -- see M4 in
+# doc/rfc7761-compliance.md.  The RP is pinned to R1's side of the R1-R2
+# link (10.0.12.2) so the expected RP address is deterministic instead of
+# "highest active IP".
 #
 # Multicast then has to survive the full PIM-SM sequence: ED2's IGMP
 # report reaches R3, R3 sends a (*,G) join toward the RP, ED1's first
@@ -176,7 +180,17 @@
 #               follows moves the loser's oif into asserted_oifs (calc_oifs()
 #               in src/route.c).  None of that is reachable in any other
 #               scenario here: every other link is an epair with exactly one
-#               router at each end.  Takes about 3 minutes.
+#               router at each end.
+#
+#               The election is also the only one in this file that is not
+#               settled by the addresses.  R3 and R4 reach the RP at a
+#               metric route_metrics() gives their static route, so step 12
+#               can better it on either side and RFC 7761 4.6.3 has to move
+#               the LAN to whichever of them is nearer: pimd takes the
+#               metric it asserts with from the kernel (rmx_metric through
+#               routesock.c), where it used to be a constant out of
+#               pimd.conf that no route change could move.  Takes about 5
+#               minutes.
 #   shared-lan-spt
 #               The same LAN and the same two contenders, but R5 is allowed
 #               onto the shortest path tree, so R3 ends up with (S,G)
@@ -467,6 +481,24 @@ SL_ED3_ADDR=10.0.3.10
 # it.  That keeps every reply the sender counts a reply from ED2, at the far
 # end of the tree, rather than one from a member sitting on the LAN itself.
 SL_JOIN_PORT=${SL_JOIN_PORT:-4322}
+
+# shared-lan: the route whose metric decides the assert election of step 12.
+# Both contenders forward the group off the shared tree, so the metric they
+# compare is rpt_assert_metric(G,I), MRIB.metric(RP(G)) -- the cost of the
+# route to the RP, and not of the one to the source.  R3 and R4 have the
+# same one, out of routes() below; route_metrics() starts both at
+# SL_METRIC_FAR and step 12 moves one of them to SL_METRIC_NEAR, which is
+# the only thing in this file that makes two pimds advertise different
+# metrics at all.
+SL_RP_NET=10.0.12.0/24
+SL_RP_GW=10.0.23.2
+SL_METRIC_NEAR=${SL_METRIC_NEAR:-1}
+SL_METRIC_FAR=${SL_METRIC_FAR:-50}
+# One re-election is a 20s unicast routing check plus the 5s timer tick
+# plus the election itself; the wait is long enough to tell a slow lab from
+# a metric that never moved.
+SL_METRIC_WAIT=${SL_METRIC_WAIT:-120}
+SL_METRIC_PKTS=${SL_METRIC_PKTS:-400}
 
 # Replies the sender must get back before the stream counts as forwarded.
 # The first seconds are always lost while PIM registers the source with
@@ -855,6 +887,21 @@ routes() {
 	r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
 	r3)  echo "10.0.1.0/24 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
 	ed2) echo "default 10.0.3.1" ;;
+	esac
+}
+
+# "destination gateway metric" triples, applied to routes() output once the
+# box has it.  Only the shared LAN needs any: its two contenders reach the
+# RP at the same cost, and at one the kernel did not pick, so that step 12
+# can better it on either side and watch the assert election follow.  Every
+# other route in this file keeps the metric FreeBSD gives a static route.
+route_metrics() {
+	case $SCENARIO in
+	shared-lan)
+		case $1 in
+		r3|r4) echo "$SL_RP_NET $SL_RP_GW $SL_METRIC_FAR" ;;
+		esac
+		;;
 	esac
 }
 
@@ -1419,6 +1466,13 @@ create_box() {
 		shift 2
 	done
 
+	# After the routes: a metric is a property of one that already exists
+	set -- $(route_metrics "$box")
+	while [ $# -ge 3 ]; do
+		jrun "$box" route -q change "$1" "$2" -metric "$3" >/dev/null
+		shift 3
+	done
+
 	case $box in
 	r*) jrun "$box" sysctl -q net.inet.ip.forwarding=1 >/dev/null ;;
 	esac
@@ -1766,6 +1820,85 @@ run_stream_and_sample_shared() {
 
 	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
 	replies=${replies:-0}
+}
+
+# Who holds the shared LAN, read off both contenders' kernel forwarding
+# caches: the assert loser's oif is gone from the MFC, not merely marked.
+sl_lan_is_held_by() {
+	case $1 in
+	r3)	forwards_on r3 "$SL_R3_IF" "$GROUP" || return 1
+		! forwards_on r4 "$SL_R4_IF" "$GROUP" ;;
+	r4)	forwards_on r4 "$SL_R4_IF" "$GROUP" || return 1
+		! forwards_on r3 "$SL_R3_IF" "$GROUP" ;;
+	esac
+}
+
+sl_set_rp_metric() {
+	jrun "$1" route -q change "$SL_RP_NET" "$SL_RP_GW" -metric "$2" >/dev/null
+}
+
+# The assert election decided by the routing table instead of by the
+# addresses.  R3 and R4 are equally far from the RP, so step 9 above ties
+# on the metric and the address settles it: R4 wins.  Give the loser of the
+# moment the better route to the RP and RFC 7761 sec. 4.6.3 says the LAN has
+# to change hands, both contenders forwarding off the shared tree and
+# rpt_assert_metric(G,I) being MRIB.metric(RP(G)).
+#
+# Each half moves the metric of the router that lost, which is what makes
+# them quick: sec. 4.6.1 leaves the Loser state on "my metric becomes better
+# than the assert winner's metric", evaluated once per pass, while a winner
+# whose own metric got worse says nothing about it until its Assert Timer
+# expires, three minutes later.  The first half is also the only assertion
+# in this file where an election is decided against the addresses: R3 wins
+# it with the lower one.
+#
+# Both halves rest on the metric being the kernel's.  While it was the
+# constant from pimd.conf, `route change -metric` moved nothing at all and
+# neither half could ever pass.
+#
+# The stream has to run underneath both: an election starts at a data
+# packet arriving on an interface that is not the entry's iif, so a LAN
+# nobody is sending to keeps whatever it decided last.
+check_assert_metric() {
+	print "12. The assert election follows the unicast route metric"
+
+	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/joiner-metric.log" 2>&1 &
+	joiner=$!
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver-metric.log" 2>&1 &
+	receiver=$!
+	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$SL_METRIC_PKTS" \
+		-w "$SL_METRIC_PKTS" "$GROUP" \
+		>"$WORKDIR/sender-metric.log" 2>&1 &
+	sender=$!
+
+	if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
+		sl_set_rp_metric r3 "$SL_METRIC_NEAR"
+		if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r3; then
+			ok "r3 reached the RP at metric $SL_METRIC_NEAR against r4's $SL_METRIC_FAR and took the LAN, with the lower address"
+		else
+			fail "r4 keeps the LAN though r3 is $SL_METRIC_NEAR from the RP and it is $SL_METRIC_FAR, the Assert carries something that is not the route's metric"
+		fi
+
+		sl_set_rp_metric r3 "$SL_METRIC_FAR"
+		sl_set_rp_metric r4 "$SL_METRIC_NEAR"
+		if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
+			ok "the metrics swapped back and so did the LAN, without waiting Assert_Time out"
+		else
+			fail "r4 has the better metric and is still the assert loser, the Loser state has no way out but its timer"
+		fi
+	else
+		fail "no assert settled the LAN in ${SL_METRIC_WAIT}s with both metrics equal, the halves below cannot be read"
+	fi
+
+	# Back to the baseline both of them start at, so that a lab left
+	# running afterwards is the one the header describes
+	sl_set_rp_metric r3 "$SL_METRIC_FAR"
+	sl_set_rp_metric r4 "$SL_METRIC_FAR"
+
+	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
+	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
 }
 
 check() {
@@ -3242,6 +3375,10 @@ check_shared_lan() {
 		ok "$winner kernel has an MFC entry for $GROUP"
 	else
 		fail "$winner won the assert but its kernel MFC is empty, pimd never pushed the route down"
+	fi
+
+	if [ "$SCENARIO" = shared-lan ]; then
+		check_assert_metric
 	fi
 
 	echo

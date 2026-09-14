@@ -211,7 +211,7 @@ struct uvif {
     uint16_t        uv_jp_timer;    /* The Join/Prune timer                 */
     uint16_t        uv_stquery_cnt; /* Startup Query Count */
     int             uv_local_pref;  /* default local preference for assert  */
-    int             uv_local_metric;/* default local metric for assert      */
+    int             uv_local_metric;/* assert metric, where the RIB has none */
     struct pim_nbr_entry *uv_pim_neighbors; /* list of PIM neighbor routers */
     struct pim_nbr_entry *uv_pim_neighbor_dr; /* Neighbor with DR role, if any (referenced from uv_pim_neighbors) */
     int             uv_ifindex;     /* because RTNETLINK returns only index */
@@ -312,6 +312,16 @@ struct listaddr {
   
 
 /*
+ * MRIB.metric is not something every kernel has to tell us: the answer to
+ * an RPF lookup carries one on Linux and on FreeBSD, and on the systems
+ * whose routing socket has no such field it does not.  Spell "the kernel
+ * said nothing" rather than let a zero -- a real metric on both of them --
+ * stand in for it, so that set_incoming() knows when to fall back to the
+ * `metric` of pimd.conf.
+ */
+#define RPF_METRIC_UNKNOWN	((uint32_t)~0)
+
+/*
  * Used to get the RPF neighbor and IIF info
  * for a given source from the unicast routing table. 
  */
@@ -319,6 +329,7 @@ struct rpfctl {
     struct in_addr source; /* the source for which we want iif and rpfnbr */
     struct in_addr rpfneighbor;/* next hop towards the source */
     vifi_t iif; /* the incoming interface to reach the next hop */
+    uint32_t metric; /* MRIB.metric of that route, RPF_METRIC_UNKNOWN if none */
 };
 
 /**

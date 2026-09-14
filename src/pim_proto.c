@@ -3030,6 +3030,16 @@ void send_pim_assert_cancel(mrtentry_t *mrt, vifi_t vifi)
  * per interface, because two LANs that assert independently expire
  * independently.
  *
+ * The Loser state has a second way out that is aged here rather than
+ * timed, "my metric becomes better than the assert winner's metric": the
+ * routing table moved under us and the election we lost is now ours to
+ * win.  It is worth asking once per pass only because that metric is the
+ * routing table's, so it can change without pimd doing anything; while it
+ * was a constant from pimd.conf, nothing but a Join or the timer could
+ * ever take a loser out of the state.  Both machines ask it of downstream
+ * interfaces alone: on RPF_interface(S) the answer is CouldAssert(S,G,I)
+ * == FALSE, i.e. an infinite metric, which is never better than anything.
+ *
  * Returns TRUE if any oif came back, i.e. if the caller owes a
  * change_interfaces().
  */
@@ -3043,9 +3053,30 @@ int age_asserts(mrtentry_t *mrt)
 
     for (vifi = 0; vifi < numvifs; vifi++) {
 	struct assert_state *as = &mrt->asserts[vifi];
+	uint32_t preference, metric;
 
 	if (as->winner == INADDR_ANY_N)
 	    continue;
+
+	if (as->winner != uvifs[vifi].uv_lcl_addr && vifi != mrt->incoming) {
+	    my_assert_metric(mrt, &preference, &metric);
+
+	    /* Actions A5, and sec. 4.6.1 lets the normal Join/Prune
+	     * mechanisms operate again: we re-assert and win it back once
+	     * packets from the source flow on the interface once more.
+	     */
+	    if (compare_metrics(preference, metric, uvifs[vifi].uv_lcl_addr,
+				as->preference, as->metric, as->winner) == TRUE) {
+		IF_DEBUG(DEBUG_PIM_ASSERT)
+		    logit(LOG_INFO, 0, "Assert winner %s on %s no longer has the better metric, resuming",
+			  inet_fmt(as->winner, s1, sizeof(s1)), uvifs[vifi].uv_name);
+
+		if (assert_clear(mrt, vifi))
+		    change = TRUE;
+
+		continue;
+	    }
+	}
 
 	IF_TIMEOUT(as->timer) {
 	    if (as->winner != uvifs[vifi].uv_lcl_addr) {

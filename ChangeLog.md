@@ -146,6 +146,23 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the re-election.  Until SPTbit is set nothing changes: section 4.2
   forwards off `inherited_olist(S,G,rpt)` then, and that olist loses the
   interface to `lost_assert(S,G,rpt,I)`, which has no such term
+- Take the metric a PIM Assert carries from the unicast routing table, as
+  RFC 7761 section 4.6.3 requires, instead of always advertising the
+  `metric` of `pimd.conf`.  Every RPF lookup now brings the route's metric
+  back with the incoming interface and the next hop: the route priority on
+  Linux, the per route metric on FreeBSD.  Before, every pimd in a domain
+  advertised the same number, the metric comparison of section 4.6.1
+  always tied and the highest address won every election, so multicast was
+  pulled onto the long path around a LAN whatever the routing table said.
+  The `metric` and `default-route-metric` settings remain, as the fallback
+  for a system that reports no metric.  The metric preference beside it is
+  still configured through `distance` and `default-route-distance`: it is
+  the administrative distance of the routing protocol the route came from,
+  and the routing socket does not report that.  A router that loses an
+  election now also leaves the assert loser state as soon as its own
+  metric becomes better than the winner's, the transition section 4.6.1
+  defines for exactly this, rather than waiting up to `Assert_Time` for a
+  routing change to take effect
 - Reject an `altnet` or `scoped` masklen above 32 in `pimd.conf` instead
   of shifting by it.  `VAL_TO_MASK()` shifts by `32 - masklen`, so a
   larger value shifted by a number no 32-bit type has, which is undefined

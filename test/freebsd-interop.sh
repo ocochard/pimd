@@ -110,15 +110,17 @@
 #               What it was written for, and what it actually found, are
 #               not the same thing, so both are here.
 #
-#               It was written for the assert metric.  pimd's is a pair of
-#               configured constants rather than the MRIB's numbers
-#               (deviation M4 in doc/rfc7761-compliance.md), so between two
-#               pimds every router on a LAN advertises the same preference
-#               and metric, compare_metrics() always ties, and the address
-#               decides -- which makes the two comparisons sec. 4.6.1 runs
-#               before that tiebreak dead code in every other test here.
-#               EOS fills those fields from its own RIB, so this is the one
-#               LAN where they could hold unequal numbers.
+#               It was written for the assert metric.  pimd's metric
+#               preference is a configured constant rather than the
+#               distance of the protocol the route came from (deviation M4
+#               in doc/rfc7761-compliance.md), so between two pimds every
+#               router on a LAN advertises the same one; the metric beside
+#               it is the routing table's, and shared-lan in
+#               freebsd-lab.sh moves it with route(8), but that is the
+#               second field compared and only after this scenario had
+#               been written.  EOS fills both from its own RIB, so this is
+#               the LAN where the preference comparison sec. 4.6.1 runs
+#               before the metric one is anything but dead code.
 #
 #               They did not at first, and that was the finding.  pimd
 #               evaluated SPTbit only when an upcall reached
@@ -308,7 +310,9 @@ AL_ED2_ADDR=10.0.5.10
 # that, so these are the distance and metric of its static route to the
 # source.  Both are set explicitly rather than left at the static-route
 # defaults, because pimd's side of the comparison has to be able to match
-# them and default-route-metric is documented as 1-1024.
+# them: the preference through default-route-distance, documented as
+# 1-255, and the metric through the metric of R3's own route to the
+# source, which is where pimd reads it from.
 AL_EOS_PREF=${AL_EOS_PREF:-100}
 AL_EOS_METRIC=${AL_EOS_METRIC:-500}
 
@@ -346,6 +350,26 @@ AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
 #                freebsd-lab.sh, whose xfail() the fix in 4cb79f1 cleared
 #                against pimd's own encoder.
 #
+#                Read a failure here carefully, because the premise is
+#                weaker than it looks.  What holds pimd on the shared tree
+#                is spt-threshold infinity, and that is a policy about
+#                sending Join(S,G), not about SPTbit: Update_SPTbit
+#                (sec. 4.2.2, doc/rfc7761.txt:1522) sets the bit when data
+#                from S arrives on RPF_interface(S) with a non-empty olist
+#                and RPF'(S,G) == RPF'(*,G), and all three are true of R3
+#                here -- ED6 supplies the olist and R1 is the upstream for
+#                the source and for the RP both.  Whether R3 ends up with
+#                an (S,G) entry to set the bit on depends on what the
+#                Arista asserts with, so the sub-case is order dependent:
+#                run on its own it stays on the shared tree and the Arista
+#                wins it, run after the other three R3 has been seen to
+#                reach SPTbit, after which sec. 4.6.1 compares the
+#                preference and pimd's 50 must beat the Arista's 100.
+#                That outcome is not pimd getting the bit wrong; closing
+#                it means a topology where the source and the RP are not
+#                reached through the same neighbour, the way rp-offpath is
+#                built in freebsd-lab.sh.
+#
 # route_metric is held equal throughout and only metric_preference is
 # moved, so no sub-case can be decided by a field it is not about.
 #
@@ -360,6 +384,9 @@ AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
 # sub-case, which is correct behaviour by both ends and no test at all.
 # What fixes it is not a knob on R3: see write_case_confs().
 AL_CASES=${AL_CASES:-"pimd-wins arista-wins tiebreak rpt-bit"}
+# Carried twice: onto R3's route to the source by route_metrics(), which is
+# where pimd reads the metric it asserts with, and into default-route-metric
+# for a kernel that reports none
 AL_PIMD_METRIC=$AL_EOS_METRIC
 AL_PREF_BETTER=$((AL_EOS_PREF - 50))
 AL_PREF_WORSE=$((AL_EOS_PREF + 50))
@@ -595,6 +622,24 @@ routes() {
 	esac
 }
 
+# "destination gateway metric" triples, applied to routes() output once the
+# box has it.  Only assert-lan needs any, and only on R3: the route_metric
+# field of its Asserts is MRIB.metric(S) now, the metric of this very route
+# (set_incoming(), src/route.c), so this is where pimd's half of the
+# comparison against the Arista is set.  It is deliberately the same number
+# the Arista advertises, $AL_EOS_METRIC, so that every sub-case is decided
+# by the one field it is about; write_case_confs() moves the preference
+# beside it and nothing else.
+route_metrics() {
+	case $SCENARIO in
+	assert-lan)
+		case $1 in
+		r3) echo "10.0.1.0/24 10.0.12.1 $AL_PIMD_METRIC" ;;
+		esac
+		;;
+	esac
+}
+
 # Retry a command until it succeeds or $1 seconds have passed.  PIM is slow
 # by design, so every assertion polls instead of sleeping a fixed amount.
 wait_for() {
@@ -660,16 +705,17 @@ restore_mcast_loop() {
 # assert-lan: the per-sub-case configuration, which is R3's metrics and
 # whether R3 and R5 may leave the shared tree.  $1 is the sub-case.
 #
-# The metrics are R3's, and they are what pimd puts in the two Assert
-# metric fields: set_incoming() (src/route.c) assigns
-# uv_local_pref/uv_local_metric to every source that is not directly
-# connected, and those come from here and nowhere else.  That is deviation
-# M4 in doc/rfc7761-compliance.md -- configured constants where sec. 4.6.3
-# asks for the MRIB's numbers -- and it is also what makes this scenario
-# possible: between two pimds every router advertises the same constants,
-# the comparison always ties, the address decides, and the metric branches
-# of compare_metrics() never execute.  The Arista puts its real routing
-# metrics on the wire, so here they do.
+# The preference is R3's, and it is the first of the two Assert metric
+# fields: set_incoming() (src/route.c) gives every source that is not
+# directly connected the interface's uv_local_pref, which comes from here
+# and nowhere else.  That is deviation M4 in doc/rfc7761-compliance.md --
+# a configured constant where sec. 4.6.3 asks for the distance of the
+# routing protocol that provided the route -- and it is also what makes
+# the sub-cases below moveable from a config file.  The second field, the
+# route metric, is the routing table's, so R3's half of it is set on the
+# route itself in route_metrics(); default-route-metric below is what pimd
+# falls back to where a kernel reports no metric at all, and is the same
+# number so that both paths compare equal against the Arista.
 #
 # The shortest-path-tree policy decides the RPT bit, which sec. 4.6.1
 # compares before either metric -- so it decides whether the metrics are
@@ -1052,6 +1098,13 @@ create_box() {
 	while [ $# -ge 2 ]; do
 		jrun "$box" route -q add "$1" "$2" >/dev/null
 		shift 2
+	done
+
+	# After the routes: a metric is a property of one that already exists
+	set -- $(route_metrics "$box")
+	while [ $# -ge 3 ]; do
+		jrun "$box" route -q change "$1" "$2" -metric "$3" >/dev/null
+		shift 3
 	done
 
 	case $box in
@@ -1888,11 +1941,12 @@ check_assert_lan() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. The Arista advertises the routing metrics sec. 4.6.3 asks for"
-	# The premise of every sub-case below.  pimd's assert metrics are
-	# configured constants (M4 in doc/rfc7761-compliance.md), so unless
-	# the Arista really does put its route's distance and metric on the
-	# wire, the two are comparing constants against constants and the
-	# metric branches never run.
+	# The premise of every sub-case below.  pimd's preference is a
+	# configured constant (M4 in doc/rfc7761-compliance.md) and its
+	# metric is the one route_metrics() put on R3's route to the source,
+	# so unless the Arista really does put its route's distance and
+	# metric on the wire, the numbers the sub-cases move are being
+	# compared against something else entirely.
 	rt=$(eos "show ip route 10.0.1.0/24")
 	if echo "$rt" | grep -q "\[$AL_EOS_PREF/$AL_EOS_METRIC\]"; then
 		ok "the Arista's route to the source is [$AL_EOS_PREF/$AL_EOS_METRIC]"

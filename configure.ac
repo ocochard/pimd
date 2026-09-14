@@ -70,6 +70,16 @@ AC_CHECK_LIB([util], [pidfile])
 # Check for required functions in libc
 AC_CHECK_FUNCS([atexit getifaddrs if_nametoindex getentropy])
 
+# RFC 7761 sec. 4.6.3 reads the metric an Assert carries off the unicast
+# routing table.  FreeBSD keeps a per-nexthop metric in struct rt_metrics
+# and returns it with every routing socket reply; where the field is
+# missing, routesock.c falls back to the value from pimd.conf.
+AC_CHECK_MEMBERS([struct rt_metrics.rmx_metric], [], [], [[
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <net/route.h>
+]])
+
 # Check for usually missing API's, which we can replace
 AC_REPLACE_FUNCS([arc4random pidfile strlcpy strlcat strtonum tempfile utimensat])
 AC_CONFIG_LIBOBJ_DIR([lib])

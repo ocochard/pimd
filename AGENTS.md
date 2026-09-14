@@ -61,7 +61,9 @@ scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tu
 `shared-lan`, `shared-lan-spt`, `ssm`, `ssm-range`, `alias`, `ifgone`, `renumber`); see the script
 header for the topologies and which upstream issue each one pins down. The two `shared-lan*` ones are the only
 ones with several PIM routers on a link, so DR election, IGMP querier election and the assert
-election only ever run there,
+election only ever run there (`shared-lan` is also the only one that gives two routers different
+route metrics, with `route change -metric`, so it is the one place an assert election is decided by
+the routing table instead of by the addresses),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is
 adjacent to the BSR and the RP and where the shared tree and the shortest path tree leave a router by
 different interfaces, `ssm` and `ssm-range` are the only ones about IGMP state rather than PIM
@@ -98,9 +100,11 @@ same way as its encoder passes one and fails the other:
   have its Register-Stop honoured, measured over a second stream once the tree is up.
 - `assert-lan`, the assert election, on a topology of its own: three PIM routers on one segment,
   pimd's R3 and the Arista contending on it. Written to compare *unequal* assert metrics, which no
-  other test can -- pimd's are configured constants rather than the MRIB's (deviation M4), so
-  between two pimds they always tie and the address decides, leaving the two comparisons RFC 7761
-  4.6.1 makes first as dead code. Getting that far took fixing deviation M10, which this
+  other test could then -- pimd advertised two configured constants rather than the MRIB's numbers
+  (deviation M4), so between two pimds they always tied and the address decided, leaving the two
+  comparisons RFC 7761 4.6.1 makes first as dead code. Half of that is fixed: the metric is the
+  routing table's now, and `shared-lan` moves it, but the preference is still `distance` from
+  `pimd.conf` and the Arista is the only router here that derives one. Getting that far took fixing deviation M10, which this
   scenario turned up: pimd evaluated SPTbit only when an upcall reached `update_sptbit()` rather
   than per packet as sec. 4.2 asks, so R3 asserted from `(*,G)` with the RPT bit set and its metric
   was never reached. The assertion that reported it stays as a tripwire. What the scenario asserts

@@ -92,8 +92,9 @@ Timer instead of at `Assert_Time`.  M11 followed them: `assert_machine()`
 runs the (S,G) one of sec. 4.6.1 first and the (\*,G) one of sec. 4.6.2
 only where that one held no state and did not move, each on its own entry.
 Which machine may take a message is the RPT bit's answer now, not the
-lookup's.  What is left around them is M4 below, the metric they carry, and
-the half of M12 that is not a metric at all.
+lookup's.  The metric they carry is the routing table's now as well, so what
+is left around them is the preference beside it, M4 below, and the half of
+M12 that is not a metric at all.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -149,28 +150,52 @@ becomes visible: the Arista advertises the LAN Prune Delay option pimd neither
 sends nor parses, so those values are already on that wire waiting to be
 asserted on.*
 
-**M4.  Assert metrics are configured constants, not MRIB metrics.**  Sec. 4.6.3
-and sec. 4.9.6 both say the metric preference and metric are the unicast
-routing protocol's.  `set_incoming()` assigns the per-interface
-`uv_local_pref`/`uv_local_metric` to every source that is not directly connected
-(`src/route.c:267-270`), defaulting to 101 and 1024; `struct rpfctl`
-(`src/vif.h:318-322`) carries no room for anything else.  Every pimd on a LAN
-therefore advertises the same metric and `compare_metrics()` always falls through
-to the address tiebreak, so the highest-IP router wins every assert regardless of
-its distance to the source, and traffic is pulled onto the long path.  The
-`distance`/`metric` settings in `pimd.conf` are the only lever.  This answers the
-old TODO question about whether asserts on the iif are evaluated with the right
-metrics: they are compared correctly, but the numbers being compared are
-constants.
+**M4.  The assert metric preference is a configured constant, not the routing
+protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both say the metric preference and the
+metric are the unicast routing protocol's.  The metric is, now: `struct rpfctl`
+(`src/vif.h`) carries MRIB.metric back from every RPF lookup -- the route's
+priority out of the netlink reply (`src/netlink.c`), `rmx_metric` out of the
+routing socket's (`src/routesock.c`) -- and `set_incoming()` (`src/route.c`)
+gives it to the source, leaving `metric` in `pimd.conf` as the fallback for a
+kernel that answers neither.  Two routers on a LAN whose routing tables disagree
+about the cost of reaching the source, or the RP, now elect on that rather than
+on their addresses, and an election follows a route change while it runs:
+sec. 4.6.1 leaves the Loser state when "my metric becomes better than the assert
+winner's metric", which `age_asserts()` (`src/pim_proto.c`) evaluates once per
+pass because the number can now move without pimd doing anything.
+
+The preference is still the configured one, `uv_local_pref`, 101 unless
+`distance` says otherwise.  It is the administrative distance of the routing
+protocol that provided the route, and the two RPF backends cannot both answer
+that question: netlink gives the protocol in `rtm_protocol`, and FreeBSD keeps
+the same RTPROT\_\* value in the nexthop's `nh_origin` but exposes it only over
+its own netlink, never over the PF\_ROUTE socket `routesock.c` reads.  Mapping
+the one that does answer onto the usual distances would have a Linux pimd
+advertise 110 for an OSPF route where a FreeBSD one advertises 101 for the same
+route, and sec. 4.6.3 compares the preference before it ever looks at the
+metric: the election on a mixed LAN would be decided by which operating system
+each router runs.  So the field stays configuration, per interface, and a domain
+whose routers learn the source through different protocols still has to set
+`distance` by hand.
+
+One thing the metric inherits from the same asymmetry, smaller because it is
+compared second: an ordinary route has priority 0 on Linux and metric 1 on
+FreeBSD, so between two routers that agree on everything else the Linux one
+wins.  Both numbers are what their own kernel calls the cost of that route.
 *Check: sec. 4.6.3, `doc/rfc7761.txt:5215` for `spt_assert_metric(S,I)`, and
-sec. 4.9.6, `:6766`, for the two wire fields.  Effort: large; it needs
-`k_req_incoming()` and `struct rpfctl` to carry preference and metric in both
-`netlink.c` and `routesock.c`.  Test: no assertion, but `assert-lan` in
-`test/freebsd-interop.sh` is built on it -- the Arista advertises its RIB
-metrics, so that LAN is the only place pimd's constants are ever compared
-against anything else, and its sub-cases drive the election by each field of
-sec. 4.6.3 in turn.  Asserting the deviation itself needs pimd's advertised
-metric to follow a route change, which needs a routing daemon in the lab.*
+sec. 4.9.6, `:6766`, for the two wire fields.  Effort: medium, and it is a
+decision rather than work: an administrative distance has to come from
+somewhere both backends can reach, or from configuration as it does today.
+Test: step 12 of `shared-lan` in `test/freebsd-lab.sh` covers the half that is
+fixed, in both directions -- the two contenders reach the RP at a metric
+`route change` sets, and the LAN changes hands when either one is bettered,
+which with a constant metric it never did.  That is `routesock.c`; the
+netlink half of the same lookup has no assertion anywhere, because no test in
+`test/` reads the outcome of an assert election on Linux at all.  The
+preference half has none either:
+between two pimds it is 101 on both, so `assert-lan` in
+`test/freebsd-interop.sh` is where it would be seen, the Arista being the one
+router on that wire that advertises its RIB's own numbers.*
 
 **M6.  No secondary address list.**  Sec. 4.3.4 requires the Address List option
 whenever an interface has secondary addresses, so that neighbors can map an MRIB
@@ -285,10 +310,12 @@ means keeping the two olists apart, not adding another term.
 *Check: sec. 4.6.5, `doc/rfc7761.txt:5294`, with the Note at `:5305`;
 `spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`; the two olists are sec.
 4.1.5, `:1131`, and `JoinDesired(S,G)` sec. 4.5.5, `:3738`.  Effort: medium.
-Test: none.  It needs two routers whose metrics differ, which between two
-pimds they do not -- M4's constants -- so it wants the Arista of
-`assert-lan` in `test/freebsd-interop.sh` and a sub-case that makes pimd
-lose from the shared tree and then lets it reach the shortest path one.*
+Test: none.  It needs a router that loses an assert while forwarding on the
+shared tree to one it would beat from the shortest path tree, so the two
+metrics have to differ: `route change -metric` does that between two pimds
+now, the way step 12 of `shared-lan` in `test/freebsd-lab.sh` does it, and
+`shared-lan-spt` is the scenario that already gets one of the two onto the
+shortest path tree.*
 
 
 Timers

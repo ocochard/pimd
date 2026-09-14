@@ -209,15 +209,18 @@ and fails the other.
 
 ### `assert-lan`: what it was for, and what it found
 
-pimd's assert metrics are configured constants, not the MRIB's numbers
-(deviation **M4** in `doc/rfc7761-compliance.md`).  Between two pimds
-every router on a LAN therefore advertises the *same* preference and
-metric, `compare_metrics()` always ties, and the address decides — so
-the two metric comparisons RFC 7761 sec. 4.6.1 runs before that
-tiebreak are dead code in every other test here, and the encoding of
-those fields (sec. 4.9.6) is only ever read by the code that wrote it.
-EOS fills them from its own RIB, so this is the one LAN in the tree
-where they could hold unequal numbers.
+pimd's assert metric preference is a configured constant, not the
+routing protocol's administrative distance (deviation **M4** in
+`doc/rfc7761-compliance.md`; the metric beside it is the routing
+table's since the same entry's other half was fixed).  Between two
+pimds every router on a LAN therefore advertises the *same* preference,
+and until `shared-lan` started moving route metrics around they
+advertised the same metric too: `compare_metrics()` tied and the
+address decided, so the two metric comparisons RFC 7761 sec. 4.6.1 runs
+before that tiebreak were dead code in every test here, and the
+encoding of those fields (sec. 4.9.6) was only ever read by the code
+that wrote it.  EOS fills both from its own RIB, so this is still the
+one LAN in the tree where the preference can hold unequal numbers.
 
 They did not at first, and that was the finding.  pimd evaluated SPTbit
 only when an upcall reached `update_sptbit()` (`src/route.c`) rather

@@ -51,10 +51,12 @@ interface configuration setting below.
 This option has nothing to do with the system default route.  It is the
 default value for the unicast routing protocol's administrative
 distance.  It is used in PIM Assert elections to determine upstream
-routers.  Currently
+routers.
 .Nm pimd
-cannot obtain the admin distance and metric from the unicast routing
-protocols, so a default routing protocol distance may be configured.
+cannot obtain the admin distance from the unicast routing protocols, so
+it is configured here; the metric beside it is read from the kernel
+routing table, see
+.Cm default-route-metric .
 The RFC confusingly refers to this as
 .Em metric prefererence .
 In a PIM Assert election, the router advertising the lowest assert
@@ -75,6 +77,15 @@ can be overridden per
 so learned routes, or PIM Asserts use the
 .Cm phyint 's
 values.
+.Pp
+This is a fallback.  A PIM Assert carries the metric of the route to the
+source, or to the RP on the shared tree, and
+.Nm pimd
+takes that from the kernel routing table where the system reports one:
+the route priority on Linux, the per route metric on FreeBSD.  This
+setting is what is used for a system that reports neither, and it is
+then the same number on every router in the domain, leaving the Assert
+election to be decided by the address.
 .Pp
 Please note that PIM Assert elections are not the same as the DR
 election.  The PIM Assert election determines the active multicast
@@ -178,9 +189,11 @@ Use this to override the
 .Cm phyint
 in PIM Assert elections.
 .It Cm metric Ar <1-1024>
-The cost of sending data through this interface.  Defaults to
-.Cm default-route-metric
-(1024) if not assigned.
+The cost of sending data through this interface, for sources reached
+over it.  Like
+.Cm default-route-metric ,
+which it defaults to (1024), this is only consulted where the kernel
+reports no metric for the route itself.
 .It Cm altnet Ar <network/len>
 Alternative host(s)/network(s) to accept as locally attached multicast
 sources on a given interface. If a phyint is attached to multiple IP

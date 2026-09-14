@@ -215,14 +215,6 @@ pim_nbr_entry_t *find_pim_nbr_on_vif(vifi_t vifi, uint32_t addr)
 /* TODO: check again the exact setup if the source is local or directly
  * connected!!!
  */
-/* TODO: XXX: change the metric and preference for all (S,G) entries per
- * source or RP?
- */
-/* TODO - If possible, this would be the place to correct set the
- * source's preference and metric to that obtained from the kernel
- * and/or unicast routing protocol.  For now, set it to the configured
- * default for local pref/metric.
- */
 
 /*
  * Set the iif, upstream router, preference and metric for the route
@@ -283,10 +275,22 @@ int set_incoming(srcentry_t *src, int type)
 	src->incoming = rpfc.iif;
 	nbr_addr      = rpfc.rpfneighbor.s_addr;
 
-	/* set the preference for sources that aren't directly connected. */
+	/* The metric preference and the metric of RFC 7761 sec. 4.6.3, for a
+	 * source that is not directly connected.  The metric is the routing
+	 * table's where the kernel gave us one, so that an Assert says how
+	 * far this router really is from the source and the election lands
+	 * on the router that is closest to it; `metric` in pimd.conf is what
+	 * is left when it does not.  The preference stays configured: it is
+	 * the routing protocol's administrative distance, and neither the
+	 * routing socket nor netlink tells us which protocol the route came
+	 * from in a way the other one also tells us.
+	 */
 	vif = &uvifs[src->incoming];
 	src->preference = vif->uv_local_pref;
-	src->metric     = vif->uv_local_metric;
+	if (rpfc.metric != RPF_METRIC_UNKNOWN)
+	    src->metric = rpfc.metric;
+	else
+	    src->metric = vif->uv_local_metric;
     }
 
     /* The upstream router must be a (PIM router) neighbor, otherwise we

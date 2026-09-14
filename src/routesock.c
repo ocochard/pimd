@@ -161,6 +161,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     /* initialize */
     rpf->source.s_addr      = source;
     rpf->rpfneighbor.s_addr = INADDR_ANY_N;
+    rpf->metric             = RPF_METRIC_UNKNOWN;
     /*
      * check if local address or directly connected before calling the
      * routing socket
@@ -314,6 +315,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     if (getmsg(&rtm, l, &rpfinfo)) {
 	rpf->rpfneighbor.s_addr = rpfinfo.rpfneighbor.s_addr;
 	rpf->iif = rpfinfo.iif;
+	rpf->metric = rpfinfo.metric;
     }
 #undef rtm
 
@@ -375,6 +377,17 @@ static int getmsg(struct rt_msghdr *rtm, int msglen __attribute__((unused)), str
 
     rpf->iif = NO_VIF;
     rpf->rpfneighbor.s_addr = INADDR_ANY;
+    rpf->metric = RPF_METRIC_UNKNOWN;
+
+    /* MRIB.metric, which RFC 7761 sec. 4.6.3 wants in the Assert.  FreeBSD
+     * keeps the per-nexthop metric `route -metric` sets in rt_metrics and
+     * fills it into every reply (sys/net/rtsock.c); the routing sockets
+     * that have no such field leave pimd with the `metric` of pimd.conf.
+     */
+#ifdef HAVE_STRUCT_RT_METRICS_RMX_METRIC
+    if (rtm->rtm_rmx.rmx_metric < RPF_METRIC_UNKNOWN)
+	rpf->metric = (uint32_t)rtm->rtm_rmx.rmx_metric;
+#endif
 
     in = ((struct sockaddr_in *)&so_dst)->sin_addr;
     IF_DEBUG(DEBUG_RPF)
@@ -462,6 +475,10 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	logit(LOG_WARNING, errno, "Failed ioctl SIOCGETRPF in k_req_incoming()");
 	return FALSE;
     }
+
+    /* After the call: the kernel side of SIOCGETRPF knows nothing of the
+     * field, so whatever it left there is not an answer. */
+    rpf->metric = RPF_METRIC_UNKNOWN;
 
     return TRUE;
 }
