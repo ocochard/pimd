@@ -104,6 +104,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Discard a PIM assert whose group is not a multicast group, or whose
+  source is not a valid host address.  `receive_pim_assert()` took both
+  straight off the wire and used them as routing table keys, the
+  `find_route(..., CREATE)` that records a lost election included, so a
+  neighbor could seed a routing entry on a loopback, class E or multicast
+  "source", or on a group outside 224.0.0.0/4, and have pimd carry those
+  on through the RPF lookup and into the kernel forwarding cache.  Every
+  other message pimd parses already screens both addresses, a register at
+  its inner header and a join/prune once per group and once per source;
+  this one did not.  The zero source of a (\*,G) assert, RFC 7761 section
+  4.9.6, stays allowed: it is what tells pimd there is no (S,G) state
+  machine to run
 - Answer `JoinDesired(S,G)` of RFC 7761 section 4.5.5 with the source
   specific state it is made of, instead of with the outgoing interface
   list the (\*,G) lends the entry.  It gates `Update_SPTbit(S,G,iif)` of

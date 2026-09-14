@@ -3515,6 +3515,38 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	      inet_fmt(source, s3, sizeof(s3)));
 
     /*
+     * Both addresses are attacker input and both are about to be used as
+     * routing table keys, the find_route(..., CREATE) in assert_machine()
+     * included.  Every other receive_*() in this file screens them before
+     * that point -- receive_pim_register() at the inner header,
+     * receive_pim_join_prune() once per group and once per source -- and
+     * this one did not, so an Assert could seed an entry on a group that is
+     * not multicast at all, or on a loopback, class E or multicast
+     * "source", and hand those on to set_incoming() and k_chg_mfc().
+     *
+     * A (*,G) Assert carries a zero source, RFC 7761 sec. 4.9.6, which is
+     * not a host address and has to stay allowed: it is what tells
+     * receive_pim_assert() below that there is no (S,G) machine to run.
+     */
+    if (!IN_MULTICAST(ntohl(group))) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, %s is not a multicast group",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		  inet_fmt(group, s2, sizeof(s2)));
+
+	return FALSE;
+    }
+
+    if (source != INADDR_ANY_N && !inet_valid_host(source)) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, %s is not a valid source",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		  inet_fmt(source, s2, sizeof(s2)));
+
+	return FALSE;
+    }
+
+    /*
      * Sec. 4.6 defines two Assert state machines, an (S,G) one and a (*,G)
      * one, and sec. 4.6.2 fixes the order they run in: the message is
      * matched against the (S,G) machine first, and reaches the (*,G) one
