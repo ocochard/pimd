@@ -80,16 +80,20 @@ pimd does not keep.
 State machines pimd does not have
 ---------------------------------
 
-Two entries this section held are fixed.  M3, the assert winner state, and
-M5, the kernel cache an assert used to be gated on, went together: the
+Three entries this section held are fixed.  M3, the assert winner state,
+and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
 (`src/mrt.h`), with Actions A1 to A6 in `src/pim_proto.c` -- so the winner
 resends before the losers time out, an AssertCancel is both sent and acted
 on, and a dead winner is forgotten at its GenID or its Neighbor Liveness
-Timer instead of at `Assert_Time`.  What is left around them is M4 below,
-the metric they carry, and M11, the fact that there is one machine where
-sec. 4.6 defines two.
+Timer instead of at `Assert_Time`.  M11 followed them: `assert_machine()`
+(`src/pim_proto.c`) is one run of one machine, and `receive_pim_assert()`
+runs the (S,G) one of sec. 4.6.1 first and the (\*,G) one of sec. 4.6.2
+only where that one held no state and did not move, each on its own entry.
+Which machine may take a message is the RPT bit's answer now, not the
+lookup's.  What is left around them is M4 below, the metric they carry, and
+M12, the one term of `lost_assert(S,G,I)` that is still not computed.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -254,29 +258,23 @@ a burst of duplicate traffic on the shared tree once per period, every period.
 and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
 group with more than about 65 pruned sources, which no scenario builds.*
 
-**M11.  One assert state machine where sec. 4.6 defines two.**  Sec. 4.6.1
-and sec. 4.6.2 are separate machines, an (S,G) one and a (\*,G) one, run in
-that order: no transition may occur in the (\*,G) machine unless the (S,G)
-machine is in NoInfo both before and after the message, and none at all if
-the message moved the (S,G) machine.  `receive_pim_assert()` picks one
-entry instead -- the longest match, preferring one with a kernel cache
-(`src/pim_proto.c`) -- and runs a single election on it, so a router holding
-both (S,G) and (\*,G) state for a group can keep assert state for only one
-of them per interface.  Where the two machines would disagree, which is the
-case sec. 4.6.2 spells out at length, pimd answers with whichever entry the
-lookup happened to return.  The same merge is why `lost_assert(S,G,I)` is a
-plain bit in `asserted_oifs` rather than the sec. 4.6.5 test, which also
-asks whether the winner's metric beats `spt_assert_metric(S,I)` -- the term
-that exists for a router with (S,G) join state that has not set SPTbit yet.
-*Check: sec. 4.6.2, `doc/rfc7761.txt:4753` for the order the two are run in
-and `:4767` for the rule that keeps the (\*,G) one out of it, with the two
-worked examples at `:4778`; `lost_assert(S,G,I)` is sec. 4.6.5, `:5294`, and
-the Note at `:5305` says what the metric term is for.  Effort:
-medium; the per-interface state is in place, it is the second copy of it on
-the (\*,G) and the ordering between them that is missing.  Test: none.
-`assert-lan` in `test/freebsd-interop.sh` is the topology -- R3 holds both
-an (S,G) and a (\*,G) for the contended group there -- and its `rpt-bit`
-and `tiebreak` sub-cases already move R3 between the two.*
+**M12.  `lost_assert(S,G,I)` does not weigh the winner's metric.**  Sec.
+4.6.5 makes that test three terms: assert state on the interface, a winner
+that is not us, and the winner's metric being better than
+`spt_assert_metric(S,I)`.  pimd has the first two, as the interface's
+`assert_state` and its bit in `asserted_oifs`, and no third.  The Note under
+the macro says what the term is for: a router that has (S,G) join state but
+has not set SPTbit yet must ignore assert state it would win back the moment
+it does, and pimd instead stays off the interface until the Assert Timer
+runs out or the winner cancels.  `lost_assert(*,G,I)` and
+`lost_assert(S,G,rpt,I)` are right: `calc_oifs()` (`src/route.c`) subtracts
+the (\*,G)'s asserted interfaces from the inherited part of the olist before
+the (S,G)'s own joins are merged in, which is the shape sec. 4.1.5 asks for.
+*Check: sec. 4.6.5, `doc/rfc7761.txt:5294`, with the Note at `:5305`;
+`spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`.  Effort: small.  Test:
+none, and it needs two routers whose metrics differ before the term can
+change an outcome, which is M4's territory -- between two pimds the metrics
+are the same configured constants.*
 
 
 Timers

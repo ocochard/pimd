@@ -1375,18 +1375,11 @@ sample_assert() {
 	forwards_on r3 "$AL_R3_LAN_IF" && al_pimd_fwd=yes
 	eos_forwards_on_lan && al_eos_fwd=yes
 
-	# Which entry pimd asserts from is what the sub-case sets up, so it
-	# is also where the loss is recorded: the metric sub-cases put R3 on
-	# the shortest path tree and the election is between two (S,G)s,
-	# while rpt-bit holds it on the shared tree and it has nothing but
-	# the (*,G) to assert from.
-	if [ "$AL_ASSERT_ENTRY" = both ]; then
-		for e in ANY "$SRC_ADDR"; do
-			asserted_on r3 "$AL_R3_LAN_IF" "$e" && al_pimd_asserted=yes
-		done
-	else
-		asserted_on r3 "$AL_R3_LAN_IF" "$AL_ASSERT_ENTRY" && al_pimd_asserted=yes
-	fi
+	# The loss is recorded on the (S,G), in every sub-case: the Arista is
+	# the router on the shortest path tree here, so its Assert always
+	# carries the RPT bit clear, and RFC 7761 sec. 4.6.2 gives such a
+	# message to the (S,G) machine of sec. 4.6.1 alone.
+	asserted_on r3 "$AL_R3_LAN_IF" "$AL_ASSERT_ENTRY" && al_pimd_asserted=yes
 }
 
 # Does router $1 have a local member on interface $2, i.e. did an IGMP
@@ -1637,17 +1630,16 @@ check_pimd_rp() {
 establish_election() {
 	case_name=$1
 
-	# Which entry records the loss depends on what R3 held when the
-	# Assert arrived.  The metric sub-cases put it on the shortest path
-	# tree, so the election is between two (S,G)s and the (S,G) is where
-	# to look; rpt-bit holds it on the shared tree, where it may have
-	# either, so both are accepted -- the sub-case is about which side
-	# won, not about pimd's bookkeeping.  ANY is how pimctl prints (*,G).
-	if [ "$case_name" = rpt-bit ]; then
-		AL_ASSERT_ENTRY=both
-	else
-		AL_ASSERT_ENTRY=$SRC_ADDR
-	fi
+	# Where the loss is recorded is not pimd's bookkeeping to choose: the
+	# RPT bit of the Assert says which of the two state machines it
+	# belongs to, sec. 4.6.2, and the Arista's always has the bit clear
+	# because it is the router on the shortest path tree.  So the (S,G)
+	# machine takes every Assert in this scenario, rpt-bit included, and
+	# the (S,G) entry is where the state lands -- pimd creating one for
+	# it if it was holding the group on the shared tree.  This used to
+	# accept the (*,G) as well, which is what pimd recorded it on when
+	# one election ran on whichever entry the lookup returned.
+	AL_ASSERT_ENTRY=$SRC_ADDR
 
 	switch_case "$case_name"
 

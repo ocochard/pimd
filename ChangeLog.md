@@ -126,6 +126,17 @@ pimd on all routers in the same domain.  See issue #93 for details.
   which is what losing an assert does, so a router with join state but no
   traffic of its own ignored the election it had just lost and kept
   sending its Joins to the loser
+- Run the two Assert state machines RFC 7761 defines, the (S,G) one of
+  section 4.6.1 and the (*,G) one of section 4.6.2, in the order section
+  4.6.2 requires, instead of one election on whichever entry the lookup
+  returned.  A message now reaches the (*,G) machine only where the (S,G)
+  machine holds no state on that interface and did not move, and the RPT
+  bit says which machine may take it at all: an Assert with the bit clear
+  is the (S,G) machine's, one with it set can put the (S,G) machine into
+  the winner state but never into the loser state.  A router holding both
+  (S,G) and (*,G) state for a group can therefore keep assert state for
+  both on the same interface, where before the two shared one record and
+  the answer depended on which entry happened to be the longest match
 - Reject an `altnet` or `scoped` masklen above 32 in `pimd.conf` instead
   of shifting by it.  `VAL_TO_MASK()` shifts by `32 - masklen`, so a
   larger value shifted by a number no 32-bit type has, which is undefined
