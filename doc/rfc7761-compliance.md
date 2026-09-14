@@ -93,8 +93,9 @@ runs the (S,G) one of sec. 4.6.1 first and the (\*,G) one of sec. 4.6.2
 only where that one held no state and did not move, each on its own entry.
 Which machine may take a message is the RPT bit's answer now, not the
 lookup's.  The metric they carry is the routing table's now as well, so what
-is left around them is the preference beside it, M4 below, and the half of
-M12 that is not a metric at all.
+is left around them is the preference beside it, M4 below, the half of M12
+that is not a metric at all, and M13, the condition that decides which of the
+two metrics an Assert carries in the first place.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -316,6 +317,69 @@ metrics have to differ: `route change -metric` does that between two pimds
 now, the way step 12 of `shared-lan` in `test/freebsd-lab.sh` does it, and
 `shared-lan-spt` is the scenario that already gets one of the two onto the
 shortest path tree.*
+
+**M13.  `JoinDesired(S,G)` is read off the inherited olist, so SPTbit is set
+where sec. 4.2.2 leaves it clear.**  `Update_SPTbit(S,G,iif)` runs on every
+packet from S, and its first condition is `JoinDesired(S,G)`: sec. 4.5.5
+makes that `immediate_olist(S,G) != NULL`, or the Keepalive Timer running
+with a non-empty inherited olist.  `immediate_olist(S,G)` is source-specific
+state alone -- `joins(S,G)` and `pim_include(S,G)`, and the latter is IGMPv3
+source-specific membership -- and `KeepaliveTimer(S,G)` starts only for a
+directly connected source or once the upstream (S,G) state machine is
+Joined.  A last hop router with an ordinary any-source receiver and no (S,G)
+Join of its own therefore answers FALSE, keeps SPTbit clear, and asserts as
+the RPT forwarder it is.
+
+pimd answers the same question with `calc_oifs()` (`update_sptbit()`,
+`src/route.c`), which on an (S,G) entry returns the *inherited* olist: the
+(\*,G)'s leaves and joins folded in.  One any-source receiver behind the
+router is enough to make it say JoinDesired, and condition 4 of sec. 4.2.2 --
+`RPF'(S,G) == RPF'(*,G)` -- holds in every chain topology, the RP being
+reached the same way as the source, so the bit goes on.  `spt-threshold
+infinity` does not hold it off: that setting gates `check_spt_threshold()`
+and the Join(S,G) that `switch_shortest_path()` sends (both `src/route.c`),
+which is `SwitchToSptDesired(S,G)` of sec. 4.2.1 and a different question.
+
+In the spec the two are connected, and by the term pimd does not keep.
+`CheckSwitchToSpt(S,G)` sets `KeepaliveTimer(S,G)` when the policy says to
+switch, with a note that restarting that timer is what results in the SPT
+switch: the timer makes `JoinDesired(S,G)` true, the Join(S,G) follows, and
+only then may the bit be set.  An infinite threshold returns false there, the
+timer is never set for that reason, and the whole chain stays down.  pimd
+keeps no `KeepaliveTimer(S,G)` of that kind -- `entry_timer` is refreshed by
+control-plane events, M7 above -- so the chain has no link in it to break.
+
+What it costs is not forwarding.  Condition 4 exists because in that topology
+the packets arrive on the same interface from the same neighbour either way,
+so the switch is a no-op; the entry drops `MRTF_RP` and keeps forwarding what
+it forwarded.  It is what the router then claims on the wire:
+`CouldAssert(S,G,I)` is read off SPTbit, so `my_assert_metric()`
+(`src/pim_proto.c`) returns `spt_assert_metric(S,I)`, the MRIB numbers for
+the source with the RPT bit clear, for a router that is forwarding off the
+shared tree.  Sec. 4.6.1 compares that bit before either metric, so on a
+shared LAN this router can beat one that really is on the shortest path
+tree, and the group stays on the longer path.
+
+The loose test is as old as `update_sptbit()`.  What gave it reach is the fix
+for M10, which runs the check once per `age_routes()` pass (`check_sptbit()`,
+`src/route.c`) rather than only at an upcall, so entries that used to escape
+it no longer do.
+*Check: sec. 4.2.2, `doc/rfc7761.txt:1522` for `Update_SPTbit(S,G,iif)` and
+`:1543` for the four conditions; `JoinDesired(S,G)` is sec. 4.5.5, `:3738`;
+`immediate_olist(S,G)` and `pim_include(S,G)` are sec. 4.1.5, `:1134` and
+`:1159`; the Keepalive Timer rules are sec. 4.2, `:1373`; the switch policy
+it is not is sec. 4.2.1, `CheckSwitchToSpt(S,G)` at `:1476` and the note on
+an infinite threshold at `:1486`.  Effort: small in code -- ask the (S,G)
+entry's own join state and per-source leaves, a directly connected source, or
+an entry `switch_shortest_path()` really switched -- and the validation is
+the work, since the bit is what `shared-lan-spt` in `test/freebsd-lab.sh` and
+every metric sub-case of `assert-lan` in `test/freebsd-interop.sh` are
+measuring.  Test: the `rpt-bit` sub-case of `assert-lan` reproduces it, but
+only run after the other three, when R3 ends up with an (S,G) entry to set
+the bit on; run on its own it stays on the shared tree and the Arista wins as
+the sub-case expects.  It is a `fail()` today rather than the `xfail()` this
+file asks for, because the order dependence has to go first: as an `xfail()`
+it would also swallow a real regression in the election it asserts.*
 
 
 Timers
