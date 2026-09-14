@@ -183,23 +183,48 @@ to be retained before they can be advertised.  This is the `alias` lab topology.
 large.  Test: none.  `alias` in `test/freebsd-lab.sh` builds the interface this
 needs, but asserts the altnet RPF path rather than the Address List option.*
 
-**M7.  No traffic-driven Keepalive Timer.**  Sec. 4.2 sets `KeepaliveTimer(S,G)`
-from arriving data.  Every write to `entry_timer` is a control-plane event or an
-upcall, and the only data-driven one, the cache miss at `src/route.c:866`, stops
-firing once the MFC is installed; `check_spt_threshold()` reads the MFC counters
-but never refreshes the timer.  With the shipped defaults the 100-second
-spt-threshold poll masks this by calling `switch_shortest_path()`, so the
-lifetime of (S,G) state is tied to the poll interval rather than to the data.
-Raising `spt-threshold interval` past 210 seconds, or setting
-`spt-threshold infinity` — which returns before the poll can refresh anything
-(`src/route.c:1118`) — removes the last data-driven refresh from entries with no
-downstream Joins, and `age_routes()` then deletes them under live traffic.  Not
-reproduced; running `rpt` or `rp-lasthop` with `spt-threshold infinity` and
-watching `pimctl show mrt` across 210 seconds would settle it.
+**M7.  The Keepalive Timer is not traffic-driven, and nothing in reach makes
+that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.
+Every write to `entry_timer` is a control-plane event or a kernel upcall;
+`check_spt_threshold()` reads the MFC counters and never refreshes the timer,
+and under `spt-threshold infinity` it returns before reading them at all
+(`src/route.c:1385`).
+
+Measured rather than reasoned about: the `rpt` topology of
+`test/freebsd-lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
+ten minutes of continuous traffic, no entry deleted on any router and no gap in
+the receiver's stream.  Three refreshes cover the entries between them, and the
+cases they cover are disjoint, so the timer never reaches zero while a source
+sends:
+
+- An entry with an oif some neighbour joined is refreshed by that neighbour's
+  periodic Join every 60 seconds (`src/pim_proto.c:2159`, `:2217`).  In the run
+  above `entry_timer` went back to 210 on the same tick as `jp_timer` wrapping
+  to 60, every time.
+- The DR and the RP refresh each other over the Register probe loop, also every
+  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:891`) and
+  the Register-Stop the DR's, while a registered packet sets it at the DR
+  directly (`:1081`), which is the one refresh that is data-driven.  Stopping
+  pimd on the last hop router, so that no Join is ever sent again, left this
+  loop holding both entries up on its own.
+- An entry with an empty oif list has no MFC, so every packet is a cache miss
+  and refreshes the timer (`src/route.c:1134`).  That is the path the
+  `keepalive` scenario pins, and it costs one upcall per packet for as long as
+  the source sends, because pimd installs no negative cache entry (the TODO at
+  `src/route.c:1117`).
+
+One shape is left over: a last hop router's (S,G) whose only oif is a local
+member, with `spt-threshold interval` longer than 210 seconds, so that the poll
+calling `switch_shortest_path()` no longer refreshes it either.  `age_routes()`
+then deletes it through the `PIMD_VIFM_LASTHOP_ROUTER` branch
+(`src/route.c:1823`) precisely because those leaves are inherited from the
+(\*,G) -- which is also why no traffic is lost: the (\*,G) keeps forwarding and
+the entry returns at the next poll.  What that costs is the switch to the
+shortest path tree oscillating with the period of the poll interval.
 *Check: sec. 4.2, `doc/rfc7761.txt:1375` and `:1383`, where arriving data sets
 the timer; `Keepalive_Period` is sec. 4.11, `:7136`.  Effort: medium.  Test:
-none; the `keepalive` scenario in `test/freebsd-lab.sh` covers the part that
-was fixed, not what is left here.*
+none, and the run above says a lab here would be asserting that the three
+masks work rather than that the timer does.*
 
 **M8.  Triggered Joins and Prunes wait for the next tick.**  The transitions in
 sec. 4.5.4 and 4.5.5 send immediately.  `change_interfaces()` and its callers
@@ -343,15 +368,24 @@ of sec. 4.11, `:6958`.  Effort: small; it needs a `send_pim_hello()` variant
 that leaves the timer alone.  Test: none; it is startup timing, and every lab
 here starts its routers together.*
 
-**T4.  No goodbye Hello when an interface goes down.**  Sec. 4.3.1 wants a
-zero-holdtime Hello so a DR can be re-elected at once.  `stop_vif()` has the two
-TODOs instead (`src/vif.c:429-433`).  Neighbors hold pimd as DR for the full 105
-seconds, black-holing traffic from directly connected sources for that long.
-The receive side is already implemented, so this is the send half only.
+**T4.  `stop_vif()` sends no goodbye Hello, on paths that could no longer send
+one.**  Sec. 4.3.1 wants a zero-holdtime Hello so a DR can be re-elected at
+once, and the send half is there in both places that can use it: `cleanup()`
+sends one on every vif before the daemon exits (`src/main.c:590`), and
+`renumber_vif()` sends one from the old address before taking the VIF down
+(`src/vif.c:545`).  `stop_vif()` itself still has the two TODOs
+(`src/vif.c:429-433`), but every path into it has either sent the Hello
+already or cannot send one: `check_vif_state()` reaches it only once
+`SIOCGIFFLAGS` reports the interface gone or `IFF_UP` clear (`src/vif.c:662`,
+`:677`), and `update_reg_vif()` only for the register vif, which has no
+neighbors.  That leaves `restart()` (`src/main.c:770`), where the interfaces
+are still up -- and it starts them again immediately, so the Hello that follows
+carries a new GenID and the neighbors re-elect on that instead.
 *Check: sec. 4.3.1, `doc/rfc7761.txt:1692`; the zero-Holdtime meaning is sec.
-4.9.2, `:6077`.  Effort: small.  Test: reported rather than asserted, by
-`renumber` in `test/freebsd-lab.sh` -- a poll cannot get ahead of an address
-that has already gone, so the scenario prints what it saw and carries on.*
+4.9.2, `:6077`.  Effort: small, and worth only the `restart()` case.  Test:
+`renumber` in `test/freebsd-lab.sh` drives the path that does send one, and
+reports rather than asserts whether it arrived -- a poll cannot get ahead of an
+address that has already gone.*
 
 **T5.  `hello-interval` has no lower bound, and 0 is fatal.**
 `man/pimd.conf.5:119` documents 30 to 18724 and calls anything under 30
