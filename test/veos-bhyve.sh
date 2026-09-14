@@ -55,19 +55,33 @@
 # changing configuration on a running switch use "cli", which talks eAPI over
 # the management interface, or "console" and type.
 #
+# The image, which -q names and which has no default: one file from the
+# Software Download area of arista.com, under vEOS-lab, named
+#
+#     vEOS64-lab-<version>.qcow2      e.g. vEOS64-lab-4.36.1F.qcow2
+#
+# (an Arista account is needed, free to register; 4.36.1F is what this was
+# written against).  The Aboot-veos-serial-<version>.iso offered beside it
+# is the bootloader other hypervisors pair with the image and is NOT needed
+# here -- its kexec is the very thing that does not survive bhyve, see
+# above, so this script never reads it.
+#
 # Requires: sysutils/grub2-bhyve, emulators/qemu-tools (qemu-img),
 # sysutils/e2fsprogs (debugfs, fsck.ext4), root.
 
 set -euo pipefail
 
-# Everything here needs root, and root's home is not where the images are:
-# under sudo the defaults have to follow the invoking user, not $HOME.
+# Everything here needs root, and root's home is not where a user keeps
+# their images: under sudo, a default derived from $HOME would point into
+# /root.  The image is named with -q and has no default at all -- it is a
+# licensed Arista download and where it lives is the caller's business --
+# while the work directory follows the invoking user.
 HOMEDIR=$HOME
 if [ -n "${SUDO_USER:-}" ]; then
     HOMEDIR=$(getent passwd "$SUDO_USER" | cut -d: -f6)
 fi
 
-QCOW=${QCOW:-$HOMEDIR/vEOS64-lab-4.36.1F.qcow2}
+QCOW=${QCOW:-}
 WORK=${WORK:-$HOMEDIR/veos-bhyve}
 VM=${VM:-veos}
 CPUS=${CPUS:-2}
@@ -99,7 +113,8 @@ Commands:
   cli COMMAND...       run an EOS CLI command over eAPI and print the result
 
 Options:
-  -q FILE   qcow2 image                      [$QCOW]
+  -q FILE   vEOS-lab qcow2 image.  Required by start, inject and
+            cloudinit; no default, and $QCOW is read when -q is absent.
   -w DIR    work directory                   [$WORK]
   -n NAME   bhyve VM name                    [$VM]
   -c NUM    vCPUs                            [$CPUS]
@@ -172,7 +187,16 @@ detach_flash() {
     mdconfig -du "$1" 2>/dev/null || true
 }
 
+# The subcommands that touch the disk all reach it through convert_image,
+# so the "did you say which image" check belongs with them rather than in
+# each one.  stop, status, console and cli never need it.
+need_image() {
+    [ -n "$QCOW" ] || die "no image given: pass -q FILE or set QCOW"
+    [ -f "$QCOW" ] || die "no such image: $QCOW"
+}
+
 convert_image() {
+    need_image
     if [ ! -f "$RAW" ] || $FORCE; then
         echo "==> converting $QCOW to raw"
         rm -f "$RAW"
@@ -332,7 +356,7 @@ run_loop() {
 
 do_start() {
     need_root
-    [ -f "$QCOW" ] || die "no such image: $QCOW"
+    need_image
 
     if [ -e /dev/vmm/"$VM" ]; then
         die "$VM already exists, run '$0 -n $VM stop' first"

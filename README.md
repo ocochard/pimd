@@ -382,9 +382,11 @@ A third suite, `test/freebsd-interop.sh`, runs pimd against an Arista
 vEOS under bhyve.  The other two have pimd at both ends of every
 exchange, so a message pimd encodes wrongly is a message pimd decodes
 wrongly in the same way and the run stays green; this one is what
-catches that.  It needs a licensed vEOS image, so it too is run by hand:
+catches that.  It needs a vEOS-lab image — `vEOS64-lab-<version>.qcow2`,
+a free-account download from arista.com that cannot ship here — named
+with `-i`, so it too is run by hand:
 
-    sh test/freebsd-interop.sh run all
+    sh test/freebsd-interop.sh -i ~/vEOS64-lab-4.36.1F.qcow2 run all
 
 **[test/README.md][tests]** describes all three: what every scenario
 covers, what only it covers, and what each suite requires.  See also the

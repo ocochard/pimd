@@ -89,6 +89,59 @@
 # the asserts and SPT switches that follow would be the thing under test
 # instead of the exchange that is.
 #
+#   assert-lan  The assert election, which needs a topology of its own: two
+#               routers with a reason to forward the same (S,G) onto one
+#               segment.  Three PIM routers share the LAN, and the two
+#               contenders get their reason by different routes -- R5's
+#               Join gives R3 an oif there, ED3's IGMP report gives the
+#               Arista one as DR:
+#
+#                                        10.0.3.0/24, bridge803
+#                                             |
+#                 ED1 --- R1 --- bridge812 -- + -- R5 --- ED2
+#                 .10  (BSR+RP)    |          |   .1      .10
+#                                 vEOS -------+
+#                                  Et1      Et2 .3
+#                                             |
+#                                    R3 .2 ---+--- ED3 .10
+#                                     |
+#                                    ED6 .10, 10.0.6.0/24
+#
+#               What it was written for, and what it actually found, are
+#               not the same thing, so both are here.
+#
+#               It was written for the assert metric.  pimd's is a pair of
+#               configured constants rather than the MRIB's numbers
+#               (deviation M4 in doc/rfc7761-compliance.md), so between two
+#               pimds every router on a LAN advertises the same preference
+#               and metric, compare_metrics() always ties, and the address
+#               decides -- which makes the two comparisons sec. 4.6.1 runs
+#               before that tiebreak dead code in every other test here.
+#               EOS fills those fields from its own RIB, so this is the one
+#               LAN where they could hold unequal numbers.
+#
+#               They do not, yet, and that is the finding.  pimd never gets
+#               onto the shortest path tree here at all: it evaluates
+#               SPTbit only when an upcall reaches update_sptbit(), never
+#               per packet as sec. 4.2 asks, so R3 keeps asserting from
+#               (*,G) state with the RPT bit set -- which sec. 4.6.1
+#               compares first, so its metric is never reached.  That is
+#               deviation M10, this scenario is what turned it up, and the
+#               three metric sub-cases report it and stop rather than
+#               pretending to compare anything.  They are written out in
+#               full and start comparing the day M10 is fixed.
+#
+#               So what it asserts today: DR and IGMP querier election on a
+#               segment shared with a foreign implementation, decided by
+#               different routers and agreed by both ends; the RP set
+#               learned through it; rpt-bit, the one sub-case that does not
+#               need pimd on the SPT, where the Arista must win on the RPT
+#               bit despite pimd holding the better preference; and M10 and
+#               M3 as known deviations.
+#
+#               Takes about 12 minutes, most of it the last sub-case,
+#               which has to outlive Assert_Time (180s).
+#
 # Which is also why this is not another scenario in freebsd-lab.sh: that
 # script needs nothing but jails, and this one needs a 4G VM image, bhyve
 # and a vendor OS.  The two labs use different jail, epair and bridge names
@@ -101,8 +154,14 @@
 # Arista believes are read over eAPI, so they are the switch's own view of
 # the exchange, not an inference from pimd's logs.
 #
-# Requirements: root, VIMAGE, ip_mroute.ko, if_bridge.ko, bhyve with a
-# vEOS-lab image, python3 (eAPI is JSON), and a built pimd.
+# Requirements: root, VIMAGE, ip_mroute.ko, if_bridge.ko, bhyve, python3
+# (eAPI is JSON), a built pimd, and a vEOS-lab image named with -i.
+#
+# That image is vEOS64-lab-<version>.qcow2, from the Software Download area
+# of arista.com under vEOS-lab, with a free account; 4.36.1F is what this
+# was written against.  The Aboot-veos-serial ISO offered beside it is not
+# needed, see the header of veos-bhyve.sh.  Neither can ship here, which is
+# why there is no default path and why this lab is not in TESTS.
 #
 # Usage: freebsd-interop.sh start|check|run [arista-rp|pimd-rp] | run all | stop
 
@@ -126,10 +185,15 @@ DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp"}
 # and cannot be: it is a licensed Arista download.
 VEOS_SH=${VEOS_SH:-$(cd "$(dirname "$0")" && pwd)/veos-bhyve.sh}
 VEOS_VM=${VEOS_VM:-veos}
-VEOS_QCOW=${VEOS_QCOW:-$HOME/vEOS64-lab-4.36.1F.qcow2}
+
+# The vEOS-lab image.  No default: it is a licensed Arista download that
+# cannot live in this tree, and where a given machine keeps it is nothing
+# this script can guess -- so it is named with -i, or in $VEOS_QCOW, and
+# the run stops with a usage message if neither says where it is.
+VEOS_QCOW=${VEOS_QCOW:-}
 
 SCENARIO=${SCENARIO:-arista-rp}
-SCENARIOS="arista-rp pimd-rp"
+SCENARIOS="arista-rp pimd-rp assert-lan"
 
 # Jails.  A prefix of their own so this lab and freebsd-lab.sh can be built
 # in the same tree without either one destroying the other's boxes.  ED4
@@ -137,14 +201,19 @@ SCENARIOS="arista-rp pimd-rp"
 # first and last hop router for.
 DEFAULT_BOXES="ed1 r1 r3 ed2"
 REVERSED_BOXES="ed1 r1 r3 ed2 ed4"
+ASSERT_BOXES="ed1 r1 r3 r5 ed2 ed3 ed6"
 BOXES=$DEFAULT_BOXES
-ROUTERS="r1 r3"
+
+DEFAULT_ROUTERS="r1 r3"
+ASSERT_ROUTERS="r1 r3 r5"
+ROUTERS=$DEFAULT_ROUTERS
 
 # Host bridges: the PIM links the Arista sits on, plus the management
 # segment eAPI is reached over.
 BR12=bridge812
 BR23=bridge823
 BR4=bridge804
+BR3=bridge803
 BR_MGMT=bridge800
 
 # bhyve taps, in PCI order.  The first NIC a vEOS sees is Management1, the
@@ -161,11 +230,25 @@ TAP_ET3=tap804
 # stays on the host and joins the bridge.
 DEFAULT_EPAIRS="epair801 epair812 epair823 epair803"
 REVERSED_EPAIRS="$DEFAULT_EPAIRS epair804"
+ASSERT_EPAIRS="epair801 epair812 epair832 epair833 epair853 epair863 epair805 epair836"
 EPAIRS=$DEFAULT_EPAIRS
+
+# Every epair either scenario can create, for a teardown that does not
+# depend on which one built the lab
+ALL_EPAIRS="$DEFAULT_EPAIRS epair804 epair832 epair833 epair853 epair863 epair805 epair836"
+ALL_BOXES="ed1 r1 r3 r5 ed2 ed3 ed4 ed6"
 
 ED1_IF=epair801a
 ED2_IF=epair803b
 ED4_IF=epair804b
+
+# assert-lan renames things: ED2 moves behind R5, and ED3 sits on the
+# contested LAN itself
+AL_ED2_IF=epair805b
+AL_ED3_IF=epair863b
+AL_ED6_IF=epair836b
+AL_R3_LAN_IF=epair833b
+AL_R3_UP_IF=epair832b
 
 SRC_ADDR=${SRC_ADDR:-10.0.1.10}
 RCV_ADDR=${RCV_ADDR:-10.0.3.10}
@@ -188,6 +271,130 @@ RP_ADDR=$ARISTA_RP_ADDR
 # src/pimd.h fixes it at 30.
 PIMD_BSR_PRIORITY=5
 PIMD_BSR_HASHLEN=30
+
+# assert-lan ------------------------------------------------------------
+#
+# The contested LAN.  R3 and the Arista are the two contenders, R5 is the
+# downstream router whose Join gives R3 its reason to forward, and ED3 is
+# the local member that gives the Arista its own.  The addresses put the
+# two elections on different routers on purpose: PIM takes the highest
+# address, so the Arista is the DR, IGMP takes the lowest, so R5 is the
+# querier, and neither election is the one under test.
+#
+# The Arista also has to win the assert tiebreak, which is the same
+# highest-address rule, so the tiebreak sub-case has a predictable answer.
+AL_R3_ADDR=10.0.3.2
+AL_EOS_ADDR=10.0.3.3
+AL_R5_ADDR=10.0.3.1
+AL_ED3_ADDR=10.0.3.10
+AL_ED6_ADDR=10.0.6.10
+AL_ED2_ADDR=10.0.5.10
+
+# What the Arista advertises in its Asserts: sec. 4.6.3 says the metric
+# preference and metric are the unicast routing protocol's, and EOS obeys
+# that, so these are the distance and metric of its static route to the
+# source.  Both are set explicitly rather than left at the static-route
+# defaults, because pimd's side of the comparison has to be able to match
+# them and default-route-metric is documented as 1-1024.
+AL_EOS_PREF=${AL_EOS_PREF:-100}
+AL_EOS_METRIC=${AL_EOS_METRIC:-500}
+
+# ED3 joins on a port of its own.  IGMP membership is per group, not per
+# port, so the Arista sees a report and takes the leaf while the stream
+# never reaches ED3's socket and it answers none of it - every reply the
+# sender counts then comes from ED2, at the far end of the tree.
+AL_JOIN_PORT=${AL_JOIN_PORT:-4322}
+AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
+
+# The sub-cases.  RFC 7761 sec. 4.6.3 (doc/rfc7761.txt:5174) defines the
+# assert metric as
+#
+#     struct assert_metric { rpt_bit_flag; metric_preference;
+#                            route_metric; ip_address; };
+#
+# and says the first three "are compared in order, where the first lower
+# value wins.  If all fields are equal, the primary IP address of the
+# router that sourced the Assert message is used as a tie-breaker, with
+# the highest IP address winning."  One sub-case per field, so each is
+# decided by exactly one comparison and the ones before it are equal:
+#
+#   pimd-wins    equal rpt_bit, pimd's metric_preference lower.  pimd
+#                must keep the LAN and the Arista must give it up.
+#   arista-wins  the same field, the other way round.
+#   tiebreak     rpt_bit, preference and metric all equal, so the address
+#                decides and the highest wins - the Arista, deliberately
+#                given the higher address on this LAN.
+#   rpt-bit      pimd is held on the shared tree while the Arista is on
+#                the shortest path tree, and pimd is given the *better*
+#                preference.  rpt_bit is compared first, so the Arista has
+#                to win regardless; a router that got the bit wrong would
+#                win on a metric it should never have been asked about.
+#                This is the mixed-vendor counterpart of shared-lan-spt in
+#                freebsd-lab.sh, whose xfail() the fix in 4cb79f1 cleared
+#                against pimd's own encoder.
+#
+# route_metric is held equal throughout and only metric_preference is
+# moved, so no sub-case can be decided by a field it is not about.
+#
+# Getting this wrong the first time is worth recording, because the lab
+# looked broken while both implementations were right.  With the RP on R1,
+# one hop upstream of both contenders, R3 reached the source and the RP
+# through the same interface and never held (S,G) state, so
+# my_assert_metric() (doc/rfc7761.txt:5194) fell to rpt_assert_metric(G,I)
+# = {1, MRIB.pref(RP), MRIB.metric(RP), ...} and R3 asserted {1,0,0} - the
+# RP was directly connected, hence the zeroes.  Against the Arista's
+# {0,100,500} that loses on rpt_bit before any metric is read, in every
+# sub-case, which is correct behaviour by both ends and no test at all.
+# What fixes it is not a knob on R3: see write_case_confs().
+AL_CASES=${AL_CASES:-"pimd-wins arista-wins tiebreak rpt-bit"}
+AL_PIMD_METRIC=$AL_EOS_METRIC
+AL_PREF_BETTER=$((AL_EOS_PREF - 50))
+AL_PREF_WORSE=$((AL_EOS_PREF + 50))
+
+# The short stream run after the election has settled, to show the LAN is
+# still carrying traffic, and how much of it has to come back
+AL_CONFIRM_PKTS=${AL_CONFIRM_PKTS:-20}
+AL_MIN_CONFIRM=${AL_MIN_CONFIRM:-12}
+
+# RFC 7761 Assert_Time, and what the "winner never resends" sub-case has
+# to outlive.  PIM_ASSERT_TIMEOUT in src/pimd.h is the same 180.
+AL_ASSERT_TIME=${AL_ASSERT_TIME:-180}
+
+# How long to wait for someone to start forwarding onto the contested LAN,
+# and how long to let the election settle once someone has.  Polled rather
+# than slept through: the chain that has to complete first is long - the
+# RP has to see the Register, the shared tree has to reach R5, R5's
+# spt-threshold timer has to fire, its (S,G) Join has to reach R3 and R3
+# has to build forwarding state - and a fixed sleep either samples a race
+# or pads every sub-case by the worst case.
+AL_FWD_WAIT=${AL_FWD_WAIT:-150}
+
+# How long to give the AssertCancel case: the Arista's membership for ED3
+# has to expire before it can cancel, which is an IGMP timeout, not a PIM
+# one.  Still far short of the Assert_Time a loser waits out otherwise,
+# which is the whole point of the message.
+AL_CANCEL_WAIT=${AL_CANCEL_WAIT:-75}
+AL_ELECTION_WAIT=${AL_ELECTION_WAIT:-30}
+
+# How long every stream in this scenario has to stay up for, worked out
+# from the waits above rather than guessed, because guessing it wrong is
+# invisible: the sender, the receiver behind R5 and ED3's joiner are all
+# started before the election is established, and if any of them expires
+# during the measurement the reading is of a lab that has quietly gone
+# away.  ED3's is the dangerous one -- its membership is the Arista's only
+# reason to forward, so a joiner that has exited makes the Arista look
+# like a router that is honouring an assert.
+#
+# The longest path through a case is establish_election() waiting out
+# AL_FWD_WAIT and AL_ELECTION_WAIT, then the resend case polling across
+# Assert_Time and AL_ELECTION_WAIT again.  Plus a wide margin: nothing is
+# gained by cutting it fine, since every stream is killed as soon as its
+# case has an answer.
+AL_STREAM_LIFE=$((AL_FWD_WAIT + AL_ASSERT_TIME + 2 * AL_ELECTION_WAIT + 150))
+
+# The stream the election is held over, one packet a second, so the count
+# is also its duration in seconds.
+AL_STREAM_PKTS=${AL_STREAM_PKTS:-$AL_STREAM_LIFE}
 
 MGMT_HOST=172.20.0.1
 MGMT_VEOS=172.20.0.2
@@ -226,30 +433,57 @@ print() { printf "\033[7m>> %-76s\033[0m\n" "$1"; }
 dprint() { printf "\033[2m%-76s\033[0m\n" "$1"; }
 
 FAILED=0
+XFAILED=0
 ok()   { printf "  \033[32mok\033[0m    %s\n" "$1"; }
 fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 
+# A behaviour that is wrong but known to be wrong: pimd deviates from the
+# spec here, the assertion reproduces it on purpose, and the run is not
+# red because of it.  Same convention as freebsd-lab.sh -- it is still
+# printed on every run, and the moment pimd starts doing the right thing
+# the assertion turns into an ok and says so.
+xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
+
 usage() {
-	echo "usage: $0 start|check|run [arista-rp|pimd-rp] | run all | stop"
+	cat <<-EOF
+	usage: $0 [-i image.qcow2] start|check|run [scenario] | run all | stop
+
+	  -i FILE   the vEOS-lab qcow2 image to boot.  Required for start and
+	            run, and \$VEOS_QCOW is read when -i is not given.  There is
+	            no default: the image is a licensed Arista download that
+	            cannot ship with this tree.
+
+	Scenarios: $SCENARIOS.  "run all" walks them in that order.
+	EOF
 }
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	arista-rp|pimd-rp) SCENARIO=${1:-$SCENARIO} ;;
+	arista-rp|pimd-rp|assert-lan) SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
 
 	# Read by everything that walks the topology, so a scenario left
 	# behind by a previous "run all" cannot leak into the next one.
-	if [ "$SCENARIO" = pimd-rp ]; then
+	case $SCENARIO in
+	pimd-rp)
 		BOXES=$REVERSED_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
 		EPAIRS=$REVERSED_EPAIRS
-		RP_ADDR=$PIMD_RP_ADDR
-	else
+		RP_ADDR=$PIMD_RP_ADDR ;;
+	assert-lan)
+		BOXES=$ASSERT_BOXES
+		ROUTERS=$ASSERT_ROUTERS
+		EPAIRS=$ASSERT_EPAIRS
+		# R1 is the RP here too, on the same interface as in
+		# pimd-rp, so the two share the address
+		RP_ADDR=$PIMD_RP_ADDR ;;
+	*)
 		BOXES=$DEFAULT_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
 		EPAIRS=$DEFAULT_EPAIRS
-		RP_ADDR=$ARISTA_RP_ADDR
-	fi
+		RP_ADDR=$ARISTA_RP_ADDR ;;
+	esac
 }
 
 # --- boxes ------------------------------------------------------------
@@ -259,6 +493,19 @@ jrun() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
 pimctl() { j=$1; shift; jrun "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
 ifaces() {
+	if [ "$SCENARIO" = assert-lan ]; then
+		case $1 in
+		ed1) echo "epair801a" ;;
+		r1)  echo "epair801b epair812b" ;;
+		r3)  echo "epair832b epair833b epair836a" ;;
+		r5)  echo "epair853b epair805a" ;;
+		ed2) echo "epair805b" ;;
+		ed3) echo "epair863b" ;;
+		ed6) echo "epair836b" ;;
+		esac
+		return
+	fi
+
 	case $1 in
 	ed1) echo "epair801a" ;;
 	r1)  echo "epair801b epair812b" ;;
@@ -269,6 +516,19 @@ ifaces() {
 }
 
 addrs() {
+	if [ "$SCENARIO" = assert-lan ]; then
+		case $1 in
+		ed1) echo "epair801a 10.0.1.10/24" ;;
+		r1)  echo "epair801b 10.0.1.1/24 epair812b 10.0.12.1/24" ;;
+		r3)  echo "epair832b 10.0.12.3/24 epair833b $AL_R3_ADDR/24 epair836a 10.0.6.1/24" ;;
+		r5)  echo "epair853b $AL_R5_ADDR/24 epair805a 10.0.5.1/24" ;;
+		ed2) echo "epair805b $AL_ED2_ADDR/24" ;;
+		ed3) echo "epair863b $AL_ED3_ADDR/24" ;;
+		ed6) echo "epair836b $AL_ED6_ADDR/24" ;;
+		esac
+		return
+	fi
+
 	case $1 in
 	ed1) echo "epair801a 10.0.1.10/24" ;;
 	r1)  echo "epair801b 10.0.1.1/24 epair812b 10.0.12.1/24" ;;
@@ -282,6 +542,25 @@ addrs() {
 # unicast RPF answer for the source and for the RP, and the Arista needs one
 # for both edge LANs; its own are in its startup-config.
 routes() {
+	if [ "$SCENARIO" = assert-lan ]; then
+		# R5's route to the source is the whole reason R3 gets an oif
+		# on the contested LAN: it makes R3 R5's RPF neighbour, so
+		# R5's Join names R3, and receive_pim_join_prune() lets only
+		# the router named in a Join add the oif.  Pointed at the
+		# Arista instead there would be one forwarder on the LAN and
+		# no assert to elect.
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.3.0/24 10.0.12.3 10.0.5.0/24 10.0.12.3 10.0.6.0/24 10.0.12.3" ;;
+		r3)  echo "10.0.1.0/24 10.0.12.1 10.0.5.0/24 $AL_R5_ADDR" ;;
+		r5)  echo "10.0.1.0/24 $AL_R3_ADDR 10.0.12.0/24 $AL_R3_ADDR 10.0.6.0/24 $AL_R3_ADDR" ;;
+		ed2) echo "default 10.0.5.1" ;;
+		ed3) echo "default $AL_EOS_ADDR" ;;
+		ed6) echo "default 10.0.6.1" ;;
+		esac
+		return
+	fi
+
 	if [ "$SCENARIO" = pimd-rp ]; then
 		# 10.0.4.0/24 hangs off the Arista, and both pimd routers
 		# have to be able to RPF towards a source sitting there
@@ -328,8 +607,11 @@ check_req() {
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
 	[ -x "$VEOS_SH" ] || \
 		die "$VEOS_SH not found, set VEOS_SH to the vEOS bhyve runner"
-	[ -f "$VEOS_QCOW" ] || \
-		die "$VEOS_QCOW not found, set VEOS_QCOW to the vEOS-lab image"
+	if [ -z "$VEOS_QCOW" ]; then
+		usage >&2
+		die "no vEOS image given, pass -i FILE or set VEOS_QCOW"
+	fi
+	[ -f "$VEOS_QCOW" ] || die "no such vEOS image: $VEOS_QCOW"
 	command -v python3 >/dev/null 2>&1 || \
 		die "python3 not found, it is what talks JSON to eAPI"
 	${SUDO} kldload -n ip_mroute 2>/dev/null || \
@@ -362,7 +644,92 @@ restore_mcast_loop() {
 
 # --- configuration ----------------------------------------------------
 
+# assert-lan: the per-sub-case configuration, which is R3's metrics and
+# whether R3 and R5 may leave the shared tree.  $1 is the sub-case.
+#
+# The metrics are R3's, and they are what pimd puts in the two Assert
+# metric fields: set_incoming() (src/route.c) assigns
+# uv_local_pref/uv_local_metric to every source that is not directly
+# connected, and those come from here and nowhere else.  That is deviation
+# M4 in doc/rfc7761-compliance.md -- configured constants where sec. 4.6.3
+# asks for the MRIB's numbers -- and it is also what makes this scenario
+# possible: between two pimds every router advertises the same constants,
+# the comparison always ties, the address decides, and the metric branches
+# of compare_metrics() never execute.  The Arista puts its real routing
+# metrics on the wire, so here they do.
+#
+# The shortest-path-tree policy decides the RPT bit, which sec. 4.6.1
+# compares before either metric -- so it decides whether the metrics are
+# looked at at all -- and it has to be settled before the Arista ever
+# contends, not after.  R3 has a receiver of its own on 10.0.6.0/24 for
+# exactly that reason: it makes R3 a last hop router, so try_switch_to_spt()
+# (src/route.c:1246, gated on MRT_IS_LASTHOP or MRT_IS_RP) will consider
+# it, and R3 reaches SPTbit off its own traffic rather than waiting for an
+# (S,G) Join from R5.
+#
+# Which matters more than it sounds.  Without that receiver the LAN is
+# R3's only outgoing interface, and the ordering becomes a race R3 can
+# lose permanently: if the Arista's Assert lands before R3 has (S,G)
+# state, R3 asserts from (*,G) with the RPT bit set, loses, and has its
+# only oif removed -- after which update_sptbit() (src/route.c:532)
+# returns early on an empty calc_oifs() and SPTbit is never set at all.
+# That is deviation M3 again, and it left the metric sub-cases passing or
+# failing on which message arrived first.  A sub-case about
+# metric_preference must not be decided by a deviation in the assert
+# state machine.
+write_case_confs() {
+	case $1 in
+	pimd-wins)   pref=$AL_PREF_BETTER; spt="spt-threshold packets 0 interval 10" ;;
+	arista-wins) pref=$AL_PREF_WORSE;  spt="spt-threshold packets 0 interval 10" ;;
+	tiebreak)    pref=$AL_EOS_PREF;    spt="spt-threshold packets 0 interval 10" ;;
+	# Held on the shared tree, and given the better preference on
+	# purpose: it must not save pimd, because the RPT bit is compared
+	# first.  Both routers are pinned, since either one switching would
+	# give R3 (S,G) state and take the bit away.
+	rpt-bit)     pref=$AL_PREF_BETTER; spt="spt-threshold infinity" ;;
+	esac
+
+	cat <<-EOF > "$WORKDIR/r3.conf"
+	# R3: one of the two contenders on the shared LAN, sub-case $1.
+	# Last hop router for ED6 as well, which is what lets it reach the
+	# shortest path tree without waiting on R5.
+	hello-interval 10
+	default-route-distance $pref
+	default-route-metric $AL_PIMD_METRIC
+	$spt
+	EOF
+
+	cat <<-EOF > "$WORKDIR/r5.conf"
+	# R5: last hop router for ED2 and IGMP querier on the shared LAN,
+	# never a contender on it.  Sub-case $1.
+	hello-interval 10
+	$spt
+	EOF
+}
+
 write_configs() {
+	if [ "$SCENARIO" = assert-lan ]; then
+		# R1 is the BSR and the RP as well as the first hop router.
+		# One router fewer to boot, and it keeps every address the
+		# assertions name on the contested LAN rather than spread
+		# over a chain that has nothing to do with the election.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router, BSR and candidate RP.  It is one hop
+		# upstream of both contenders and never on the contested LAN,
+		# so nothing it does decides the election.
+		hello-interval 10
+		bsr-candidate epair812b priority $PIMD_BSR_PRIORITY interval 10
+		rp-candidate epair812b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# R3's and R5's configs are per sub-case
+		write_case_confs "$(echo "$AL_CASES" | awk '{print $1}')"
+		write_veos_assert_conf
+		write_eapi_helper
+		return
+	fi
+
 	# hello-interval is tuned in both scenarios, and only to make
 	# neighbour discovery take seconds instead of the 30s default.
 	if [ "$SCENARIO" = pimd-rp ]; then
@@ -482,9 +849,13 @@ write_configs() {
 		EOF
 	fi
 
-	# eAPI is JSON-RPC over HTTP and there is no JSON in base, so the one
-	# piece of python in this lab lives here.  It prints the text output
-	# of each command, which is what the assertions grep.
+	write_eapi_helper
+}
+
+# eAPI is JSON-RPC over HTTP and there is no JSON in base, so the one
+# piece of python in this lab lives here.  It prints the text output of
+# each command, which is what the assertions grep.
+write_eapi_helper() {
 	cat <<-'PYEOF' > "$EAPI"
 	import base64, json, sys, urllib.error, urllib.request
 
@@ -515,6 +886,57 @@ write_configs() {
 	PYEOF
 }
 
+# assert-lan: the Arista's configuration.  It is the second contender on
+# the shared LAN and the DR there, and it holds no BSR or RP role - R1
+# does, so that the roles under test on this LAN are only the ones the
+# election needs.
+#
+# The distance and metric on the route to the source are the whole point.
+# Sec. 4.6.3 says the Assert metric preference and metric are the unicast
+# routing protocol's, and EOS obeys that, so these two numbers are what it
+# puts on the wire and what pimd's own constants are compared against.
+# Written as a static route because a routing daemon would put the lab at
+# the mercy of whatever metric it chose.
+write_veos_assert_conf() {
+	cat <<-EOF > "$WORKDIR/veos.cfg"
+	! Generated by freebsd-interop.sh, do not edit in place
+	no aaa root
+	username $EAPI_USER privilege 15 role network-admin secret 0 $EAPI_PASS
+	!
+	hostname veos-assert
+	no logging console
+	spanning-tree mode none
+	!
+	interface Management1
+	   ip address $MGMT_VEOS/24
+	!
+	management api http-commands
+	   no shutdown
+	   protocol http
+	!
+	interface Ethernet1
+	   no switchport
+	   ip address 10.0.12.2/24
+	   pim ipv4 sparse-mode
+	!
+	interface Ethernet2
+	   no switchport
+	   ip address $AL_EOS_ADDR/24
+	   pim ipv4 sparse-mode
+	!
+	ip routing
+	!
+	ip route 10.0.1.0/24 10.0.12.1 $AL_EOS_PREF metric $AL_EOS_METRIC
+	ip route 10.0.5.0/24 $AL_R5_ADDR
+	!
+	router multicast
+	   ipv4
+	      routing
+	!
+	end
+	EOF
+}
+
 # Run one or more EOS commands and print their text output.  Every command
 # runs from enable mode, which is where all the show commands live.
 eos() {
@@ -525,6 +947,35 @@ eos() {
 # --- topology ---------------------------------------------------------
 
 create_lans() {
+	if [ "$SCENARIO" = assert-lan ]; then
+		# Two segments, and both are real broadcast domains rather
+		# than point-to-point links: $BR12 carries R1, R3 and the
+		# Arista's Ethernet1, and $BR3 is the contested LAN with R3,
+		# R5, ED3 and the Arista's Ethernet2 on it.  Nothing else in
+		# this file has more than two things on a wire.
+		for br in $BR12 $BR3 $BR_MGMT; do
+			if ifconfig "$br" >/dev/null 2>&1; then
+				die "$br already exists, it is not ours to reuse"
+			fi
+			${SUDO} ifconfig bridge create name "$br" group pimx up >/dev/null
+		done
+		${SUDO} ifconfig "$BR_MGMT" inet "$MGMT_HOST/24" alias
+
+		for e in epair812 epair832 epair833 epair853 epair863; do
+			${SUDO} ifconfig "$e" create group pimx >/dev/null
+			${SUDO} ifconfig "${e}a" up
+		done
+		# R1 and R3 meet the Arista's Ethernet1 here
+		${SUDO} ifconfig "$BR12" addm epair812a
+		${SUDO} ifconfig "$BR12" addm epair832a
+		# The contested LAN: R3, R5 and ED3, plus tap for Ethernet2
+		${SUDO} ifconfig "$BR3" addm epair833a
+		${SUDO} ifconfig "$BR3" addm epair853a
+		${SUDO} ifconfig "$BR3" addm epair863a
+
+		return 0
+	fi
+
 	bridges="$BR12 $BR23 $BR_MGMT"
 	bridged_epairs="epair812 epair823"
 	if [ "$SCENARIO" = pimd-rp ]; then
@@ -605,12 +1056,24 @@ destroy_box() {
 # Ethernet1 and Ethernet2 the same way in both; only pimd-rp bridges it to
 # the LAN behind it.
 veos() {
+	# assert-lan puts Ethernet2 on the contested LAN instead of on a
+	# link of its own, and has no use for Ethernet3
+	et2="$TAP_ET2:$BR23"
 	et3=$TAP_ET3
-	[ "$SCENARIO" = pimd-rp ] && et3="$TAP_ET3:$BR4"
+	case $SCENARIO in
+	pimd-rp)    et3="$TAP_ET3:$BR4" ;;
+	assert-lan) et2="$TAP_ET2:$BR3" ;;
+	esac
 
-	${SUDO} "$VEOS_SH" -q "$VEOS_QCOW" -n "$VEOS_VM" \
+	# -q only when there is an image to name: stop and console do not
+	# need one, and stop runs on paths where none was given
+	qarg=""
+	[ -n "$VEOS_QCOW" ] && qarg="-q $VEOS_QCOW"
+
+	# shellcheck disable=SC2086
+	${SUDO} "$VEOS_SH" $qarg -n "$VEOS_VM" \
 		-t "$TAP_MGMT:$BR_MGMT" -t "$TAP_ET1:$BR12" \
-		-t "$TAP_ET2:$BR23" -t "$et3" \
+		-t "$et2" -t "$et3" \
 		-a "$MGMT_VEOS" "$@"
 }
 
@@ -647,13 +1110,7 @@ start() {
 		# Removed rather than truncated: the file belongs to the root
 		# daemon that wrote it, not to whoever runs this script.
 		${SUDO} rm -f "$WORKDIR/$r.log"
-		# shellcheck disable=SC2086
-		${SUDO} daemon -f -p "$WORKDIR/$r.daemon.pid" \
-			-o "$WORKDIR/$r.log" \
-			jexec "$(jname "$r")" "$PIMD" -i "$r" -n $DEBUG \
-			-f "$WORKDIR/$r.conf" \
-			-p "$WORKDIR/$r.pid" \
-			-u "$WORKDIR/$r.sock"
+		start_pimd "$r"
 	done
 
 	print "Writing the generated startup-config onto the vEOS flash ..."
@@ -688,7 +1145,7 @@ stop() {
 	# current one's: "run all" switches scenarios between runs, and a
 	# stop that only tore down what $SCENARIO happens to name would leave
 	# the other one's jail or bridge behind to collide with the next run.
-	for box in $REVERSED_BOXES; do
+	for box in $ALL_BOXES; do
 		destroy_box "$box"
 	done
 
@@ -698,10 +1155,10 @@ stop() {
 	# destroyed by name rather than by group, and destroying the "a" end
 	# takes the "b" end with it.  The bridges never left the host, but
 	# naming them too keeps the teardown in one place.
-	for e in $REVERSED_EPAIRS; do
+	for e in $ALL_EPAIRS; do
 		${SUDO} ifconfig "${e}a" destroy 2>/dev/null || true
 	done
-	for br in $BR12 $BR23 $BR4 $BR_MGMT; do
+	for br in $BR12 $BR23 $BR3 $BR4 $BR_MGMT; do
 		${SUDO} ifconfig "$br" destroy 2>/dev/null || true
 	done
 
@@ -747,6 +1204,16 @@ eos_dr() {
 
 pimd_dr_is() { [ "$(pimd_dr "$1" "$2")" = "$3" ]; }
 eos_dr_is()  { [ "$(eos_dr "$1")" = "$2" ]; }
+
+# The IGMP querier pimd shows for interface $2 on router $1, "Local" when
+# this router won the election.  "show igmp" prints an interface table and
+# a group table, both keyed on the interface name and both stripped of
+# their headings by -t, so the rows are told apart by the interface state
+# in the second column.
+iface_querier() {
+	pimctl "$1" -t show igmp 2>/dev/null | \
+		awk -v ifn="$2" '$1 == ifn && $2 ~ /^(Up|Down|Disabled)$/ { print $3; exit }'
+}
 
 # Does the Arista hold this RP, and did it learn it from a Bootstrap rather
 # than from its own configuration?  Both halves matter: an "rp address" line
@@ -816,6 +1283,187 @@ route_iif() {
 # PIM Registers R1 has decapsulated so far
 registers_seen() {
 	${SUDO} grep -c "Received PIM register:" "$WORKDIR/r1.log" 2>/dev/null || true
+}
+
+# --- assert-lan helpers -----------------------------------------------
+
+# Does router $1 actually forward this scenario's stream onto interface
+# $2?  Read out of the kernel rather than out of pimd, because neither
+# pimd entry answers it on its own: a router that lost the assert can
+# still show the LAN in the oifs of its (*,G), which is state about the
+# group and not about this source.  The MFC is the forwarding decision
+# itself, and its vif numbers are the ones pimd handed the kernel.
+forwards_on() {
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
+
+	jrun "$1" netstat -gn 2>/dev/null | awk -v s="$SRC_ADDR" -v g="$GROUP" -v v="$idx" '
+		$1 == s && $2 == g {
+			# "Origin Group Packets In-Vif Out-Vifs:Ttls", the
+			# out-vifs being "<vif>:<ttl>" from field 5 on
+			for (i = 5; i <= NF; i++) {
+				split($i, oif, ":")
+				if (oif[1] == v)
+					found = 1
+			}
+			exit
+		}
+		END { exit !found }
+	'
+}
+
+# Has router $1 been asserted off interface $2 for the (S,G) under test?
+#
+# The (S,G) entry only, not the (*,G).  They are separate elections and
+# this scenario routinely splits them: R3 asserts from (*,G) state in the
+# first round, with the RPT bit set, and loses that one for good, then
+# reaches SPTbit and wins the (S,G) round on its metric.  A winner that is
+# still marked asserted on its (*,G) is that split, not a failure, and
+# reading both entries here would report every metric win as a loss.
+asserted_on() {
+	map_isset "$1" "$2" "$(route_map "$1" "${3:-$SRC_ADDR}" "$GROUP" Asserted)"
+}
+
+# Does the Arista forward the stream onto the contested LAN?  There is no
+# "show ip pim assert" on EOS, so the observable is the same one used on
+# pimd's side: whether the interface is in the outgoing list of the
+# (S,G).  "show ip mroute" prints one two-space indented "<source>, <age>,
+# flags: ..." heading per entry under the group, with an "Outgoing
+# interface list:" and its members indented further under each:
+#
+#   225.1.2.3
+#     10.0.1.10, 0:00:44, flags: SRP
+#       Incoming interface: Ethernet1
+#       Outgoing interface list:
+#         Ethernet2
+#
+# so the entry is found by its heading and ended by the next one.
+eos_forwards_on_lan() {
+	eos "show ip mroute $GROUP" 2>/dev/null | awk -v s="$SRC_ADDR" '
+		$1 == s","          { want = 1; oifs = 0; next }
+		# The next entry heading ends this one
+		want && /^  [0-9]/  { exit }
+		want && /Outgoing interface list:/ { oifs = 1; next }
+		want && oifs && $1 == "Ethernet2"  { found = 1; exit }
+		END { exit !found }
+	'
+}
+
+# The two contenders, sampled together.  Nothing here can be read before
+# traffic flows - an assert is started by a data packet arriving on an
+# interface that is not the receiver's iif - and nothing survives long
+# after it stops, so both sides are read while the stream is in flight.
+# Sets: al_pimd_fwd, al_eos_fwd, al_pimd_asserted.
+sample_assert() {
+	al_pimd_fwd=
+	al_eos_fwd=
+	al_pimd_asserted=
+
+	forwards_on r3 "$AL_R3_LAN_IF" && al_pimd_fwd=yes
+	eos_forwards_on_lan && al_eos_fwd=yes
+
+	# Which entry pimd asserts from is what the sub-case sets up, so it
+	# is also where the loss is recorded: the metric sub-cases put R3 on
+	# the shortest path tree and the election is between two (S,G)s,
+	# while rpt-bit holds it on the shared tree and it has nothing but
+	# the (*,G) to assert from.
+	if [ "$AL_ASSERT_ENTRY" = both ]; then
+		for e in ANY "$SRC_ADDR"; do
+			asserted_on r3 "$AL_R3_LAN_IF" "$e" && al_pimd_asserted=yes
+		done
+	else
+		asserted_on r3 "$AL_R3_LAN_IF" "$AL_ASSERT_ENTRY" && al_pimd_asserted=yes
+	fi
+}
+
+# Does router $1 have a local member on interface $2, i.e. did an IGMP
+# report there reach it?  Read off the (*,G), which is where a leaf lands
+# before any source is known.
+has_leaf() {
+	map_isset "$1" "$2" "$(route_map "$1" ANY "$GROUP" Leaves)"
+}
+
+# Is router $1 on the shortest path tree for source $2?  "show mrt" prints
+# an entry's flags, and SPT is set once the router holds (S,G) forwarding
+# state of its own rather than an RPT-derived entry -- which is exactly
+# what decides the RPT bit in the Assert it sends.
+has_spt() {
+	pimctl "$1" show mrt 2>/dev/null | \
+		awk -v s="$2" -v g="$GROUP" '$1 == s && $2 == g && /SPT/ { found = 1 }
+			END { exit !found }'
+}
+
+# Has the election reached the state the sub-case is about?
+#
+# "Exactly one forwarder" is not enough on its own, and taking it for
+# enough cost two runs that passed by luck and a third that did not.  The
+# election takes two rounds here: R3 asserts first from (*,G) state with
+# the RPT bit set and loses, and for as long as that is where things
+# stand the Arista is the only forwarder -- which satisfies "exactly one"
+# perfectly well while being the answer to a question no sub-case asked.
+# Sampling there reports round one, and whether round two had happened by
+# then came down to whether it fitted inside the margin.
+#
+# So the metric sub-cases wait for R3 to hold (S,G) state as well, which
+# is round two having happened: losing round one is what sets SPTbit
+# (assert_loser in update_sptbit(), src/route.c:532) and R3 re-asserts
+# with the SPT metric off the back of it.  rpt-bit wants R3 held on the
+# shared tree and so has nothing further to wait for.
+#
+# Still blind to which side won: this waits for the election to be the
+# one the sub-case set up, never for a particular outcome of it.
+election_settled() {
+	sample_assert
+
+	[ -n "$al_pimd_fwd" ] && [ -z "$al_eos_fwd" ] && return 0
+	[ -z "$al_pimd_fwd" ] && [ -n "$al_eos_fwd" ] && return 0
+
+	return 1
+}
+
+# Start pimd on one router of this lab, from whatever its .conf now says
+start_pimd() {
+	r=$1
+
+	# shellcheck disable=SC2086
+	${SUDO} daemon -f -p "$WORKDIR/$r.daemon.pid" \
+		-o "$WORKDIR/$r.log" \
+		jexec "$(jname "$r")" "$PIMD" -i "$r" -n $DEBUG \
+		-f "$WORKDIR/$r.conf" \
+		-p "$WORKDIR/$r.pid" \
+		-u "$WORKDIR/$r.sock"
+}
+
+# Switch the lab to a sub-case: rewrite R3's and R5's configs and restart
+# pimd on both.  Seconds, where rebooting the vEOS to change its side
+# would cost minutes, which is why all four sub-cases run in one lab.
+#
+# Restarted rather than SIGHUPed, and both routers together.  The old
+# assert state has to be gone from the *Arista* as well, and only a new
+# GenID in a Hello makes a neighbour drop what it held for the router that
+# sent it; a reload keeps the GenID and the Arista would go on applying
+# the previous sub-case's election to the new one.
+switch_case() {
+	write_case_confs "$1"
+
+	for r in r3 r5; do
+		[ -f "$WORKDIR/$r.daemon.pid" ] && \
+			${SUDO} pkill -F "$WORKDIR/$r.daemon.pid" 2>/dev/null
+		rm -f "$WORKDIR/$r.daemon.pid"
+		${SUDO} rm -f "$WORKDIR/$r.log"
+	done
+	sleep 3
+
+	for r in r3 r5; do
+		start_pimd "$r"
+	done
+
+	for r in r3 r5; do
+		wait_for 60 has_neighbor "$r" "$AL_EOS_ADDR" || \
+			die "$r did not come back up in sub-case $1"
+		wait_for 120 has_rp "$r" "$RP_ADDR" || \
+			die "$r did not relearn the RP in sub-case $1"
+	done
 }
 
 # pimd-rp: every exchange below has the writer and the reader swapped
@@ -962,14 +1610,460 @@ check_pimd_rp() {
 	return $((FAILED > 0))
 }
 
+# assert-lan: bring the lab to a settled election for sub-case $1, with
+# the streams left running, and leave the reading in al_pimd_fwd,
+# al_eos_fwd and al_pimd_asserted.  Returns non-zero if no election
+# settled, having said why.
+#
+# Split out from assert_case() because the two M3 cases need the same
+# setup and then measure something else entirely.  Calling assert_case()
+# for its side effects and discarding its output, which is what they used
+# to do, hid any failure it reported: the message went to /dev/null while
+# the counter behind it still went up, so a broken setup showed as a run
+# that was one assertion short and otherwise green.
+establish_election() {
+	case_name=$1
+
+	# Which entry records the loss depends on what R3 held when the
+	# Assert arrived.  The metric sub-cases put it on the shortest path
+	# tree, so the election is between two (S,G)s and the (S,G) is where
+	# to look; rpt-bit holds it on the shared tree, where it may have
+	# either, so both are accepted -- the sub-case is about which side
+	# won, not about pimd's bookkeeping.  ANY is how pimctl prints (*,G).
+	if [ "$case_name" = rpt-bit ]; then
+		AL_ASSERT_ENTRY=both
+	else
+		AL_ASSERT_ENTRY=$SRC_ADDR
+	fi
+
+	switch_case "$case_name"
+
+	# ED3's report gives the Arista, as DR, a leaf on the LAN; R5's Join
+	# gives R3 its oif there.  Two forwarders on one segment is what an
+	# assert needs, and they get there by different routes on purpose:
+	# add_leaf() (src/route.c) only lets the DR act on a report, so IGMP
+	# alone could never produce the second one.
+	# The order the three receivers are brought up in is the scenario, not
+	# housekeeping, and getting it wrong costs a sub-case that passes or
+	# fails on a race.
+	#
+	# pimd evaluates SPTbit once per upcall and not per packet: sec. 4.2
+	# runs Update_SPTbit(S,G,iif) "on receipt of data from S to G", but
+	# forwarding is in the kernel, so update_sptbit() (src/route.c:532) is
+	# reachable only from process_cache_miss() and process_wrong_iif().
+	# Whatever is true at that first upcall is what the entry keeps.  If
+	# the Arista is already forwarding by then, R3's one evaluation
+	# happens while it is losing an assert from (*,G) state, it never
+	# reaches SPTbit, and its Assert carries the RPT bit for the rest of
+	# the run -- which decides every sub-case before its metric is read.
+	#
+	# So the tree is built to the point where R3 holds (S,G) state of its
+	# own, and only then is the Arista given a reason to forward.  ED6 is
+	# what makes that possible without waiting on R5: its membership makes
+	# R3 a last hop router, so try_switch_to_spt() (src/route.c:1246) will
+	# consider R3 at all.
+	jrun ed6 "$MPING" -r -i "$AL_ED6_IF" -p "$AL_JOIN_PORT6" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/joiner6.log" 2>&1 &
+	joiner6=$!
+	jrun ed2 "$MPING" -r -i "$AL_ED2_IF" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+
+	# R3 has to know about ED6 before the first packet, or its one SPTbit
+	# evaluation sees an empty outgoing list and returns early
+	if ! wait_for 90 has_leaf r3 epair836a; then
+		fail "$case_name: R3 never saw ED6's membership, it cannot reach the SPT"
+		kill "$receiver" "$joiner6" 2>/dev/null
+		wait "$receiver" "$joiner6" 2>/dev/null
+		return 1
+	fi
+
+	jrun ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$AL_STREAM_PKTS" -w "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 &
+	sender=$!
+
+	# The metric sub-cases need R3 on the shortest path tree before it is
+	# asked to assert; rpt-bit needs it held off, and has nothing to wait
+	# for beyond the traffic arriving.
+	if [ "$case_name" != rpt-bit ]; then
+		# Deviation M10: pimd evaluates SPTbit only when an upcall
+		# reaches update_sptbit() (src/route.c:532), so an (S,G) that
+		# meets the sec. 4.2 conditions only after its first packet
+		# never sets it.  R3 is exactly that entry here -- traffic on
+		# RPF_interface(S), a non-empty olist from ED6, and
+		# RPF'(S,G) == RPF'(*,G) -- and it sits on the shared tree
+		# anyway, which makes its Assert carry the RPT bit and lose
+		# on sec. 4.6.1's first comparison whatever its metric says.
+		#
+		# So this is reported where it happens rather than dressed up
+		# as a failure of the election: until pimd re-evaluates
+		# SPTbit, the metric comparison this sub-case exists for
+		# cannot be reached at all, and saying so is the assertion.
+		if ! wait_for "$AL_FWD_WAIT" has_spt r3 "$SRC_ADDR"; then
+			if [ -z "$AL_M10_SEEN" ]; then
+				xfail "R3 holds (S,G) with an olist and traffic on its RPF interface but never set SPTbit, so its Assert carries the RPT bit and no metric of its is ever compared (M10, src/route.c:532)"
+				dprint "$(pimctl r3 show mrt | head -8)"
+				AL_M10_SEEN=yes
+			elif [ "$AL_IN_SUBCASE" = yes ]; then
+				dprint "  $case_name: unreachable for the same reason, see M10 above"
+			fi
+			kill "$sender" "$receiver" "$joiner6" 2>/dev/null
+			wait "$sender" "$receiver" "$joiner6" 2>/dev/null
+			return 1
+		fi
+	else
+		if ! wait_for "$AL_FWD_WAIT" forwards_on r3 "$AL_R3_LAN_IF"; then
+			fail "$case_name: R3 never forwarded onto the LAN, there is no election to hold"
+			kill "$sender" "$receiver" "$joiner6" 2>/dev/null
+			wait "$sender" "$receiver" "$joiner6" 2>/dev/null
+			return 1
+		fi
+	fi
+
+	# Now the second forwarder.  add_leaf() (src/route.c) only lets the DR
+	# act on an IGMP report, and the Arista is the DR here, so ED3's report
+	# gives it a leaf and gives nobody else one.
+	jrun ed3 "$MPING" -r -i "$AL_ED3_IF" -p "$AL_JOIN_PORT" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/joiner.log" 2>&1 &
+	joiner=$!
+
+	if ! wait_for "$AL_FWD_WAIT" election_settled; then
+		spt=no
+		has_spt r3 "$SRC_ADDR" && spt=yes
+		fail "$case_name: no settled election after ${AL_FWD_WAIT}s (pimd fwd='$al_pimd_fwd' Arista fwd='$al_eos_fwd' pimd SPT=$spt)"
+		dprint "$(pimctl r3 show mrt | head -8)"
+		dprint "$(eos "show ip mroute $GROUP")"
+		kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		wait "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		return 1
+	fi
+
+	# A margin past the first settled reading, so a second round in
+	# flight is not mistaken for the answer
+	sleep "$AL_ELECTION_WAIT"
+	sample_assert
+
+	return 0
+}
+
+# assert-lan: establish the election for sub-case $1 and say whether the
+# side that should have won did.  $2 is the side expected to keep the
+# LAN, $3 why.
+assert_case() {
+	case_name=$1
+	winner=$2
+	because=$3
+
+	print "Sub-case $case_name: $because"
+
+	AL_IN_SUBCASE=yes
+	establish_election "$case_name"
+	rc=$?
+	AL_IN_SUBCASE=
+	[ $rc -eq 0 ] || return 1
+
+	kill "$sender" 2>/dev/null
+	wait "$sender" 2>/dev/null
+
+	if [ -z "$al_pimd_fwd" ] && [ -z "$al_eos_fwd" ]; then
+		fail "$case_name: neither router forwarded onto the LAN, nothing was elected"
+		dprint "$(eos "show ip mroute $GROUP")"
+		return 1
+	fi
+
+	case $winner in
+	pimd)
+		if [ -n "$al_pimd_fwd" ] && [ -z "$al_eos_fwd" ]; then
+			ok "$case_name: pimd kept the LAN, the Arista gave it up"
+		else
+			fail "$case_name: pimd forward='$al_pimd_fwd' Arista forward='$al_eos_fwd', wanted pimd only"
+			dprint "$(eos "show ip mroute $GROUP")"
+		fi
+		if [ -z "$al_pimd_asserted" ]; then
+			ok "$case_name: pimd holds no asserted oif, as the winner"
+		else
+			fail "$case_name: pimd won but marked $AL_R3_LAN_IF asserted"
+		fi ;;
+	arista)
+		if [ -n "$al_eos_fwd" ] && [ -z "$al_pimd_fwd" ]; then
+			ok "$case_name: the Arista kept the LAN, pimd gave it up"
+		else
+			fail "$case_name: pimd forward='$al_pimd_fwd' Arista forward='$al_eos_fwd', wanted the Arista only"
+			dprint "$(eos "show ip mroute $GROUP")"
+		fi
+		if [ -n "$al_pimd_asserted" ]; then
+			ok "$case_name: pimd recorded $AL_R3_LAN_IF as asserted, as the loser"
+		else
+			fail "$case_name: pimd lost the LAN but never marked $AL_R3_LAN_IF asserted"
+		fi ;;
+	esac
+
+	# Either way the receiver behind R5 must still be served: an assert
+	# decides which router forwards, never whether anything does.  A
+	# second short stream, run to completion now that the election has
+	# settled, rather than the long one above - that one is killed at
+	# the sampling point and never writes its summary line.
+	jrun ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$AL_CONFIRM_PKTS" -w $((AL_CONFIRM_PKTS + 30)) "$GROUP" \
+		>"$WORKDIR/sender2.log" 2>&1 || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender2.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$AL_MIN_CONFIRM" ]; then
+		ok "$case_name: $replies of $AL_CONFIRM_PKTS packets still reached ED2 past the election"
+	else
+		fail "$case_name: only $replies of $AL_CONFIRM_PKTS reached ED2, the LAN was black-holed"
+	fi
+
+	kill "$receiver" "$joiner" "$joiner6" 2>/dev/null
+	wait "$receiver" "$joiner" "$joiner6" 2>/dev/null
+}
+
+check_assert_lan() {
+	print "1. Everyone on the contested LAN sees everyone else"
+	# Three PIM routers on one segment, which nothing else in this file
+	# has: the two contenders and the downstream router.
+	for pair in "r3 $AL_EOS_ADDR" "r3 $AL_R5_ADDR" \
+		    "r5 $AL_EOS_ADDR" "r5 $AL_R3_ADDR"; do
+		# shellcheck disable=SC2086
+		set -- $pair
+		if wait_for 90 has_neighbor "$1" "$2"; then
+			ok "$1 sees $2 on the shared LAN"
+		else
+			fail "$1 never saw $2, PIM hello is not crossing $BR3"
+		fi
+	done
+	if wait_for 90 eos_has_neighbor "$AL_R3_ADDR"; then
+		ok "the Arista sees R3 at $AL_R3_ADDR"
+	else
+		fail "the Arista never saw R3 at $AL_R3_ADDR"
+	fi
+	if wait_for 90 eos_has_neighbor "$AL_R5_ADDR"; then
+		ok "the Arista sees R5 at $AL_R5_ADDR"
+	else
+		fail "the Arista never saw R5 at $AL_R5_ADDR"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. DR and IGMP querier election, against a foreign implementation"
+	# Two elections over one wire, deliberately won by different
+	# routers: PIM takes the highest address (the Arista), IGMP the
+	# lowest (R5).  Neither is the assert, and both are asserted from
+	# both sides.
+	if wait_for 60 pimd_dr_is r3 "$AL_R3_LAN_IF" "$AL_EOS_ADDR"; then
+		ok "R3 made the Arista DR on the shared LAN"
+	else
+		fail "R3 says the DR is '$(pimd_dr r3 "$AL_R3_LAN_IF")', expected $AL_EOS_ADDR"
+	fi
+	if wait_for 60 pimd_dr_is r5 epair853b "$AL_EOS_ADDR"; then
+		ok "R5 agrees the Arista is DR"
+	else
+		fail "R5 says the DR is '$(pimd_dr r5 epair853b)', expected $AL_EOS_ADDR"
+	fi
+	if wait_for 60 eos_dr_is Ethernet2 "$AL_EOS_ADDR"; then
+		ok "the Arista agrees it is DR"
+	else
+		fail "the Arista says the DR is '$(eos_dr Ethernet2)', expected $AL_EOS_ADDR"
+	fi
+	q=$(iface_querier r3 "$AL_R3_LAN_IF")
+	if [ "$q" = "$AL_R5_ADDR" ]; then
+		ok "R3 says the IGMP querier is R5 at $AL_R5_ADDR, not the DR"
+	else
+		fail "R3 says the querier is '$q', expected $AL_R5_ADDR"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. Both pimd routers learn the RP from R1"
+	for r in r3 r5; do
+		if wait_for 120 has_rp "$r" "$RP_ADDR"; then
+			ok "$r learned RP $RP_ADDR"
+		else
+			fail "$r never learned RP $RP_ADDR"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. The Arista advertises the routing metrics sec. 4.6.3 asks for"
+	# The premise of every sub-case below.  pimd's assert metrics are
+	# configured constants (M4 in doc/rfc7761-compliance.md), so unless
+	# the Arista really does put its route's distance and metric on the
+	# wire, the two are comparing constants against constants and the
+	# metric branches never run.
+	rt=$(eos "show ip route 10.0.1.0/24")
+	if echo "$rt" | grep -q "\[$AL_EOS_PREF/$AL_EOS_METRIC\]"; then
+		ok "the Arista's route to the source is [$AL_EOS_PREF/$AL_EOS_METRIC]"
+	else
+		fail "the Arista's route to the source is not [$AL_EOS_PREF/$AL_EOS_METRIC]"
+		dprint "$rt"
+		return 1
+	fi
+
+	# The four elections.  Each rewrites r3.conf and restarts pimd on
+	# R3; nothing else changes, so the only variable is what pimd puts
+	# in the two metric fields and whether it is on the SPT.
+	for c in $AL_CASES; do
+		case $c in
+		pimd-wins)
+			assert_case pimd-wins pimd \
+				"pimd's metric preference $AL_PREF_BETTER beats the Arista's $AL_EOS_PREF" ;;
+		arista-wins)
+			assert_case arista-wins arista \
+				"the Arista's $AL_EOS_PREF beats pimd's $AL_PREF_WORSE" ;;
+		tiebreak)
+			assert_case tiebreak arista \
+				"equal metrics, so the highest address wins" ;;
+		rpt-bit)
+			assert_case rpt-bit arista \
+				"pimd is off the SPT, so RFC 7761 4.6.1 decides on the RPT bit before the metric" ;;
+		esac
+		[ "$FAILED" -eq 0 ] || return 1
+	done
+
+	# The two M3 cases, which need an assert pimd has *lost* to work
+	# from, so they run last and reuse the state the tiebreak left.
+	check_assert_cancel
+	check_assert_no_resend
+
+	return $((FAILED > 0))
+}
+
+# M3, first half: pimd ignores an AssertCancel.
+#
+# Sec. 4.6.4 has the winner send an Assert with an infinite metric when it
+# stops forwarding, so the losers return to NoInfo at once instead of
+# waiting out Assert_Time.  pimd never sends one -- my_assert_metric() has
+# no infinite-metric path -- so between two pimds its receive path for one
+# has never had an input in any test.  EOS does send it, which is what
+# makes this reachable here at all.
+#
+# doc/rfc7761-compliance.md M3: pimd gates all downstream assert
+# processing on the interface still being in mrt->oifs
+# (src/pim_proto.c:2660), and losing removed it, so the cancel cannot be
+# acted on.  Expected to report KNOWN until that is fixed.
+check_assert_cancel() {
+	print "5. An AssertCancel from the Arista (RFC 7761 4.6.4)"
+
+	# pimd has to be the assert loser for a cancel to mean anything, and
+	# rpt-bit is the sub-case that gets it there without needing the
+	# shortest path tree that M10 denies: pimd asserts from (*,G), the
+	# Arista wins on the RPT bit, pimd is the loser.  tiebreak would do
+	# the same job if pimd could reach the SPT, and is what this used
+	# before M10 was understood.
+	establish_election rpt-bit || return
+	if [ -z "$al_pimd_asserted" ] || [ -n "$al_pimd_fwd" ]; then
+		fail "could not make pimd the assert loser, the cancel case cannot run"
+		kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		wait "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		return
+	fi
+
+	# Take the winner's reason to forward away.  Shutting Ethernet2 down
+	# would take the whole LAN with it, so the membership goes instead:
+	# ED3 stops reporting, the Arista's only leaf expires, and it is
+	# then a winner that has deleted the forwarding state which caused
+	# the assert -- the exact trigger sec. 4.6.4 names.
+	kill "$joiner" 2>/dev/null
+	wait "$joiner" 2>/dev/null
+
+	# Long enough for the membership to expire and the cancel to be sent
+	# and acted on, and far short of the Assert_Time a loser would
+	# otherwise have to wait out.
+	sleep "$AL_CANCEL_WAIT"
+	sample_assert
+
+	if [ -n "$al_pimd_fwd" ] && [ -z "$al_pimd_asserted" ]; then
+		ok "pimd returned to forwarding after the AssertCancel"
+	else
+		xfail "pimd ignored the AssertCancel and stayed off the LAN (M3, src/pim_proto.c:2660)"
+	fi
+
+	kill "$sender" "$receiver" "$joiner6" 2>/dev/null
+	wait "$sender" "$receiver" "$joiner6" 2>/dev/null
+}
+
+# M3, second half: pimd wins and never resends.
+#
+# Sec. 4.6.1 has the winner rearm at Assert_Time - Assert_Override_Interval
+# and resend, so a conformant loser is refreshed before its own timer
+# expires.  pimd arms nothing (src/pim_proto.c:2677-2681), so at
+# Assert_Time the Arista returns to NoInfo and starts forwarding again,
+# and the LAN carries every packet twice until pimd notices the duplicate
+# on the wrong interface and asserts afresh.
+#
+# That last part is why this has to be sampled continuously rather than
+# once at the end.  The re-election is quick -- one data packet on the
+# wrong iif is enough -- so a single reading taken after Assert_Time finds
+# the Arista off the LAN again and looks exactly like a winner that had
+# refreshed its assert properly.  The deviation is the window, not the
+# state either side of it, so the whole crossing is polled and the
+# question is whether the Arista ever came back at all.
+#
+# Slow by nature: it has to outlive Assert_Time.  AL_SKIP_RESEND=yes
+# leaves it out of a quick run.
+check_assert_no_resend() {
+	print "6. pimd as assert winner, past Assert_Time (RFC 7761 4.6.1)"
+
+	if [ "${AL_SKIP_RESEND:-no}" = yes ]; then
+		dprint "  skipped, AL_SKIP_RESEND=yes"
+		return
+	fi
+
+	# This one needs pimd to be the assert *winner*, and M10 means it
+	# never is here: without SPTbit its Assert carries the RPT bit and
+	# loses to the Arista before any metric is read.  So the case is
+	# blocked rather than passing or failing, and says which deviation
+	# blocks it -- it becomes runnable the day M10 is fixed, at which
+	# point it starts measuring M3 as intended.
+	if ! establish_election pimd-wins; then
+		xfail "pimd cannot be made the assert winner while M10 stands, so the winner-resend half of M3 is untested"
+		return
+	fi
+	if [ -z "$al_pimd_fwd" ] || [ -n "$al_eos_fwd" ]; then
+		fail "could not make pimd the assert winner, the resend case cannot run"
+		kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		wait "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+		return
+	fi
+
+	# Poll across the Assert_Time boundary rather than sleeping through
+	# it, and remember whether the Arista ever resumed, not what it was
+	# doing when the clock ran out.
+	resumed=
+	deadline=$(($(date +%s) + AL_ASSERT_TIME + AL_ELECTION_WAIT))
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		if eos_forwards_on_lan; then
+			resumed=yes
+			break
+		fi
+		sleep 5
+	done
+
+	# "It never resumed" is only worth anything if it still could have.
+	# The Arista's one reason to forward is ED3's membership, and the
+	# streams outlive the window by design (AL_STREAM_LIFE) -- but if
+	# that ever stops being true, the Arista goes quiet for a reason
+	# that has nothing to do with asserts and this case prints a
+	# confident ok about a lab that had gone away underneath it.
+	if ! eos_has_mroute "$GROUP"; then
+		fail "the Arista has no state for $GROUP left, it could not have resumed either way"
+		dprint "$(eos "show ip mroute $GROUP")"
+	elif [ -z "$resumed" ]; then
+		ok "the Arista never resumed in ${AL_ASSERT_TIME}s+, and still holds $GROUP"
+	else
+		xfail "the Arista resumed forwarding before Assert_Time was out, pimd never resent its Assert (M3, src/pim_proto.c:2677)"
+	fi
+
+	kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+	wait "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null
+}
+
 check() {
 	jls -j "$(jname r1)" jid >/dev/null 2>&1 || die "lab is not running, run '$0 start'"
 	FAILED=0
+	XFAILED=0
 
-	if [ "$SCENARIO" = pimd-rp ]; then
-		check_pimd_rp
-		return $?
-	fi
+	case $SCENARIO in
+	pimd-rp)    check_pimd_rp;    return $? ;;
+	assert-lan) check_assert_lan; return $? ;;
+	esac
 
 	print "1. pimd and EOS become PIM neighbours on both links"
 	# Both directions, because a Hello pimd sends and EOS silently drops
@@ -1110,10 +2204,13 @@ check() {
 # --- main -------------------------------------------------------------
 
 verdict() {
+	known=""
+	[ "$XFAILED" -gt 0 ] && known=", $XFAILED known deviation(s)"
+
 	if [ "$FAILED" -eq 0 ]; then
-		print "$SCENARIO: all assertions passed"
+		print "$SCENARIO: all assertions passed$known"
 	else
-		print "$SCENARIO: $FAILED assertion(s) failed"
+		print "$SCENARIO: $FAILED assertion(s) failed$known"
 	fi
 }
 
@@ -1126,6 +2223,14 @@ run_one() {
 	stop
 	return $rc
 }
+
+while getopts "i:h" opt; do
+	case "$opt" in
+	i) VEOS_QCOW=$OPTARG ;;
+	*) usage; exit 2 ;;
+	esac
+done
+shift $((OPTIND - 1))
 
 case ${1:-} in
 start) set_scenario "${2:-}"; start ;;

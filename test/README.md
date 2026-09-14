@@ -140,10 +140,40 @@ and control socket land in `/tmp/pimd-test`.
 The Arista vEOS interoperability lab
 ------------------------------------
 
-    sh test/freebsd-interop.sh run all         # both scenarios
-    sh test/freebsd-interop.sh run pimd-rp     # one of them
-    sh test/freebsd-interop.sh start arista-rp # build it and leave it up
-    sh test/freebsd-interop.sh stop
+    sh test/freebsd-interop.sh -i ~/vEOS64-lab-4.36.1F.qcow2 run all
+    sh test/freebsd-interop.sh -i ~/vEOS.qcow2 run pimd-rp     # one of them
+    sh test/freebsd-interop.sh -i ~/vEOS.qcow2 start assert-lan # leave it up
+    sh test/freebsd-interop.sh stop                            # no image needed
+
+`-i` names the vEOS-lab qcow2 image, and there is no default: it is a
+licensed Arista download that cannot ship with this tree, so where it
+lives is yours to say.  `$VEOS_QCOW` works instead of the flag.
+
+### Getting the image
+
+One file, from the *Software Download* area of [arista.com][arista-dl],
+under **vEOS-lab**.  It needs an Arista account, which is free to
+register; the vEOS-lab licence covers lab and evaluation use, which is
+what this is.
+
+| | |
+|---|---|
+| File          | `vEOS64-lab-<version>.qcow2`, e.g. `vEOS64-lab-4.36.1F.qcow2` |
+| Tested with   | 4.36.1F, x86_64, ~620 MiB compressed and 4 GiB raw |
+| Also on offer | `Aboot-veos-serial-<version>.iso` — **not needed here** |
+
+The Aboot ISO is the bootloader every other hypervisor pairs with the
+image, and it is deliberately unused: its `kexec` into the EOS kernel
+does not survive bhyve, so `veos-bhyve.sh` reads the kernel and initrd
+straight out of `vEOS-lab.swi` on the image's own flash partition and
+boots them with `grub-bhyve`.  Downloading it does no harm, but nothing
+will read it.
+
+Nothing else is version-specific by design, but the EOS CLI is: the
+assertions parse `show ip pim interface`, `show ip mroute`, `show ip pim
+rp detail` and `show ip pim bsr`, and the configuration uses the
+`router pim sparse-mode` / `router pim bsr` syntax of EOS 4.3x.  A much
+older or newer release may want the parsers in `eos_*()` adjusting.
 
 This is the only test that puts a second implementation on the wire.
 Everything else here has pimd at both ends of every exchange, which
@@ -163,16 +193,85 @@ The two scenarios are each other's mirror, and running both is the
 point: a parser that is wrong in the same way as its encoder passes one
 and fails the other.
 
-| Scenario    | Time | Roles                                       | What it reverses |
-|-------------|------|---------------------------------------------|------------------|
-| `arista-rp` | ~3m  | Arista is BSR, RP and the router in the middle; R1 is first hop, R3 last hop. | pimd parses a Bootstrap and Candidate-RP-Advertisement written by EOS; EOS has to believe pimd's (\*,G) Join and decapsulate its Register.  DR election is asserted on two links and from both sides, pimd losing one and winning the other. |
-| `pimd-rp`   | ~4m  | R1 is BSR and RP; the Arista is first *and* last hop router, for a LAN of its own. | EOS parses pimd's Bootstrap — address, priority and hash mask length asserted separately — R3 has to learn the same RP set *through* the Arista, and pimd has to believe an EOS-built Join and decapsulate an EOS Register, then get off the register vif and have its Register-Stop honoured. |
+| Scenario     | Time | Roles                                      | What it covers |
+|--------------|------|---------------------------------------------|------------------|
+| `arista-rp`  | ~3m  | Arista is BSR, RP and the router in the middle; R1 is first hop, R3 last hop. | pimd parses a Bootstrap and Candidate-RP-Advertisement written by EOS; EOS has to believe pimd's (\*,G) Join and decapsulate its Register.  DR election is asserted on two links and from both sides, pimd losing one and winning the other. |
+| `pimd-rp`    | ~4m  | R1 is BSR and RP; the Arista is first *and* last hop router, for a LAN of its own. | The mirror of the above.  EOS parses pimd's Bootstrap — address, priority and hash mask length asserted separately — R3 has to learn the same RP set *through* the Arista, and pimd has to believe an EOS-built Join and decapsulate an EOS Register, then get off the register vif and have its Register-Stop honoured. |
+| `assert-lan` | ~12m | Three PIM routers share one segment: pimd's R3 and the Arista contend on it, pimd's R5 is downstream. | The assert election, on a topology of its own.  See below — written to reach code no other test executes, and it found the reason it cannot. |
+
+### `assert-lan`: what it was for, and what it found
+
+pimd's assert metrics are configured constants, not the MRIB's numbers
+(deviation **M4** in `doc/rfc7761-compliance.md`).  Between two pimds
+every router on a LAN therefore advertises the *same* preference and
+metric, `compare_metrics()` always ties, and the address decides — so
+the two metric comparisons RFC 7761 sec. 4.6.1 runs before that
+tiebreak are dead code in every other test here, and the encoding of
+those fields (sec. 4.9.6) is only ever read by the code that wrote it.
+EOS fills them from its own RIB, so this is the one LAN in the tree
+where they could hold unequal numbers.
+
+They do not, yet.  pimd never reaches the shortest path tree here,
+because it evaluates SPTbit only when an upcall reaches
+`update_sptbit()` (`src/route.c:532`) rather than on every data packet
+as sec. 4.2 asks — so it keeps asserting from `(*,G)` state with the RPT
+bit set, which sec. 4.6.1 compares before either metric.  That is
+deviation **M10**, and this scenario is what turned it up.  It is
+reported as **KNOWN**, once per run.
+
+So the three metric sub-cases below do not compare anything today.  They
+are written out in full, and they start comparing the day M10 is fixed:
+
+| Sub-case      | Decided by | Winner | Today |
+|---------------|------------|--------|-------|
+| `pimd-wins`   | `metric_preference`, pimd's lower | pimd | KNOWN (M10) |
+| `arista-wins` | `metric_preference`, the Arista's lower | Arista | KNOWN (M10) |
+| `tiebreak`    | all three equal, so the address | Arista (higher) | KNOWN (M10) |
+| `rpt-bit`     | `rpt_bit_flag`, with pimd given the *better* preference so only the bit can decide | Arista | asserted |
+
+`rpt-bit` is the one that needs no SPT — it wants pimd on the shared
+tree, which is where M10 leaves it anyway — so it runs for real: the
+Arista has to win on the bit despite pimd advertising the better
+preference.
+
+What the scenario asserts today, then, is DR and IGMP querier election
+on a segment shared with a foreign implementation (won by different
+routers, agreed by both ends), the RP set learned through it, `rpt-bit`,
+and M10 and M3 as known deviations.
+
+Two further cases cover what a conformant peer does that another pimd
+never would, both for deviation **M3**:
+
+- **AssertCancel** (sec. 4.6.4).  The winner sends an Assert with an
+  infinite metric when it stops forwarding, so losers return to NoInfo
+  at once.  pimd never sends one, so its *receive* path for one has
+  never had an input in any other test; here the Arista sends it and
+  pimd is asked to act.
+- **Winner never resends** (sec. 4.6.1).  The winner should rearm at
+  `Assert_Time - Assert_Override_Interval` and resend.  pimd arms
+  nothing, so at `Assert_Time` the Arista returns to NoInfo, resumes
+  forwarding, and the LAN carries every packet twice until pimd notices
+  the duplicate and asserts afresh.
+
+The second one is why the scenario is slow, and why it polls across the
+whole `Assert_Time` crossing instead of sampling once at the end: the
+re-election takes one data packet, so a single late reading finds the
+Arista off the LAN again and is indistinguishable from a winner that
+refreshed properly.  The deviation is the *window*, not the state either
+side of it.  `AL_SKIP_RESEND=yes` leaves this case out of a quick run.
+
+ED6 hangs off R3 so that R3 is a last hop router in its own right.  That
+is what makes M10 a clean demonstration rather than a muddle: R3 plainly
+meets the sec. 4.2 conditions — traffic on `RPF_interface(S)`, a
+non-empty outgoing list, `RPF'(S,G) == RPF'(*,G)` — and stays on the
+shared tree regardless.  Without it the contested LAN is R3's only
+outgoing interface, and losing an assert empties the list, which tangles
+M10 up with M3.
 
 Requirements, on top of the vnet jail lab's: `bhyve` with a VIMAGE
 kernel, `sysutils/grub2-bhyve`, `emulators/qemu-tools`,
-`sysutils/e2fsprogs`, `python3` (eAPI is JSON), and a vEOS-lab qcow2
-image plus its Aboot ISO.  The image is a licensed Arista download and
-is not, and cannot be, in this tree; point `VEOS_QCOW` at it.
+`sysutils/e2fsprogs`, `python3` (eAPI is JSON), and the image named by
+`-i` above.
 
 It cannot run beside `freebsd-lab.sh` — the two share
 `net.inet.ip.mcast.loop` and the 10.0.0.0/8 addresses — and says so on
@@ -184,14 +283,20 @@ be built in one tree.
 `veos-bhyve.sh` boots the vEOS and knows nothing about PIM.  The
 interoperability lab drives it, and it is useful on its own:
 
-    sudo ./test/veos-bhyve.sh -t tap100:br0 -D start   # boot it detached
-    sudo ./test/veos-bhyve.sh console                  # attach to the console
-    sudo ./test/veos-bhyve.sh cli 'show ip pim neighbor'
-    sudo ./test/veos-bhyve.sh inject startup-config    # write it to the flash
-    sudo ./test/veos-bhyve.sh cloudinit startup-config # or use a config drive
-    sudo ./test/veos-bhyve.sh stop
+    V=./test/veos-bhyve.sh
+    Q=~/vEOS64-lab-4.36.1F.qcow2
 
-It is `bash`, not `sh`, and every subcommand needs root.
+    sudo $V -q $Q inject startup-config      # write it onto the guest flash
+    sudo $V -q $Q -t tap100:br0 -D start     # boot it detached
+    sudo $V console                          # attach to the console
+    sudo $V cli 'show ip pim neighbor'       # or ask it over eAPI
+    sudo $V -q $Q cloudinit startup-config   # the config-drive way instead
+    sudo $V stop
+
+It is `bash`, not `sh`, and every subcommand needs root.  `-q` names the
+image and is needed only by the three that touch the disk — `start`,
+`inject` and `cloudinit`; `stop`, `console`, `status` and `cli` do not
+care where it lives.
 
 Its header documents what booting a vEOS under bhyve actually takes, all
 of it learned the hard way: the disk holds no bootloader and the kexec
@@ -214,7 +319,8 @@ Which suite sees what
 | Unicast RPF lookups         | `netlink.c` | `routesock.c` | `routesock.c` |
 | Kernel glue                 | Linux `kern.c` | BSD `kern.c` | BSD `kern.c` |
 | Unicast routing             | OSPF, via bird | static | static |
-| Several PIM routers per link| `shared.sh`, `pod.sh` | `shared-lan*` | no |
+| Several PIM routers per link| `shared.sh`, `pod.sh` | `shared-lan*` | `assert-lan` |
+| Assert metrics that differ  | no | no | `assert-lan` |
 | Point-to-point vifs         | no | `gif-tunnel*` | no |
 | Interfaces changing at runtime | no | `ifgone`, `renumber` | no |
 | A foreign implementation    | no | no | yes |
@@ -225,6 +331,7 @@ Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert —
 wants the vEOS lab too, because it is the only one that can tell a wrong
 encoding from a matching pair of wrong ones.
 
+[arista-dl]: https://www.arista.com/en/support/software-download
 [185]: https://github.com/troglobit/pimd/issues/185
 [211]: https://github.com/troglobit/pimd/issues/211
 [218]: https://github.com/troglobit/pimd/issues/218
