@@ -166,7 +166,15 @@
 #
 # Usage: freebsd-interop.sh start|check|run [arista-rp|pimd-rp] | run all | stop
 
-SUDO=${SUDO:-sudo}
+# Root needs no sudo, and the places this runs unattended -- CI in a VM,
+# a jail host -- often do not have it installed at all.  An explicitly
+# empty SUDO= is honoured either way; ${SUDO:-sudo} would have quietly
+# put sudo back.
+if [ "$(id -u)" -eq 0 ]; then
+	SUDO=${SUDO-}
+else
+	SUDO=${SUDO-sudo}
+fi
 
 PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 WORKDIR=${WORKDIR:-/tmp/pimd-interop}

@@ -343,7 +343,15 @@
 
 set -eu
 
-SUDO=${SUDO:-sudo}
+# Root needs no sudo, and the places this runs unattended -- CI in a VM,
+# a jail host -- often do not have it installed at all.  An explicitly
+# empty SUDO= is honoured either way; ${SUDO:-sudo} would have quietly
+# put sudo back.
+if [ "$(id -u)" -eq 0 ]; then
+	SUDO=${SUDO-}
+else
+	SUDO=${SUDO-sudo}
+fi
 # The tree this script lives in, so it tests the pimd next to it rather
 # than whatever is installed.  Override to point somewhere else.
 PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
