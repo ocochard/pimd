@@ -104,6 +104,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Answer `JoinDesired(S,G)` of RFC 7761 section 4.5.5 with the source
+  specific state it is made of, instead of with the outgoing interface
+  list the (\*,G) lends the entry.  It gates `Update_SPTbit(S,G,iif)` of
+  section 4.2.2, so one ordinary any-source receiver behind a last hop
+  router was enough to set the SPT bit of a router that is forwarding off
+  the shared tree.  Section 4.6.1 compares that bit before either metric,
+  so on a shared LAN such a router beat one really on the shortest path
+  tree and held the group on the longer path.  A Join(S,G) received from a
+  downstream router and an IGMPv3 source-specific membership still set it,
+  as does a source that is directly connected or an entry `spt-threshold`
+  really switched; `spt-threshold infinity` now keeps the bit clear, which
+  is what section 4.2.1 says an infinite threshold does
 - Keep the PIM assert state per interface, the way RFC 7761 sections 4.6.1
   and 4.6.2 define it, instead of one winner and one timer for a whole
   routing entry.  Five gaps close with it.  The winner now arms its Assert

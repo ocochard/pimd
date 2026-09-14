@@ -718,6 +718,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 
     /* TODO: don't need some of the flags */
     if (r->flags & MRTF_SPT)	       fprintf(fp, " SPT");
+    if (r->flags & MRTF_KAT)	       fprintf(fp, " KAT");
     if (r->flags & MRTF_WC)	       fprintf(fp, " WC");
     if (r->flags & MRTF_RP)	       fprintf(fp, " RP");
     if (r->flags & MRTF_REGISTER)      fprintf(fp, " REG");

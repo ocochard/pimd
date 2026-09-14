@@ -1997,6 +1997,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		}
 		IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
+		    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
 		    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
 		    change_interfaces(mrt,
 				      mrt->incoming,
@@ -2023,6 +2024,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    }
 		    IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 			PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
+			PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
 			PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
 			change_interfaces(mrt,
 					  mrt->incoming,
@@ -2208,6 +2210,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 		new_join = (PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) == 0);
 		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
+		/* joins(S,G), which a new entry does not inherit from the
+		 * (*,G) the way joined_oifs does -- see sg_joined_oifs in
+		 * src/mrt.h and join_desired() in src/route.c */
+		PIMD_VIFM_SET(vifi, mrt->sg_joined_oifs);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
 		/* "Receive Join(S,G) on interface I", the same transition in
 		 * sec. 4.6.1. */
@@ -3219,6 +3225,12 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
      * it unreachable, the AssertCancel of RFC 7761 sec. 4.6.4 included, and
      * left the Loser state with no transition out of it but its own timer.
      * The interface is still downstream while we hold assert state for it.
+     *
+     * Only the state of the entry the machine keeps its own on, deliberately:
+     * letting an (S,G) machine with no entry yet read the (*,G)'s instead is
+     * M14 in doc/rfc7761-compliance.md, and doing it here alone hands that
+     * machine the AssertCancel of sec. 4.6.4 as well, which then clears the
+     * (S,G) state while the (*,G) Loser state goes on holding the interface.
      */
     if (PIMD_VIFM_ISSET(vifi, mrt->oifs) ||
 	(vifi != mrt->incoming && own && assert_lost_on(own, vifi))) {

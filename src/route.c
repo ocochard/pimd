@@ -508,6 +508,83 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 
 
 /*
+ * RFC 7761 sec. 4.5.5:
+ *
+ *   bool JoinDesired(S,G) {
+ *       return( immediate_olist(S,G) != NULL
+ *               OR ( KeepaliveTimer(S,G) is running
+ *                    AND inherited_olist(S,G) != NULL ) )
+ *   }
+ *
+ * Two questions, and pimd used to answer both with calc_oifs(), which is
+ * inherited_olist(S,G) alone: one any-source receiver behind a last hop
+ * router was then enough to make it true, and sec. 4.2.2 set the SPTbit of a
+ * router that is forwarding off the shared tree.
+ *
+ * Sec. 4.1.5 builds immediate_olist(S,G) out of source-specific state only,
+ * joins(S,G) and pim_include(S,G), and `joined_oifs` and `leaves` are neither
+ * as they stand: VOIF_COPY() seeds a new (S,G) with the (*,G)'s copy of both
+ * (src/mrt.h), and add_leaf() and delete_leaf() keep pushing (*,G) leaves
+ * into every (S,G) of the group.  `sg_joined_oifs` is the half of
+ * `joined_oifs` a Join(S,G) really put there, which is joins(S,G).  The
+ * leaves have no such half outside the SSM range: add_leaf() ignores the
+ * source of an IGMPv3 report for an ASM group, so an interface the (*,G)
+ * holds too carries an any-source receiver and nothing of ours, and an SSM
+ * group has no (*,G) to subtract.
+ *
+ * The second question is which entries ever have a Keepalive Timer at all.
+ * pimd has no timer of that name -- `entry_timer` is refreshed by
+ * control-plane events, deviation M7 in doc/rfc7761-compliance.md -- but the
+ * events that start one are few: sec. 4.2 starts it for a directly connected
+ * source, and sec. 4.2.1 has CheckSwitchToSpt(S,G) start it when the switch
+ * policy says to switch, which here is switch_shortest_path() and MRTF_KAT.
+ * An entry that came by its (S,G) state any other way -- an Assert it lost, a
+ * Prune(S,G,rpt) it was told about -- has none, and answers FALSE however much
+ * the (*,G) gives it to forward.  `spt-threshold infinity` reaches the SPTbit
+ * through this, and only this: it returns false in CheckSwitchToSpt(S,G), no
+ * Keepalive Timer is started, and the chain sec. 4.2.1 describes stays down.
+ */
+static int join_desired(mrtentry_t *mrt)
+{
+    uint8_t oifs[MAXVIFS];
+    mrtentry_t *grp;
+    vifi_t vifi;
+
+    grp = mrt->group->grp_route;
+
+    /* immediate_olist(S,G) = joins(S,G) (+) pim_include(S,G) (-) lost_assert(S,G) */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (PIMD_VIFM_ISSET(vifi, mrt->pruned_oifs))
+	    continue;
+
+	if (PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs) && lost_assert(mrt, vifi))
+	    continue;
+
+	/* joins(S,G) */
+	if (PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs))
+	    return TRUE;
+
+	/* pim_include(S,G), and only where we are the DR, which is the rule
+	 * merge_local_members() applies */
+	if (PIMD_VIFM_ISSET(vifi, mrt->leaves) &&
+	    (uvifs[vifi].uv_flags & VIFF_DR) &&
+	    !(grp && PIMD_VIFM_ISSET(vifi, grp->leaves)))
+	    return TRUE;
+    }
+
+    /* KeepaliveTimer(S,G) is running: a directly connected source, sec. 4.2,
+     * or one CheckSwitchToSpt(S,G) started for us, sec. 4.2.1 */
+    if (!(mrt->flags & MRTF_KAT) && mrt->source->upstream)
+	return FALSE;
+
+    /* AND inherited_olist(S,G) != NULL */
+    calc_oifs(mrt, oifs);
+
+    return !PIMD_VIFM_ISEMPTY(oifs);
+}
+
+
+/*
  * RFC 7761 sec. 4.2.2, Update_SPTbit(S,G,iif), called as the spec calls it,
  * when a packet arrives:
  *
@@ -538,7 +615,6 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
     int directly_connected, different_iif, no_rpt_olist, same_rpf_nbr, assert_loser;
     rpentry_t *rp = NULL;
     mrtentry_t *mwc;
-    uint8_t oifs[MAXVIFS];
 
     if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_SPT))
 	return;
@@ -546,10 +622,7 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
     if (!mrt->source || iif != mrt->source->incoming)
 	return;			/* Not RPF_interface(S) */
 
-    /* JoinDesired(S,G): an inherited olist to forward to, and the entry is
-     * alive, entry_timer being the KeepaliveTimer pimd keeps. */
-    calc_oifs(mrt, oifs);
-    if (PIMD_VIFM_ISEMPTY(oifs))
+    if (!join_desired(mrt))
 	return;
 
     if (mrt->group->active_rp_grp)
@@ -605,10 +678,10 @@ static void check_sptbit(mrtentry_t *mrt)
     if (!mrt->source || mrt->incoming != mrt->source->incoming)
 	return;			/* Not RPF_interface(S) */
 
-    /* Nothing to forward, so JoinDesired(S,G) is false and update_sptbit()
-     * would return without setting anything.  Answered here so the kernel
-     * call below is only made for an entry that can use the answer. */
-    if (PIMD_VIFM_ISEMPTY(mrt->oifs))
+    /* JoinDesired(S,G) is false, so update_sptbit() would return without
+     * setting anything.  Answered here so the kernel call below is only made
+     * for an entry that can use the answer. */
+    if (!join_desired(mrt))
 	return;
 
     kc = mrt->kernel_cache;
@@ -1359,7 +1432,16 @@ mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)
 			      mrt->asserted_oifs, 0);
 	}
 
+	/* RFC 7761 sec. 4.2.1: CheckSwitchToSpt(S,G) sets KeepaliveTimer(S,G)
+	 * when the switch policy says to switch, and the note under it gives
+	 * that as what results in the switch -- the timer makes
+	 * JoinDesired(S,G) true, the Join(S,G) follows, and only then may
+	 * sec. 4.2.2 set the SPTbit.  This is the one place pimd takes that
+	 * decision, so it is the one place the timer starts for a source that
+	 * is not directly connected.
+	 */
 	SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
+	mrt->flags |= MRTF_KAT;
 	FIRE_TIMER(mrt->jp_timer);
     }
 
@@ -1689,6 +1771,7 @@ void age_routes(void)
 			    if (vifi != PIMREG_VIF) {
 				IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
 				    PIMD_VIFM_CLR(vifi, mrt_srcs->joined_oifs);
+				    PIMD_VIFM_CLR(vifi, mrt_srcs->sg_joined_oifs);
 				    change_flag = TRUE;
 				}
 			    }

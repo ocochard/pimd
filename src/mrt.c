@@ -762,6 +762,7 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->group   = grp;
     mrt->incoming = NO_VIF;
     PIMD_VIFM_CLRALL(mrt->joined_oifs);
+    PIMD_VIFM_CLRALL(mrt->sg_joined_oifs);
     PIMD_VIFM_CLRALL(mrt->leaves);
     PIMD_VIFM_CLRALL(mrt->pruned_oifs);
     PIMD_VIFM_CLRALL(mrt->asserted_oifs);

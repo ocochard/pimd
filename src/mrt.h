@@ -35,6 +35,12 @@
 #define MRTF_WC			0x0002	/* (*,G) entry			    */
 #define MRTF_RP			0x0004	/* iif toward RP		    */
 #define MRTF_NEW		0x0008	/* new created routing entry	    */
+#define MRTF_KAT		0x0010	/* KeepaliveTimer(S,G) has been
+					 * started, RFC 7761 sec. 4.2 and
+					 * sec. 4.2.1, i.e. this (S,G) is one
+					 * we pulled onto the shortest path
+					 * tree ourselves.  See join_desired()
+					 * in src/route.c		    */
 #define MRTF_IIF_REGISTER	0x0020	/* ???				    */
 #define MRTF_REGISTER		0x0080	/* ???				    */
 #define MRTF_KERNEL_CACHE	0x0200	/* a mirror for the kernel cache    */
@@ -215,6 +221,11 @@ typedef struct mrtentry {
     vifi_t		  incoming;	/* the iif (either toward S or RP)  */
     uint8_t		  oifs[MAXVIFS];		/* The current result oifs	    */
     uint8_t		  joined_oifs[MAXVIFS];		/* The joined oifs (Join received)  */
+    uint8_t		  sg_joined_oifs[MAXVIFS];	/* joins(S,G) of RFC 7761 sec. 4.1.5:
+							 * the subset of joined_oifs a
+							 * Join(S,G) put here, told apart
+							 * from the (*,G) state VOIF_COPY()
+							 * seeds the rest with	    */
     uint8_t		  pruned_oifs[MAXVIFS]; 	/* The pruned oifs (Prune received) */
     uint8_t		  asserted_oifs[MAXVIFS];	/* The asserted oifs (lost Assert)  */
     uint8_t		  leaves[MAXVIFS];		/* Has directly connected members   */

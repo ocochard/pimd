@@ -30,16 +30,19 @@ confirmed to be intentional, move it to the last section with the reason.
 
 A deviation that a test reproduces should be asserted through `xfail()`, in
 `test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
-unasserted, so that it flips to `ok` the day it is fixed.  Three are carried
-that way and all three now report `ok`, so they stay as tripwires against the
+unasserted, so that it flips to `ok` the day it is fixed.  Four are carried
+that way, and three of them report `ok`, so they stay as tripwires against the
 deviation coming back: the assert RPT-bit entry of 4.6.1 in `shared-lan-spt`,
 the SPTbit entry of 4.2.2 in `assert-lan`, and the assert winner state of
-4.6.1 and 4.6.2, which `assert-lan` asserts from both sides.
+4.6.1 and 4.6.2, which `assert-lan` asserts from both sides.  The fourth is
+M14, and it depends on the order its scenario runs in: `KNOWN` where the
+sub-case runs on its own, `ok` in the full walk.  Read its `Test:` note before
+reading anything into either.
 
 Every entry therefore ends with a `Test:` note saying what reproduces it, and
 most of them say `none` -- the point of writing it down is that the gap is
-visible from this list rather than only from grepping the labs.  Nothing here
-is carried as a live `xfail()` today.  Where an entry names a scenario without
+visible from this list rather than only from grepping the labs.  M14 is the
+only one a test reproduces at all.  Where an entry names a scenario without
 asserting anything, it is because that scenario builds the topology the
 deviation needs and stops short of the assertion; those are the cheap ones to
 close.  Several are not blackbox-testable at all, and say so: a five-second
@@ -80,7 +83,7 @@ pimd does not keep.
 State machines pimd does not have
 ---------------------------------
 
-Three entries this section held are fixed.  M3, the assert winner state,
+Four entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -92,10 +95,16 @@ Timer instead of at `Assert_Time`.  M11 followed them: `assert_machine()`
 runs the (S,G) one of sec. 4.6.1 first and the (\*,G) one of sec. 4.6.2
 only where that one held no state and did not move, each on its own entry.
 Which machine may take a message is the RPT bit's answer now, not the
-lookup's.  The metric they carry is the routing table's now as well, so what
-is left around them is the preference beside it, M4 below, the half of M12
-that is not a metric at all, and M13, the condition that decides which of the
-two metrics an Assert carries in the first place.
+lookup's.  M13 went with them, and it decided which of the two metrics an
+Assert carries in the first place: `JoinDesired(S,G)` is read off the source
+specific state sec. 4.5.5 names now -- `joins(S,G)`, kept apart from the
+(\*,G) copy every (S,G) is seeded with in `sg_joined_oifs` (`src/mrt.h`), an
+IGMPv3 source-specific membership, a directly connected source, or a
+Keepalive Timer `switch_shortest_path()` started (`MRTF_KAT`) -- so a router
+forwarding off the shared tree keeps SPTbit clear, and `spt-threshold
+infinity` keeps it clear for good.  The metric they carry is the routing
+table's now as well, so what is left around them is the preference beside it,
+M4 below, and the half of M12 that is not a metric at all.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -307,7 +316,12 @@ alone, get traffic, set SPTbit and win the re-election.  pimd computes one
 olist per entry and uses it for forwarding and for Join/Prune both, so that
 router prunes the source whose traffic it needs to get there, and the two
 never resolve -- the deadlock the Note under the macro describes.  Closing it
-means keeping the two olists apart, not adding another term.
+means keeping the two olists apart, not adding another term, and half of that
+is in place: `join_desired()` (`src/route.c`) builds `immediate_olist(S,G)`
+out of `sg_joined_oifs`, the `joins(S,G)` an (S,G) entry does not inherit
+from its (\*,G), and sec. 4.2.2 is read off it.  What still has one olist for
+forwarding and for Join/Prune both is `join_or_prune()` (`src/pim_proto.c`),
+which is where the deadlock is.
 *Check: sec. 4.6.5, `doc/rfc7761.txt:5294`, with the Note at `:5305`;
 `spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`; the two olists are sec.
 4.1.5, `:1131`, and `JoinDesired(S,G)` sec. 4.5.5, `:3738`.  Effort: medium.
@@ -318,68 +332,42 @@ now, the way step 12 of `shared-lan` in `test/freebsd-lab.sh` does it, and
 `shared-lan-spt` is the scenario that already gets one of the two onto the
 shortest path tree.*
 
-**M13.  `JoinDesired(S,G)` is read off the inherited olist, so SPTbit is set
-where sec. 4.2.2 leaves it clear.**  `Update_SPTbit(S,G,iif)` runs on every
-packet from S, and its first condition is `JoinDesired(S,G)`: sec. 4.5.5
-makes that `immediate_olist(S,G) != NULL`, or the Keepalive Timer running
-with a non-empty inherited olist.  `immediate_olist(S,G)` is source-specific
-state alone -- `joins(S,G)` and `pim_include(S,G)`, and the latter is IGMPv3
-source-specific membership -- and `KeepaliveTimer(S,G)` starts only for a
-directly connected source or once the upstream (S,G) state machine is
-Joined.  A last hop router with an ordinary any-source receiver and no (S,G)
-Join of its own therefore answers FALSE, keeps SPTbit clear, and asserts as
-the RPT forwarder it is.
+**M14.  An Assert the (S,G) machine should take is unreachable once the
+shared tree has lost the interface.**  Sec. 4.6.1 gates the NoInfo-to-Loser
+transition of the (S,G) machine on `AssertTrackingDesired(S,G,I)`, which is
+join and membership state -- `joins(*,G)` on I is enough -- and says nothing
+about the outgoing interfaces.  `assert_machine()` (`src/pim_proto.c`) asks
+instead whether the interface is still in the entry's `oifs`, or whether the
+entry the state lives on has already lost it; a router with no (S,G) entry
+yet has no such entry, and the (*,G) it borrows its metric from has just lost
+the interface, so the message reaches neither machine's NoInfo and the (*,G)
+machine's Loser state answers it instead.
 
-pimd answers the same question with `calc_oifs()` (`update_sptbit()`,
-`src/route.c`), which on an (S,G) entry returns the *inherited* olist: the
-(\*,G)'s leaves and joins folded in.  One any-source receiver behind the
-router is enough to make it say JoinDesired, and condition 4 of sec. 4.2.2 --
-`RPF'(S,G) == RPF'(*,G)` -- holds in every chain topology, the RP being
-reached the same way as the source, so the bit goes on.  `spt-threshold
-infinity` does not hold it off: that setting gates `check_spt_threshold()`
-and the Join(S,G) that `switch_shortest_path()` sends (both `src/route.c`),
-which is `SwitchToSptDesired(S,G)` of sec. 4.2.1 and a different question.
-
-In the spec the two are connected, and by the term pimd does not keep.
-`CheckSwitchToSpt(S,G)` sets `KeepaliveTimer(S,G)` when the policy says to
-switch, with a note that restarting that timer is what results in the SPT
-switch: the timer makes `JoinDesired(S,G)` true, the Join(S,G) follows, and
-only then may the bit be set.  An infinite threshold returns false there, the
-timer is never set for that reason, and the whole chain stays down.  pimd
-keeps no `KeepaliveTimer(S,G)` of that kind -- `entry_timer` is refreshed by
-control-plane events, M7 above -- so the chain has no link in it to break.
-
-What it costs is not forwarding.  Condition 4 exists because in that topology
-the packets arrive on the same interface from the same neighbour either way,
-so the switch is a no-op; the entry drops `MRTF_RP` and keeps forwarding what
-it forwarded.  It is what the router then claims on the wire:
-`CouldAssert(S,G,I)` is read off SPTbit, so `my_assert_metric()`
-(`src/pim_proto.c`) returns `spt_assert_metric(S,I)`, the MRIB numbers for
-the source with the RPT bit clear, for a router that is forwarding off the
-shared tree.  Sec. 4.6.1 compares that bit before either metric, so on a
-shared LAN this router can beat one that really is on the shortest path
-tree, and the group stays on the longer path.
-
-The loose test is as old as `update_sptbit()`.  What gave it reach is the fix
-for M10, which runs the check once per `age_routes()` pass (`check_sptbit()`,
-`src/route.c`) rather than only at an upcall, so entries that used to escape
-it no longer do.
-*Check: sec. 4.2.2, `doc/rfc7761.txt:1522` for `Update_SPTbit(S,G,iif)` and
-`:1543` for the four conditions; `JoinDesired(S,G)` is sec. 4.5.5, `:3738`;
-`immediate_olist(S,G)` and `pim_include(S,G)` are sec. 4.1.5, `:1134` and
-`:1159`; the Keepalive Timer rules are sec. 4.2, `:1373`; the switch policy
-it is not is sec. 4.2.1, `CheckSwitchToSpt(S,G)` at `:1476` and the note on
-an infinite threshold at `:1486`.  Effort: small in code -- ask the (S,G)
-entry's own join state and per-source leaves, a directly connected source, or
-an entry `switch_shortest_path()` really switched -- and the validation is
-the work, since the bit is what `shared-lan-spt` in `test/freebsd-lab.sh` and
-every metric sub-case of `assert-lan` in `test/freebsd-interop.sh` are
-measuring.  Test: the `rpt-bit` sub-case of `assert-lan` reproduces it, but
-only run after the other three, when R3 ends up with an (S,G) entry to set
-the bit on; run on its own it stays on the shared tree and the Arista wins as
-the sub-case expects.  It is a `fail()` today rather than the `xfail()` this
-file asks for, because the order dependence has to go first: as an `xfail()`
-it would also swallow a real regression in the election it asserts.*
+A last hop router held on the shared tree beside a router that is on the
+shortest path tree is exactly that case, and it keeps no `AssertWinner(S,G,I)`
+for the LAN: `lost_assert(S,G,rpt,I)` of sec. 4.6.5 reads NULL and what holds
+the interface is the (*,G) state alone.  That state is not refreshed, because
+the winner asserts per source from then on, and the downstream router that
+would clear it with a Join(*,G) now sends that Join to the winner instead.
+So the interface comes back at `Assert_Time`, the two routers collide, and the
+election runs again every 180 seconds.
+*Check: sec. 4.6.1, `doc/rfc7761.txt:4279`, with
+`AssertTrackingDesired(S,G,I)` at `:4431` and the transition it gates at
+`:4519`; `lost_assert(S,G,rpt,I)` is sec. 4.6.5, `:5284`; the AssertCancel is
+sec. 4.6.4, `:5245`.  Effort: small, but not the one-line widening of the
+`oifs` test it looks like -- that was measured, and it hands the (S,G) machine the AssertCancel of sec. 4.6.4 as
+well, which then clears the (S,G) state and returns, leaving the (*,G) Loser
+state holding the interface for the full `Assert_Time`: `assert-lan` reports
+the AssertCancel case as a known deviation the moment it is done that way.
+Both machines have to answer the cancel for that to hold together.  Test: the
+`rpt-bit` sub-case of `assert-lan` in `test/freebsd-interop.sh` goes on asking
+for the loss on the (S,G) and reports `KNOWN` through `xfail()` while it lands
+on the (*,G) instead -- but only when that sub-case is run on its own,
+`AL_CASES=rpt-bit`.  In the full walk it reports `ok`: the Arista has three
+elections behind it by then and its (S,G) Assert reaches R3 before the (*,G)
+one has taken the interface away, so the (S,G) machine is still reachable and
+takes it.  Which of the two orderings a run saw is worth checking before
+reading anything into either.*
 
 
 Timers
