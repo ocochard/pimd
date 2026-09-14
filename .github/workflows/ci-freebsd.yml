@@ -73,19 +73,22 @@ jobs:
             /tmp/inst/sbin/pimctl -u /tmp/pimd.sock kill
 
   lab:
-    # The vnet jail lab: seven PIM-SM scenarios over real jails, epairs and
-    # bridges, asserting on forwarded traffic and on the kernel MFC in each
-    # vnet.  It is the only regression test that exercises the RPF lookups
-    # in routesock.c and the kern.c BSD branches, rather than merely
-    # compiling them.
+    # The vnet jail lab: thirteen PIM-SM scenarios over real jails, epairs
+    # and bridges, asserting on forwarded traffic and on the kernel MFC in
+    # each vnet.  It is the only regression test that exercises the RPF
+    # lookups in routesock.c and the kern.c BSD branches, rather than merely
+    # compiling them, so without it every FreeBSD-specific line here is
+    # covered by a compiler and nothing else.
     #
-    # Opt-in rather than on every push: it needs root, a VIMAGE kernel and
-    # ip_mroute.ko/if_bridge.ko inside the VM, it sets a host-global sysctl
-    # (net.inet.ip.mcast.loop), and `run all` takes upwards of twenty
-    # minutes.  Start it from the Actions tab, or add a schedule, once it
-    # has proven itself reliable here.
+    # `run all` takes around half an hour, which is why it is a job of its
+    # own rather than another step of the build: the build reports in a few
+    # minutes and does not wait for this.  VIMAGE is in GENERIC, so the only
+    # setup needed is loading ip_mroute.ko and if_bridge.ko, which a jail
+    # cannot do for itself.  The lab also sets a host-global sysctl
+    # (net.inet.ip.mcast.loop) and restores it afterwards; in a throwaway VM
+    # that costs nothing either way.
     name: Lab on FreeBSD ${{ matrix.release }} (${{ matrix.arch }})
-    if: github.event_name == 'workflow_dispatch'
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -124,4 +127,20 @@ jobs:
             gmake V=1
 
             # Already root in the VM, so the script's sudo wrapper is empty.
-            SUDO= sh test/freebsd-lab.sh run all
+            #
+            # A scenario that fails keeps its work directory, which holds one
+            # pimd log per router and the traffic captures.  copyback is off
+            # and the VM goes away with the job, so print the logs here or
+            # the run leaves nothing but the assertion that tripped.
+            SUDO= sh test/freebsd-lab.sh run all || rc=$?
+
+            for d in /tmp/pimd-test.*.failed; do
+                    test -d "$d" || continue
+                    for f in "$d"/*.log; do
+                            test -f "$f" || continue
+                            echo "===== $f ====="
+                            tail -n 200 "$f"
+                    done
+            done
+
+            exit ${rc:-0}

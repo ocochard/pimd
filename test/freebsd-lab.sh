@@ -39,12 +39,13 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Twelve scenarios are built on that topology.  Most differ only in which
+# Thirteen scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
 # right hand links as bridged segments and hang two more routers off them;
-# alias gives one interface a second address and moves the sender onto it:
+# alias gives one interface a second address and moves the sender onto it;
+# ifgone and renumber change a link under a pimd that is already running:
 #
 #   rpt         R2 is BSR and RP, ED2 joins, traffic has to reach it over
 #               the shared tree.  Takes about 90s.
