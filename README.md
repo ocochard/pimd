@@ -26,10 +26,18 @@ available under the free [3-clause BSD license][License].  This is the
 restored original version from University of Southern California, by
 Ahmed Helmy, Rusty Eddy and Pavlin Ivanov Radoslavov.
 
-Development happens in [this GitHub repository][GitHub], a fork of
-[troglobit/pimd][upstream].  This is the preferred way to access the GIT
-sources, report bugs, and send patches or pull requests.  Tarballs of the
-2.x releases are still on the [upstream releases page][releases page].
+Development happens in [this GitHub repository][GitHub], which is where
+pimd is maintained today.  This is the preferred way to access the GIT
+sources, report bugs, and send patches or pull requests.  The project
+started out as a fork of [troglobit/pimd][upstream], and tarballs of the
+2.x releases are still on that [releases page][releases page].
+
+The protocol pimd implements is PIM-SM as specified in [RFC 7761][], the
+current PIM-SM standard (STD 83), with the Bootstrap Router mechanism of
+[RFC 5059][] and Source Specific Multicast of RFC 4607.  Where pimd is
+known to disagree with RFC 7761 the disagreement is written down in
+[doc/rfc7761-compliance.md][compliance], each entry naming the section it
+is measured against and the test that reproduces it, if any.
 
 pimd is developed, built and tested on both FreeBSD and Linux, and CI
 covers both: the [Linux][] workflow builds with gcc and clang and runs
@@ -143,7 +151,7 @@ multicast group prefix records is possible for the CRP.
 To keep track of all Rendezvous Points in a PIM-SM domain there exists a
 feature called *Bootstrap Router*.  The elected BSR in a PIM-SM domain
 periodically announces the RP set in Bootstrap messages.  For details on
-PIM BSR operation, see [RFC 5059](http://tools.ietf.org/search/rfc5059).
+PIM BSR operation, see [RFC 5059][].
 
     bsr-candidate [address | ifname] [priority <0-255>] [interval <10-26214>]
 
@@ -152,6 +160,26 @@ to that of CRP.  If either the address or the interface name is left out
 `pimd` uses the highest active IP address.  If the priority is omitted,
 `pimd` (like Cisco) defaults to priority 0.  If the interval is omitted,
 it defaults to the RFC value of 60 seconds.
+
+Groups in the Source Specific Multicast range never use an RP; pimd
+builds a source tree for each (S,G) a receiver asks for.  That range is
+232.0.0.0/8, from RFC 4607, unless `pimd.conf` says otherwise:
+
+    ssm-range [default | <group>[/<LENGTH> | masklen <LENGTH>]]
+
+As with the Cisco `ip pim ssm range` setting, the ranges given *replace*
+the default rather than adding to it, so keeping 232.0.0.0/8 in service
+alongside a range of your own takes an explicit `ssm-range default` line.
+Several `ssm-range` lines may be given, a range covering the link-local
+groups 224.0.0.0/24 is rejected, and `pimctl show status` lists the
+ranges in effect.
+
+Note, this changes how a group behaves and not merely how it is named.
+Receivers on an SSM group have to name their sources, with IGMPv3, since
+an any-source report for such a group is ignored (RFC 4604), and groups
+of a default range that has been replaced go back to needing an RP.  All
+routers in the domain should agree on the ranges; nothing in PIM
+advertises them.
 
 In a PIM-SM domain there can be two, or more, paths from a designated
 router (DR) for a multicast sender to reach a receiver.  When receivers
@@ -273,13 +301,27 @@ when running in the foreground (`-n`).
 Monitoring
 ----------
 
-To see the virtual interface table, including neighboring PIM routers,
-and the multicast routing table:
+To see one line per interface with the PIM and the IGMP view side by
+side, the virtual interface table, the neighboring PIM routers, and the
+multicast routing table:
 
+    pimctl show summary
     pimctl show interface
     pimctl show neighbor
     pimctl show mrt
-    ...
+
+`show mrt` is what the daemon believes.  What the kernel actually
+forwards is `show mfc`: one line per (S,G) with the incoming interface,
+the outgoing interface list, and the kernel's packet, byte and
+wrong-interface counters for that flow.
+
+    pimctl show mfc
+
+The IGMP side has commands of its own, `pimctl show igmp groups` and
+`pimctl show igmp interface`, or `pimctl show igmp` for both at once.  A
+few spellings people type anyway work as hidden aliases: `show if` and
+`show interfaces` for `show interface`, `show routes` for `show mrt`, and
+`show groups` for `show igmp groups`.
 
 The default command is `pimctl show pim`.  To watch it continually
 (notice the `-c` flag to watch(1) to tell it to interpret the ANSI
@@ -397,11 +439,11 @@ header of each script for its topology, and the [Linux][] and
 Contributing
 ------------
 
-pimd was written and is maintained by [Joachim Wiberg][] at
-[troglobit/pimd][upstream]; this fork is where the FreeBSD work and the
-changes listed in the [ChangeLog][] happen.  If you find bugs, have
-feature requests, or want to contribute fixes or features, check out the
-code from GitHub:
+pimd was restored and maintained for many years by [Joachim Wiberg][] at
+[troglobit/pimd][upstream].  This repository is where it is maintained
+now, and where the FreeBSD work and the changes listed in the
+[ChangeLog][] happen.  If you find bugs, have feature requests, or want
+to contribute fixes or features, check out the code from GitHub:
 
 	git clone https://github.com/ocochard/pimd
 	cd pimd
@@ -427,6 +469,9 @@ Stanford Junior University.
 [ChangeLog]:       https://github.com/ocochard/pimd/blob/master/ChangeLog.md
 [releases page]:   https://github.com/troglobit/pimd/releases
 [buildsystem]:     https://autotools.io/
+[RFC 7761]:        https://datatracker.ietf.org/doc/html/rfc7761
+[RFC 5059]:        https://datatracker.ietf.org/doc/html/rfc5059
+[compliance]:      https://github.com/ocochard/pimd/blob/master/doc/rfc7761-compliance.md
 [contrib]:         https://github.com/ocochard/pimd/blob/master/.github/CONTRIBUTING.md
 [tests]:           https://github.com/ocochard/pimd/blob/master/test/README.md
 [Joachim Wiberg]:  https://troglobit.com
