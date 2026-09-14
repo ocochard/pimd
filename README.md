@@ -42,7 +42,7 @@ is measured against and the test that reproduces it, if any.
 pimd is developed, built and tested on both FreeBSD and Linux, and CI
 covers both: the [Linux][] workflow builds with gcc and clang and runs
 the network namespace test suite, the [FreeBSD][] one builds in a VM and
-can run the vnet jail lab (see [Testing](#testing)).  On Linux it should
+runs the vnet jail lab (see [Testing](#testing)).  On Linux it should
 work as-is out of the box on all major distributions.  Other UNIX
 variants; NetBSD, DragonFly, and Illumos, may also work, but do not
 receive the same amount of testing.
@@ -415,10 +415,18 @@ makes a test SKIP, not fail.
 The FreeBSD counterpart is `test/freebsd-lab.sh`, which builds the same
 kind of topologies out of vnet jails, epairs and `if_bridge`, and is the
 only regression test that exercises the BSD routing socket and kernel
-glue rather than merely compiling it.  It needs root, a VIMAGE kernel and
-`ip_mroute.ko`, so it is deliberately not part of `make check`:
+glue rather than merely compiling it.  GENERIC needs nothing added to run
+it — VIMAGE is in it and both modules ship with it — they just have to be
+loaded first, since a jail may not `kldload`:
 
+    kldload -n ip_mroute if_bridge
     sh test/freebsd-lab.sh run all
+
+It is out of `make check` all the same: automake drives `TESTS` under
+`unshare -mrun`, which exists on Linux and nowhere else, and the lab
+wants root, half an hour, and a host-global sysctl
+(`net.inet.ip.mcast.loop`, restored when it finishes).  The [FreeBSD][]
+workflow runs it on every push instead.
 
 A third suite, `test/freebsd-interop.sh`, runs pimd against an Arista
 vEOS under bhyve.  The other two have pimd at both ends of every

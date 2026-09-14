@@ -7,22 +7,24 @@ cannot, and a change is only really covered when the suite that can see
 it has run.
 
 * The **Linux suite** is `make check`.  It builds router topologies out
-  of network namespaces and veth pairs, and it is the one CI runs on
-  every push.  It exercises `netlink.c` and the Linux kernel glue.
+  of network namespaces and veth pairs, and exercises `netlink.c` and the
+  Linux kernel glue.  CI runs it on every push.
 * The **FreeBSD vnet jail lab** builds the same kind of topologies out
   of vnet jails and epairs, and is the only thing that exercises
   `routesock.c` and the BSD branches of `kern.c` rather than merely
   compiling them.  It also holds the scenarios that reproduce specific
-  upstream issues.
+  upstream issues.  CI runs it on every push too, in a FreeBSD VM.
 * The **Arista vEOS interoperability lab** puts a foreign PIM
   implementation on the wire.  The other two have pimd on both ends of
   every exchange, so a message pimd encodes wrongly is a message pimd
   decodes wrongly in the same way and the run stays green.  This one
   catches that.
 
-Only the first is part of `make check`.  The other two need root, a
-specific kernel and, for the third, a licensed VM image, so they are
-run by hand.
+Only the first is part of `make check`, because automake drives `TESTS`
+under `unshare -mrun` and that is Linux.  The other two are shell scripts
+run on their own: both need root and a couple of kernel modules loaded
+beforehand, and the third also needs a licensed VM image, which is why it
+is the one CI cannot run.
 
 
 Table of Contents
@@ -91,11 +93,17 @@ The FreeBSD vnet jail lab
     sh test/freebsd-lab.sh check rpt        # assertions against a running lab
     sh test/freebsd-lab.sh stop
 
-Deliberately **not** in `TESTS`: it needs root (via sudo), a VIMAGE
-kernel, `ip_mroute.ko`, and `if_bridge.ko` for the shared segment
-scenarios.  The Linux suite cannot run on FreeBSD at all — it is built
-on `unshare`, veth and namespaces — so without this lab the BSD half of
-the tree is compiled but never executed.
+Deliberately **not** in `TESTS`, which automake runs under `unshare
+-mrun`, a Linux command.  What the lab itself wants is root, and
+`ip_mroute.ko` plus `if_bridge.ko` for the shared segment scenarios
+loaded before it starts, because a jail may not `kldload`.  Nothing there
+calls for a custom kernel: GENERIC is built with VIMAGE and ships both
+modules.  The Linux suite cannot run on FreeBSD at all, so without this
+lab the BSD half of the tree is compiled but never executed.
+
+Run as root the lab uses no `sudo` at all; as an ordinary user it wraps
+every privileged command in one, and `SUDO=` in the environment overrides
+that either way.
 
 What makes it possible: `sys/netinet/ip_mroute.c` is fully VNET-ized, so
 each vnet jail owns a private forwarding cache and vif table, and
