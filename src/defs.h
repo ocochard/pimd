@@ -566,6 +566,7 @@ extern int	send_pim_assert		(uint32_t source, uint32_t group, vifi_t vifi, mrten
 extern void	send_pim_assert_cancel	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_winner_is_me	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_lost_on		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern int	lost_assert		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	age_asserts		(mrtentry_t *mrtentry_ptr);
 extern void     send_pim_join           (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern void     send_pim_prune          (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);

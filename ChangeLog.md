@@ -137,6 +137,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   (S,G) and (*,G) state for a group can therefore keep assert state for
   both on the same interface, where before the two shared one record and
   the answer depended on which entry happened to be the longest match
+- Compute the third term of `lost_assert(S,G,I)`, RFC 7761 section 4.6.5:
+  an interface lost to an assert returns to the outgoing list once the
+  entry is on the shortest path tree and the winner's metric no longer
+  beats the metric the router would assert with from there.  Before, the
+  interface stayed out until the Assert Timer expired or the winner sent
+  an AssertCancel, even where the router had become the one that would win
+  the re-election.  Until SPTbit is set nothing changes: section 4.2
+  forwards off `inherited_olist(S,G,rpt)` then, and that olist loses the
+  interface to `lost_assert(S,G,rpt,I)`, which has no such term
 - Reject an `altnet` or `scoped` masklen above 32 in `pimd.conf` instead
   of shifting by it.  `VAL_TO_MASK()` shifts by `32 - masklen`, so a
   larger value shifted by a number no 32-bit type has, which is undefined

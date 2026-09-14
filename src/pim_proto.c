@@ -64,6 +64,9 @@ static int compare_metrics         (uint32_t local_preference,
 static void my_assert_metric       (mrtentry_t *mrt,
 				    uint32_t *preference,
 				    uint32_t *metric);
+static void spt_assert_metric      (mrtentry_t *mrt,
+				    uint32_t *preference,
+				    uint32_t *metric);
 static int  assert_send            (uint32_t source,
 				    uint32_t group,
 				    vifi_t vifi,
@@ -2839,6 +2842,53 @@ int assert_lost_on(mrtentry_t *mrt, vifi_t vifi)
     return as && as->winner != INADDR_ANY_N && as->winner != uvifs[vifi].uv_lcl_addr;
 }
 
+/*
+ * lost_assert(S,G,I) of sec. 4.6.5, which is more than "I am Assert Loser":
+ * it is that, and the winner's metric being better than spt_assert_metric(S,I)
+ * as well.  The third term is what lets an entry that has since reached the
+ * shortest path tree take back an interface it lost from the shared tree,
+ * where its own metric carried the RPT bit and lost on the bit before any
+ * number was compared.  Without it the interface stays out until the Assert
+ * Timer expires or the winner cancels, though the re-election is already
+ * ours to win.
+ *
+ * The term belongs to this macro alone.  lost_assert(*,G,I) and
+ * lost_assert(S,G,rpt,I) read the same winner and stop at "not me", so a
+ * (*,G) entry, the (S,G,rpt) variant and an (S,G) still forwarding on the
+ * shared tree all answer from assert_lost_on() directly.  calc_oifs()
+ * (src/route.c) is the caller, once per interface the entry has lost.
+ */
+int lost_assert(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+    uint32_t preference, metric;
+
+    if (!assert_lost_on(mrt, vifi))
+	return FALSE;
+
+    /* "if RPF_interface(S) == I: return FALSE" */
+    if (vifi == mrt->incoming)
+	return FALSE;
+
+    if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_RP))
+	return TRUE;
+
+    /* Sec. 4.2 forwards off inherited_olist(S,G,rpt) until SPTbit(S,G) is
+     * set, and that olist loses the interface to lost_assert(S,G,rpt),
+     * which has no such term.  So the question is only worth asking once
+     * this entry really is the one on the shortest path tree.
+     */
+    if (!(mrt->flags & MRTF_SPT))
+	return TRUE;
+
+    spt_assert_metric(mrt, &preference, &metric);
+
+    /* compare_metrics() answers for its first pair, so ask it whether the
+     * winner beats what we would assert with from the shortest path tree. */
+    return compare_metrics(as->preference, as->metric, as->winner,
+			   preference, metric, uvifs[vifi].uv_lcl_addr);
+}
+
 /* Does any interface hold assert state?  MRTF_ASSERTED mirrors that, for the
  * dumps and for the entries whose upstream came from an Assert on the iif. */
 static void assert_update_flag(mrtentry_t *mrt)
@@ -3538,22 +3588,32 @@ int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mr
  * to hand it a tie on preference and metric and let the address tiebreak
  * decide an election the spec had already answered.
  */
+/*
+ * spt_assert_metric(S,I), sec. 4.6.3: MRIB.pref(S)/MRIB.metric(S), so it
+ * comes off the source entry rather than off this entry -- what the unicast
+ * routing table says, never a value another router asserted at us.  It is
+ * what we would assert with once SPTbit(S,G) is set, which is why
+ * lost_assert() below weighs a winner against it.
+ */
+static void spt_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *metric)
+{
+    if (mrt->source) {
+	*preference = mrt->source->preference & ~PIM_ASSERT_RPT_BIT;
+	*metric     = mrt->source->metric;
+
+	return;
+    }
+
+    *preference = mrt->preference & ~PIM_ASSERT_RPT_BIT;
+    *metric     = mrt->metric;
+}
+
 static void my_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *metric)
 {
     mrtentry_t *mrp = NULL;
 
     if (mrt->flags & MRTF_SPT) {
-	/* spt_assert_metric(S,I) is MRIB.pref(S)/MRIB.metric(S), so it comes
-	 * off the source entry rather than off this entry: sec. 4.6.3 has us
-	 * assert with what the unicast routing table says, never with a
-	 * value another router asserted at us. */
-	if (mrt->source) {
-	    *preference = mrt->source->preference & ~PIM_ASSERT_RPT_BIT;
-	    *metric     = mrt->source->metric;
-	} else {
-	    *preference = mrt->preference & ~PIM_ASSERT_RPT_BIT;
-	    *metric     = mrt->metric;
-	}
+	spt_assert_metric(mrt, preference, metric);
 
 	return;
     }

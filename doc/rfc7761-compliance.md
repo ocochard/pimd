@@ -93,7 +93,7 @@ runs the (S,G) one of sec. 4.6.1 first and the (\*,G) one of sec. 4.6.2
 only where that one held no state and did not move, each on its own entry.
 Which machine may take a message is the RPT bit's answer now, not the
 lookup's.  What is left around them is M4 below, the metric they carry, and
-M12, the one term of `lost_assert(S,G,I)` that is still not computed.
+the half of M12 that is not a metric at all.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -258,23 +258,37 @@ a burst of duplicate traffic on the shared tree once per period, every period.
 and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
 group with more than about 65 pruned sources, which no scenario builds.*
 
-**M12.  `lost_assert(S,G,I)` does not weigh the winner's metric.**  Sec.
-4.6.5 makes that test three terms: assert state on the interface, a winner
-that is not us, and the winner's metric being better than
-`spt_assert_metric(S,I)`.  pimd has the first two, as the interface's
-`assert_state` and its bit in `asserted_oifs`, and no third.  The Note under
-the macro says what the term is for: a router that has (S,G) join state but
-has not set SPTbit yet must ignore assert state it would win back the moment
-it does, and pimd instead stays off the interface until the Assert Timer
-runs out or the winner cancels.  `lost_assert(*,G,I)` and
-`lost_assert(S,G,rpt,I)` are right: `calc_oifs()` (`src/route.c`) subtracts
-the (\*,G)'s asserted interfaces from the inherited part of the olist before
-the (S,G)'s own joins are merged in, which is the shape sec. 4.1.5 asks for.
+**M12.  `lost_assert(S,G,I)`'s third term reaches the olist, not the Join.**
+Sec. 4.6.5 makes that test three terms: assert state on the interface, a
+winner that is not us, and the winner's metric being better than
+`spt_assert_metric(S,I)`.  The third one is computed now, in `lost_assert()`
+(`src/pim_proto.c`), and `calc_oifs()` (`src/route.c`) asks it per interface
+rather than subtracting `asserted_oifs` whole: an entry on the shortest path
+tree takes back an interface it lost to a winner whose metric no longer
+beats the one it would assert with from that tree.  Until SPTbit is set the
+answer is `lost_assert(S,G,rpt,I)`, plain assert state, because sec. 4.2
+forwards off `inherited_olist(S,G,rpt)` until then.
+
+What the term is really for is the other olist, and that half is missing.
+Sec. 4.1.5 keeps `immediate_olist(S,G)` -- `joins(S,G)` and
+`pim_include(S,G)` minus `lost_assert(S,G)` -- apart from the inherited one,
+and `JoinDesired(S,G)` is read off that, or off `inherited_olist(S,G)` while
+the Keepalive Timer runs: both of them carry the term, and neither is the
+olist sec. 4.2 forwards off while SPTbit is clear.  A router that loses an
+assert while forwarding on the shared tree, to a winner it would beat from
+the shortest path tree, is meant to keep its (S,G) Join on that strength
+alone, get traffic, set SPTbit and win the re-election.  pimd computes one
+olist per entry and uses it for forwarding and for Join/Prune both, so that
+router prunes the source whose traffic it needs to get there, and the two
+never resolve -- the deadlock the Note under the macro describes.  Closing it
+means keeping the two olists apart, not adding another term.
 *Check: sec. 4.6.5, `doc/rfc7761.txt:5294`, with the Note at `:5305`;
-`spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`.  Effort: small.  Test:
-none, and it needs two routers whose metrics differ before the term can
-change an outcome, which is M4's territory -- between two pimds the metrics
-are the same configured constants.*
+`spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`; the two olists are sec.
+4.1.5, `:1131`, and `JoinDesired(S,G)` sec. 4.5.5, `:3738`.  Effort: medium.
+Test: none.  It needs two routers whose metrics differ, which between two
+pimds they do not -- M4's constants -- so it wants the Arista of
+`assert-lan` in `test/freebsd-interop.sh` and a sub-case that makes pimd
+lose from the shared tree and then lets it reach the shortest path one.*
 
 
 Timers

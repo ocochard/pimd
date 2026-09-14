@@ -727,7 +727,7 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
 {
     uint8_t oifs[MAXVIFS];
     mrtentry_t *grp;
-    mrtentry_t *mrp;
+    vifi_t vifi;
 
     /*
      * oifs =
@@ -735,6 +735,25 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
      *              - my_asserted_oifs - incoming_interface,
      * i.e. `leaves` have higher priority than `prunes`, but lower priority
      * than `asserted`. The incoming interface is always deleted from the oifs
+     *
+     * The two halves are the two RFC 7761 sec. 4.1.5 builds, and they do not
+     * lose the same interfaces to an assert:
+     *
+     *   inherited_olist(S,G,rpt) = ( joins(*,G) (-) prunes(S,G,rpt) )
+     *       (+) ( pim_include(*,G) (-) pim_exclude(S,G) )
+     *       (-) ( lost_assert(*,G) (+) lost_assert(S,G,rpt) )
+     *   inherited_olist(S,G) = inherited_olist(S,G,rpt)
+     *       (+) joins(S,G) (+) pim_include(S,G) (-) lost_assert(S,G)
+     *
+     * lost_assert(*,G) is the (*,G) entry's own `asserted_oifs`, subtracted
+     * from the inherited half alone.  The other two are this entry's, and
+     * which of them applies is what lost_assert() (src/pim_proto.c) answers:
+     * until SPTbit(S,G) is set sec. 4.2 forwards off inherited_olist(S,G,rpt)
+     * and the answer is lost_assert(S,G,rpt), plain assert state, taking the
+     * interface away wherever it came from.  Once it is set the olist is
+     * inherited_olist(S,G) and the answer is lost_assert(S,G), which also
+     * asks whether the winner would still beat us now that we assert from
+     * the shortest path tree, sec. 4.6.5.
      */
 
     if (!mrt) {
@@ -750,6 +769,7 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
 	    PIMD_VIFM_MERGE(oifs, grp->joined_oifs, oifs);
 	    PIMD_VIFM_CLR_MASK(oifs, grp->pruned_oifs);
 	    merge_local_members(oifs, grp->leaves);
+	    /* lost_assert(*,G) */
 	    PIMD_VIFM_CLR_MASK(oifs, grp->asserted_oifs);
 	}
     }
@@ -758,7 +778,13 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
     PIMD_VIFM_MERGE(oifs, mrt->joined_oifs, oifs);
     PIMD_VIFM_CLR_MASK(oifs, mrt->pruned_oifs);
     merge_local_members(oifs, mrt->leaves);
-    PIMD_VIFM_CLR_MASK(oifs, mrt->asserted_oifs);
+
+    /* lost_assert(S,G) or lost_assert(S,G,rpt) here, and lost_assert(*,G)
+     * where this entry is the (*,G) itself */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs) && lost_assert(mrt, vifi))
+	    PIMD_VIFM_CLR(vifi, oifs);
+    }
 
     PIMD_VIFM_COPY(oifs, oifs_ptr);
 }
