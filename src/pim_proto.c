@@ -64,6 +64,14 @@ static int compare_metrics         (uint32_t local_preference,
 static void my_assert_metric       (mrtentry_t *mrt,
 				    uint32_t *preference,
 				    uint32_t *metric);
+static int  assert_send            (uint32_t source,
+				    uint32_t group,
+				    vifi_t vifi,
+				    uint32_t preference,
+				    uint32_t metric);
+static void assert_noinfo          (mrtentry_t *mrt, vifi_t vifi);
+static int  assert_clear           (mrtentry_t *mrt, vifi_t vifi);
+static void assert_neighbor_gone   (uint32_t addr);
 
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
@@ -179,6 +187,9 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 		/* Known neighbor rebooted, update info and resend RP-Set */
 		cache_nbr_settings(nbr, &opts);
 		refresh_upstream_joins(nbr);
+		/* It no longer knows it won any Assert, RFC 7761 sec. 4.6.1
+		 * and sec. 4.6.2, "Current Winner's GenID Changes". */
+		assert_neighbor_gone(src);
 		goto rebooted;
 	    }
 
@@ -300,9 +311,6 @@ static void reset_upstream_router(mrtentry_t *mrt, pim_nbr_entry_t *nbr_delete)
 
     if (mrt->upstream != nbr_delete)
 	return;
-
-    if (mrt->assert_winner == nbr_delete->address)
-	mrt->assert_winner = INADDR_ANY_N;
 
     if (mrt->flags & MRTF_RP) {
 	/* Upstream is toward the RP, not toward the source. */
@@ -480,6 +488,10 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 	for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext)
 	    reset_upstream_router(mrt_srcs, nbr_delete);
     }
+
+    /* "NLT Expires" in the Loser state of both Assert state machines: an
+     * interface held off for a winner that is gone is loss for nothing. */
+    assert_neighbor_gone(nbr_delete->address);
 
     free(nbr_delete);
 }
@@ -2134,7 +2146,11 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
-		PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
+		/* "Receive Join(*,G) on interface I" in the Loser state of
+		 * RFC 7761 sec. 4.6.2: whoever sent it may know the winner
+		 * has died, so give the interface back and let the election
+		 * run again if it was wrong. */
+		assert_clear(mrt, vifi);
 		/* TODO: XXX: TIMER implem. dependency! */
 		if (mrt->vif_timers[vifi] < holdtime) {
 		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
@@ -2190,7 +2206,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		new_join = (PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) == 0);
 		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
-		PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
+		/* "Receive Join(S,G) on interface I", the same transition in
+		 * sec. 4.6.1. */
+		assert_clear(mrt, vifi);
 		/* TODO: XXX: TIMER implem. dependency! */
 		if (mrt->vif_timers[vifi] < holdtime) {
 		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
@@ -2786,6 +2804,266 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 #define PIM_ASSERT_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN	\
 			   + PIM_ENCODE_UNI_ADDR_LEN + 2 * sizeof(uint32_t))
 
+/* infinite_assert_metric(), RFC 7761 sec. 4.6.3: {1, infinity, infinity, 0}.
+ * The RPT bit is the top bit of the preference field, so "infinity" is the
+ * rest of it.  An Assert carrying this loses to every real metric, which is
+ * the whole of what sec. 4.6.4 needs an AssertCancel to be.
+ */
+#define PIM_ASSERT_INFINITE_PREFERENCE	(PIM_ASSERT_RPT_BIT | 0x7fffffff)
+#define PIM_ASSERT_INFINITE_METRIC	0xffffffff
+
+/*
+ * The three states of RFC 7761 sec. 4.6.1 and sec. 4.6.2, read off the
+ * per-interface winner: NoInfo has none, "I am Assert Winner" has our own
+ * address on that interface, anything else is "I am Assert Loser".
+ */
+static struct assert_state *assert_state(mrtentry_t *mrt, vifi_t vifi)
+{
+    if (!mrt || !mrt->asserts || vifi >= numvifs)
+	return NULL;
+
+    return &mrt->asserts[vifi];
+}
+
+int assert_winner_is_me(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    return as && as->winner != INADDR_ANY_N && as->winner == uvifs[vifi].uv_lcl_addr;
+}
+
+int assert_lost_on(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    return as && as->winner != INADDR_ANY_N && as->winner != uvifs[vifi].uv_lcl_addr;
+}
+
+/* Does any interface hold assert state?  MRTF_ASSERTED mirrors that, for the
+ * dumps and for the entries whose upstream came from an Assert on the iif. */
+static void assert_update_flag(mrtentry_t *mrt)
+{
+    vifi_t vifi;
+
+    mrt->flags &= ~MRTF_ASSERTED;
+    if (!mrt->asserts)
+	return;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (mrt->asserts[vifi].winner != INADDR_ANY_N) {
+	    mrt->flags |= MRTF_ASSERTED;
+	    return;
+	}
+    }
+}
+
+/* Actions A1 and A3: we sent the Assert, so we own the interface until
+ * Assert_Time, and rearm short of it to resend before the losers time out. */
+static void assert_won(mrtentry_t *mrt, vifi_t vifi, uint32_t source,
+		       uint32_t preference, uint32_t metric)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    /* Our own address is what marks the Winner state, so an interface
+     * without one cannot hold it -- storing zero there would read back as
+     * NoInfo and leave the timer running with nothing to expire. */
+    if (!as || uvifs[vifi].uv_lcl_addr == INADDR_ANY_N)
+	return;
+
+    as->winner     = uvifs[vifi].uv_lcl_addr;
+    as->preference = preference;
+    as->metric     = metric;
+    as->source     = source;
+    SET_TIMER(as->timer, PIM_ASSERT_WINNER_TIMEOUT);
+    mrt->flags |= MRTF_ASSERTED;
+}
+
+/* Actions A2 and A6: store the new winner and what it won with, and hold it
+ * for Assert_Time.  The metric is the winner's, never ours to advertise. */
+static void assert_lost(mrtentry_t *mrt, vifi_t vifi, uint32_t winner,
+			uint32_t preference, uint32_t metric)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    if (!as)
+	return;
+
+    as->winner     = winner;
+    as->preference = preference;
+    as->metric     = metric;
+    SET_TIMER(as->timer, PIM_ASSERT_TIMEOUT);
+    mrt->flags |= MRTF_ASSERTED;
+
+    IF_DEBUG(DEBUG_PIM_ASSERT)
+	logit(LOG_INFO, 0, "Assert lost on %s for group %s, winner %s",
+	      uvifs[vifi].uv_name,
+	      inet_fmt(mrt->group ? mrt->group->group : INADDR_ANY_N, s1, sizeof(s1)),
+	      inet_fmt(winner, s2, sizeof(s2)));
+}
+
+/* Actions A5: delete the assert information, i.e. back to NoInfo. */
+static void assert_noinfo(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    if (!as)
+	return;
+
+    as->winner     = INADDR_ANY_N;
+    as->preference = 0;
+    as->metric     = 0;
+    as->source     = INADDR_ANY_N;
+    RESET_TIMER(as->timer);
+    assert_update_flag(mrt);
+}
+
+/*
+ * Actions A5 on one downstream interface, plus the oif it took away.  The
+ * "Receive Join(S,G) on interface I" and "Assert Timer Expires" transitions
+ * of the Loser state both land here; sec. 4.6.1 wants the normal Join/Prune
+ * mechanisms to operate again, and in pimd that means the interface coming
+ * back out of `asserted_oifs`.
+ *
+ * Returns TRUE if the oif list has to be recomputed.
+ */
+static int assert_clear(mrtentry_t *mrt, vifi_t vifi)
+{
+    int restore;
+
+    if (!assert_state(mrt, vifi))
+	return FALSE;
+
+    /* Only the Loser state has these transitions.  A Join arriving on an
+     * interface we won is the downstream router asking for the traffic we
+     * are already forwarding there, and dropping the winner state for it
+     * would stop the resend of Actions A3 and the AssertCancel of Actions
+     * A4 that the interface still owes.
+     */
+    if (assert_winner_is_me(mrt, vifi))
+	return FALSE;
+
+    restore = PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs) != 0;
+    if (restore)
+	PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
+
+    assert_noinfo(mrt, vifi);
+
+    return restore;
+}
+
+/*
+ * Actions A4: the winner is about to stop forwarding on I, so it sends an
+ * Assert with an infinite metric -- the AssertCancel of sec. 4.6.4 -- and
+ * returns to NoInfo.  Without it the losers wait Assert_Time out before
+ * anything takes over, which is the difference between a subnet that
+ * converges in a second and one that black-holes the group for three
+ * minutes.  Item 8 of the design list at sec. 4.10 is the rationale.
+ */
+void send_pim_assert_cancel(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct assert_state *as = assert_state(mrt, vifi);
+
+    if (!as || !mrt->group)
+	return;
+
+    if (!(uvifs[vifi].uv_flags & (VIFF_DOWN | VIFF_DISABLED)))
+	assert_send(as->source, mrt->group->group, vifi,
+		    PIM_ASSERT_INFINITE_PREFERENCE, PIM_ASSERT_INFINITE_METRIC);
+
+    assert_noinfo(mrt, vifi);
+}
+
+/*
+ * The Assert Timer of sec. 4.6.1 and sec. 4.6.2, aged once per
+ * age_routes() pass: a winner resends and rearms (Actions A3), a loser
+ * returns to NoInfo and gives the interface back (Actions A5).  One timer
+ * per interface, because two LANs that assert independently expire
+ * independently.
+ *
+ * Returns TRUE if any oif came back, i.e. if the caller owes a
+ * change_interfaces().
+ */
+int age_asserts(mrtentry_t *mrt)
+{
+    int change = FALSE;
+    vifi_t vifi;
+
+    if (!mrt->asserts)
+	return FALSE;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	struct assert_state *as = &mrt->asserts[vifi];
+
+	if (as->winner == INADDR_ANY_N)
+	    continue;
+
+	IF_TIMEOUT(as->timer) {
+	    if (as->winner != uvifs[vifi].uv_lcl_addr) {
+		if (assert_clear(mrt, vifi))
+		    change = TRUE;
+		continue;
+	    }
+
+	    /* Actions A3, which is Actions A1 sent a second time. */
+	    if (!mrt->group || !send_pim_assert(as->source, mrt->group->group, vifi, mrt))
+		assert_noinfo(mrt, vifi);
+	}
+    }
+
+    return change;
+}
+
+/*
+ * "Current Winner's GenID Changes or NLT Expires" -- the Loser state of both
+ * state machines, Actions A5.  The winner's router or interface has gone
+ * down and may have come back up, so it no longer knows it won; holding the
+ * interface off for the rest of Assert_Time costs up to three minutes of
+ * complete loss for nothing.
+ */
+static void assert_forget_winner(mrtentry_t *mrt, uint32_t addr)
+{
+    int change = FALSE;
+    vifi_t vifi;
+
+    if (!mrt || !mrt->asserts)
+	return;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (mrt->asserts[vifi].winner != addr)
+	    continue;
+
+	if (assert_clear(mrt, vifi))
+	    change = TRUE;
+    }
+
+    if (change)
+	change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
+			  mrt->pruned_oifs, mrt->leaves,
+			  mrt->asserted_oifs, 0);
+}
+
+static void assert_neighbor_gone(uint32_t addr)
+{
+    grpentry_t *grp, *grp_next;
+    mrtentry_t *mrt, *mrt_next;
+
+    if (addr == INADDR_ANY_N)
+	return;
+
+    /* Every mrtentry_t is either a group's grp_route or on its mrtlink, so
+     * this pair of loops is the whole routing table.  The next pointers are
+     * saved because assert_forget_winner() ends in change_interfaces(). */
+    for (grp = grplist; grp; grp = grp_next) {
+	grp_next = grp->next;
+	assert_forget_winner(grp->grp_route, addr);
+
+	for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
+	    mrt_next = mrt->grpnext;
+	    assert_forget_winner(mrt, addr);
+	}
+    }
+}
+
 int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 {
     vifi_t vifi;
@@ -2803,6 +3081,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     uint8_t  local_wins;
     uint16_t jp_value;
     pim_nbr_entry_t *original_upstream_router;
+    struct assert_state *as;
     rpentry_t *rpentry;
 
     (void)dst;
@@ -2882,36 +3161,93 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     rpentry = rp_match(group);
     if (assert_rptbit && rpentry && source == rpentry->address) {
 	mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
-	if (mrt && !(mrt->flags & MRTF_KERNEL_CACHE)) {
-	    if (mrt->flags & MRTF_WC)
-		mrt = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	}
     } else {
 	mrt = find_route(source, group, MRTF_SG | MRTF_WC, DONT_CREATE);
-	if (mrt && !(mrt->flags & MRTF_KERNEL_CACHE)) {
-	    if (mrt->flags & MRTF_SG) {
-		mrt2 = mrt->group->grp_route;
-		if (mrt2 && (mrt2->flags & MRTF_KERNEL_CACHE))
-		    mrt = mrt2;
-		else
-		    mrt = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	    } else {
-		if (mrt->flags & MRTF_WC)
-		    mrt = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	    }
+	if (mrt && (mrt->flags & MRTF_SG) && !(mrt->flags & MRTF_KERNEL_CACHE)) {
+	    /* An (S,G) with nothing behind it yet: the (*,G) is the entry
+	     * actually forwarding the group, so the election is about it. */
+	    mrt2 = mrt->group->grp_route;
+	    if (mrt2 && (mrt2->flags & MRTF_KERNEL_CACHE))
+		mrt = mrt2;
 	}
     }
 
-    if (!mrt || !(mrt->flags & MRTF_KERNEL_CACHE)) {
-	/* No routing entry or not "active" entry. Ignore the assert */
+    if (!mrt)
+	return FALSE;
+
+    /*
+     * RFC 7761 sec. 4.6.1 keys the NoInfo-to-Loser transition on
+     * AssertTrackingDesired(S,G,I), which is join state, local membership or
+     * the interface being upstream -- it says nothing about traffic.  pimd
+     * used to require MRTF_KERNEL_CACHE here, and that cache is torn down
+     * the moment the oif list empties, which is exactly what losing an
+     * assert does: the loser was then deaf to every later Assert on the
+     * interface, its winner's resend and the AssertCancel of sec. 4.6.4
+     * included, and could only leave the Loser state when its own timer ran
+     * out.  Ask whether the interface interests us, which is the question
+     * the spec asks.
+     */
+    if (!(mrt->flags & MRTF_KERNEL_CACHE) &&
+	vifi != mrt->incoming &&
+	!PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) &&
+	!PIMD_VIFM_ISSET(vifi, mrt->leaves) &&
+	!PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs)) {
+	/* Nothing here cares about this interface. Ignore the assert */
 	return FALSE;
     }
 
     /* Prepare the local preference and metric, RPT bit included */
     my_assert_metric(mrt, &local_preference, &local_metric);
 
-    if (PIMD_VIFM_ISSET(vifi, mrt->oifs)) {
+    /* An interface we lost an Assert on is no longer in `oifs` -- that is
+     * what losing does -- so testing `oifs` alone made every later Assert on
+     * it unreachable, the AssertCancel of RFC 7761 sec. 4.6.4 included, and
+     * left the Loser state with no transition out of it but its own timer.
+     * The interface is still downstream while we hold assert state for it.
+     */
+    if (PIMD_VIFM_ISSET(vifi, mrt->oifs) ||
+	(vifi != mrt->incoming && assert_lost_on(mrt, vifi))) {
 	/* The ASSERT has arrived on oif */
+	as = assert_state(mrt, vifi);
+
+	if (as && assert_lost_on(mrt, vifi)) {
+	    /* "I am Assert Loser", sec. 4.6.1 and sec. 4.6.2.  Only the
+	     * current winner can take us out of it, and a preferred Assert
+	     * from anyone can replace it.
+	     */
+	    if (src == as->winner) {
+		/* Inferior to our own metric, an AssertCancel included:
+		 * back to NoInfo and let Join/Prune operate again. */
+		if (compare_metrics(local_preference, local_metric, v->uv_lcl_addr,
+				    assert_preference, assert_metric, src) == TRUE) {
+		    IF_DEBUG(DEBUG_PIM_ASSERT)
+			logit(LOG_INFO, 0, "Assert winner %s on %s gave up %s, resuming",
+			      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+			      inet_fmt(group, s2, sizeof(s2)));
+
+		    if (assert_clear(mrt, vifi))
+			change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
+					  mrt->pruned_oifs, mrt->leaves,
+					  mrt->asserted_oifs, 0);
+
+		    return TRUE;
+		}
+
+		/* Acceptable Assert from the current winner: Actions A2, it
+		 * keeps the interface and refreshes the timer. */
+		assert_lost(mrt, vifi, src, assert_preference, assert_metric);
+
+		return TRUE;
+	    }
+
+	    /* From anyone else, only an Assert better than the one the
+	     * winner holds changes anything: Actions A2 again. */
+	    if (compare_metrics(as->preference, as->metric, as->winner,
+				assert_preference, assert_metric, src) == FALSE)
+		assert_lost(mrt, vifi, src, assert_preference, assert_metric);
+
+	    return TRUE;
+	}
 
 	/* TODO: XXX: here the processing order is different from the spec.
 	 * The spec requires first eventually to create a routing entry
@@ -2985,11 +3321,12 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    mrt = mrt2;
 	}
 
-	/* Have to remove that outgoing vifi from mrt */
+	/* Actions A6: "I am Assert Loser" on this interface.  The interface
+	 * leaves the olist with it, which is lost_assert(S,G,I) of
+	 * sec. 4.6.5 as pimd spells it.
+	 */
 	PIMD_VIFM_SET(vifi, mrt->asserted_oifs);
-	mrt->flags |= MRTF_ASSERTED;
-	if (mrt->assert_timer < PIM_ASSERT_TIMEOUT)
-	    SET_TIMER(mrt->assert_timer, PIM_ASSERT_TIMEOUT);
+	assert_lost(mrt, vifi, src, assert_preference, assert_metric);
 
 	/* TODO: XXX: check that the timer of all affected routing entries
 	 * has been restarted.
@@ -3018,13 +3355,14 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (mrt->upstream == NULL)
 	    return FALSE;
 
-	if (mrt->assert_winner == mrt->upstream->address) {
+	as = assert_state(mrt, vifi);
+	if (as && as->winner == mrt->upstream->address) {
 	    /* Already lost this interface, so the assert to beat is the
 	     * winner's, per the Loser state of RFC 7761 sec. 4.6.1, not a
 	     * metric of our own.
 	     */
-	    local_preference = mrt->assert_winner_preference;
-	    local_metric     = mrt->assert_winner_metric;
+	    local_preference = as->preference;
+	    local_metric     = as->metric;
 	} else {
 	    my_assert_metric(mrt, &local_preference, &local_metric);
 	}
@@ -3043,9 +3381,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	 * ours on every other interface, where it beat routers that really
 	 * are closer to the source.
 	 */
-	mrt->assert_winner_preference = assert_preference;
-	mrt->assert_winner_metric     = assert_metric;
-	mrt->assert_winner            = src;
+	assert_lost(mrt, vifi, src, assert_preference, assert_metric);
 	mrt->upstream = find_pim_nbr(src);
 
 	/* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If the
@@ -3067,14 +3403,10 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 		original_upstream_router = mrt->source->upstream;
 	}
 
-	if (mrt->upstream != original_upstream_router) {
-	    mrt->flags |= MRTF_ASSERTED;
-	    SET_TIMER(mrt->assert_timer, PIM_ASSERT_TIMEOUT);
-	} else {
+	if (mrt->upstream == original_upstream_router) {
 	    /* Back on the upstream the routing table names, so there is no
 	     * winner to keep a metric for. */
-	    mrt->assert_winner = INADDR_ANY_N;
-	    mrt->flags &= ~MRTF_ASSERTED;
+	    assert_noinfo(mrt, vifi);
 	}
     }
 
@@ -3082,61 +3414,59 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 }
 
 
-int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mrt)
+/* The wire half, shared by an Assert and the AssertCancel that is one with
+ * an infinite metric, sec. 4.6.4. */
+static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
+		       uint32_t preference, uint32_t metric)
 {
     uint8_t *data;
     uint8_t *data_start;
-    uint32_t local_preference;
-    uint32_t local_metric;
-    srcentry_t *srcentry __attribute__((unused));
 
     /* Don't send assert if the outgoing interface a tunnel or register vif */
     /* TODO: XXX: in the code above asserts are accepted over VIFF_TUNNEL.
      * Check if anything can go wrong if asserts are accepted and/or
      * sent over VIFF_TUNNEL.
      */
-    if (uvifs[vifi].uv_flags & (VIFF_REGISTER | VIFF_TUNNEL))
+    if (vifi >= numvifs || (uvifs[vifi].uv_flags & (VIFF_REGISTER | VIFF_TUNNEL)))
 	return FALSE;
 
     data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
     data_start = data;
     PUT_EGADDR(group, SINGLE_GRP_MSKLEN, 0, data);
     PUT_EUADDR(source, data);
-
-    /* TODO: XXX: where to get the metric from: srcentry or mrt
-     * or from the kernel?
-     */
-    if (mrt->flags & MRTF_RP) {
-	/* (*,G) or (S,G)RPbit (iif toward RP) */
-	srcentry = mrt->group->active_rp_grp->rp->rpentry;
-	/* TODO:
-	   set_incoming(srcentry, PIM_IIF_RP);
-	*/
-    } else {
-	/* (S,G) toward S */
-	srcentry = mrt->source;
-	/* TODO:
-	   set_incoming(srcentry, PIM_IIF_SOURCE);
-	*/
-    }
-
-    /* TODO: check again!
-       local_metric = srcentry->metric;
-       local_preference = srcentry->preference;
-    */
-    my_assert_metric(mrt, &local_preference, &local_metric);
-
-    PUT_HOSTLONG(local_preference, data);
-    PUT_HOSTLONG(local_metric, data);
+    PUT_HOSTLONG(preference, data);
+    PUT_HOSTLONG(metric, data);
 
     IF_DEBUG(DEBUG_PIM_ASSERT)
-	logit(LOG_INFO, 0, "Send PIM ASSERT from %s for group %s and source %s",
+	logit(LOG_INFO, 0, "Send PIM ASSERT%s from %s for group %s and source %s",
+	      metric == PIM_ASSERT_INFINITE_METRIC ? " CANCEL" : "",
 	      inet_fmt(uvifs[vifi].uv_lcl_addr, s1, sizeof(s1)),
 	      inet_fmt(group, s2, sizeof(s2)),
 	      inet_fmt(source, s3, sizeof(s3)));
 
     send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
 	     PIM_ASSERT, data - data_start);
+
+    return TRUE;
+}
+
+/*
+ * Actions A1 of RFC 7761 sec. 4.6.1 and sec. 4.6.2, and Actions A3, which
+ * is the same message sent again: whoever sends an Assert on an interface
+ * claims it, so record ourselves as the winner there and arm the timer that
+ * makes us resend before the losers give the interface back.
+ */
+int send_pim_assert(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mrt)
+{
+    uint32_t local_preference;
+    uint32_t local_metric;
+
+    my_assert_metric(mrt, &local_preference, &local_metric);
+
+    if (!assert_send(source, group, vifi, local_preference, local_metric))
+	return FALSE;
+
+    assert_won(mrt, vifi, source, local_preference, local_metric);
 
     return TRUE;
 }

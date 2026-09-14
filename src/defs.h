@@ -563,6 +563,10 @@ extern int	receive_pim_join_prune	(uint32_t src, uint32_t dst, char *msg, size_t
 extern int	join_or_prune		(mrtentry_t *mrtentry_ptr, pim_nbr_entry_t *upstream_router);
 extern int	receive_pim_assert	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_assert		(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mrtentry_ptr);
+extern void	send_pim_assert_cancel	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern int	assert_winner_is_me	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern int	assert_lost_on		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern int	age_asserts		(mrtentry_t *mrtentry_ptr);
 extern void     send_pim_join           (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern void     send_pim_prune          (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern int	send_periodic_pim_join_prune (vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t holdtime);

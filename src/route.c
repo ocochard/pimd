@@ -556,7 +556,7 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
     different_iif      = !rp || mrt->source->incoming != rp->incoming;
     no_rpt_olist       = !mwc;
     same_rpf_nbr       = mwc && mrt->upstream && mrt->upstream == mwc->upstream;
-    assert_loser       = mrt->assert_winner != INADDR_ANY_N;
+    assert_loser       = assert_lost_on(mrt, iif);
 
     if (directly_connected || different_iif || no_rpt_olist || same_rpf_nbr || assert_loser) {
 	mrt->flags |= MRTF_SPT;
@@ -790,6 +790,7 @@ int change_interfaces(mrtentry_t *mrt,
     uint8_t new_real_oifs[MAXVIFS];    /* The result oifs */
     uint8_t old_real_oifs[MAXVIFS];
     vifi_t      old_iif;
+    vifi_t      vifi;
     rpentry_t   *rp;
     cand_rp_t   *cand_rp;
     kernel_cache_t *kc;
@@ -853,6 +854,19 @@ int change_interfaces(mrtentry_t *mrt,
 	FIRE_TIMER(mrt->jp_timer);
     }
     PIMD_VIFM_COPY(new_real_oifs, mrt->oifs);
+
+    /* "CouldAssert(S,G,I) -> FALSE" in the Winner state of RFC 7761
+     * sec. 4.6.1 and sec. 4.6.2: an interface we won an Assert on and no
+     * longer forward to gets an AssertCancel, so whoever we beat takes over
+     * now instead of at Assert_Time.
+     */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (!assert_winner_is_me(mrt, vifi))
+	    continue;
+
+	if (!PIMD_VIFM_ISSET(vifi, new_real_oifs))
+	    send_pim_assert_cancel(mrt, vifi);
+    }
 
     if (mrt->flags & MRTF_WC) {
 	/* (*,G) entry */
@@ -1491,7 +1505,6 @@ void age_routes(void)
     rpentry_t *rp;
     int update_src_iif;
     uint8_t new_pruned_oifs[MAXVIFS];
-    int assert_timer_expired = 0;
     uint8_t ucast_flag = FALSE;
     uint8_t rate_flag = FALSE;
 
@@ -1555,10 +1568,7 @@ void age_routes(void)
 		if (mrt_grp) {
 		    /* The (*,G) entry */
 		    /* outgoing interfaces timers */
-		    change_flag = FALSE;
-		    assert_timer_expired = 0;
-		    if (mrt_grp->flags & MRTF_ASSERTED)
-			assert_timer_expired = TIMEOUT(mrt_grp->assert_timer);
+		    change_flag = age_asserts(mrt_grp);
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_grp->joined_oifs)) {
@@ -1566,13 +1576,6 @@ void age_routes(void)
 				PIMD_VIFM_CLR(vifi, mrt_grp->joined_oifs);
 				change_flag = TRUE;
 			    }
-			}
-
-			if (assert_timer_expired) {
-			    PIMD_VIFM_CLR(vifi, mrt_grp->asserted_oifs);
-			    change_flag = TRUE;
-			    mrt_grp->assert_winner = INADDR_ANY_N;
-			    mrt_grp->flags &= ~MRTF_ASSERTED;
 			}
 		    }
 
@@ -1648,10 +1651,7 @@ void age_routes(void)
 		    mrt_srcs_next = mrt_srcs->grpnext;
 
 		    /* outgoing interfaces timers */
-		    change_flag = FALSE;
-		    assert_timer_expired = 0;
-		    if (mrt_srcs->flags & MRTF_ASSERTED)
-			assert_timer_expired = TIMEOUT(mrt_srcs->assert_timer);
+		    change_flag = age_asserts(mrt_srcs);
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {
@@ -1662,13 +1662,6 @@ void age_routes(void)
 				    change_flag = TRUE;
 				}
 			    }
-			}
-
-			if (assert_timer_expired) {
-			    PIMD_VIFM_CLR(vifi, mrt_srcs->asserted_oifs);
-			    change_flag = TRUE;
-			    mrt_srcs->assert_winner = INADDR_ANY_N;
-			    mrt_srcs->flags &= ~MRTF_ASSERTED;
 			}
 		    }
 

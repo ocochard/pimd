@@ -30,15 +30,16 @@ confirmed to be intentional, move it to the last section with the reason.
 
 A deviation that a test reproduces should be asserted through `xfail()`, in
 `test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
-unasserted, so that it flips to `ok` the day it is fixed.  The assert RPT-bit
-entry of 4.6.1 was carried that way and is now fixed; `shared-lan-spt` still
-holds the assertion, as a tripwire against its coming back.  So is the SPTbit
-entry of 4.2.2, which `assert-lan` keeps for the same reason.
+unasserted, so that it flips to `ok` the day it is fixed.  Three are carried
+that way and all three now report `ok`, so they stay as tripwires against the
+deviation coming back: the assert RPT-bit entry of 4.6.1 in `shared-lan-spt`,
+the SPTbit entry of 4.2.2 in `assert-lan`, and the assert winner state of
+4.6.1 and 4.6.2, which `assert-lan` asserts from both sides.
 
 Every entry therefore ends with a `Test:` note saying what reproduces it, and
 most of them say `none` -- the point of writing it down is that the gap is
-visible from this list rather than only from grepping the labs.  M3 is the one
-carried as a live `xfail()` today.  Where an entry names a scenario without
+visible from this list rather than only from grepping the labs.  Nothing here
+is carried as a live `xfail()` today.  Where an entry names a scenario without
 asserting anything, it is because that scenario builds the topology the
 deviation needs and stops short of the assertion; those are the cheap ones to
 close.  Several are not blackbox-testable at all, and say so: a five-second
@@ -78,6 +79,17 @@ pimd does not keep.
 
 State machines pimd does not have
 ---------------------------------
+
+Two entries this section held are fixed.  M3, the assert winner state, and
+M5, the kernel cache an assert used to be gated on, went together: the
+assert state is now per interface -- winner address, winner metric and
+Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
+(`src/mrt.h`), with Actions A1 to A6 in `src/pim_proto.c` -- so the winner
+resends before the losers time out, an AssertCancel is both sent and acted
+on, and a dead winner is forgotten at its GenID or its Neighbor Liveness
+Timer instead of at `Assert_Time`.  What is left around them is M4 below,
+the metric they carry, and M11, the fact that there is one machine where
+sec. 4.6 defines two.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
@@ -133,37 +145,6 @@ becomes visible: the Arista advertises the LAN Prune Delay option pimd neither
 sends nor parses, so those values are already on that wire waiting to be
 asserted on.*
 
-**M3.  No assert winner state, except on the incoming interface.**  Sec. 4.6.1
-and 4.6.2 keep, per (S,G,I) and (\*,G,I), the winner's address and metric and an
-Assert Timer.  pimd keeps one `assert_timer` per entry, an `asserted_oifs`
-bitmap that only records losing, and -- since the F15 fix -- the address and
-metric of the winner on the incoming interface alone (`assert_winner` and
-friends in `src/mrt.h`), which is what the Loser state compares a further
-Assert against.  Nothing is kept per outgoing interface.  Five requirements
-fall out of that.  The winner never
-arms `Assert_Time - Assert_Override_Interval` and never resends, so a conformant
-loser restores its oif at 180 seconds and the LAN duplicates traffic until the
-next wrong-iif upcall, once per 180 seconds for the life of the flow
-(`src/pim_proto.c:2677-2681`, `:2726-2730`).  AssertCancel is never sent, because
-`my_assert_metric()` has no infinite-metric path and nothing calls
-`send_pim_assert()` when forwarding state is torn down.  A received AssertCancel,
-or any later assert on an interface pimd has already lost on, is ignored, since
-all downstream processing is gated on the interface still being in `mrt->oifs`
-(`src/pim_proto.c:2660`) and losing removes it.  The loser does not clear its
-state when the winner's GenID changes or its liveness timer expires
-(`src/pim_proto.c:134-137`, `src/vif.c:812-815`), so a crashed winner costs up to
-180 seconds of complete loss.  And the single per-entry timer means asserts lost
-on two LANs share one expiry, extending one and resetting the other.
-*Check: sec. 4.6.1, `doc/rfc7761.txt:4279`, and sec. 4.6.2, `:4725`, for the
-per-interface state; the winner's timer is `doc/rfc7761.txt:4687` and `:5138`,
-AssertCancel is sec. 4.6.4, `:5245`, and the winner-resend rationale is item 9
-of the design list at `:5439`.  Effort: medium, and it is one piece of work
-rather than five.  Test: `assert-lan` in `test/freebsd-interop.sh`, both halves,
-through `xfail()`.  Case 5 feeds pimd an AssertCancel from the Arista and case 6
-makes pimd the winner and watches the Arista resume at `Assert_Time`.  Neither
-is reachable from a pimd-only lab, because pimd never sends either message and
-nothing would put one on the wire.*
-
 **M4.  Assert metrics are configured constants, not MRIB metrics.**  Sec. 4.6.3
 and sec. 4.9.6 both say the metric preference and metric are the unicast
 routing protocol's.  `set_incoming()` assigns the per-interface
@@ -186,22 +167,6 @@ metrics, so that LAN is the only place pimd's constants are ever compared
 against anything else, and its sub-cases drive the election by each field of
 sec. 4.6.3 in turn.  Asserting the deviation itself needs pimd's advertised
 metric to follow a route change, which needs a routing daemon in the lab.*
-
-**M5.  An assert is ignored unless the entry already has a kernel cache.**
-Sec. 4.6.1 keys the NoInfo-to-Loser transition on `AssertTrackingDesired`, which
-is true from join or local-membership state alone.  `src/pim_proto.c:2652-2655`
-requires `MRTF_KERNEL_CACHE`, which is set only when data has arrived and is torn
-down whenever the oif list empties.  A downstream router with join state but no
-traffic — which is the state it is in right after an assert resolves and the
-loser's traffic stops — ignores the election and keeps sending its Joins to the
-loser, so nothing joins the winner and the traffic that would rebuild the cache
-never arrives.
-*Check: sec. 4.6.1, `doc/rfc7761.txt:4431` for `AssertTrackingDesired(S,G,I)`
-and `:4518` for the NoInfo transition keyed on it.  Effort: medium.  Test:
-none.  `assert-lan` in `test/freebsd-interop.sh` is the nearest topology, and
-its R5 is already a downstream router with join state; provoking this
-deterministically means stopping the winner's traffic without stopping the
-joins.*
 
 **M6.  No secondary address list.**  Sec. 4.3.4 requires the Address List option
 whenever an interface has secondary addresses, so that neighbors can map an MRIB
@@ -264,6 +229,30 @@ a burst of duplicate traffic on the shared tree once per period, every period.
 and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
 group with more than about 65 pruned sources, which no scenario builds.*
 
+**M11.  One assert state machine where sec. 4.6 defines two.**  Sec. 4.6.1
+and sec. 4.6.2 are separate machines, an (S,G) one and a (\*,G) one, run in
+that order: no transition may occur in the (\*,G) machine unless the (S,G)
+machine is in NoInfo both before and after the message, and none at all if
+the message moved the (S,G) machine.  `receive_pim_assert()` picks one
+entry instead -- the longest match, preferring one with a kernel cache
+(`src/pim_proto.c`) -- and runs a single election on it, so a router holding
+both (S,G) and (\*,G) state for a group can keep assert state for only one
+of them per interface.  Where the two machines would disagree, which is the
+case sec. 4.6.2 spells out at length, pimd answers with whichever entry the
+lookup happened to return.  The same merge is why `lost_assert(S,G,I)` is a
+plain bit in `asserted_oifs` rather than the sec. 4.6.5 test, which also
+asks whether the winner's metric beats `spt_assert_metric(S,I)` -- the term
+that exists for a router with (S,G) join state that has not set SPTbit yet.
+*Check: sec. 4.6.2, `doc/rfc7761.txt:4753` for the order the two are run in
+and `:4767` for the rule that keeps the (\*,G) one out of it, with the two
+worked examples at `:4778`; `lost_assert(S,G,I)` is sec. 4.6.5, `:5294`, and
+the Note at `:5305` says what the metric term is for.  Effort:
+medium; the per-interface state is in place, it is the second copy of it on
+the (\*,G) and the ordering between them that is missing.  Test: none.
+`assert-lan` in `test/freebsd-interop.sh` is the topology -- R3 holds both
+an (S,G) and a (\*,G) for the contended group there -- and its `rpt-bit`
+and `tiebreak` sub-cases already move R3 between the two.*
+
 
 Timers
 ------
@@ -288,7 +277,7 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | Override\_Interval | 2.5 s | not tracked, not advertised | M2 |
 | J/P\_Override\_Interval (PPT) | 3 s | `holdtime/3`, 70 s | M2 |
 | Assert\_Time | 180 s | `PIM_ASSERT_TIMEOUT` 180 s | ok |
-| Assert\_Override\_Interval | 3 s | no winner-side timer | M3 |
+| Assert\_Override\_Interval | 3 s | 5 s, the TIMER\_INTERVAL floor | minor |
 | Register\_Suppression\_Time | 60 s | 60 s | ok |
 | Register\_Probe\_Time | 5 s | 5 s | ok |
 | RST(S,G) | 25–85 s | 30–90 s, the probe-time term omitted | minor |
@@ -297,7 +286,13 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 
 `TIMER_INTERVAL` is 5 seconds and `SET_TIMER`/`IF_TIMEOUT` count whole seconds,
 so no sub-5-second spec value is representable today.  That is the real cost
-behind T1 and M8.
+behind T1 and M8, and behind the one minor assert row: the winner's timer is
+`PIM_ASSERT_WINNER_TIMEOUT`, `Assert_Time - Assert_Override_Interval` rounded
+down to whole ticks, so 175 s rather than 177 s.  A timer only ever expires on
+a tick, and 177 and 180 reach zero on the same one, which would have the
+resend race the refresh it exists to deliver.  The effect is a 5-second
+override interval where the spec asks for 3, which is the direction that is
+safe.
 
 **T1.  `t_override` is RFC 2362's constant, quantized away.**
 `PIM_RANDOM_DELAY_JOIN_TIMEOUT` is 4.5 (`src/pimd.h:65`), which is RFC 2362's

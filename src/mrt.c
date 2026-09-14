@@ -436,9 +436,20 @@ void delete_mrtentry(mrtentry_t *mrt)
     grpentry_t *grp;
     mrtentry_t *mrt_wc;
     mrtentry_t *mrt_rp;
+    vifi_t vifi;
 
     if (!mrt)
 	return;
+
+    /* An entry going away stops forwarding on every interface at once, so
+     * every Assert it won is one it owes an AssertCancel, RFC 7761
+     * sec. 4.6.4.  change_interfaces() has already sent the cancels for the
+     * interfaces it emptied, and those are back in NoInfo by now.
+     */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (assert_winner_is_me(mrt, vifi))
+	    send_pim_assert_cancel(mrt, vifi);
+    }
 
     /* Delete the kernel cache first */
     if (mrt->flags & MRTF_KERNEL_CACHE)
@@ -769,13 +780,15 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
 #ifdef SAVE_MEMORY
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * numvifs);
     mrt->vif_deletion_delay = calloc(1, sizeof(uint16_t) * numvifs);
+    mrt->asserts	    = calloc(numvifs, sizeof(mrt->asserts[0]));
     vif_numbers = numvifs;
 #else
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * total_interfaces);
     mrt->vif_deletion_delay = calloc(1, sizeof(uint16_t) * total_interfaces);
+    mrt->asserts	    = calloc(total_interfaces, sizeof(mrt->asserts[0]));
     vif_numbers = total_interfaces;
 #endif /* SAVE_MEMORY */
-    if (!mrt->vif_timers || !mrt->vif_deletion_delay) {
+    if (!mrt->vif_timers || !mrt->vif_deletion_delay || !mrt->asserts) {
 	logit(LOG_WARNING, 0, "alloc_mrtentry(): out of memory");
 	FREE_MRTENTRY(mrt);
 	return NULL;
@@ -792,8 +805,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     RESET_TIMER(mrt->entry_timer);
     RESET_TIMER(mrt->jp_timer);
     RESET_TIMER(mrt->rs_timer);
-    RESET_TIMER(mrt->assert_timer);
-    RESET_TIMER(mrt->assert_rate_timer);
     mrt->kernel_cache = NULL;
 
     return mrt;

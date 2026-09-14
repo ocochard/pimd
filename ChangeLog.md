@@ -104,6 +104,28 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Keep the PIM assert state per interface, the way RFC 7761 sections 4.6.1
+  and 4.6.2 define it, instead of one winner and one timer for a whole
+  routing entry.  Five gaps close with it.  The winner now arms its Assert
+  Timer at `Assert_Time - Assert_Override_Interval` and resends, so a
+  conformant loser is refreshed rather than restoring its interface every
+  180 seconds and flooding the LAN with duplicates until the next
+  election.  A winner that stops forwarding on an interface sends the
+  AssertCancel of section 4.6.4, so the LAN converges at once instead of
+  waiting `Assert_Time` out.  A loser acts on later asserts on that
+  interface, an AssertCancel included; before, losing removed the
+  interface from the outgoing list and every further assert on it was
+  dropped.  A loser also returns to NoInfo when the winner's GenID changes
+  or its Neighbor Liveness Timer expires, instead of holding the interface
+  off for up to three minutes after the winner has gone.  And asserts lost
+  on two LANs no longer share one expiry
+- Evaluate a received assert against the join and membership state of the
+  interface, which is the `AssertTrackingDesired(S,G,I)` of RFC 7761
+  section 4.6.1, rather than requiring the entry to hold a kernel cache.
+  That cache is torn down as soon as the outgoing interface list empties,
+  which is what losing an assert does, so a router with join state but no
+  traffic of its own ignored the election it had just lost and kept
+  sending its Joins to the loser
 - Reject an `altnet` or `scoped` masklen above 32 in `pimd.conf` instead
   of shifting by it.  `VAL_TO_MASK()` shifts by `32 - masklen`, so a
   larger value shifted by a number no 32-bit type has, which is undefined

@@ -138,7 +138,11 @@
 #               learned through it; all four sub-cases of the election,
 #               including rpt-bit, the one that wants pimd held off the
 #               SPT, where the Arista must win on the RPT bit despite pimd
-#               holding the better preference; and M3 as a known deviation.
+#               holding the better preference; and the two halves of the
+#               assert state machine no pimd-only lab can reach, a received
+#               AssertCancel and the winner's resend at Assert_Time -
+#               Assert_Override_Interval.  Those two were deviation M3 and
+#               are fixed; their reports stay as tripwires.
 #
 #               Takes about 12 minutes, most of it the last sub-case,
 #               which has to outlive Assert_Time (180s).
@@ -682,10 +686,10 @@ restore_mcast_loop() {
 # state, R3 asserts from (*,G) with the RPT bit set, loses, and has its
 # only oif removed -- after which update_sptbit() (src/route.c:532)
 # returns early on an empty calc_oifs() and SPTbit is never set at all.
-# That is deviation M3 again, and it left the metric sub-cases passing or
-# failing on which message arrived first.  A sub-case about
-# metric_preference must not be decided by a deviation in the assert
-# state machine.
+# Nothing then changes on either side, so nothing re-runs the election,
+# and the metric sub-cases passed or failed on which message arrived
+# first.  A sub-case about metric_preference must not be decided by the
+# order two packets happened to land in.
 write_case_confs() {
 	case $1 in
 	pimd-wins)   pref=$AL_PREF_BETTER; spt="spt-threshold packets 0 interval 10" ;;
@@ -1624,7 +1628,7 @@ check_pimd_rp() {
 # al_eos_fwd and al_pimd_asserted.  Returns non-zero if no election
 # settled, having said why.
 #
-# Split out from assert_case() because the two M3 cases need the same
+# Split out from assert_case() because the two state machine cases need the same
 # setup and then measure something else entirely.  Calling assert_case()
 # for its side effects and discarding its output, which is what they used
 # to do, hid any failure it reported: the message went to /dev/null while
@@ -1927,7 +1931,7 @@ check_assert_lan() {
 		[ "$FAILED" -eq 0 ] || return 1
 	done
 
-	# The two M3 cases, which need an assert pimd has *lost* to work
+	# The two state machine cases, which need an assert pimd has *lost* to work
 	# from, so they run last and reuse the state the tiebreak left.
 	check_assert_cancel
 	check_assert_no_resend
@@ -1935,19 +1939,23 @@ check_assert_lan() {
 	return $((FAILED > 0))
 }
 
-# M3, first half: pimd ignores an AssertCancel.
+# The AssertCancel of sec. 4.6.4, received.
 #
 # Sec. 4.6.4 has the winner send an Assert with an infinite metric when it
 # stops forwarding, so the losers return to NoInfo at once instead of
-# waiting out Assert_Time.  pimd never sends one -- my_assert_metric() has
-# no infinite-metric path -- so between two pimds its receive path for one
-# has never had an input in any test.  EOS does send it, which is what
+# waiting out Assert_Time.  pimd now sends one too
+# (send_pim_assert_cancel(), src/pim_proto.c), but between two pimds an
+# assert only ever resolves one way, so a *received* cancel still has no
+# other source than a foreign implementation.  EOS sends it, which is what
 # makes this reachable here at all.
 #
-# doc/rfc7761-compliance.md M3: pimd gates all downstream assert
-# processing on the interface still being in mrt->oifs
-# (src/pim_proto.c:2660), and losing removed it, so the cancel cannot be
-# acted on.  Expected to report KNOWN until that is fixed.
+# This was the first half of deviation M3: pimd gated all downstream assert
+# processing on the interface still being in mrt->oifs, and losing removed
+# it, so the cancel could not be acted on.  The Loser state of sec. 4.6.1
+# now has its own transitions (src/pim_proto.c:3203), and a loser is no
+# longer required to hold a kernel cache to hear an assert at all
+# (src/pim_proto.c:3185), which was the gate behind it.  The report stays
+# as the tripwire for both.
 check_assert_cancel() {
 	print "5. An AssertCancel from the Arista (RFC 7761 4.6.4)"
 
@@ -1982,21 +1990,23 @@ check_assert_cancel() {
 	if [ -n "$al_pimd_fwd" ] && [ -z "$al_pimd_asserted" ]; then
 		ok "pimd returned to forwarding after the AssertCancel"
 	else
-		xfail "pimd ignored the AssertCancel and stayed off the LAN (M3, src/pim_proto.c:2660)"
+		xfail "pimd ignored the AssertCancel and stayed off the LAN (M3 is back, src/pim_proto.c:3203)"
 	fi
 
 	kill "$sender" "$receiver" "$joiner6" 2>/dev/null
 	wait "$sender" "$receiver" "$joiner6" 2>/dev/null
 }
 
-# M3, second half: pimd wins and never resends.
+# The winner's resend of sec. 4.6.1 Actions A3.
 #
 # Sec. 4.6.1 has the winner rearm at Assert_Time - Assert_Override_Interval
 # and resend, so a conformant loser is refreshed before its own timer
-# expires.  pimd arms nothing (src/pim_proto.c:2677-2681), so at
-# Assert_Time the Arista returns to NoInfo and starts forwarding again,
-# and the LAN carries every packet twice until pimd notices the duplicate
-# on the wrong interface and asserts afresh.
+# expires.  This was the second half of deviation M3: pimd armed nothing,
+# so at Assert_Time the Arista returned to NoInfo and started forwarding
+# again, and the LAN carried every packet twice until pimd noticed the
+# duplicate on the wrong interface and asserted afresh.  assert_won()
+# (src/pim_proto.c:2874) arms PIM_ASSERT_WINNER_TIMEOUT now and
+# age_asserts() resends on it; the report stays as the tripwire.
 #
 # That last part is why this has to be sampled continuously rather than
 # once at the end.  The re-election is quick -- one data packet on the
@@ -2023,7 +2033,7 @@ check_assert_no_resend() {
 	# With M10 fixed it runs, and the guard stays for the day pimd cannot
 	# win here again.
 	if ! establish_election pimd-wins; then
-		xfail "pimd could not be made the assert winner here, so the winner-resend half of M3 is untested"
+		xfail "pimd could not be made the assert winner here, so the winner resend of sec. 4.6.1 is untested"
 		return
 	fi
 	if [ -z "$al_pimd_fwd" ] || [ -n "$al_eos_fwd" ]; then
@@ -2058,7 +2068,7 @@ check_assert_no_resend() {
 	elif [ -z "$resumed" ]; then
 		ok "the Arista never resumed in ${AL_ASSERT_TIME}s+, and still holds $GROUP"
 	else
-		xfail "the Arista resumed forwarding before Assert_Time was out, pimd never resent its Assert (M3, src/pim_proto.c:2677)"
+		xfail "the Arista resumed forwarding before Assert_Time was out, pimd never resent its Assert (M3 is back, src/pim_proto.c:2874)"
 	fi
 
 	kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null

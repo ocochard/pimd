@@ -67,6 +67,8 @@
 	    free((mrtentry_ptr)->vif_timers);			\
 	if ((mrtentry_ptr)->vif_deletion_delay)			\
 	    free((mrtentry_ptr)->vif_deletion_delay);		\
+	if ((mrtentry_ptr)->asserts)			\
+	    free((mrtentry_ptr)->asserts);			\
 	curr = (mrtentry_ptr)->kernel_cache;			\
 	while (curr) {						\
 	    next = curr->next;					\
@@ -182,6 +184,27 @@ typedef struct grpentry {
     struct mrtentry	*grp_route;    /* Pointer to the (*,G) routing entry*/
 } grpentry_t;
 
+/*
+ * RFC 7761 sec. 4.6.1 and sec. 4.6.2 keep one Assert state machine per
+ * (S,G,I) and per (*,G,I): who won on that interface, the metric it won
+ * with, and an Assert Timer.  The three states are read off `winner`:
+ * NoInfo is INADDR_ANY_N, "I am Assert Winner" is our own address on I,
+ * anything else is "I am Assert Loser".
+ *
+ * `source` is the address the Assert we sent named, so that the resend of
+ * sec. 4.6.1 Actions A3 and the AssertCancel of Actions A4 repeat it.  An
+ * Assert off a (*,G) entry names the source whose data raised it, with the
+ * RPT bit set, which is what my_assert_metric() returns for an entry that
+ * is not on the shortest path tree.
+ */
+struct assert_state {
+    uint32_t		 winner;	/* AssertWinner(S,G,I), 0 = NoInfo  */
+    uint32_t		 preference;	/* AssertWinnerMetric(S,G,I), with  */
+    uint32_t		 metric;	/*   the RPT bit in the preference  */
+    uint32_t		 source;	/* Source our own Assert named	    */
+    uint16_t		 timer;		/* AT(S,G,I) / AT(*,G,I)	    */
+};
+
 typedef struct mrtentry {
     struct mrtentry	  *grpnext;	/* next entry of same group	    */
     struct mrtentry	  *grpprev;	/* prev entry of same group	    */
@@ -202,15 +225,13 @@ typedef struct mrtentry {
 					 */
     uint32_t		 metric;	/* Routing Metric for this entry    */
     uint32_t		 preference;	/* The metric preference value	    */
-    uint32_t		 assert_winner;	/* Assert winner on the iif, or 0.
-					 * Its metric is what a further
-					 * Assert on the iif is compared
-					 * against, and is not ours to
-					 * advertise -- see RFC 7761
+    struct assert_state	*asserts;	/* One per vif, like vif_timers.
+					 * The winner's metric is what a
+					 * further Assert on that interface
+					 * is compared against, and is not
+					 * ours to advertise -- see RFC 7761
 					 * sec. 4.6.3.
 					 */
-    uint32_t		 assert_winner_preference;
-    uint32_t		 assert_winner_metric;
     uint32_t		 spt_pktcnt;	/* Kernel packet count the SPTbit was
 					 * last checked at, see check_sptbit()
 					 */
@@ -220,8 +241,6 @@ typedef struct mrtentry {
     uint16_t		 entry_timer;	/* entry timer			    */
     uint16_t		 jp_timer;	/* The Join/Prune timer		    */
     uint16_t		 rs_timer;	/* Register-Suppression Timer	    */
-    u_int		 assert_timer;
-    u_int		 assert_rate_timer;
     struct kernel_cache *kernel_cache;	/* List of the kernel cache entries */
 } mrtentry_t;
 

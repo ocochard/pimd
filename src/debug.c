@@ -686,6 +686,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     char pruned_oifs[MAXVIFS+1];
     char leaves_oifs[MAXVIFS+1];
     char asserted_oifs[MAXVIFS+1];
+    char assert_states[MAXVIFS+1];
     char incoming_iif[MAXVIFS+1];
 
     for (vifi = 0; vifi < numvifs; vifi++) {
@@ -699,6 +700,11 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	    PIMD_VIFM_ISSET(vifi, r->leaves) ? 'l' : '.';
 	asserted_oifs[vifi] =
 	    PIMD_VIFM_ISSET(vifi, r->asserted_oifs) ? 'a' : '.';
+	/* The Assert state machine of RFC 7761 sec. 4.6.1: 'W' where we won
+	 * the election, 'L' where we lost it.  Not the same question as the
+	 * line above, which is the olist the loss leaves behind. */
+	assert_states[vifi] = assert_winner_is_me(r, vifi) ? 'W'
+	    : (assert_lost_on(r, vifi) ? 'L' : '.');
 	incoming_iif[vifi] = '.';
     }
     oifs[vifi]		= 0x0;	/* End of string */
@@ -706,6 +712,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     pruned_oifs[vifi]	= 0x0;
     leaves_oifs[vifi]	= 0x0;
     asserted_oifs[vifi] = 0x0;
+    assert_states[vifi] = 0x0;
     incoming_iif[vifi]	= 0x0;
     incoming_iif[r->incoming] = 'I';
 
@@ -726,16 +733,20 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     fprintf(fp, "Pruned   oifs: %-20s\n", pruned_oifs);
     fprintf(fp, "Leaves   oifs: %-20s\n", leaves_oifs);
     fprintf(fp, "Asserted oifs: %-20s\n", asserted_oifs);
+    fprintf(fp, "Assert state : %-20s\n", assert_states);
     fprintf(fp, "Outgoing oifs: %-20s\n", oifs);
     fprintf(fp, "Incoming     : %-20s\n", incoming_iif);
 
-    fprintf(fp, "\nTIMERS:  Entry    JP    RS  Assert VIFS:");
+    fprintf(fp, "\nTIMERS:  Entry    JP    RS  VIFS:");
     for (vifi = 0; vifi < numvifs; vifi++)
 	fprintf(fp, "  %d", vifi);
-    fprintf(fp, "\n         %5d  %4d  %4d  %6d      ",
-	    r->entry_timer, r->jp_timer, r->rs_timer, r->assert_timer);
+    fprintf(fp, "\n         %5d  %4d  %4d       ",
+	    r->entry_timer, r->jp_timer, r->rs_timer);
     for (vifi = 0; vifi < numvifs; vifi++)
 	fprintf(fp, " %2d", r->vif_timers[vifi]);
+    fprintf(fp, "\nASSERT:                        ");
+    for (vifi = 0; vifi < numvifs; vifi++)
+	fprintf(fp, " %2d", r->asserts[vifi].timer);
     fprintf(fp, "\n");
 }
 
