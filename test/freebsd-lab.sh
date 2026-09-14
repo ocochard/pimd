@@ -1637,6 +1637,26 @@ iface_querier() {
 		awk -v ifn="$2" '$1 == ifn && $2 ~ /^(Up|Down|Disabled)$/ { print $3; exit }'
 }
 
+# Have all three routers on the shared LAN settled on r5 as the querier?
+# Polled rather than read once, because this election converges on a timer
+# rather than on anything a router sends in reply: a pimd believes it is the
+# querier until it hears a query from a lower address, and queries go out
+# every igmp_query_interval / 4 while the startup count lasts
+# (query_groups(), src/igmp_proto.c, three of them from
+# IGMP_STARTUP_QUERY_COUNT) and every igmp_query_interval, 125s, after that.
+# A router that came up just behind r5 therefore reads "Local" for up to
+# half a minute, and a busy host is enough to land a single reading in that
+# window -- a lab still converging, not an election that went the wrong way.
+# Seen for real: `run all` failed here twice on a host compiling LLVM
+# alongside it, with the same pimd that passed the scenario on its own.
+queriers_settled() {
+	[ "$(iface_querier r5 epair503b)" = "Local" ] || return 1
+	[ "$(iface_querier r3 "$SL_R3_IF")" = "$SL_QUERIER_ADDR" ] || return 1
+	[ "$(iface_querier r4 "$SL_R4_IF")" = "$SL_QUERIER_ADDR" ] || return 1
+
+	return 0
+}
+
 # Run the ED1 -> ED2 stream and watch the RP while it is in flight.
 # Sets: replies, regs, sg_seen, sg_native, selfreg.
 #
@@ -3047,13 +3067,12 @@ check_shared_lan() {
 	# Two elections over the same wire, deliberately won by different
 	# routers: PIM takes the highest address, IGMP the lowest.
 	print "4. The IGMP querier election takes the lowest, i.e. another router"
-	q3=$(iface_querier r3 "$SL_R3_IF")
-	q4=$(iface_querier r4 "$SL_R4_IF")
-	q5=$(iface_querier r5 epair503b)
-	if [ "$q5" = "Local" ] && [ "$q3" = "$SL_QUERIER_ADDR" ] &&
-	   [ "$q4" = "$SL_QUERIER_ADDR" ]; then
+	if wait_for 90 queriers_settled; then
 		ok "r5 ($SL_QUERIER_ADDR) is the querier, r3 and r4 agree"
 	else
+		q3=$(iface_querier r3 "$SL_R3_IF")
+		q4=$(iface_querier r4 "$SL_R4_IF")
+		q5=$(iface_querier r5 epair503b)
 		fail "querier disagreement: r5 '$q5' (want Local), r3 '$q3', r4 '$q4' (want $SL_QUERIER_ADDR)"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
