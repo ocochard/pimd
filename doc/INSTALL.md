@@ -8,11 +8,15 @@ However, if you want to try the latest bleeding edge pimd, clone the GIT
 sources from <https://github.com/ocochard/pimd>, or download one of the
 2.x release tarballs at <https://github.com/troglobit/pimd/releases>
 
-After unpacking the tarball, cd to the new directory, e.g. `pimd-2.3.0/`
+After unpacking the tarball, cd to the new directory, e.g. `pimd-3.0/`
 followed by:
 
     ./configure && make
     sudo make install
+
+On FreeBSD, NetBSD and DragonFly the generated Makefiles are GNU make
+ones, so install the `gmake` package and use `gmake` in place of `make`
+in every command here.
 
 By default pimd is installed to the `/usr/local` prefix, except for
 `pimd.conf` which is installed to `/etc`.  If you want to install to
@@ -30,7 +34,7 @@ supports the use of `DESTDIR=` to install to a staging directory.  What
 you want is probably something like:
 
     ./configure --prefix=/usr --sysconfdir=/etc && make
-    make DESTDIR=/tmp/staging VERSION=2.3.0-1 install
+    make DESTDIR=/tmp/staging install-strip
 
 The default `/etc/pimd.conf` should be good enough for most use cases.
 But if you edit it, see the man page or the comments in the file for
@@ -74,24 +78,31 @@ taking into account the following:
 Cross Compiling
 ---------------
 
-The pimd build system does not use GNU autotools, but it is still
-possible to cross-compile.  Simply make sure to give the `configure`
-script the correct paths and options, and then set the environment
-variable `CROSS` to your cross compiler prefix.  E.g.
+As of pimd 3.0 the build system is GNU autotools, so cross-compiling is
+the usual `--host=` dance: name the target triplet and `configure` looks
+for a toolchain prefixed with it.  E.g.
 
-    ./configure --prefix=/ --embedded-libc
-    make CROSS=arm-linux-gnueabi-
+    ./configure --host=arm-linux-gnueabi --prefix=/usr
+    make
 
-**Note:** some toolchains do not properly setup at `cc` symlink, for
-  instance the Debian/Ubuntu ARM toolchains.  Instead they assume that
-  projects are using GCC and only provide a `gcc` symlink.
+The tools have to be in `PATH`.  If they are not named after the triplet
+`--host` was given, name the compiler yourself:
+
+    ./configure --host=arm-linux-gnueabi CC=arm-linux-gnueabi-gcc
+
+**Note:** the `CROSS=` variable and the `--embedded-libc` flag of pimd
+  2.x are gone; both belonged to the hand-written build system that
+  autotools replaced.
 
 
 Old INSTALL
 -----------
 
 Old install instructions, before PIM kernel support was readily
-available in all major operating systems
+available in all major operating systems.  The command line below is
+pimd 2.x and earlier: the config file is `-f` today, not `-c`, and most
+of the debug levels listed have been renamed or removed.  `pimd -h`
+lists the ones that exist.
 
 1. Apply the PIM kernel patches, recompile, reboot
 
@@ -122,7 +133,7 @@ available in all major operating systems
    routers, and without the RP-set in the routers the multicast packets
    cannot be forwarded.
 
-7. There are plenty of bugs, some of them known (check BUGS.TODO), some of
-   them unknown, so your bug reports are more than welcome.
+7. There are plenty of bugs, some of them known (check `doc/TODO.org`),
+   some of them unknown, so your bug reports are more than welcome.
 
 

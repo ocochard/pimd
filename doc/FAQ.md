@@ -7,15 +7,14 @@ Mini FAQ
   implements only PIM-SMv2.  You need to upgrade/configure your Cisco to
   run PIM-SMv2.
 	
-  If your Cisco is indeed running PIM-SMv2, and it is the RP, you need
-  to run the pimd `configure` script with `--enable-broken-crc` defined.
-  See the beginning of the configure script, or the output from the
-  command `configure --help`.  Note that this will then likely cause the
-  PIM Register messages to *not* be accepted by some other vendors, but
-  pimd-to-pimd should still be OK.
-
-  **Note:** This is a *very* old FAQ and this issue is exteremly likely
-  to be rather reversed in 2015 ...
+  If your Cisco is indeed running PIM-SMv2, and it is the RP, this used
+  to call for a `--enable-broken-crc` build.  That flag is gone, and so
+  is the need for it: a PIM Register checksum covers the first 8 bytes
+  only, the PIM header and the next 4, not the encapsulated data packet.
+  Some older routers checksummed the whole message instead, which RFC
+  7761 sec. 4.9.3 says should be accepted as well, for exactly this
+  reason.  pimd sends the first form and accepts either one, see the
+  checksum test in `receive_pim_register()`, `src/pim_proto.c`.
 
 * Q: Do I need to re-configure my Linux kernel to run pimd?
 
@@ -57,10 +56,13 @@ Mini FAQ
 * Q: pimd compiled and is running on a single machines, but when I run
   it on 2+ machines, the multicast packets do not reach the receivers.
 
-  Without detailed debug information I cannot answer this question.
-  Please send to the pimd maintainer a scheme (topology map) of your
-  network, and the debug output from each router (`pimd -dall`), that
-  may help.
+  Without detailed debug information this cannot be answered.  Please
+  file a scheme (topology map) of your network at the [GitHub issue
+  tracker][tracker], along with the debug output from each router.  Note
+  that the subsystems of `-d` only select what is logged, the level has
+  to allow it through as well, so it takes all three flags:
+
+        pimd -n -l debug -d all
 
 * Q: How do I debug my multicast routing?
 
@@ -85,9 +87,9 @@ Mini FAQ
 
 * Q: How do I configure pimd to do FOO?
 
-  See file [README-config.md][config].  If the answer is not there, send
-  an email to the current pimd maintainer, or file a bug report at the
-  [GitHub issue tracker][tracker].
+  See file [README-config.md][config].  If the answer is not there, ask
+  the question, or file a bug report, at the [GitHub issue
+  tracker][tracker].
 
 
 [debug]:   https://github.com/ocochard/pimd/blob/master/doc/README-debug.md
