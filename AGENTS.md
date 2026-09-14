@@ -77,6 +77,10 @@ RPT bit of RFC 7761 4.6.1, and it now reports `ok` -- the deviation it guards wa
 `4cb79f1`, so the assertion stays as a tripwire. The other live `xfail()`s are in
 `test/freebsd-interop.sh`, for deviations M3 and M10.
 
+`doc/rfc7761-compliance.md` is the list these come from: every entry there ends with a `Test:` note
+naming what reproduces it, or `none`, so which deviations are covered and which are only written
+down is answerable from that file rather than by grepping the labs.
+
 `test/freebsd-interop.sh` is the only test that puts a second PIM implementation on the wire: an
 Arista vEOS in bhyve, between two pimd routers in vnet jails. Every other test has pimd on both
 ends, so a message pimd encodes wrongly it also decodes wrongly and the run stays green. Its two

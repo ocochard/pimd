@@ -28,10 +28,21 @@ Each entry carries an effort estimate.  "Small" means a localized change,
 pimd does not have today.  When one is fixed, delete the entry; when one is
 confirmed to be intentional, move it to the last section with the reason.
 
-A deviation that a test reproduces should be asserted through `xfail()` in
-`test/freebsd-lab.sh` rather than left unasserted, so that it flips to `ok` the
-day it is fixed.  The assert RPT-bit entry of 4.6.1 was carried that way and is
-now fixed; `shared-lan-spt` still holds the assertion.
+A deviation that a test reproduces should be asserted through `xfail()`, in
+`test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
+unasserted, so that it flips to `ok` the day it is fixed.  The assert RPT-bit
+entry of 4.6.1 was carried that way and is now fixed; `shared-lan-spt` still
+holds the assertion, as a tripwire against its coming back.
+
+Every entry therefore ends with a `Test:` note saying what reproduces it, and
+most of them say `none` -- the point of writing it down is that the gap is
+visible from this list rather than only from grepping the labs.  M3 and M10 are
+the ones carried as a live `xfail()` today, and M10 is here because a test went
+looking for something else and fell over it.  Where an entry names a scenario without
+asserting anything, it is because that scenario builds the topology the
+deviation needs and stops short of the assertion; those are the cheap ones to
+close.  Several are not blackbox-testable at all, and say so: a five-second
+latency or a startup race cannot be told from a slow lab.
 
 
 Input validation and trust
@@ -88,10 +99,12 @@ is implemented, via `MRTF_RP` entries dragged into the same group set
 (`src/route.c:1454-1502`), and is wire-correct; it is the triggered half that is
 missing.
 *Check: sec. 4.5.3, `doc/rfc7761.txt:2975` (downstream), sec. 4.5.7, `:3983`
-(upstream triggered), sec. 4.5.6, `:3927` (the periodic compound message);
-the olist rule pimd breaks is sec. 4.1.5, `:1138`, where `prunes(S,G,rpt)`
-subtracts from `joins(*,G)` alone and not from `inherited_olist(S,G)` at `:1142`.
-Effort: large.*
+(upstream triggered), sec. 4.5.6, `:3927` (the periodic compound message); the
+olist rule pimd breaks is sec. 4.1.5, `:1138`, where `prunes(S,G,rpt)`
+subtracts from `joins(*,G)` alone and not from `inherited_olist(S,G)` at
+`:1142`.  Effort: large.  Test: none.  `shared-lan` in `test/freebsd-lab.sh` is
+the topology it needs -- two downstream routers on one segment, one pruning
+what the other joined.*
 
 **M2.  No LAN Prune Delay option, and no real Prune-Pending timer.**
 Sec. 4.3.3 wants the option in every Hello on a multi-access LAN, and
@@ -110,12 +123,15 @@ delay to 21845 seconds, about six hours.  Where `vif_deletion_delay` is still 0,
 because the oif came from a local leaf rather than from a received Join, the same
 code drops the oif instantly with no override window at all.  No PruneEcho is
 sent either, so a Prune lost on the LAN is never recovered.
-*Check: sec. 4.3.3, `doc/rfc7761.txt:1812`, with the option itself in
-sec. 4.3.1, `:1657`, and its wire format in sec. 4.9.2, `:6083`; the
-Prune-Pending Timer is sec. 4.5.1, `:2674`, and sec. 4.5.2, `:2899`;
+*Check: sec. 4.3.3, `doc/rfc7761.txt:1812`, with the option itself in sec.
+4.3.1, `:1657`, and its wire format in sec. 4.9.2, `:6083`; the Prune-Pending
+Timer is sec. 4.5.1, `:2674`, and sec. 4.5.2, `:2899`;
 `J/P_Override_Interval(I)` is sec. 4.11, `:7013`.  Effort: large, though
 emitting the option with default values so neighbors stop falling back is
-small.*
+small.  Test: none, and `assert-lan` in `test/freebsd-interop.sh` is where it
+becomes visible: the Arista advertises the LAN Prune Delay option pimd neither
+sends nor parses, so those values are already on that wire waiting to be
+asserted on.*
 
 **M3.  No assert winner state, except on the incoming interface.**  Sec. 4.6.1
 and 4.6.2 keep, per (S,G,I) and (\*,G,I), the winner's address and metric and an
@@ -142,7 +158,11 @@ on two LANs share one expiry, extending one and resetting the other.
 per-interface state; the winner's timer is `doc/rfc7761.txt:4687` and `:5138`,
 AssertCancel is sec. 4.6.4, `:5245`, and the winner-resend rationale is item 9
 of the design list at `:5439`.  Effort: medium, and it is one piece of work
-rather than five.*
+rather than five.  Test: `assert-lan` in `test/freebsd-interop.sh`, both halves,
+through `xfail()`.  Case 5 feeds pimd an AssertCancel from the Arista and case 6
+makes pimd the winner and watches the Arista resume at `Assert_Time`.  Neither
+is reachable from a pimd-only lab, because pimd never sends either message and
+nothing would put one on the wire.*
 
 **M4.  Assert metrics are configured constants, not MRIB metrics.**  Sec. 4.6.3
 and sec. 4.9.6 both say the metric preference and metric are the unicast
@@ -160,7 +180,12 @@ constants.
 *Check: sec. 4.6.3, `doc/rfc7761.txt:5215` for `spt_assert_metric(S,I)`, and
 sec. 4.9.6, `:6766`, for the two wire fields.  Effort: large; it needs
 `k_req_incoming()` and `struct rpfctl` to carry preference and metric in both
-`netlink.c` and `routesock.c`.*
+`netlink.c` and `routesock.c`.  Test: no assertion, but `assert-lan` in
+`test/freebsd-interop.sh` is built on it -- the Arista advertises its RIB
+metrics, so that LAN is the only place pimd's constants are ever compared
+against anything else, and its sub-cases drive the election by each field of
+sec. 4.6.3 in turn.  Asserting the deviation itself needs pimd's advertised
+metric to follow a route change, which needs a routing daemon in the lab.*
 
 **M5.  An assert is ignored unless the entry already has a kernel cache.**
 Sec. 4.6.1 keys the NoInfo-to-Loser transition on `AssertTrackingDesired`, which
@@ -172,7 +197,11 @@ loser's traffic stops — ignores the election and keeps sending its Joins to th
 loser, so nothing joins the winner and the traffic that would rebuild the cache
 never arrives.
 *Check: sec. 4.6.1, `doc/rfc7761.txt:4431` for `AssertTrackingDesired(S,G,I)`
-and `:4518` for the NoInfo transition keyed on it.  Effort: medium.*
+and `:4518` for the NoInfo transition keyed on it.  Effort: medium.  Test:
+none.  `assert-lan` in `test/freebsd-interop.sh` is the nearest topology, and
+its R5 is already a downstream router with join state; provoking this
+deterministically means stopping the winner's traffic without stopping the
+joins.*
 
 **M6.  No secondary address list.**  Sec. 4.3.4 requires the Address List option
 whenever an interface has secondary addresses, so that neighbors can map an MRIB
@@ -185,7 +214,9 @@ at pimd's alias cannot map it back.  `install_altnet()` currently keeps only the
 subnet and mask (`src/config.c:266-289`), so pimd's own secondary addresses have
 to be retained before they can be advertised.  This is the `alias` lab topology.
 *Check: sec. 4.3.4, `doc/rfc7761.txt:1993`, with the option in sec. 4.3.1,
-`:1664`, and its wire format in sec. 4.9.2, `:6167`.  Effort: medium to large.*
+`:1664`, and its wire format in sec. 4.9.2, `:6167`.  Effort: medium to
+large.  Test: none.  `alias` in `test/freebsd-lab.sh` builds the interface this
+needs, but asserts the altnet RPF path rather than the Address List option.*
 
 **M7.  No traffic-driven Keepalive Timer.**  Sec. 4.2 sets `KeepaliveTimer(S,G)`
 from arriving data.  Every write to `entry_timer` is a control-plane event or an
@@ -201,7 +232,9 @@ downstream Joins, and `age_routes()` then deletes them under live traffic.  Not
 reproduced; running `rpt` or `rp-lasthop` with `spt-threshold infinity` and
 watching `pimctl show mrt` across 210 seconds would settle it.
 *Check: sec. 4.2, `doc/rfc7761.txt:1375` and `:1383`, where arriving data sets
-the timer; `Keepalive_Period` is sec. 4.11, `:7136`.  Effort: medium.*
+the timer; `Keepalive_Period` is sec. 4.11, `:7136`.  Effort: medium.  Test:
+none; the `keepalive` scenario in `test/freebsd-lab.sh` covers the part that
+was fixed, not what is left here.*
 
 **M8.  Triggered Joins and Prunes wait for the next tick.**  The transitions in
 sec. 4.5.4 and 4.5.5 send immediately.  `change_interfaces()` and its callers
@@ -215,8 +248,9 @@ transition to NotJoined instead of cancelling it, so a pruned entry re-sends its
 Prune every 60 seconds instead of once.
 *Check: sec. 4.5.4, `doc/rfc7761.txt:3367`, and sec. 4.5.5, `:3618`; every
 transition there says "Send" with no delay, and the JoinDesired-goes-FALSE row
-at `:3514` and `:3779` cancels the timer rather than re-arming it.
-Effort: medium.*
+at `:3514` and `:3779` cancels the timer rather than re-arming it.  Effort:
+medium.  Test: none, and none is obvious: the symptom is up to five seconds of
+added latency, which no assertion here could tell from a slow lab.*
 
 **M9.  A group set carrying a (\*,G) Join can be split across messages.**
 Sec. 4.9.5.2 makes that list of (S,G,rpt) Prunes unsplittable and, when they do
@@ -227,8 +261,45 @@ Join(\*,G) and the tail of its prune list land in different packets, and a
 conformant upstream moves every (S,G,rpt) it holds to NoInfo on the first one —
 a burst of duplicate traffic on the shared tree once per period, every period.
 *Check: sec. 4.9.5.2, `doc/rfc7761.txt:6684`; "MUST NOT be split" at `:6698`
-and the smallest-N rule at `:6706`.
-Effort: medium.*
+and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
+group with more than about 65 pruned sources, which no scenario builds.*
+
+**M10.  SPTbit is decided once, at the first upcall, and never revisited.**
+Sec. 4.2 runs `Update_SPTbit(S,G,iif)` on receipt of every data packet, so an
+(S,G) sets the bit as soon as its conditions hold.  pimd forwards in the kernel
+and can only run the check when the kernel asks it something:
+`update_sptbit()` (`src/route.c:532`) is reachable from `process_cache_miss()`
+and `process_wrong_iif()` alone (`src/route.c:1045`, `:1144`).  Once the MFC
+entry is installed there are no more cache misses, and the wrong-iif upcalls
+that do arrive carry an `iif` that is not `RPF_interface(S)`, which the function
+rejects on its second line.  Whatever was true at the first upcall is what the
+entry keeps.
+
+The five conditions themselves match the RFC, `I_Am_Assert_Loser` included, so
+this is only about when they are evaluated -- but the window is narrow and easy
+to miss: at that first upcall the entry has just been created and its outgoing
+list is often still empty, which `process_cache_miss()` checks before calling
+at all (`src/route.c:1042`).  An (S,G) that acquires an olist a moment later,
+which is the normal order when a receiver joins around the same time as the
+first packet, stays on the shared tree for as long as its kernel cache lives.
+
+That is not confined to a wrong flag.  `CouldAssert(S,G,I)` is false without
+SPTbit, so `my_assert_metric()` returns `rpt_assert_metric(G,I)` and every
+Assert the router sends carries the RPT bit -- which sec. 4.6.1 compares before
+either metric.  On a shared LAN the router loses the election to any last hop
+router that did reach the SPT, whatever its own routing metric says, and keeps
+losing it: the oif is removed, and with it any later chance of an upcall on the
+right interface.
+*Check: sec. 4.2, `doc/rfc7761.txt:1522` for the pseudocode and `:1383` for
+"on receipt of data from S to G on interface iif"; `CouldAssert` is sec. 4.6.1,
+`:4405`, and `my_assert_metric()` is sec. 4.6.3, `:5194`.  Effort: medium; the
+check wants a home that runs more often than an upcall, and the obvious one is
+the periodic `age_routes()` walk.  Test: `assert-lan` in
+`test/freebsd-interop.sh`, as `xfail()`.  Its metric sub-cases give R3 a
+receiver of its own so the sec. 4.2 conditions plainly hold -- traffic on
+`RPF_interface(S)`, a non-empty olist, and `RPF'(S,G) == RPF'(*,G)` -- and R3
+sits on the shared tree regardless, which is reported where it happens rather
+than as a failure of the election it makes unreachable.*
 
 
 Timers
@@ -276,8 +347,9 @@ conformant upstream that deleted the oif after 3.  Against another pimd it is
 masked by M2.
 *Check: the `t_override` row of sec. 4.11, `doc/rfc7761.txt:7077`, and
 `Effective_Override_Interval(I)` in sec. 4.3.3, `:1925`.  Effort: small for the
-constant,
-medium for sub-tick scheduling.*
+constant, medium for sub-tick scheduling.  Test: none.  It needs a shared LAN and
+a peer that deletes the oif after 3 seconds rather than pimd's 5, so
+`assert-lan` in `test/freebsd-interop.sh` is the natural home.*
 
 **T2.  `t_suppressed` uses RFC 2362's range, and (\*,G) suppression is inert.**
 The interval is `PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD)`,
@@ -292,10 +364,11 @@ than lost traffic, which is why it was tolerable, but restoring it needs the
 original loss scenario reproduced first: the bug it papers over is most likely
 in `join_or_prune()` or the `jp_timer` accounting.  Note also the address
 tiebreak in those guards has no counterpart in RFC 7761.
-*Check: the `t_suppressed` row of sec. 4.11, `doc/rfc7761.txt:7070`; the
-"See Join(\*,G) to RPF'(\*,G)" transition that arms it is sec. 4.5.4, `:3543`,
-and its (S,G) twin sec. 4.5.5, `:3815`.  Effort: small to fix, medium to fix
-safely.*
+*Check: the `t_suppressed` row of sec. 4.11, `doc/rfc7761.txt:7070`; the "See
+Join(\*,G) to RPF'(\*,G)" transition that arms it is sec. 4.5.4, `:3543`, and
+its (S,G) twin sec. 4.5.5, `:3815`.  Effort: small to fix, medium to fix
+safely.  Test: none.  Join suppression needs two routers wanting the same group
+on one segment, which `shared-lan` and `assert-lan` both have.*
 
 **T3.  `Triggered_Hello_Delay` is not implemented in either direction.**
 `src/vif.c:321` picks rand(1, Hello_Period) rather than rand(0, 5 s), and
@@ -307,17 +380,20 @@ is sent immediately instead of after rand(0, 5 s), and resets the periodic
 schedule, so a whole LAN answers a rebooting router in the same instant and then
 converges onto its clock.
 *Check: sec. 4.3.1, `doc/rfc7761.txt:1612` (startup) and `:1670` (the triggered
-Hello answering a new neighbor); the value is the `Triggered_Hello_Delay` row of
-sec. 4.11, `:6958`.  Effort: small; it needs a `send_pim_hello()` variant that
-leaves the timer alone.*
+Hello answering a new neighbor); the value is the `Triggered_Hello_Delay` row
+of sec. 4.11, `:6958`.  Effort: small; it needs a `send_pim_hello()` variant
+that leaves the timer alone.  Test: none; it is startup timing, and every lab
+here starts its routers together.*
 
 **T4.  No goodbye Hello when an interface goes down.**  Sec. 4.3.1 wants a
 zero-holdtime Hello so a DR can be re-elected at once.  `stop_vif()` has the two
 TODOs instead (`src/vif.c:429-433`).  Neighbors hold pimd as DR for the full 105
 seconds, black-holing traffic from directly connected sources for that long.
 The receive side is already implemented, so this is the send half only.
-*Check: sec. 4.3.1, `doc/rfc7761.txt:1692`; the zero-Holdtime meaning is
-sec. 4.9.2, `:6077`.  Effort: small.*
+*Check: sec. 4.3.1, `doc/rfc7761.txt:1692`; the zero-Holdtime meaning is sec.
+4.9.2, `:6077`.  Effort: small.  Test: reported rather than asserted, by
+`renumber` in `test/freebsd-lab.sh` -- a poll cannot get ahead of an address
+that has already gone, so the scenario prints what it saw and carries on.*
 
 **T5.  `hello-interval` has no lower bound, and 0 is fatal.**
 `man/pimd.conf.5:119` documents 30 to 18724 and calls anything under 30
@@ -329,7 +405,8 @@ other range check in `config.c` warns and falls back to the default.  Not an RFC
 item; listed because the audit walked into it.
 *Check: no rule to check against; the nearest thing the spec says is the
 `Hello_Period` row of sec. 4.11, `doc/rfc7761.txt:6956`, which gives the
-30-second default and no range.  Effort: small.*
+30-second default and no range.  Effort: small.  Test: none.  It is a config
+parse, so it wants a unit test rather than a lab.*
 
 
 Interop details
@@ -340,8 +417,11 @@ for 103.  `src/pim_proto.c:965` sets `IPPROTO_UDP` with an `XXX: bogus` comment;
 everything else in the dummy header matches.  An RP that inspects the inner
 protocol may drop it, after which the DR re-adds the register tunnel every
 60 to 90 seconds.
-*Check: sec. 4.9.3, `doc/rfc7761.txt:6253` for the dummy header, the
-`IP Protocol` row at `:6269`.  Effort: small.*
+*Check: sec. 4.9.3, `doc/rfc7761.txt:6253` for the dummy header, the `IP
+Protocol` row at `:6269`.  Effort: small.  Test: no assertion, but `arista-rp` in
+`test/freebsd-interop.sh` shows the harm is not universal: EOS decapsulates
+pimd's Register with its protocol 17 dummy header and register-stops it
+normally.  An RP that does inspect the field is what this needs.*
 
 **I2.  ECN and DSCP are not copied into the Register header.**  Sec. 4.4.1 asks
 for both.  `ip_tos` is written once at startup (`src/pim.c:110`) and neither
@@ -349,7 +429,8 @@ for both.  `ip_tos` is written once at startup (`src/pim.c:110`) and neither
 registered traffic crosses the DR-to-RP path as best-effort Not-ECT however the
 source marked it.
 *Check: sec. 4.4.1, `doc/rfc7761.txt:2291` (ECN) and `:2303` (DSCP); the RP's
-side of the same copy is sec. 4.4.2, `:2443` and `:2446`.  Effort: small.*
+side of the same copy is sec. 4.4.2, `:2443` and `:2446`.  Effort: small.  Test:
+none.*
 
 
 Checked, no action
