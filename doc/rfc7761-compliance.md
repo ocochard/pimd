@@ -32,13 +32,13 @@ A deviation that a test reproduces should be asserted through `xfail()`, in
 `test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
 unasserted, so that it flips to `ok` the day it is fixed.  The assert RPT-bit
 entry of 4.6.1 was carried that way and is now fixed; `shared-lan-spt` still
-holds the assertion, as a tripwire against its coming back.
+holds the assertion, as a tripwire against its coming back.  So is the SPTbit
+entry of 4.2.2, which `assert-lan` keeps for the same reason.
 
 Every entry therefore ends with a `Test:` note saying what reproduces it, and
 most of them say `none` -- the point of writing it down is that the gap is
-visible from this list rather than only from grepping the labs.  M3 and M10 are
-the ones carried as a live `xfail()` today, and M10 is here because a test went
-looking for something else and fell over it.  Where an entry names a scenario without
+visible from this list rather than only from grepping the labs.  M3 is the one
+carried as a live `xfail()` today.  Where an entry names a scenario without
 asserting anything, it is because that scenario builds the topology the
 deviation needs and stops short of the assertion; those are the cheap ones to
 close.  Several are not blackbox-testable at all, and say so: a five-second
@@ -263,43 +263,6 @@ a burst of duplicate traffic on the shared tree once per period, every period.
 *Check: sec. 4.9.5.2, `doc/rfc7761.txt:6684`; "MUST NOT be split" at `:6698`
 and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
 group with more than about 65 pruned sources, which no scenario builds.*
-
-**M10.  SPTbit is decided once, at the first upcall, and never revisited.**
-Sec. 4.2 runs `Update_SPTbit(S,G,iif)` on receipt of every data packet, so an
-(S,G) sets the bit as soon as its conditions hold.  pimd forwards in the kernel
-and can only run the check when the kernel asks it something:
-`update_sptbit()` (`src/route.c:532`) is reachable from `process_cache_miss()`
-and `process_wrong_iif()` alone (`src/route.c:1045`, `:1144`).  Once the MFC
-entry is installed there are no more cache misses, and the wrong-iif upcalls
-that do arrive carry an `iif` that is not `RPF_interface(S)`, which the function
-rejects on its second line.  Whatever was true at the first upcall is what the
-entry keeps.
-
-The five conditions themselves match the RFC, `I_Am_Assert_Loser` included, so
-this is only about when they are evaluated -- but the window is narrow and easy
-to miss: at that first upcall the entry has just been created and its outgoing
-list is often still empty, which `process_cache_miss()` checks before calling
-at all (`src/route.c:1042`).  An (S,G) that acquires an olist a moment later,
-which is the normal order when a receiver joins around the same time as the
-first packet, stays on the shared tree for as long as its kernel cache lives.
-
-That is not confined to a wrong flag.  `CouldAssert(S,G,I)` is false without
-SPTbit, so `my_assert_metric()` returns `rpt_assert_metric(G,I)` and every
-Assert the router sends carries the RPT bit -- which sec. 4.6.1 compares before
-either metric.  On a shared LAN the router loses the election to any last hop
-router that did reach the SPT, whatever its own routing metric says, and keeps
-losing it: the oif is removed, and with it any later chance of an upcall on the
-right interface.
-*Check: sec. 4.2, `doc/rfc7761.txt:1522` for the pseudocode and `:1383` for
-"on receipt of data from S to G on interface iif"; `CouldAssert` is sec. 4.6.1,
-`:4405`, and `my_assert_metric()` is sec. 4.6.3, `:5194`.  Effort: medium; the
-check wants a home that runs more often than an upcall, and the obvious one is
-the periodic `age_routes()` walk.  Test: `assert-lan` in
-`test/freebsd-interop.sh`, as `xfail()`.  Its metric sub-cases give R3 a
-receiver of its own so the sec. 4.2 conditions plainly hold -- traffic on
-`RPF_interface(S)`, a non-empty olist, and `RPF'(S,G) == RPF'(*,G)` -- and R3
-sits on the shared tree regardless, which is reported where it happens rather
-than as a failure of the election it makes unreachable.*
 
 
 Timers

@@ -120,24 +120,25 @@
 #               EOS fills those fields from its own RIB, so this is the one
 #               LAN where they could hold unequal numbers.
 #
-#               They do not, yet, and that is the finding.  pimd never gets
-#               onto the shortest path tree here at all: it evaluates
-#               SPTbit only when an upcall reaches update_sptbit(), never
-#               per packet as sec. 4.2 asks, so R3 keeps asserting from
-#               (*,G) state with the RPT bit set -- which sec. 4.6.1
-#               compares first, so its metric is never reached.  That is
-#               deviation M10, this scenario is what turned it up, and the
-#               three metric sub-cases report it and stop rather than
-#               pretending to compare anything.  They are written out in
-#               full and start comparing the day M10 is fixed.
+#               They did not at first, and that was the finding.  pimd
+#               evaluated SPTbit only when an upcall reached
+#               update_sptbit(), never per packet as sec. 4.2 asks, so R3
+#               never got onto the shortest path tree here and kept
+#               asserting from (*,G) state with the RPT bit set -- which
+#               sec. 4.6.1 compares first, so its metric was never reached.
+#               That was deviation M10, this scenario is what turned it up,
+#               and it is fixed: age_routes() re-runs the check for as long
+#               as data is arriving.  The assertion that reported it stays
+#               as a tripwire and goes back to KNOWN if R3 stops reaching
+#               the tree.
 #
-#               So what it asserts today: DR and IGMP querier election on a
+#               So what it asserts: DR and IGMP querier election on a
 #               segment shared with a foreign implementation, decided by
 #               different routers and agreed by both ends; the RP set
-#               learned through it; rpt-bit, the one sub-case that does not
-#               need pimd on the SPT, where the Arista must win on the RPT
-#               bit despite pimd holding the better preference; and M10 and
-#               M3 as known deviations.
+#               learned through it; all four sub-cases of the election,
+#               including rpt-bit, the one that wants pimd held off the
+#               SPT, where the Arista must win on the RPT bit despite pimd
+#               holding the better preference; and M3 as a known deviation.
 #
 #               Takes about 12 minutes, most of it the last sub-case,
 #               which has to outlive Assert_Time (180s).
@@ -1647,21 +1648,21 @@ establish_election() {
 	# housekeeping, and getting it wrong costs a sub-case that passes or
 	# fails on a race.
 	#
-	# pimd evaluates SPTbit once per upcall and not per packet: sec. 4.2
-	# runs Update_SPTbit(S,G,iif) "on receipt of data from S to G", but
-	# forwarding is in the kernel, so update_sptbit() (src/route.c:532) is
-	# reachable only from process_cache_miss() and process_wrong_iif().
-	# Whatever is true at that first upcall is what the entry keeps.  If
-	# the Arista is already forwarding by then, R3's one evaluation
-	# happens while it is losing an assert from (*,G) state, it never
-	# reaches SPTbit, and its Assert carries the RPT bit for the rest of
-	# the run -- which decides every sub-case before its metric is read.
-	#
-	# So the tree is built to the point where R3 holds (S,G) state of its
+	# The tree is built to the point where R3 holds (S,G) state of its
 	# own, and only then is the Arista given a reason to forward.  ED6 is
 	# what makes that possible without waiting on R5: its membership makes
-	# R3 a last hop router, so try_switch_to_spt() (src/route.c:1246) will
+	# R3 a last hop router, so try_switch_to_spt() (src/route.c) will
 	# consider R3 at all.
+	#
+	# That order used to decide the sub-cases on its own.  pimd evaluated
+	# SPTbit once per upcall and not per packet, so if the Arista was
+	# already forwarding when R3's one evaluation happened, R3 was losing
+	# an assert from (*,G) state, never reached SPTbit, and asserted with
+	# the RPT bit for the rest of the run -- deviation M10, which this
+	# scenario turned up.  check_sptbit() (src/route.c) re-runs the check
+	# while data is arriving now, so the order no longer decides anything;
+	# it is kept because a sub-case that has to wait out an election it did
+	# not set up is slower and harder to read.
 	jrun ed6 "$MPING" -r -i "$AL_ED6_IF" -p "$AL_JOIN_PORT6" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
 		>"$WORKDIR/joiner6.log" 2>&1 &
 	joiner6=$!
@@ -1669,8 +1670,8 @@ establish_election() {
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 
-	# R3 has to know about ED6 before the first packet, or its one SPTbit
-	# evaluation sees an empty outgoing list and returns early
+	# R3 has to know about ED6 before the first packet, or the SPTbit
+	# check sees an empty outgoing list and returns early on every pass
 	if ! wait_for 90 has_leaf r3 epair836a; then
 		fail "$case_name: R3 never saw ED6's membership, it cannot reach the SPT"
 		kill "$receiver" "$joiner6" 2>/dev/null
@@ -1686,19 +1687,20 @@ establish_election() {
 	# asked to assert; rpt-bit needs it held off, and has nothing to wait
 	# for beyond the traffic arriving.
 	if [ "$case_name" != rpt-bit ]; then
-		# Deviation M10: pimd evaluates SPTbit only when an upcall
-		# reaches update_sptbit() (src/route.c:532), so an (S,G) that
-		# meets the sec. 4.2 conditions only after its first packet
-		# never sets it.  R3 is exactly that entry here -- traffic on
+		# This was deviation M10: pimd evaluated SPTbit only when an
+		# upcall reached update_sptbit() (src/route.c), so an (S,G)
+		# that met the sec. 4.2 conditions only after its first packet
+		# never set it.  R3 is exactly that entry here -- traffic on
 		# RPF_interface(S), a non-empty olist from ED6, and
-		# RPF'(S,G) == RPF'(*,G) -- and it sits on the shared tree
-		# anyway, which makes its Assert carry the RPT bit and lose
-		# on sec. 4.6.1's first comparison whatever its metric says.
+		# RPF'(S,G) == RPF'(*,G) -- and it sat on the shared tree
+		# anyway, which made its Assert carry the RPT bit and lose on
+		# sec. 4.6.1's first comparison whatever its metric said.
 		#
-		# So this is reported where it happens rather than dressed up
-		# as a failure of the election: until pimd re-evaluates
-		# SPTbit, the metric comparison this sub-case exists for
-		# cannot be reached at all, and saying so is the assertion.
+		# check_sptbit() (src/route.c) fixed that, and the report
+		# stays as the tripwire for it: a pimd that stops reaching the
+		# tree cannot compare metrics at all, so the sub-case says so
+		# where it happens rather than failing the election it makes
+		# unreachable.
 		if ! wait_for "$AL_FWD_WAIT" has_spt r3 "$SRC_ADDR"; then
 			if [ -z "$AL_M10_SEEN" ]; then
 				xfail "R3 holds (S,G) with an olist and traffic on its RPF interface but never set SPTbit, so its Assert carries the RPT bit and no metric of its is ever compared (M10, src/route.c:532)"
@@ -1942,10 +1944,10 @@ check_assert_cancel() {
 	print "5. An AssertCancel from the Arista (RFC 7761 4.6.4)"
 
 	# pimd has to be the assert loser for a cancel to mean anything, and
-	# rpt-bit is the sub-case that gets it there without needing the
-	# shortest path tree that M10 denies: pimd asserts from (*,G), the
-	# Arista wins on the RPT bit, pimd is the loser.  tiebreak would do
-	# the same job if pimd could reach the SPT, and is what this used
+	# rpt-bit is the sub-case that gets it there with the fewest moving
+	# parts: pimd is held off the shortest path tree, asserts from (*,G),
+	# the Arista wins on the RPT bit, pimd is the loser.  tiebreak does
+	# the same job now that pimd reaches the SPT, and is what this used
 	# before M10 was understood.
 	establish_election rpt-bit || return
 	if [ -z "$al_pimd_asserted" ] || [ -n "$al_pimd_fwd" ]; then
@@ -2006,14 +2008,14 @@ check_assert_no_resend() {
 		return
 	fi
 
-	# This one needs pimd to be the assert *winner*, and M10 means it
-	# never is here: without SPTbit its Assert carries the RPT bit and
-	# loses to the Arista before any metric is read.  So the case is
-	# blocked rather than passing or failing, and says which deviation
-	# blocks it -- it becomes runnable the day M10 is fixed, at which
-	# point it starts measuring M3 as intended.
+	# This one needs pimd to be the assert *winner*, which it could not
+	# be while M10 stood: without SPTbit its Assert carried the RPT bit
+	# and lost to the Arista before any metric was read, so the case
+	# reported which deviation blocked it instead of measuring anything.
+	# With M10 fixed it runs, and the guard stays for the day pimd cannot
+	# win here again.
 	if ! establish_election pimd-wins; then
-		xfail "pimd cannot be made the assert winner while M10 stands, so the winner-resend half of M3 is untested"
+		xfail "pimd could not be made the assert winner here, so the winner-resend half of M3 is untested"
 		return
 	fi
 	if [ -z "$al_pimd_fwd" ] || [ -n "$al_eos_fwd" ]; then

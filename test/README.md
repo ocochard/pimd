@@ -197,7 +197,7 @@ and fails the other.
 |--------------|------|---------------------------------------------|------------------|
 | `arista-rp`  | ~3m  | Arista is BSR, RP and the router in the middle; R1 is first hop, R3 last hop. | pimd parses a Bootstrap and Candidate-RP-Advertisement written by EOS; EOS has to believe pimd's (\*,G) Join and decapsulate its Register.  DR election is asserted on two links and from both sides, pimd losing one and winning the other. |
 | `pimd-rp`    | ~4m  | R1 is BSR and RP; the Arista is first *and* last hop router, for a LAN of its own. | The mirror of the above.  EOS parses pimd's Bootstrap — address, priority and hash mask length asserted separately — R3 has to learn the same RP set *through* the Arista, and pimd has to believe an EOS-built Join and decapsulate an EOS Register, then get off the register vif and have its Register-Stop honoured. |
-| `assert-lan` | ~12m | Three PIM routers share one segment: pimd's R3 and the Arista contend on it, pimd's R5 is downstream. | The assert election, on a topology of its own.  See below — written to reach code no other test executes, and it found the reason it cannot. |
+| `assert-lan` | ~12m | Three PIM routers share one segment: pimd's R3 and the Arista contend on it, pimd's R5 is downstream. | The assert election, on a topology of its own.  See below — written to reach code no other test executes, and it found the deviation that kept it from doing so. |
 
 ### `assert-lan`: what it was for, and what it found
 
@@ -211,33 +211,34 @@ those fields (sec. 4.9.6) is only ever read by the code that wrote it.
 EOS fills them from its own RIB, so this is the one LAN in the tree
 where they could hold unequal numbers.
 
-They do not, yet.  pimd never reaches the shortest path tree here,
-because it evaluates SPTbit only when an upcall reaches
-`update_sptbit()` (`src/route.c:532`) rather than on every data packet
-as sec. 4.2 asks — so it keeps asserting from `(*,G)` state with the RPT
-bit set, which sec. 4.6.1 compares before either metric.  That is
-deviation **M10**, and this scenario is what turned it up.  It is
-reported as **KNOWN**, once per run.
+They did not at first, and that was the finding.  pimd evaluated SPTbit
+only when an upcall reached `update_sptbit()` (`src/route.c`) rather
+than on every data packet as sec. 4.2 asks, so R3 never reached the
+shortest path tree here and kept asserting from `(*,G)` state with the
+RPT bit set, which sec. 4.6.1 compares before either metric.  That was
+deviation **M10**, and this scenario is what turned it up.  It is fixed
+— `age_routes()` re-runs the check for as long as data is arriving — and
+the assertion that reported it stays, as a tripwire: it goes back to
+**KNOWN** if R3 ever stops reaching the tree.
 
-So the three metric sub-cases below do not compare anything today.  They
-are written out in full, and they start comparing the day M10 is fixed:
+So all four sub-cases below compare what they were written to compare:
 
 | Sub-case      | Decided by | Winner | Today |
 |---------------|------------|--------|-------|
-| `pimd-wins`   | `metric_preference`, pimd's lower | pimd | KNOWN (M10) |
-| `arista-wins` | `metric_preference`, the Arista's lower | Arista | KNOWN (M10) |
-| `tiebreak`    | all three equal, so the address | Arista (higher) | KNOWN (M10) |
+| `pimd-wins`   | `metric_preference`, pimd's lower | pimd | asserted |
+| `arista-wins` | `metric_preference`, the Arista's lower | Arista | asserted |
+| `tiebreak`    | all three equal, so the address | Arista (higher) | asserted |
 | `rpt-bit`     | `rpt_bit_flag`, with pimd given the *better* preference so only the bit can decide | Arista | asserted |
 
-`rpt-bit` is the one that needs no SPT — it wants pimd on the shared
-tree, which is where M10 leaves it anyway — so it runs for real: the
+`rpt-bit` is the one that needs no SPT: it wants pimd held on the shared
+tree, which `spt-threshold infinity` on both pimd routers does, and the
 Arista has to win on the bit despite pimd advertising the better
 preference.
 
-What the scenario asserts today, then, is DR and IGMP querier election
-on a segment shared with a foreign implementation (won by different
-routers, agreed by both ends), the RP set learned through it, `rpt-bit`,
-and M10 and M3 as known deviations.
+What the scenario asserts, then, is DR and IGMP querier election on a
+segment shared with a foreign implementation (won by different routers,
+agreed by both ends), the RP set learned through it, all four sub-cases
+of the election, and M3 as a known deviation.
 
 Two further cases cover what a conformant peer does that another pimd
 never would, both for deviation **M3**:
@@ -261,12 +262,13 @@ refreshed properly.  The deviation is the *window*, not the state either
 side of it.  `AL_SKIP_RESEND=yes` leaves this case out of a quick run.
 
 ED6 hangs off R3 so that R3 is a last hop router in its own right.  That
-is what makes M10 a clean demonstration rather than a muddle: R3 plainly
-meets the sec. 4.2 conditions — traffic on `RPF_interface(S)`, a
-non-empty outgoing list, `RPF'(S,G) == RPF'(*,G)` — and stays on the
-shared tree regardless.  Without it the contested LAN is R3's only
-outgoing interface, and losing an assert empties the list, which tangles
-M10 up with M3.
+is what makes the metric sub-cases readable: R3 plainly meets the
+sec. 4.2 conditions — traffic on `RPF_interface(S)`, a non-empty
+outgoing list, `RPF'(S,G) == RPF'(*,G)` — and reaches the tree off its
+own traffic rather than waiting for an (S,G) Join from R5.  Without it
+the contested LAN is R3's only outgoing interface, and losing an assert
+empties the list, which leaves `JoinDesired(S,G)` false and no way back
+onto the tree — M10 tangled up with M3.
 
 Requirements, on top of the vnet jail lab's: `bhyve` with a VIMAGE
 kernel, `sysutils/grub2-bhyve`, `emulators/qemu-tools`,

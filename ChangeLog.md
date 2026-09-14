@@ -534,6 +534,27 @@ pimd on all routers in the same domain.  See issue #93 for details.
   re-flooded down the shared tree.  An entry whose outgoing interface list
   has just emptied now clears the bit instead, so it stops claiming a tree
   it is about to prune itself off
+- Re-evaluate the (S,G) SPTbit while data is flowing, instead of only when
+  the kernel raises an upcall.  RFC 7761 sec. 4.2.2 runs
+  `Update_SPTbit(S,G,iif)` on receipt of every data packet, but pimd
+  forwards in the kernel and only sees the packets the kernel hands up, so
+  the check ran from the cache-miss and wrong-iif paths alone.  An MFC entry
+  installed with the incoming interface the (S,G) already wants raises
+  neither, so whatever was true at the first upcall was what the entry kept:
+  an (S,G) that gained an outgoing interface a moment after its first
+  packet, or one that the spt-threshold poll created under a (\*,G) and
+  inherited the kernel cache of -- a last hop router that reaches the source
+  and the RP through the same interface, which is every chain topology --
+  stayed on the shared tree for as long as that cache lived.
+  `CouldAssert(S,G,I)` is false without the bit, so every Assert such a
+  router sent carried the RPT bit that sec. 4.6.1 compares before either
+  metric, and it lost the LAN to any router that had reached the shortest
+  path tree whatever its own metric said.  `age_routes()` now runs the same
+  check once a pass for the entries that could still set the bit, asking the
+  kernel whether the MFC entry carrying the (S,G) forwarded anything since
+  the previous pass: the kernel matches packets on the incoming interface of
+  the entry holding that cache, so a counter that moved on an entry whose
+  iif is `RPF_interface(S)` is the arriving data sec. 4.2.2 asks about
 - Bound a received Register-Stop before parsing it.  RFC 7761 sec. 4.9.4
   gives the message an encoded group and an encoded unicast source after
   the PIM header, 18 bytes in all, and `receive_pim_register_stop()` read

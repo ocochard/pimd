@@ -211,6 +211,9 @@ typedef struct mrtentry {
 					 */
     uint32_t		 assert_winner_preference;
     uint32_t		 assert_winner_metric;
+    uint32_t		 spt_pktcnt;	/* Kernel packet count the SPTbit was
+					 * last checked at, see check_sptbit()
+					 */
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint16_t		*vif_deletion_delay; /* vifs deletion delay list    */
     uint16_t		 flags;		/* The MRTF_* flags		    */

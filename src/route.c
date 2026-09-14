@@ -565,6 +565,87 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 }
 
 
+/*
+ * The other half of that trigger.  Sec. 4.2.2 runs the check above on receipt
+ * of every data packet from S, and pimd forwards in the kernel, so the only
+ * packets it ever sees are the ones the kernel hands up.  Once an MFC entry is
+ * installed with the incoming interface the (S,G) already wants there are
+ * none: no further cache miss, and no wrong-iif upcall either, since those
+ * carry an iif that is not RPF_interface(S) and update_sptbit() rejects them
+ * on its second line.  Whatever was true at that first upcall is what the
+ * entry keeps, and the window is narrow: an (S,G) that acquires an outgoing
+ * interface a moment after its first packet, or one that switch_shortest_path()
+ * creates under a (*,G) and inherits the kernel cache of, never sets the bit at
+ * all.  It then asserts as an RPT forwarder for as long as it lives, since
+ * CouldAssert(S,G,I) is false without the bit and sec. 4.6.1 compares the bit
+ * before either metric.
+ *
+ * So run the check once per age_routes() pass as well.  "On receipt of data" is
+ * the part that has to be answered without the packet: the kernel counts what
+ * it forwards, and it matches packets on the incoming interface of the entry
+ * holding the MFC, so a count that moved between two passes on an entry whose
+ * iif is RPF_interface(S) is data from S received on RPF_interface(S).  Only an
+ * entry with a kernel cache of its own is asked.  One still forwarding through
+ * the (*,G) it was created under is matched on the shared tree's interface, and
+ * there a packet from S on RPF_interface(S) is a wrong-iif upcall that
+ * process_wrong_iif() already answers.
+ */
+static void check_sptbit(mrtentry_t *mrt)
+{
+    struct sg_count count;
+    kernel_cache_t *kc;
+
+    if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_SPT))
+	return;
+
+    if (!mrt->source || mrt->incoming != mrt->source->incoming)
+	return;			/* Not RPF_interface(S) */
+
+    /* Nothing to forward, so JoinDesired(S,G) is false and update_sptbit()
+     * would return without setting anything.  Answered here so the kernel
+     * call below is only made for an entry that can use the answer. */
+    if (PIMD_VIFM_ISEMPTY(mrt->oifs))
+	return;
+
+    kc = mrt->kernel_cache;
+    if (!(mrt->flags & MRTF_KERNEL_CACHE) || !kc)
+	return;
+
+    if (k_get_sg_cnt(udp_socket, kc->source, kc->group, &count))
+	return;
+
+    /* The kernel counter runs from the moment the MFC entry was installed, and
+     * an entry whose incoming interface changed since kept it, so the value on
+     * its own says nothing about the interface the packets came in on.  The
+     * difference between two passes does, which is why the first pass only
+     * takes a baseline.  It is kept on the routing entry rather than in the
+     * kernel cache entry because check_spt_threshold() uses that one as its own
+     * previous value, over its own much longer period.
+     */
+    if (!mrt->spt_pktcnt || mrt->spt_pktcnt == count.pktcnt) {
+	mrt->spt_pktcnt = count.pktcnt;
+	return;
+    }
+
+    mrt->spt_pktcnt = count.pktcnt;
+    update_sptbit(mrt, mrt->incoming);
+
+    if (mrt->flags & MRTF_SPT) {
+	IF_DEBUG(DEBUG_MRT)
+	    logit(LOG_DEBUG, 0, "SPT bit set for (%s,%s), data from S arriving on %s",
+		  inet_fmt(mrt->source->address, s1, sizeof(s1)),
+		  inet_fmt(mrt->group->group, s2, sizeof(s2)),
+		  uvifs[mrt->incoming].uv_name);
+
+	/* What the entry owes its upstream routers changes with the bit:
+	 * join_or_prune() prunes the source off the shared tree once it is on
+	 * the shortest path one.  No reason to sit on that until the periodic
+	 * timer comes round. */
+	FIRE_TIMER(mrt->jp_timer);
+    }
+}
+
+
 
 /*
  * Half of a change of upstream router: RFC 7761 sec. 4.5.4 and 4.5.5 pair the
@@ -1648,6 +1729,11 @@ void age_routes(void)
 
 		    if (rate_flag == TRUE)
 			check_spt_threshold(mrt_srcs);
+
+		    /* Sec. 4.2.2 decides SPTbit on receipt of data, which pimd
+		     * only sees when the kernel hands it a packet.  Ask the
+		     * kernel instead. */
+		    check_sptbit(mrt_srcs);
 
 		    mrt_wide = mrt_srcs->group->grp_route;
 

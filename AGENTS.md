@@ -74,8 +74,8 @@ address in the second.
 Assertions that reproduce a deviation report `KNOWN` through `xfail()` instead of failing the run,
 and turn into an `ok` once pimd is fixed; `shared-lan-spt` has this file's only one, for the assert
 RPT bit of RFC 7761 4.6.1, and it now reports `ok` -- the deviation it guards was fixed in
-`4cb79f1`, so the assertion stays as a tripwire. The other live `xfail()`s are in
-`test/freebsd-interop.sh`, for deviations M3 and M10.
+`4cb79f1`, so the assertion stays as a tripwire. The other live `xfail()` is in
+`test/freebsd-interop.sh`, for deviation M3.
 
 `doc/rfc7761-compliance.md` is the list these come from: every entry there ends with a `Test:` note
 naming what reproduces it, or `none`, so which deviations are covered and which are only written
@@ -100,15 +100,14 @@ same way as its encoder passes one and fails the other:
   pimd's R3 and the Arista contending on it. Written to compare *unequal* assert metrics, which no
   other test can -- pimd's are configured constants rather than the MRIB's (deviation M4), so
   between two pimds they always tie and the address decides, leaving the two comparisons RFC 7761
-  4.6.1 makes first as dead code. It does not get that far yet, and why is the finding: pimd never
-  reaches the SPT here, because it evaluates SPTbit only when an upcall reaches `update_sptbit()`
-  rather than per packet as sec. 4.2 asks, so it asserts from `(*,G)` with the RPT bit set and its
-  metric is never reached. That is deviation M10, reported as `KNOWN`. What the scenario asserts
-  today is DR and IGMP querier election against a foreign implementation, the RP set learned
-  through it, the `rpt-bit` sub-case (the one needing no SPT, where the Arista must win on the bit
-  despite pimd holding the better preference), and M3 -- pimd ignores an AssertCancel and never
-  resends as winner. The three metric sub-cases are written out and start comparing the day M10 is
-  fixed. `AL_SKIP_RESEND=yes` skips the 180s case.
+  4.6.1 makes first as dead code. Getting that far took fixing deviation M10, which this
+  scenario turned up: pimd evaluated SPTbit only when an upcall reached `update_sptbit()` rather
+  than per packet as sec. 4.2 asks, so R3 asserted from `(*,G)` with the RPT bit set and its metric
+  was never reached. The assertion that reported it stays as a tripwire. What the scenario asserts
+  is DR and IGMP querier election against a foreign implementation, the RP set learned through it,
+  all four sub-cases of the election -- the three metric ones and `rpt-bit`, where the Arista must
+  win on the bit despite pimd holding the better preference -- and M3, which is still live: pimd
+  ignores an AssertCancel and never resends as winner. `AL_SKIP_RESEND=yes` skips the 180s case.
 
 `run all` walks all three. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
 `-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path).
