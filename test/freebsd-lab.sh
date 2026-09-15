@@ -372,7 +372,15 @@
 #
 #               Only ED1's link goes away, so R1 keeps the link to R2 and
 #               the run can tell a daemon that survived from one that
-#               exited.  Takes about 30s.
+#               exited.  That link is then asked what it is still a member
+#               of, rather than only whether it still has a neighbour: a
+#               neighbour outlives the membership that feeds it by the
+#               Hello holdtime, and the leave issued for the interface that
+#               went is what takes the groups off the one that stayed.
+#               k_leave() named the interface by an address the kernel
+#               could no longer place, and in_mcast.c answers that by
+#               matching the group on any interface at all.  Takes about
+#               50s.
 #
 #   renumber    The rpt topology again, and the counterpart to ifgone: the
 #               interface stays, its address moves.  R2's address on the
@@ -396,7 +404,15 @@
 #               router: the adjacency with R1 has to survive untouched.
 #               The goodbye Hello is reported rather than asserted, since a
 #               poll cannot get ahead of an address that has already gone.
-#               Takes about 30s.
+#
+#               Both links are asked what they are still a member of as
+#               well, for ifgone's reason and against the same bug: the VIF
+#               is stopped with the address that has just been deleted, so
+#               the membership that should have gone stays on the
+#               renumbered interface -- the re-join that follows is refused
+#               with "Address already in use", which the run asserts on too
+#               -- and another interface's is dropped in its place.  Takes
+#               about 50s.
 #
 # The scenarios cannot run in parallel: they use the same jail names and
 # epairs, and net.inet.ip.mcast.loop is a host-global sysctl.
@@ -651,6 +667,7 @@ IFGONE_IF=${IFGONE_IF:-epair101b}
 IFGONE_PEER_IF=${IFGONE_PEER_IF:-epair101a}
 IFGONE_ADDR=${IFGONE_ADDR:-10.0.1.1}
 IFGONE_KEPT=${IFGONE_KEPT:-10.0.12.1}
+IFGONE_KEPT_IF=${IFGONE_KEPT_IF:-epair112a}
 
 # renumber: R2's address on the R1 link moves, inside its own subnet, which
 # is what an interface renumbered under a running pimd looks like -- a DHCP
@@ -668,6 +685,23 @@ RENUM_OLD=${RENUM_OLD:-10.0.23.2}
 RENUM_NEW=${RENUM_NEW:-10.0.23.22}
 RENUM_PEER=${RENUM_PEER:-r3}
 RENUM_KEPT=${RENUM_KEPT:-10.0.12.1}
+RENUM_KEPT_IF=${RENUM_KEPT_IF:-Epair112b}
+
+# The groups pimd joins on every link it runs PIM on: ALL-PIM-ROUTERS on
+# the PIM socket, ALL-ROUTERS and the IGMPv3 report group on the IGMP one.
+# Without them there is no Hello, no neighbour, no Join and no report.
+#
+# ifgone and renumber both take an interface out from under a running pimd,
+# which is when the leave issued for it can name an address the kernel can
+# no longer place and take another interface's membership instead.  Which
+# one it takes is the first in that *socket's* list, so the two sockets can
+# lose groups on different interfaces and all three have to be asked for.
+PIM_GROUPS=${PIM_GROUPS:-"224.0.0.13 224.0.0.2 224.0.0.22"}
+
+# How long to watch them for.  Measured on the losing side: pimd acted on
+# the address six seconds after it moved, one TIMER_INTERVAL, and the
+# kernel had the membership off the other interface a second after that.
+GROUP_WATCH=${GROUP_WATCH:-20}
 
 # gif-tunnel: the tunnel R1 and R3 build over R2.  The inner prefix is a
 # /24 on a point-to-point link on purpose, see the header.
@@ -2678,6 +2712,51 @@ logged() {
 	${SUDO} grep -q "$2" "$WORKDIR/$1.log" 2>/dev/null
 }
 
+# Which of the groups $3.. interface $2 on router $1 is no longer in,
+# printed as a list and empty when it still holds them all.  ifmcstat is
+# the only view of this: netstat -gn shows the forwarding cache and the VIF
+# table, not the memberships pimd's sockets hold, and pimctl shows what
+# pimd believes rather than what the kernel did with it.
+#
+# Worth asking directly, because everything else that depends on a
+# membership outlives it.  A neighbour entry survives its own Hello
+# holdtime, 105s, so a router that has just gone deaf still lists every
+# neighbour it had, and an assertion that reads one passes for the minutes
+# it takes to age out.
+missing_groups() {
+	mg_box=$1
+	mg_if=$2
+	shift 2
+
+	mg_held=$(jrun "$mg_box" ifmcstat -i "$mg_if" -f inet 2>/dev/null)
+	for mg_group in "$@"; do
+		echo "$mg_held" | grep -q "group $mg_group\b" || printf '%s ' "$mg_group"
+	done
+}
+
+# True as soon as any interface in $2 (space separated, on router $1) has
+# lost one of $PIM_GROUPS, naming them in $LOST_GROUPS.
+#
+# For wait_for(), i.e. watched rather than sampled.  pimd finds an interface
+# that has gone or moved on its own timer, every TIMER_INTERVAL (5s, see
+# src/defs.h), so the leave that can take another interface's membership
+# with it does not happen when the address does: a single sample taken in
+# between finds everything still in place and proves nothing.
+lost_groups() {
+	lg_box=$1
+	lg_ifs=$2
+	LOST_GROUPS=
+
+	for lg_if in $lg_ifs; do
+		# shellcheck disable=SC2086
+		lg_gone=$(missing_groups "$lg_box" "$lg_if" $PIM_GROUPS)
+		if [ -n "$lg_gone" ]; then
+			LOST_GROUPS="$LOST_GROUPS$lg_if lost $lg_gone"
+		fi
+	done
+
+	[ -n "$LOST_GROUPS" ]
+}
 
 # Address column of one interface in "pimctl show interface", i.e. the
 # address pimd gave the VIF out of the several the interface may carry
@@ -2903,6 +2982,19 @@ check_ifgone() {
 		fail "r1 lost its remaining PIM adjacency"
 	fi
 
+	# The adjacency above is the symptom; this is the cause, and it is
+	# the half that shows up immediately.  The leave issued for the
+	# interface that went names an address the kernel can no longer
+	# place, and on *BSD that is not refused: in_mcast.c matches the
+	# group on any interface and drops the first membership it finds,
+	# which is this one.
+	print "8. The link R1 kept is still in the groups pimd joined"
+	if wait_for "$GROUP_WATCH" lost_groups r1 "$IFGONE_KEPT_IF"; then
+		fail "r1: ${LOST_GROUPS}- the leave for $IFGONE_IF took them"
+	else
+		ok "r1: $IFGONE_KEPT_IF held $PIM_GROUPS for ${GROUP_WATCH}s after $IFGONE_IF went"
+	fi
+
 	[ "$FAILED" -eq 0 ] || return 1
 	return 0
 }
@@ -3015,6 +3107,23 @@ check_renumber() {
 		ok "r2: still has R1 ($RENUM_KEPT) as a neighbour"
 	else
 		fail "r2: lost its adjacency with R1, the restart was not confined to $RENUM_IF"
+	fi
+
+	# Both halves of the same leave.  The renumbered VIF is stopped with
+	# the address that has just been deleted, so the kernel cannot place
+	# it: the membership it should have dropped stays on $RENUM_IF, and
+	# another interface's is dropped in its place.  The neighbour above
+	# says nothing about either -- it lives on for its holdtime.
+	print "9. Both links hold every group after the renumbering"
+	if wait_for "$GROUP_WATCH" lost_groups r2 "$RENUM_KEPT_IF $RENUM_IF"; then
+		fail "r2: ${LOST_GROUPS}- the leave for $RENUM_IF named an address the kernel could not place"
+	else
+		ok "r2: $RENUM_KEPT_IF and $RENUM_IF both held $PIM_GROUPS for ${GROUP_WATCH}s"
+	fi
+	if logged r2 "Cannot join group"; then
+		fail "r2: a group re-join was refused, the old membership was never dropped"
+	else
+		ok "r2: every group was re-joined, none was still held"
 	fi
 
 	[ "$FAILED" -eq 0 ] || return 1
