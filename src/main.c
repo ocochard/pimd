@@ -759,6 +759,24 @@ static void del_static_rp(void)
  */
 static void restart(int signo)
 {
+    struct uvif *v;
+    vifi_t vifi;
+
+    /* RFC 7761 sec. 4.3.1 wants a Hello with Holdtime zero before an
+     * interface stops speaking PIM, so a DR is re-elected at once instead of
+     * at the neighbors' Neighbor Liveness Timer.  Of every path into
+     * stop_vif() this is the only one where the interfaces are still up and
+     * able to send: check_vif_state() gets there once the kernel already
+     * reports the interface gone or down, and cleanup() has sent its own
+     * goodbyes before calling us with signo 0.
+     */
+    if (signo) {
+	for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
+	    if ((v->uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_REGISTER | VIFF_TUNNEL)) == 0)
+		send_pim_hello(v, 0);
+	}
+    }
+
     /*
      * reset all the entries
      */

@@ -104,6 +104,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Send the Hello with Holdtime zero of RFC 7761 section 4.3.1 before a
+  restart takes the interfaces down, so neighbors elect a new DR at once
+  instead of waiting out the Neighbor Liveness Timer.  `cleanup()` already
+  sent one on the way out and `renumber_vif()` sends one from the old
+  address; `restart()`, reached from SIGHUP and from `pimctl restart`, is
+  the remaining path where the interfaces are still up and able to send
 - Delay the first PIM Hello on an interface by a random 0 to 5 seconds, the
   Triggered_Hello_Delay of RFC 7761 section 4.3.1.  A delay was drawn at
   startup, from the wrong range, and then thrown away: `start_vif()` went

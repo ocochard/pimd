@@ -469,25 +469,6 @@ Effort: medium; a per-vif triggered-Hello timer, separate from the periodic
 one, and the RFC 5059 Bootstrap has to wait for it.  Test: none; it is startup
 timing, and every lab here starts its routers together.*
 
-**T4.  `stop_vif()` sends no goodbye Hello, on paths that could no longer send
-one.**  Sec. 4.3.1 wants a zero-holdtime Hello so a DR can be re-elected at
-once, and the send half is there in both places that can use it: `cleanup()`
-sends one on every vif before the daemon exits (`src/main.c:590`), and
-`renumber_vif()` sends one from the old address before taking the VIF down
-(`src/vif.c:554`).  `stop_vif()` itself still has the two TODOs
-(`src/vif.c:438-442`), but every path into it has either sent the Hello
-already or cannot send one: `check_vif_state()` reaches it only once
-`SIOCGIFFLAGS` reports the interface gone or `IFF_UP` clear (`src/vif.c:672`,
-`:687`), and `update_reg_vif()` only for the register vif, which has no
-neighbors.  That leaves `restart()` (`src/main.c:770`), where the interfaces
-are still up -- and it starts them again immediately, so the Hello that follows
-carries a new GenID and the neighbors re-elect on that instead.
-*Check: sec. 4.3.1, `doc/rfc7761.txt:1692`; the zero-Holdtime meaning is sec.
-4.9.2, `:6077`.  Effort: small, and worth only the `restart()` case.  Test:
-`renumber` in `test/freebsd-lab.sh` drives the path that does send one, and
-reports rather than asserts whether it arrived -- a poll cannot get ahead of an
-address that has already gone.*
-
 **T5.  `hello-interval` has no lower bound.**
 `man/pimd.conf.5:119` documents 30 to 18724 and calls anything under 30
 unsupported.  `src/config.c:1451` enforces the ceiling only, so 0 and 1 to 29
