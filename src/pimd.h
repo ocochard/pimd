@@ -70,6 +70,24 @@
  * This was RFC 2362's [Random-Delay-Join-Timeout], 4.5, a different quantity.
  */
 #define PIM_OVERRIDE_INTERVAL           2.5
+/* Propagation_Delay(I) of sec. 4.3.3, the other half of
+ * J/P_Override_Interval(I).  Both are seconds here and milliseconds on the
+ * wire, which is the only unit the LAN Prune Delay option has.
+ *
+ * Not the 0.5 s default: the same section asks implementers to "enforce a
+ * lower bound on the permitted values for this delay to allow for scheduling
+ * and processing delays within their router", because "setting this
+ * Propagation Delay to too low a value may result in temporary forwarding
+ * outages because a downstream router will not be able to override a
+ * neighbor's Prune message before the upstream neighbor stops forwarding".
+ * pimd's scheduling delay is the whole of TIMER_INTERVAL -- an override Join
+ * is built by age_routes() and no timer here expires off a tick -- so that is
+ * what it advertises, and what an upstream is asked to wait for it.  T1 in
+ * doc/rfc7761-compliance.md is the deviation this covers for; when sub-tick
+ * scheduling arrives this goes back to 0.5.
+ */
+#define PIM_PROPAGATION_DELAY           TIMER_INTERVAL
+#define PIM_MSEC(secs)                  ((uint16_t)((secs) * 1000))
 
 /* TODO: XXX: cannot be shorter than 10 seconds (not in the spec)
  * MAX: Cisco max value (16383) for ip pim rp-candidate interval. */
@@ -319,6 +337,11 @@ typedef struct pim_jp_encod_grp_ {
 #define PIM_HELLO_HOLDTIME              1
 #define PIM_HELLO_HOLDTIME_LEN          2
 #define PIM_HELLO_HOLDTIME_FOREVER      0xffff
+
+#define PIM_HELLO_LAN_PRUNE_DELAY       2
+#define PIM_HELLO_LAN_PRUNE_DELAY_LEN   4
+/* The T bit of sec. 4.9.2, the top bit of the Propagation_Delay field */
+#define PIM_LAN_PRUNE_DELAY_T_BIT       0x8000
 
 #define PIM_HELLO_DR_PRIO               19
 #define PIM_HELLO_DR_PRIO_LEN           4

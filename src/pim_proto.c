@@ -40,6 +40,10 @@ typedef struct {
     uint32_t  dr_prio;
     int8_t    dr_prio_present;
     uint32_t  genid;
+    int8_t    lan_delay_present;
+    int8_t    tracking_support;
+    uint16_t  propagation_delay;
+    uint16_t  override_interval;
 } pim_hello_opts_t;
 
 /*
@@ -81,17 +85,21 @@ static void assert_neighbor_gone   (vifi_t vifi, uint32_t addr, const char *why)
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
 
+/* Effective_Override_Interval(I), defined with the rest of the LAN Prune
+ * Delay plumbing further down; t_override is drawn from it. */
+static uint16_t effective_override_interval(vifi_t vifi);
+
 /*
  * t_override: the randomized delay before a triggered Join, so that routers
  * on a LAN do not all answer in the same instant.  RFC 7761 sec. 4.11 wants
- * rand(0, Effective_Override_Interval(I)), and with no LAN Prune Delay option
- * to derive one from that is the Override_Interval default.  The division
- * still quantizes the result to whole seconds, and SET_TIMER cannot express
- * anything finer; that half is M2 and T1 in doc/rfc7761-compliance.md.
+ * rand(0, Effective_Override_Interval(I)), which is now a value the link
+ * negotiates rather than the Override_Interval default.  The division still
+ * quantizes the result to whole seconds, and SET_TIMER cannot express
+ * anything finer; that half is T1 in doc/rfc7761-compliance.md.
  */
-static uint16_t jp_override_timeout(void)
+static uint16_t jp_override_timeout(vifi_t vifi)
 {
-    return (RANDOM() % (int)(10 * PIM_OVERRIDE_INTERVAL)) / 10;
+    return (RANDOM() % effective_override_interval(vifi)) / 1000;
 }
 
 
@@ -119,7 +127,7 @@ static uint16_t jp_suppression_timeout(void)
  */
 static void refresh_upstream_joins(pim_nbr_entry_t *nbr)
 {
-    uint16_t jp_value = jp_override_timeout();
+    uint16_t jp_value = jp_override_timeout(nbr->vifi);
     grpentry_t *grp;
     mrtentry_t *mrt;
 
@@ -704,6 +712,20 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 		GET_HOSTLONG(opts->genid, data);
 		break;
 
+	    case PIM_HELLO_LAN_PRUNE_DELAY: {
+		uint16_t delay;
+
+		if (validate_pim_opt(src, "LAN Prune Delay", PIM_HELLO_LAN_PRUNE_DELAY_LEN, opt_len) == FALSE)
+		    return FALSE;
+
+		GET_HOSTSHORT(delay, data);
+		opts->lan_delay_present = 1;
+		opts->tracking_support  = (delay & PIM_LAN_PRUNE_DELAY_T_BIT) ? 1 : 0;
+		opts->propagation_delay = delay & ~PIM_LAN_PRUNE_DELAY_T_BIT;
+		GET_HOSTSHORT(opts->override_interval, data);
+		break;
+	    }
+
 	    default:
 		break;		/* Ignore any unknown options */
 	}
@@ -731,6 +753,95 @@ static void cache_nbr_settings(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
     nbr->genid           = opts->genid;
     nbr->dr_prio         = opts->dr_prio;
     nbr->dr_prio_present = opts->dr_prio_present;
+
+    /* RFC 7761 sec. 4.3.3.  A neighbor that stops advertising the option
+     * takes the whole link back to the defaults, so the absent case is
+     * recorded rather than left at what the last Hello said. */
+    nbr->lan_delay_present = opts->lan_delay_present;
+    nbr->tracking_support  = opts->tracking_support;
+    nbr->propagation_delay = opts->propagation_delay;
+    nbr->override_interval = opts->override_interval;
+}
+
+/*
+ * RFC 7761 sec. 4.3.3: "the information provided in the LAN Prune Delay
+ * option is not used unless all neighbors on a link advertise the option".
+ * A link with no neighbors at all answers TRUE, and the effective values
+ * below are then our own, which is what a router alone on a segment would
+ * have negotiated with itself.
+ */
+static int lan_delay_enabled(vifi_t vifi)
+{
+    pim_nbr_entry_t *nbr;
+
+    for (nbr = uvifs[vifi].uv_pim_neighbors; nbr; nbr = nbr->next) {
+	if (!nbr->lan_delay_present)
+	    return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* Effective_Propagation_Delay(I) and Effective_Override_Interval(I) of the
+ * same section: the largest value anyone on the link advertises, ours
+ * included, or the default where the option is not universal. */
+static uint16_t effective_propagation_delay(vifi_t vifi)
+{
+    uint16_t delay = PIM_MSEC(PIM_PROPAGATION_DELAY);
+    pim_nbr_entry_t *nbr;
+
+    if (!lan_delay_enabled(vifi))
+	return delay;
+
+    for (nbr = uvifs[vifi].uv_pim_neighbors; nbr; nbr = nbr->next) {
+	if (nbr->propagation_delay > delay)
+	    delay = nbr->propagation_delay;
+    }
+
+    return delay;
+}
+
+static uint16_t effective_override_interval(vifi_t vifi)
+{
+    uint16_t delay = PIM_MSEC(PIM_OVERRIDE_INTERVAL);
+    pim_nbr_entry_t *nbr;
+
+    if (!lan_delay_enabled(vifi))
+	return delay;
+
+    for (nbr = uvifs[vifi].uv_pim_neighbors; nbr; nbr = nbr->next) {
+	if (nbr->override_interval > delay)
+	    delay = nbr->override_interval;
+    }
+
+    return delay;
+}
+
+/*
+ * J/P_Override_Interval(I), sec. 4.11: the two effective values added.  The
+ * wire carries milliseconds and every timer here is whole seconds, so the
+ * sum is rounded up -- a window rounded down is one a downstream router can
+ * miss, and the section exists to give it one.
+ */
+static uint16_t jp_override_interval(vifi_t vifi)
+{
+    uint32_t msec = effective_propagation_delay(vifi) + effective_override_interval(vifi);
+
+    return (msec + 999) / 1000;
+}
+
+/* The Prune-Pending Timer of sec. 4.5.1 and sec. 4.5.2.  The point-to-point
+ * flag used to stand in for the single-neighbor test, which is not the same
+ * question: a shared segment with one PIM router left on it has nobody to
+ * override either. */
+static uint16_t prune_pending_delay(vifi_t vifi)
+{
+    struct uvif *v = &uvifs[vifi];
+
+    if (!v->uv_pim_neighbors || !v->uv_pim_neighbors->next)
+	return 0;
+
+    return jp_override_interval(vifi);
 }
 
 int send_pim_hello(struct uvif *v, uint16_t holdtime)
@@ -747,6 +858,16 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     PUT_HOSTSHORT(PIM_HELLO_HOLDTIME, data);
     PUT_HOSTSHORT(PIM_HELLO_HOLDTIME_LEN, data);
     PUT_HOSTSHORT(holdtime, data);
+
+    /* RFC 7761 sec. 4.3.3 wants this on every multi-access LAN, and an
+     * upstream that does not see it falls back to its own defaults -- which
+     * for pimd's own downstream neighbors used to mean the option was never
+     * on the wire at all.  The T bit stays clear: it advertises the ability
+     * to disable Join suppression, which pimd does not have. */
+    PUT_HOSTSHORT(PIM_HELLO_LAN_PRUNE_DELAY, data);
+    PUT_HOSTSHORT(PIM_HELLO_LAN_PRUNE_DELAY_LEN, data);
+    PUT_HOSTSHORT(PIM_MSEC(PIM_PROPAGATION_DELAY), data);
+    PUT_HOSTSHORT(PIM_MSEC(PIM_OVERRIDE_INTERVAL), data);
 
     PUT_HOSTSHORT(PIM_HELLO_DR_PRIO, data);
     PUT_HOSTSHORT(PIM_HELLO_DR_PRIO_LEN, data);
@@ -1511,6 +1632,106 @@ void log_pim_join_prune(uint32_t src, uint8_t *data_ptr, int num_groups, char* i
 /* TODO: when parsing, check if we go beyond message size */
 /* TODO: too long, simplify it! */
 #define PIM_JOIN_PRUNE_MINLEN (4 + PIM_ENCODE_UNI_ADDR_LEN + 4)
+/*
+ * PruneEcho(*,G), PruneEcho(S,G) and PruneEcho(S,G,rpt), RFC 7761 sec. 4.5.1
+ * and sec. 4.5.2: when the Prune-Pending Timer expires and the router really
+ * does stop forwarding on the interface, it sends the Prune once more with
+ * its own address in the Upstream Neighbor Address field.  "Its purpose is to
+ * add additional reliability so that if a Prune that should have been
+ * overridden by another router is lost locally on the LAN, then the PruneEcho
+ * may be received and cause the override to happen."
+ *
+ * Not sent on an interface with a single PIM neighbor: there is nobody there
+ * whose override could have been lost.  Built here rather than through
+ * add_jp_entry(), which addresses a message to a neighbor and this one is
+ * addressed to ourselves.
+ */
+void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
+{
+    struct uvif *v = &uvifs[vifi];
+    uint32_t source;
+    uint8_t flags = USADDR_S_BIT;
+    uint8_t *data;
+    char *buf;
+    size_t len;
+
+    if (!mrt || !mrt->group)
+	return;
+
+    if (!v->uv_pim_neighbors || !v->uv_pim_neighbors->next)
+	return;
+
+    if (v->uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_REGISTER))
+	return;
+
+    if (mrt->flags & MRTF_SG) {
+	if (!mrt->source)
+	    return;
+
+	source = mrt->source->address;
+	if (mrt->flags & MRTF_RP)
+	    flags |= USADDR_RP_BIT;
+    } else {
+	source = mrt->group->rpaddr;
+	flags |= USADDR_RP_BIT | USADDR_WC_BIT;
+    }
+
+    buf  = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
+    data = (uint8_t *)buf;
+
+    PUT_EUADDR(v->uv_lcl_addr, data);	/* Upstream Neighbor Address: ours */
+    PUT_BYTE(0, data);			/* Reserved */
+    PUT_BYTE(1, data);			/* One group */
+    PUT_HOSTSHORT(PIM_JOIN_PRUNE_HOLDTIME, data);
+    PUT_EGADDR(mrt->group->group, SINGLE_GRP_MSKLEN, 0, data);
+    PUT_HOSTSHORT(0, data);		/* No joined sources */
+    PUT_HOSTSHORT(1, data);		/* One pruned source */
+    PUT_ESADDR(source, SINGLE_SRC_MSKLEN, flags, data);
+
+    len = data - (uint8_t *)buf;
+    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	logit(LOG_INFO, 0, "Send PruneEcho for (%s,%s) on %s",
+	      inet_fmt(source, s1, sizeof(s1)),
+	      inet_fmt(mrt->group->group, s2, sizeof(s2)), v->uv_name);
+
+    send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_JOIN_PRUNE, len);
+}
+
+/*
+ * "Receive Prune(*,G)" and "Receive Prune(S,G)" of sec. 4.5.1 and sec. 4.5.2:
+ * the downstream state machine on I goes to Prune-Pending and starts the
+ * Prune-Pending Timer, J/P_Override_Interval(I), or zero where the router has
+ * no more than one neighbor on the interface and nobody is left to override.
+ *
+ * pimd keeps one timer per (entry, interface), the Expiry Timer, so
+ * Prune-Pending is that timer lowered to the pending delay.  Nothing is lost
+ * by folding the two: "for forwarding purposes, the Prune-Pending state
+ * functions exactly like the Join state", and a Join arriving meanwhile
+ * raises the timer again, which is the transition back to Join.  What the
+ * bitmap adds is which of the two an expiry came from, so that the PruneEcho
+ * goes out for a prune and not for a membership that simply ran out.
+ *
+ * What this replaces was `holdtime/3`, 70 seconds for the usual holdtime and
+ * six hours for a Join asking for 0xffff, compounding at every hop.
+ */
+static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
+{
+    uint16_t delay = prune_pending_delay(vifi);
+
+    if (delay == 0) {
+	/* Nobody to wait for, and nobody to echo to either: a zero delay is
+	 * the single-neighbor case, which sec. 4.5.1 excuses the PruneEcho
+	 * on.  So the interface is not marked pending at all. */
+	FIRE_TIMER(mrt->vif_timers[vifi]);
+	return;
+    }
+
+    if (mrt->vif_timers[vifi] > delay)
+	SET_TIMER(mrt->vif_timers[vifi], delay);
+
+    PIMD_VIFM_SET(vifi, mrt->prune_pending_oifs);
+}
+
 int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), char *msg, size_t len)
 {
     vifi_t vifi;
@@ -1746,7 +1967,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    }
 			} else if (my_action == PIM_ACTION_JOIN) {
 			    /* Override the Prune by scheduling a Join */
-			    jp_value = jp_override_timeout();
+			    jp_value = jp_override_timeout(vifi);
 			    /* TODO: XXX: TIMER implem. dependency! */
 			    if (mrt_rp->jp_timer > jp_value)
 				SET_TIMER(mrt_rp->jp_timer, jp_value);
@@ -1759,7 +1980,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			for (grp = rpentry->cand_rp->rp_grp_next->grplink; grp; grp = grp->rpnext) {
 			    my_action = join_or_prune(grp->grp_route, upstream_router);
 			    if (my_action == PIM_ACTION_JOIN) {
-				jp_value = jp_override_timeout();
+				jp_value = jp_override_timeout(vifi);
 				/* TODO: XXX: TIMER implem. dependency! */
 				if (grp->grp_route->jp_timer > jp_value)
 				    SET_TIMER(grp->grp_route->jp_timer, jp_value);
@@ -1767,7 +1988,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
 				my_action = join_or_prune(mrt_srcs, upstream_router);
 				if (my_action == PIM_ACTION_JOIN) {
-				    jp_value = jp_override_timeout();
+				    jp_value = jp_override_timeout(vifi);
 				    /* TODO: XXX: TIMER implem. dependency! */
 				    if (mrt_srcs->jp_timer > jp_value)
 					SET_TIMER(mrt_srcs->jp_timer, jp_value);
@@ -1875,7 +2096,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    }
 		    else if (my_action == PIM_ACTION_JOIN) {
 			/* Override the Prune by scheduling a Join */
-			jp_value = jp_override_timeout();
+			jp_value = jp_override_timeout(vifi);
 			/* TODO: XXX: TIMER implem. dependency! */
 			if (mrt->jp_timer > jp_value)
 			    SET_TIMER(mrt->jp_timer, jp_value);
@@ -1888,7 +2109,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    for (mrt_srcs = mrt->group->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
 			my_action = join_or_prune(mrt_srcs, upstream_router);
 			if (my_action == PIM_ACTION_JOIN) {
-			    jp_value = jp_override_timeout();
+			    jp_value = jp_override_timeout(vifi);
 			    /* TODO: XXX: TIMER implem. dependency! */
 			    if (mrt_srcs->jp_timer > jp_value)
 				SET_TIMER(mrt_srcs->jp_timer, jp_value);
@@ -1916,7 +2137,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		}
 		else if (my_action == PIM_ACTION_JOIN) {
 		    /* Override the Prune by scheduling a Join */
-		    jp_value = jp_override_timeout();
+		    jp_value = jp_override_timeout(vifi);
 		    /* TODO: XXX: TIMER implem. dependency! */
 		    if (mrt->jp_timer > jp_value)
 			SET_TIMER(mrt->jp_timer, jp_value);
@@ -2030,19 +2251,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (!mrt)
 		    continue;   /* I don't have (S,G) to prune. Ignore. */
 
-		/* If the link is point-to-point, timeout the oif
-		 * immediately, otherwise decrease the timer to allow
-		 * other downstream routers to override the prune.
-		 */
 		/* TODO: XXX: increase the entry timer? */
-		if (v->uv_flags & VIFF_POINT_TO_POINT) {
-		    FIRE_TIMER(mrt->vif_timers[vifi]);
-		} else {
-		    /* TODO: XXX: TIMER implem. dependency! */
-		    if (mrt->vif_timers[vifi] > mrt->vif_deletion_delay[vifi])
-			SET_TIMER(mrt->vif_timers[vifi],
-				  mrt->vif_deletion_delay[vifi]);
-		}
+		prune_pending(mrt, vifi);
 		IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
 		    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
@@ -2062,14 +2272,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
 		if (mrt) {
 		    SET_TIMER(mrt->entry_timer, holdtime);
-		    if (v->uv_flags & VIFF_POINT_TO_POINT) {
-			FIRE_TIMER(mrt->vif_timers[vifi]);
-		    } else {
-			/* TODO: XXX: TIMER implem. dependency! */
-			if (mrt->vif_timers[vifi] > mrt->vif_deletion_delay[vifi])
-			    SET_TIMER(mrt->vif_timers[vifi],
-				      mrt->vif_deletion_delay[vifi]);
-		    }
+		    prune_pending(mrt, vifi);
 		    IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 			PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
 			PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
@@ -2126,14 +2329,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			 * left us forwarding to that router for the whole expiry
 			 * time.
 			 */
-			if (v->uv_flags & VIFF_POINT_TO_POINT) {
-			    FIRE_TIMER(mrt->vif_timers[vifi]);
-			} else {
-			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (mrt->vif_timers[vifi] > mrt->vif_deletion_delay[vifi])
-				SET_TIMER(mrt->vif_timers[vifi],
-					  mrt->vif_deletion_delay[vifi]);
-			}
+			prune_pending(mrt, vifi);
 			IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 			    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
 			    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
@@ -2204,11 +2400,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		 * has died, so give the interface back and let the election
 		 * run again if it was wrong. */
 		assert_clear(mrt, vifi);
+		/* "The Prune-Pending Timer is canceled (without triggering an
+		 * expiry event)", sec. 4.5.1 and sec. 4.5.2, and the Expiry
+		 * Timer goes back to the maximum of its value and the holdtime.
+		 */
+		PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
 		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->vif_timers[vifi] < holdtime) {
+		if (mrt->vif_timers[vifi] < holdtime)
 		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
-		    mrt->vif_deletion_delay[vifi] = holdtime/3;
-		}
 		if (mrt->entry_timer < holdtime)
 		    SET_TIMER(mrt->entry_timer, holdtime);
 		change_interfaces(mrt,
@@ -2266,11 +2465,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		/* "Receive Join(S,G) on interface I", the same transition in
 		 * sec. 4.6.1. */
 		assert_clear(mrt, vifi);
+		/* "The Prune-Pending Timer is canceled (without triggering an
+		 * expiry event)", sec. 4.5.1 and sec. 4.5.2, and the Expiry
+		 * Timer goes back to the maximum of its value and the holdtime.
+		 */
+		PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
 		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->vif_timers[vifi] < holdtime) {
+		if (mrt->vif_timers[vifi] < holdtime)
 		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
-		    mrt->vif_deletion_delay[vifi] = holdtime/3;
-		}
 		if (mrt->entry_timer < holdtime)
 		    SET_TIMER(mrt->entry_timer, holdtime);
 		/* If this is a new entry, send immediately the
@@ -3644,7 +3846,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	 * about them until we say so; waiting for the periodic Join left
 	 * them without the group for up to a whole period.
 	 */
-	jp_value = jp_override_timeout();
+	jp_value = jp_override_timeout(vifi);
 	if (own->jp_timer > jp_value)
 	    SET_TIMER(own->jp_timer, jp_value);
 

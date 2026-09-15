@@ -508,6 +508,23 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 
 
 /*
+ * "Prune-Pending Timer Expires" of RFC 7761 sec. 4.5.1 and sec. 4.5.2: the
+ * downstream state machine goes to NoInfo and the router owes the LAN a
+ * PruneEcho.  The interface is one pimd has just dropped from the outgoing
+ * list, and the bitmap says whether a Prune put it on its way out or the
+ * Expiry Timer simply ran its full course, which owes nothing.
+ */
+static void expire_prune_pending(mrtentry_t *mrt, vifi_t vifi)
+{
+    if (!PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
+	return;
+
+    PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
+    send_prune_echo(mrt, vifi);
+}
+
+
+/*
  * RFC 7761 sec. 4.5.5:
  *
  *   bool JoinDesired(S,G) {
@@ -1723,6 +1740,7 @@ void age_routes(void)
 			if (PIMD_VIFM_ISSET(vifi, mrt_grp->joined_oifs)) {
 			    IF_TIMEOUT(mrt_grp->vif_timers[vifi]) {
 				PIMD_VIFM_CLR(vifi, mrt_grp->joined_oifs);
+				expire_prune_pending(mrt_grp, vifi);
 				change_flag = TRUE;
 			    }
 			}
@@ -1809,6 +1827,7 @@ void age_routes(void)
 				IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
 				    PIMD_VIFM_CLR(vifi, mrt_srcs->joined_oifs);
 				    PIMD_VIFM_CLR(vifi, mrt_srcs->sg_joined_oifs);
+				    expire_prune_pending(mrt_srcs, vifi);
 				    change_flag = TRUE;
 				}
 			    }

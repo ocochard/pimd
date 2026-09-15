@@ -60,8 +60,6 @@
 	PIMD_VIFM_COPY((from)->asserted_oifs, (to)->asserted_oifs);	\
 	memcpy((to)->vif_timers, (from)->vif_timers,			\
 	       numvifs * sizeof((from)->vif_timers[0]));		\
-	memcpy((to)->vif_deletion_delay, (from)->vif_deletion_delay,	\
-	       numvifs * sizeof((from)->vif_deletion_delay[0]));	\
     } while (0)
 
 #define FREE_MRTENTRY(mrtentry_ptr)				\
@@ -71,8 +69,6 @@
 								\
 	if ((mrtentry_ptr)->vif_timers)				\
 	    free((mrtentry_ptr)->vif_timers);			\
-	if ((mrtentry_ptr)->vif_deletion_delay)			\
-	    free((mrtentry_ptr)->vif_deletion_delay);		\
 	if ((mrtentry_ptr)->asserts)			\
 	    free((mrtentry_ptr)->asserts);			\
 	curr = (mrtentry_ptr)->kernel_cache;			\
@@ -123,6 +119,14 @@ typedef struct pim_nbr_entry {
     int8_t                dr_prio_present;/* If set, this neighbor has prio */
     uint32_t              dr_prio;	  /* DR priority: 1 (default)       */
     uint32_t              genid;	  /* Cached generation ID           */
+    /* The LAN Prune Delay option, RFC 7761 sec. 4.3.3.  A link where one
+     * neighbor omits the option is a link where nobody's values are used,
+     * so the flag is as much of it as the effective values need. */
+    int8_t                lan_delay_present;
+    int8_t                tracking_support;/* Its T bit: can disable Join
+					    * suppression                   */
+    uint16_t              propagation_delay;/* Milliseconds, as on the wire  */
+    uint16_t              override_interval;
     vifi_t		  vifi;		  /* which interface		    */
     uint16_t		  timer;	  /* for timing out neighbor	    */
     time_t		  uptime;	  /* time since first hello	    */
@@ -240,6 +244,12 @@ typedef struct mrtentry {
 							 * from the (*,G) state VOIF_COPY()
 							 * seeds the rest with	    */
     uint8_t		  pruned_oifs[MAXVIFS]; 	/* The pruned oifs (Prune received) */
+    uint8_t		  prune_pending_oifs[MAXVIFS];	/* Prune-Pending state of RFC 7761
+							 * sec. 4.5.1 and sec. 4.5.2: a
+							 * Prune lowered the Expiry Timer
+							 * here and the oif is waiting to
+							 * be overridden.  Which expiry
+							 * owes a PruneEcho	    */
     uint8_t		  asserted_oifs[MAXVIFS];	/* The asserted oifs (lost Assert)  */
     uint8_t		  leaves[MAXVIFS];		/* Has directly connected members   */
     struct pim_nbr_entry *upstream;	/* upstream router, needed because
@@ -260,7 +270,6 @@ typedef struct mrtentry {
 					 * last checked at, see check_sptbit()
 					 */
     uint16_t		*vif_timers;	/* vifs timer list		    */
-    uint16_t		*vif_deletion_delay; /* vifs deletion delay list    */
     uint16_t		 flags;		/* The MRTF_* flags		    */
     uint16_t		 entry_timer;	/* entry timer			    */
     uint16_t		 jp_timer;	/* The Join/Prune timer		    */

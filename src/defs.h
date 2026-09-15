@@ -564,6 +564,7 @@ extern int	join_or_prune		(mrtentry_t *mrtentry_ptr, pim_nbr_entry_t *upstream_r
 extern int	receive_pim_assert	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_assert		(uint32_t source, uint32_t group, vifi_t vifi, mrtentry_t *mrtentry_ptr);
 extern void	send_pim_assert_cancel	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern void	send_prune_echo		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_winner_is_me	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_lost_on		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	lost_assert		(mrtentry_t *mrtentry_ptr, vifi_t vifi);

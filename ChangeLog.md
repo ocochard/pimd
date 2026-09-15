@@ -117,6 +117,27 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Send and parse the LAN Prune Delay Hello option, RFC 7761 sec. 4.3.3,
+  and derive the Prune-Pending Timer from it.  pimd advertised neither
+  Propagation_Delay nor Override_Interval and kept neither from its
+  neighbours, so every router on a link with pimd on it fell back to the
+  defaults; worse, the delay pimd itself waited before acting on a Prune
+  was the Join holdtime divided by three, 70 seconds for the usual 210 and
+  about six hours for a Join asking for 0xffff.  A Prune on a shared LAN
+  therefore left traffic flowing long past the three seconds
+  J/P_Override_Interval(I) asks for, compounding at every hop, while an
+  outgoing interface that came from a local member rather than from a
+  received Join went the other way and was dropped instantly, with no
+  override window at all.  Both are now the interval the link negotiates,
+  zero where pimd has at most one neighbour on the interface, and the
+  PruneEcho of sec. 4.5.1 is sent when the timer expires so that an
+  override lost on the LAN can still be made.  The Propagation_Delay pimd
+  advertises is the 5 second timer granularity rather than the 0.5 second
+  default, which is the lower bound sec. 4.3.3 asks implementers to enforce
+  "to allow for scheduling and processing delays within their router": a
+  triggered Join here is built by the periodic pass, so an upstream told to
+  wait 3 seconds would stop forwarding before pimd's own override could go
+  out
 - Do not split the group set carrying a (\*,G) Join across two Join/Prune
   messages.  RFC 7761 sec. 4.9.5.2 makes the list of (S,G,rpt) Prunes that
   qualifies such a Join unsplittable: an upstream router that reads the
