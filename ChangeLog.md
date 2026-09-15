@@ -117,6 +117,23 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Stop leaving a multicast group on whatever interface the kernel picks.
+  `k_leave()` named the interface by the address the VIF was built with,
+  and on \*BSD an address the kernel can no longer place is not an error:
+  `INADDR_TO_IFP()` leaves the interface NULL and `imo_match_group()` then
+  matches the group on *any* interface, so `IP_DROP_MEMBERSHIP` took the
+  membership of whichever VIF came first in the socket's list.  An
+  interface that was destroyed, or renumbered under the running daemon,
+  therefore took 224.0.0.13, 224.0.0.2 and 224.0.0.22 off a VIF nobody had
+  touched: pimd went deaf on the link it still had, heard no further
+  Hellos there, and the neighbour it already had aged out and never came
+  back.  Renumbering showed the other half of the same bug, the membership
+  that should have been dropped stayed behind and the re-join that follows
+  failed with "Address already in use".  Both calls now name the interface
+  by an address it still has, and ask the kernel for nothing once the
+  interface has gone and taken its memberships with it.  Caught by the
+  `ifgone` scenario of `test/freebsd-lab.sh`; Linux names the interface by
+  index and was never affected
 - Ask a netlink attribute for its bytes before reading them.  `RTA_OK()`
   only says an attribute is no longer than what is left of the message, so
   a four byte one with no payload passes it, and `getmsg()` then read the

@@ -287,6 +287,54 @@ void k_set_router_alert(int socket)
 }
 
 
+#ifndef __linux__
+/*
+ * Name the interface a multicast membership belongs to, in the terms the
+ * kernel resolves: an address it can still place.
+ *
+ * imr_interface is looked up by address, INADDR_TO_IFP() in
+ * sys/netinet/in_mcast.c, and an address the kernel cannot place there is
+ * not refused.  It leaves ifp NULL, and both ends of that go wrong for us:
+ * imo_match_group() then matches the group on *any* interface, so
+ * IP_DROP_MEMBERSHIP takes the membership of whichever VIF comes first in
+ * the socket's list, and IP_ADD_MEMBERSHIP picks an interface out of the
+ * routing table instead.  A VIF holds an address the kernel may have
+ * dropped already -- its interface was destroyed, or renumbered under the
+ * running daemon -- and leaving with one of those left pimd deaf on the
+ * link it still had, every group gone from a VIF nobody had touched.
+ *
+ * So ask the interface for an address of its own.  Any of them resolves to
+ * the same ifnet, which is all a membership is keyed on, so this is not the
+ * "which address is the VIF's" question check_vif_addrs() walks getifaddrs()
+ * for.  FALSE means there is no interface left to ask, and the kernel has
+ * already dropped everything it held there.
+ *
+ * Linux is not in this: it names the interface by index, and ip_mc_find_dev()
+ * refuses an index it cannot resolve instead of falling back to any of them.
+ */
+static int mcast_ifaddr(struct uvif *v, struct in_addr *addr)
+{
+    struct ifreq ifr;
+
+    memset(&ifr, 0, sizeof(ifr));
+    strlcpy(ifr.ifr_name, v->uv_name, sizeof(ifr.ifr_name));
+    if (ioctl(udp_socket, SIOCGIFADDR, (char *)&ifr) < 0) {
+	/* An interface that has been removed is ENODEV on Linux and ENXIO
+	 * on *BSD, as check_vif_state() reads them; EADDRNOTAVAIL is one
+	 * that has no address for us to name it by. */
+	if (errno != ENODEV && errno != ENXIO && errno != EADDRNOTAVAIL)
+	    logit(LOG_WARNING, errno, "Failed reading address of %s", v->uv_name);
+
+	return FALSE;
+    }
+
+    *addr = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr;
+
+    return TRUE;
+}
+#endif /* !__linux__ */
+
+
 /*
  * Join a multicast group on virtual interface 'v'.
  */
@@ -302,7 +350,8 @@ void k_join(int socket, uint32_t grp, struct uvif *v)
     mreq.imr_ifindex	      = v->uv_ifindex;
     mreq.imr_address.s_addr   = v->uv_lcl_addr;
 #else
-    mreq.imr_interface.s_addr = v->uv_lcl_addr;
+    if (!mcast_ifaddr(v, &mreq.imr_interface))
+	return;
 #endif /* __linux__ */
     mreq.imr_multiaddr.s_addr = grp;
 
@@ -336,7 +385,8 @@ void k_leave(int socket, uint32_t grp, struct uvif *v)
     mreq.imr_ifindex	      = v->uv_ifindex;
     mreq.imr_address.s_addr   = v->uv_lcl_addr;
 #else
-    mreq.imr_interface.s_addr = v->uv_lcl_addr;
+    if (!mcast_ifaddr(v, &mreq.imr_interface))
+	return;
 #endif /* __linux__ */
     mreq.imr_multiaddr.s_addr = grp;
 
