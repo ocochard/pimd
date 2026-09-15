@@ -1449,9 +1449,9 @@ sample_assert() {
 	# The (S,G) is where sec. 4.6.1 keeps the state of the machine every
 	# Assert in this scenario belongs to, the Arista's carrying the RPT
 	# bit clear.  The (*,G) is sampled beside it, and only so that the
-	# loser branch can tell M14 -- the loss recorded on the shared tree's
-	# entry, because pimd could not reach the (S,G) machine -- from no
-	# loss recorded at all.
+	# loser branch can tell the loss recorded on the shared tree's entry
+	# -- deviation M14, fixed, and this is its tripwire -- from no loss
+	# recorded at all.
 	asserted_on r3 "$AL_R3_LAN_IF" "$AL_ASSERT_ENTRY" && al_pimd_asserted=yes
 	asserted_on r3 "$AL_R3_LAN_IF" ANY && al_pimd_asserted_wc=yes
 }
@@ -1713,21 +1713,18 @@ establish_election() {
 	# to accept the (*,G) as well, which is what pimd recorded it on when
 	# one election ran on whichever entry the lookup returned.
 	#
-	# rpt-bit asks for the same entry and may not get it, depending on the
-	# order the run walks the sub-cases in.  R3 is held on the shared tree
-	# there, so it holds no (S,G) state of its own; run on its own, the
-	# first Assert it hears from the Arista is the (*,G) one of sec. 4.6.2,
-	# source 0.0.0.0 on the wire, and losing that takes the LAN away.  The
-	# Arista's (S,G) Assert arrives behind it and should put the (S,G)
-	# machine into Loser as well, sec. 4.6.1 asking only for
-	# AssertTrackingDesired(S,G,I), but pimd can no longer reach that
-	# machine once the shared tree has lost the interface, so the loss
-	# stays on the (*,G) -- M14 in doc/rfc7761-compliance.md.  In the full
-	# walk the Arista has three elections behind it and its (S,G) Assert
-	# gets there first, the (S,G) machine takes it, and the assertion
-	# below reports ok.  Either way it asks for the entry sec. 4.6.1 names
-	# and reports KNOWN when it lands elsewhere, rather than being
-	# rewritten to match whichever pimd does.
+	# rpt-bit asks for the same entry and is the sub-case that used to
+	# fail to get it.  R3 is held on the shared tree there, so it holds no
+	# (S,G) state of its own; run on its own, the first Assert it hears
+	# from the Arista is the (*,G) one of sec. 4.6.2, source 0.0.0.0 on
+	# the wire, and losing that takes the LAN away.  The Arista's (S,G)
+	# Assert arrives behind it and has to put the (S,G) machine into Loser
+	# as well, sec. 4.6.1 asking only for AssertTrackingDesired(S,G,I).
+	# pimd could not reach that machine once the shared tree had lost the
+	# interface and left the loss on the (*,G) -- deviation M14, fixed in
+	# assert_machine(), and the assertion stays as its tripwire.  It asks
+	# for the entry sec. 4.6.1 names and reports KNOWN when it lands
+	# elsewhere, rather than being rewritten to match whatever pimd does.
 	AL_ASSERT_ENTRY=$SRC_ADDR
 
 	switch_case "$case_name"
@@ -2095,8 +2092,10 @@ check_assert_cancel() {
 	# Back to NoInfo is what sec. 4.6.4 asks of the loser, and it is the
 	# observable here: with both receivers gone nobody forwards onto this
 	# LAN whatever the assert state says, so "pimd forwards again" would
-	# measure the receivers rather than the cancel.  Either entry counts,
-	# the loss having landed on the (*,G) -- M14.
+	# measure the receivers rather than the cancel.  Both entries are
+	# asked: the cancel reaches the (S,G) machine that holds the loss and
+	# then the (*,G) machine behind it, which is the half of M14 that is
+	# not about reaching the (S,G) machine in the first place.
 	if [ -z "$al_pimd_asserted$al_pimd_asserted_wc" ]; then
 		ok "pimd returned to NoInfo on $AL_R3_LAN_IF, as sec. 4.6.4 asks, rather than waiting out Assert_Time"
 	else

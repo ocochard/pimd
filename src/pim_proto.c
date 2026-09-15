@@ -3214,10 +3214,12 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
 /*
  * What one run of one of the two Assert state machines did with the
  * message.  Sec. 4.6.2 needs no more than this: the (*,G) machine may run
- * only if the (S,G) one held no state and did not move.
+ * only if the (S,G) one held no state and did not move.  ASSERT_CANCELLED
+ * is the one case where it may run anyway -- see receive_pim_assert().
  */
 #define ASSERT_NOTHING	0
 #define ASSERT_MOVED	1
+#define ASSERT_CANCELLED	2
 
 /*
  * One run of a per-interface Assert state machine: sec. 4.6.1's on an (S,G)
@@ -3237,7 +3239,8 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
  * only once it has Loser state to keep.
  *
  * Returns ASSERT_MOVED if the machine took the message, which is what keeps
- * the (*,G) machine out of it.
+ * the (*,G) machine out of it, and ASSERT_CANCELLED if it took it by giving
+ * the interface back, which does not.
  */
 static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  uint32_t src, uint32_t source, uint32_t group,
@@ -3284,16 +3287,19 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
      * what losing does -- so testing `oifs` alone made every later Assert on
      * it unreachable, the AssertCancel of RFC 7761 sec. 4.6.4 included, and
      * left the Loser state with no transition out of it but its own timer.
-     * The interface is still downstream while we hold assert state for it.
+     * The interface is still downstream while assert state holds it out.
      *
-     * Only the state of the entry the machine keeps its own on, deliberately:
-     * letting an (S,G) machine with no entry yet read the (*,G)'s instead is
-     * M14 in doc/rfc7761-compliance.md, and doing it here alone hands that
-     * machine the AssertCancel of sec. 4.6.4 as well, which then clears the
-     * (S,G) state while the (*,G) Loser state goes on holding the interface.
+     * An (S,G) machine with no (S,G) entry yet reads that state off the
+     * (*,G) it already borrows its metric and its olist from.  Anything
+     * narrower leaves it unreachable for as long as the (*,G) is the loser
+     * on the interface, which is the one state a last hop router held on
+     * the shared tree beside a router on the shortest path tree is in:
+     * sec. 4.6.1 gates the NoInfo-to-Loser transition on
+     * AssertTrackingDesired(S,G,I), which is join and membership state and
+     * says nothing about the outgoing interfaces.
      */
     if (PIMD_VIFM_ISSET(vifi, mrt->oifs) ||
-	(vifi != mrt->incoming && own && assert_lost_on(own, vifi))) {
+	(vifi != mrt->incoming && assert_lost_on(own ? own : mrt, vifi))) {
 	/* The ASSERT has arrived on oif */
 	as = own ? assert_state(own, vifi) : NULL;
 
@@ -3318,7 +3324,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 					  own->pruned_oifs, own->leaves,
 					  own->asserted_oifs, 0);
 
-		    return ASSERT_MOVED;
+		    return ASSERT_CANCELLED;
 		}
 
 		/* Acceptable Assert from the current winner: Actions A2, it
@@ -3514,7 +3520,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     uint32_t assert_preference;
     uint32_t assert_metric;
     uint32_t assert_rptbit;
-    int held;
+    int held, rc;
 
     (void)dst;
 
@@ -3637,12 +3643,22 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	 * machine out even where this message changes nothing. */
 	held = sg && (assert_lost_on(sg, vifi) || assert_winner_is_me(sg, vifi));
 
-	if (assert_machine(sg ? sg : wc, sg, vifi, FALSE, src, source, group,
-			   assert_rptbit, assert_preference,
-			   assert_metric) == ASSERT_MOVED)
+	rc = assert_machine(sg ? sg : wc, sg, vifi, FALSE, src, source, group,
+			    assert_rptbit, assert_preference, assert_metric);
+	if (rc == ASSERT_MOVED)
 	    return TRUE;
 
-	if (held)
+	/* The exception, and the whole of why the (S,G) machine returns its
+	 * two answers apart.  An AssertCancel, sec. 4.6.4, is the one message
+	 * that hands the interface back rather than taking it, and a router
+	 * that lost both machines to the same winner -- the (*,G) first, on
+	 * the shared tree, and the (S,G) once the winner moved to the
+	 * shortest path tree -- has two Loser states to leave on it.  Stop at
+	 * the (S,G) one, as the ordering of sec. 4.6.2 reads, and the (*,G)
+	 * goes on holding the interface out of its olist until Assert_Time
+	 * runs out, which is the black hole the cancel exists to prevent.
+	 */
+	if (rc == ASSERT_NOTHING && held)
 	    return TRUE;
     }
 

@@ -117,6 +117,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Let an Assert reach the (S,G) state machine that owns it after the (\*,G)
+  has lost the interface.  Sec. 4.6.1 gates the NoInfo-to-Loser transition
+  on AssertTrackingDesired(S,G,I), which is join and membership state;
+  pimd asked instead whether the interface was still in the entry's
+  outgoing list, which it never is once an assert has taken it, so a last
+  hop router held on the shared tree beside one on the shortest path tree
+  recorded the loss on its (\*,G) and re-ran the election every 180
+  seconds.  An AssertCancel now reaches both machines, which is what the
+  ordering of sec. 4.6.2 cannot express on its own
 - Stop leaving a multicast group on whatever interface the kernel picks.
   `k_leave()` named the interface by the address the VIF was built with,
   and on \*BSD an address the kernel can no longer place is not an error:
