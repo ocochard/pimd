@@ -3184,7 +3184,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  uint32_t rptbit, uint32_t assert_preference,
 			  uint32_t assert_metric)
 {
-    pim_nbr_entry_t *original_upstream_router;
+    srcentry_t *orig_src;
     uint32_t local_preference, local_metric;
     struct assert_state *as;
     struct uvif *v;
@@ -3416,15 +3416,21 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	if (own->jp_timer > jp_value)
 	    SET_TIMER(own->jp_timer, jp_value);
 
-	/* Check if the upstream router is different from the original one */
-	{
-	    if (own->flags & MRTF_RP)
-		original_upstream_router = own->group->active_rp_grp->rp->rpentry->upstream;
-	    else
-		original_upstream_router = own->source->upstream;
-	}
+	/* Check if the upstream router is different from the original one.
+	 * Read the entry the routing table names it on the way
+	 * reset_upstream_router() above does: a group is left holding its
+	 * routing entries but no active_rp_grp when the RP set it matched
+	 * goes away, and an entry that cannot name its original upstream
+	 * cannot be back on it either, so leave the assert state alone.
+	 */
+	if (own->flags & MRTF_RP)
+	    orig_src = own->group->active_rp_grp
+		? own->group->active_rp_grp->rp->rpentry
+		: NULL;
+	else
+	    orig_src = own->source;
 
-	if (own->upstream == original_upstream_router) {
+	if (orig_src && own->upstream == orig_src->upstream) {
 	    /* Back on the upstream the routing table names, so there is no
 	     * winner to keep a metric for. */
 	    assert_noinfo(own, vifi);
