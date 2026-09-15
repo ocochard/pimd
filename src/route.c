@@ -1193,6 +1193,17 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
     source = mfc_source = igmpctl->im_src.s_addr;
     iif    = igmpctl->im_vif;
 
+    /* im_vif is one byte of the message the kernel wrote; uvifs[] is
+     * MAXVIFS entries and only numvifs of them are in service, so anything
+     * outside that is a read past what we know rather than an interface we
+     * could act on.  The very next line indexes with it.
+     */
+    if (iif >= numvifs) {
+	logit(LOG_WARNING, 0, "Kernel cache miss on VIF #%u, only %u in service",
+	      (unsigned)iif, (unsigned)numvifs);
+	return;
+    }
+
     IF_DEBUG(DEBUG_MRT)
 	logit(LOG_DEBUG, 0, "Cache miss, src %s, dst %s, iif %s",
 	      inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)), uvifs[iif].uv_name);
@@ -1321,6 +1332,15 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
     group  = igmpctl->im_dst.s_addr;
     source = igmpctl->im_src.s_addr;
     iif    = igmpctl->im_vif;
+
+    /* Same as in process_cache_miss() above: the index comes out of the
+     * upcall and uvifs[] only has numvifs interfaces in it.
+     */
+    if (iif >= numvifs) {
+	logit(LOG_WARNING, 0, "Kernel wrong-iif upcall on VIF #%u, only %u in service",
+	      (unsigned)iif, (unsigned)numvifs);
+	return;
+    }
 
     IF_DEBUG(DEBUG_MRT)
 	logit(LOG_DEBUG, 0, "Wrong iif: src %s, dst %s, iif %s",

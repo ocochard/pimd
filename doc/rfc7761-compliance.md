@@ -124,7 +124,7 @@ sec. 4.5.7 exists to provide.  And pimd never sends a Join(S,G,rpt) either:
 (`src/pim_proto.c:1389-1397`), so the triggered machine of 4.5.7 has no
 implementation.  Note that the *compound* Join(\*,G)+Prune(S,G,rpt) of sec. 4.5.6
 is implemented, via `MRTF_RP` entries dragged into the same group set
-(`src/route.c:1859-1908`), and is wire-correct; it is the triggered half that is
+(`src/route.c:1879-1928`), and is wire-correct; it is the triggered half that is
 missing.
 *Check: sec. 4.5.3, `doc/rfc7761.txt:2975` (downstream), sec. 4.5.7, `:3983`
 (upstream triggered), sec. 4.5.6, `:3927` (the periodic compound message); the
@@ -228,7 +228,7 @@ that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.
 Every write to `entry_timer` is a control-plane event or a kernel upcall;
 `check_spt_threshold()` reads the MFC counters and never refreshes the timer,
 and under `spt-threshold infinity` it returns before reading them at all
-(`src/route.c:1509`).
+(`src/route.c:1529`).
 
 Measured rather than reasoned about: the `rpt` topology of
 `test/freebsd-lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
@@ -248,16 +248,16 @@ sends:
   pimd on the last hop router, so that no Join is ever sent again, left this
   loop holding both entries up on its own.
 - An entry with an empty oif list has no MFC, so every packet is a cache miss
-  and refreshes the timer (`src/route.c:1250`).  That is the path the
+  and refreshes the timer (`src/route.c:1261`).  That is the path the
   `keepalive` scenario pins, and it costs one upcall per packet for as long as
   the source sends, because pimd installs no negative cache entry (the TODO at
-  `src/route.c:1234`).
+  `src/route.c:1245`).
 
 One shape is left over: a last hop router's (S,G) whose only oif is a local
 member, with `spt-threshold interval` longer than 210 seconds, so that the poll
 calling `switch_shortest_path()` no longer refreshes it either.  `age_routes()`
 then deletes it through the `PIMD_VIFM_LASTHOP_ROUTER` branch
-(`src/route.c:1961`) precisely because those leaves are inherited from the
+(`src/route.c:1981`) precisely because those leaves are inherited from the
 (\*,G) -- which is also why no traffic is lost: the (\*,G) keeps forwarding and
 the entry returns at the next poll.  What that costs is the switch to the
 shortest path tree oscillating with the period of the poll interval.
@@ -270,7 +270,7 @@ masks work rather than that the timer does.*
 sec. 4.5.4 and 4.5.5 send immediately.  `change_interfaces()` and its callers
 turn every such transition into `FIRE_TIMER(mrt->jp_timer)`
 (`src/route.c:957` and `:1018` in `change_interfaces()` itself, `:483`, `:721`,
-`:1392` and `:1457` in its callers), and the message is only built when
+`:1412` and `:1477` in its callers), and the message is only built when
 `age_routes()` next runs, every `TIMER_INTERVAL` = 5 seconds.  `add_leaf()`
 and the `MRTF_NEW` arms of `receive_pim_join_prune()` are the exceptions that do
 send at once.  Up to 5 seconds of added join latency on every other transition,
@@ -509,7 +509,7 @@ Checked, no action
   caller asks it to.  *Check: Appendix A, `doc/rfc7761.txt:7567`, which is where
   RFC 4601's (\*,\*,RP) support was removed.*
 - **Sec. 4.5.6's compound Join(\*,G)+Prune(S,G,rpt) is implemented**, through
-  `MRTF_RP` entries pulled into the same group set (`src/route.c:1859-1908`) and
+  `MRTF_RP` entries pulled into the same group set (`src/route.c:1879-1928`) and
   the RPT bit set from that flag.  What is missing around it is M1 and M9, not
   this.  *Check: sec. 4.5.6, `doc/rfc7761.txt:3927`.*
 - **The RP's decapsulate-and-forward step is the kernel's**, via `MRT_PIM` and
@@ -522,7 +522,7 @@ Checked, no action
   right, but `mrt->oifs` is consequently not a pure function of the join/prune
   state — whether it still contains its own iif depends on which caller last ran
   — and two "did this arrive on an oif?" tests read it
-  (`src/route.c:1399`, `src/pim_proto.c:3295`).  *Check: sec. 4.2,
+  (`src/route.c:1419`, `src/pim_proto.c:3295`).  *Check: sec. 4.2,
   `doc/rfc7761.txt:1425`, where `oiflist = oiflist (-) iif` is a step of the
   forwarding rules and not part of the olist macros of sec. 4.1.5, `:1131`.*
 - **`lost_assert()` is already enforced for local members.**  `calc_oifs()`

@@ -104,6 +104,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Check the interface index of a kernel upcall against the interfaces that
+  are in service before using it.  `process_cache_miss()` and
+  `process_wrong_iif()` took `im_vif`, one byte of the message the kernel
+  wrote, straight into `uvifs[]` -- an array of MAXVIFS entries of which
+  only `numvifs` are live -- and the first use was the debug log that
+  prints the interface name.  Same reasoning as the length check above, and
+  the same caveat: the kernel is the only writer of that field, so this is
+  hardening and not a fix for anything seen on a running router
 - Pay for the bytes of a kernel upcall before reading them.  `accept_igmp()`
   admits anything an IP header long, and everything behind that was then
   read on trust: `process_kernel_call()` reads a `struct igmpmsg` that is
