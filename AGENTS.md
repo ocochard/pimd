@@ -55,15 +55,19 @@ membership out: a kernel that joined a group answers every query afterwards, so 
 never expires while the emulated device is on the LAN.
 
 `test/freebsd-lab.sh` is the FreeBSD counterpart and is deliberately **not** in `TESTS`: it needs
-vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for `shared-lan`), and it drives the
+vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for the shared segment scenarios), and it drives the
 `routesock.c` and `kern.c` BSD branches the Linux suite can never reach. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
-`shared-lan`, `shared-lan-spt`, `ssm`, `ssm-range`, `alias`, `ifgone`, `renumber`); see the script
-header for the topologies and which upstream issue each one pins down. The two `shared-lan*` ones are the only
-ones with several PIM routers on a link, so DR election, IGMP querier election and the assert
-election only ever run there (`shared-lan` is also the only one that gives two routers different
+`shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
+`renumber`); see the script
+header for the topologies and which upstream issue each one pins down. `shared-lan`,
+`shared-lan-spt` and `assert-recover` are one topology and the only one with several PIM routers on
+a link, so DR election, IGMP querier election and the assert election only ever run there
+(`shared-lan` is also the only one that gives two routers different
 route metrics, with `route change -metric`, so it is the one place an assert election is decided by
-the routing table instead of by the addresses),
+the routing table instead of by the addresses, and `assert-recover` is the only one about how a
+router *leaves* the assert state rather than how it enters one -- it kills the winner's pimd so the
+loser meets a new GenID, then renumbers the winner's interface downwards),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is
 adjacent to the BSR and the RP and where the shared tree and the shortest path tree leave a router by
 different interfaces, `ssm` and `ssm-range` are the only ones about IGMP state rather than PIM

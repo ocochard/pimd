@@ -220,6 +220,60 @@
 #               claims the shortest path tree it never joined, the metrics
 #               tie, and the address hands it a win the spec does not.
 #               Takes about 3 minutes.
+#   assert-recover
+#               The same LAN and the same two contenders once more, and the
+#               only scenario about how a router *leaves* the assert state
+#               rather than how it enters one.  RFC 7761 sec. 4.6 gives the
+#               Loser state four ways out and the Winner state two, and two
+#               of those six are reachable nowhere else in this file.
+#
+#               It starts from shared-lan's answer: R4 holds the LAN, R3 is
+#               the loser.  Then R4's pimd is restarted, fast enough that
+#               R3 still knows it as a neighbour, so the Hello coming back
+#               carries a generation ID R3 does not know.  "Current Winner's
+#               GenID Changes", Actions A5: R3 has to return to NoInfo on
+#               it.  Held to the Loser state instead, a router keeps an
+#               interface off for a winner that no longer knows it won, for
+#               the rest of Assert_Time - three minutes of loss for a
+#               neighbour that rebooted in two seconds.  Read out of R3's
+#               log, not out of a dump: R4 relearns ED3's membership from
+#               its own startup IGMP queries and takes the LAN back within
+#               seconds, so the state is a race while the log line is not.
+#
+#               Then R4's address on the LAN is replaced inside its own
+#               subnet, which is the renumber scenario's DHCP lease moving
+#               on a segment where an election has already been decided.
+#               Both addresses are above R3's, so the election has the
+#               answer it had before and nothing but pimd's memory of
+#               having won it is under test.  That memory used to be
+#               re-derived on every read, by comparing the stored winner
+#               against the address the interface has now, so renumbering
+#               turned a router into the loser of its own election.
+#
+#               Downwards, and that is not arbitrary: age_asserts() ages a
+#               loser out on "my metric becomes better than the assert
+#               winner's", a router misreading its own state ties with
+#               itself on both metrics, and the address breaks the tie.
+#               Renumbered upwards it beats its own ghost within one timer
+#               tick and repairs itself before anything can see it -
+#               measured, with the bug reintroduced and the new address
+#               above the old one the scenario passed every time.
+#
+#               What that costs is smaller than it looks, and the scenario
+#               says so rather than claiming otherwise: assertion 7 reports
+#               the inverted state, which is real, but assertion 8 passes
+#               with the bug in place too.  R4 tears its entry down and
+#               rebuilds it while the VIF is bouncing, and the rebuilt
+#               entry asserts from NoInfo like any other, so the LAN
+#               converges on one forwarder either way.  Assertion 8 is kept
+#               for that convergence, which nothing else here covers.
+#
+#               The other half of the same fix - that an assert is given
+#               back only on the link the departed neighbour was on, never
+#               on another link whose winner happens to hold the same
+#               address - is not covered: it needs one router reachable at
+#               the same address on two of its own links, which no topology
+#               here builds.  Takes about 4 minutes.
 #   ssm         IGMPv3 (S,G) membership state on R3, the last hop router,
 #               for a group in the 232.0.0.0/8 SSM range.  The only
 #               scenario about what IGMP leaves behind on a router rather
@@ -348,11 +402,11 @@
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
-# "shared-lan-spt", "ssm", "ssm-range", "alias", "ifgone", "renumber", or
-# "all" for run.
+# "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
+# "ifgone", "renumber", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
-# shared-lan, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
+# the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
 # ./configure && gmake).
 
 set -eu
@@ -475,6 +529,37 @@ SL_DR_ADDR=10.0.3.3
 SL_QUERIER_ADDR=10.0.3.1
 SL_ED3_ADDR=10.0.3.10
 
+# The address the shared LAN's DR starts at.  assert-recover replaces it,
+# see AR_DR_ADDR below, so set_scenario() puts this one back for the two
+# scenarios that want it.
+SL_DR_ADDR_DEFAULT=$SL_DR_ADDR
+
+# assert-recover: the DR's two addresses, and which is which matters.  The
+# renumbering has to move it *down*.
+#
+# age_asserts() (src/pim_proto.c) re-runs the comparison that ages a loser
+# out once per pass, and a router that misreads its own winner state as
+# loser state is carrying its own old metric as the winner's: the two tie
+# on preference and on metric, and the address settles it.  Renumbered
+# upwards such a router beats its own ghost on the tiebreak within one
+# timer tick, and the state repairs itself before anything on the LAN can
+# notice -- measured here, with the bug reintroduced and the new address
+# above the old one the scenario passed every time.  Renumbered downwards
+# it loses to the ghost and stays stuck until the Assert Timer expires,
+# which is the behaviour this is here to catch.
+#
+# Both are above $SL_R3_ADDR, so R4 wins the election before and after and
+# stays the DR: the election's answer is not what is under test.
+AR_DR_ADDR=${AR_DR_ADDR:-10.0.3.200}
+AR_DR_NEW=${AR_DR_NEW:-10.0.3.100}
+
+# How long an election is given to settle, and how long the stream that
+# drives it runs for.  An election is only ever run while data is arriving
+# on the segment, so the stream has to outlast a pimd restart, a
+# renumbering and the four convergences between them.
+AR_WAIT=${AR_WAIT:-90}
+AR_PKTS=${AR_PKTS:-600}
+
 # ED3 joins the group on a port of its own.  IGMP membership is per group,
 # not per port, so R4 sees a report and takes the leaf, while the stream
 # ED1 sends to $GROUP:4321 never reaches ED3's socket and it answers none of
@@ -590,15 +675,19 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber] | run all | stop"
+	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover] | run all | stop"
 }
 
-# Both shared segment scenarios are one topology.  They differ in whether
-# the last hop router is allowed onto the shortest path tree, and therefore
-# in which of the two contenders the spec says must win the assert.
+# Three scenarios, one topology: it is the only one in this file with more
+# than one PIM router on a link, so anything about an election has to be
+# built on it.  shared-lan and shared-lan-spt differ in whether the last hop
+# router is allowed onto the shortest path tree, and therefore in which of
+# the two contenders the spec says must win the assert; assert-recover takes
+# shared-lan's answer as its starting point and goes after the two ways a
+# router leaves the assert state again.
 is_shared_lan() {
 	case $SCENARIO in
-	shared-lan|shared-lan-spt) return 0 ;;
+	shared-lan|shared-lan-spt|assert-recover) return 0 ;;
 	esac
 
 	return 1
@@ -606,7 +695,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -621,6 +710,13 @@ set_scenario() {
 		ROUTERS=$SHARED_ROUTERS
 		EPAIRS="epair101 epair112 $SHARED_EPAIRS"
 		ED2_IF=epair510b
+		# assert-recover needs a DR address it can renumber
+		# downwards from, see AR_DR_ADDR
+		if [ "$SCENARIO" = assert-recover ]; then
+			SL_DR_ADDR=$AR_DR_ADDR
+		else
+			SL_DR_ADDR=$SL_DR_ADDR_DEFAULT
+		fi
 	elif [ "$SCENARIO" = rp-offpath ]; then
 		BOXES=$DEFAULT_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -840,7 +936,7 @@ routes() {
 		ed2) echo "default 10.0.3.1" ;;
 		esac
 		return ;;
-	shared-lan|shared-lan-spt)
+	shared-lan|shared-lan-spt|assert-recover)
 		# R5 reaches the source and the RP through R3, which is what
 		# makes this scenario work: its Join names R3 as the upstream
 		# router, and receive_pim_join_prune() (src/pim_proto.c) only
@@ -897,7 +993,7 @@ routes() {
 # other route in this file keeps the metric FreeBSD gives a static route.
 route_metrics() {
 	case $SCENARIO in
-	shared-lan)
+	shared-lan|assert-recover)
 		case $1 in
 		r3|r4) echo "$SL_RP_NET $SL_RP_GW $SL_METRIC_FAR" ;;
 		esac
@@ -1486,6 +1582,49 @@ destroy_box() {
 	${SUDO} jail -r "$name" 2>/dev/null || true
 }
 
+# Start pimd on one router.  Split out of start() so that a scenario can
+# restart a single daemon in the middle of a run: the command line has to
+# be the same one, or the router that comes back is not the one the rest of
+# the scenario was written against.  daemon(8) opens the log with O_APPEND,
+# so what the first incarnation logged is still there afterwards.
+start_pimd() {
+	r=$1
+
+	# shellcheck disable=SC2086
+	${SUDO} daemon -f -p "$WORKDIR/$r.daemon.pid" \
+		-o "$WORKDIR/$r.log" \
+		jexec "$(jname "$r")" "$PIMD" -i "$r" -n $DEBUG \
+		-f "$WORKDIR/$r.conf" \
+		-p "$WORKDIR/$r.pid" \
+		-u "$WORKDIR/$r.sock"
+}
+
+pimd_is_down() { ! pimctl "$1" show status >/dev/null 2>&1; }
+
+# Stop and start pimd on one router, leaving the lab around it alone.  The
+# point of it for assert-recover is the generation ID: RFC 7761 sec. 4.3.1
+# has a router pick a new one every time it starts, and that is what tells
+# the neighbours this is not the incarnation they were talking to.  A
+# SIGHUP would not do -- restart() (src/main.c) keeps the GenID, and the
+# neighbours would go on applying what they held for the old one.
+#
+# SIGKILL, and that is the whole of why this function exists.  On SIGTERM
+# cleanup() (src/main.c) sends a Hello with a zero holdtime on every vif,
+# which is a router saying goodbye: the neighbours delete it outright and
+# reach "NLT Expires" in the Loser state, never "Current Winner's GenID
+# Changes".  A router that is cut off says nothing, stays a neighbour for
+# the rest of its holdtime, and is still one when its new Hello arrives --
+# which is the only way the GenID event happens at all, and is also what a
+# router that really rebooted looks like.
+restart_pimd() {
+	r=$1
+
+	[ -f "$WORKDIR/$r.pid" ] && \
+		${SUDO} pkill -9 -F "$WORKDIR/$r.pid" 2>/dev/null || true
+	wait_for 15 pimd_is_down "$r" || true
+	start_pimd "$r"
+}
+
 start() {
 	check_req
 
@@ -1517,13 +1656,7 @@ start() {
 
 	print "Starting pimd on $(pim_routers | tr ' ' ',') ..."
 	for r in $(pim_routers); do
-		# shellcheck disable=SC2086
-		${SUDO} daemon -f -p "$WORKDIR/$r.daemon.pid" \
-			-o "$WORKDIR/$r.log" \
-			jexec "$(jname "$r")" "$PIMD" -i "$r" -n $DEBUG \
-			-f "$WORKDIR/$r.conf" \
-			-p "$WORKDIR/$r.pid" \
-			-u "$WORKDIR/$r.sock"
+		start_pimd "$r"
 	done
 
 	if [ "$SCENARIO" = keepalive ]; then
@@ -1672,6 +1805,40 @@ asserted_on() {
 		if map_isset "$1" "$2" "$(route_map "$1" "$src" "$3" Asserted)"; then
 			return 0
 		fi
+	done
+
+	return 1
+}
+
+# The per-vif Assert state map of ($2,$3) on router $1: 'W' on an interface
+# this router won the election on, 'L' on one it lost, '.' where it holds
+# no assert state.  Same encoding as route_map(), but not readable through
+# it: "Assert state : <map>" puts the map in field 4, where every other
+# per-vif line of "show mrt detail" has it in field 3.
+route_assert_map() {
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" '
+		$1 == s && $2 == g                      { want = 1; next }
+		want && $1 == "Assert" && $2 == "state" { print $4; want = 0 }
+	'
+}
+
+# The Assert state character interface $2 holds for group $3 on router $1,
+# read off whichever entry carries it the way asserted_on() does.  Prints
+# 'W' or 'L' and succeeds; prints nothing and fails where the router holds
+# neither, which is both "NoInfo" and "no such entry" -- a caller that
+# needs those apart has to ask about the entry separately.
+assert_state_on() {
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
+
+	for src in "$SRC_ADDR" ANY; do
+		map=$(route_assert_map "$1" "$src" "$3")
+		[ -n "$map" ] || continue
+
+		case $(printf '%s' "$map" | cut -c "$((idx + 1))") in
+		W) echo W; return 0 ;;
+		L) echo L; return 0 ;;
+		esac
 	done
 
 	return 1
@@ -1901,6 +2068,226 @@ check_assert_metric() {
 	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
 }
 
+# How many times r3 has been let out of the Loser state by the winner
+# coming back under a new generation ID.  Counted rather than matched,
+# because r3's log is one file across the restart and an earlier flap
+# would answer a plain grep.
+#
+# "restarted" and not the other half of Actions A5: assert_forget_winner()
+# (src/pim_proto.c) is reached by both "Current Winner's GenID Changes"
+# and "NLT Expires" and says which, and only the first of those is what
+# this step sets up.  Matching either would pass on a pimd that has no
+# GenID handling at all, since a neighbour deleted for any reason lands in
+# the same function.
+ar_resumes() {
+	n=$(${SUDO} grep -c "restarted, resuming" "$WORKDIR/r3.log" 2>/dev/null || true)
+	echo "${n:-0}"
+}
+
+ar_resumed_since() { [ "$(ar_resumes)" -gt "$1" ]; }
+
+ar_restore_addr() {
+	jrun r4 ifconfig "$SL_R4_IF" inet "$AR_DR_NEW" delete 2>/dev/null || true
+	jrun r4 ifconfig "$SL_R4_IF" inet "$SL_DR_ADDR/24" alias 2>/dev/null || true
+}
+
+ar_cleanup() {
+	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
+	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
+}
+
+ar_dump() {
+	print "RESULT: FAIL ($FAILED assertion(s))"
+	for r in r3 r4; do
+		dprint "--- $r: pimctl show interface ---"
+		pimctl "$r" show interface 2>&1 || true
+		dprint "--- $r: pimctl show mrt detail ---"
+		pimctl "$r" show mrt detail 2>&1 | head -40 || true
+		dprint "--- $r: netstat -gn ---"
+		jrun "$r" netstat -gn 2>&1 || true
+	done
+}
+
+# assert-recover: the two ways RFC 7761 sec. 4.6 lets a router out of the
+# assert state it is holding, neither of which any other scenario reaches.
+#
+# Both need what only a shared segment has, two PIM routers contending for
+# one link, so this runs on the shared-lan topology and inherits its
+# configuration whole: R3 and R4 both put $GROUP on $BR_RECEIVER, R4 wins
+# the election on the higher address, R3 is the loser holding the LAN in
+# its asserted oifs.  That state is the starting point, not the subject --
+# step 9 of shared-lan is where it is asserted for its own sake.
+#
+# The winner's GenID changes.  R4's pimd is restarted, which is quick
+# enough that R3 never times the neighbour out, so the Hello that comes
+# back is from a router R3 still knows, carrying a generation ID it does
+# not: the Loser state of sec. 4.6.1 and sec. 4.6.2 returns to NoInfo on
+# that, Actions A5.  Without it R3 holds an interface off for a router
+# that no longer knows it won, for the rest of Assert_Time.  Asserted from
+# R3's log rather than from a dump, because the window is not one a poll
+# can promise to catch: R4 relearns ED3's membership from its own startup
+# IGMP queries within a few seconds and takes the LAN straight back, while
+# the log line stays.  A restart slow enough to outlast R3's neighbour
+# holdtime instead arrives as "NLT Expires", which is the same Actions A5
+# through the other door and the same line in the log.
+#
+# The winner's address changes.  R4's address on the LAN is replaced
+# inside its own subnet -- the DHCP lease of the renumber scenario, but on
+# a segment where an election has already been decided.  Both addresses
+# are above R3's, so the election has the answer it had before and the
+# only thing under test is pimd's memory of having won it.  That memory
+# used to be "the winner is whatever address this interface has now",
+# which renumbering falsified: R4 read itself back as the loser of its own
+# election.  Step 7 is where that shows.  It has to move downwards to show
+# at all, and what it costs once it does is less than it appears; both are
+# measurements rather than predictions, and both are written down at the
+# steps they belong to.
+#
+# Not covered here: the other half of the same fix, that an assert is
+# given back only on the link the departed neighbour was on.  Telling that
+# apart needs one router reachable at the same address on two of its own
+# links, which no topology in this file builds.
+#
+# Takes about four minutes, longer if the elections are slow.
+check_assert_recover() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The RP set is distributed by the bootstrap router"
+	for r in $ROUTERS; do
+		if wait_for 90 has_rp "$r" "$RP_ADDR"; then
+			ok "$r learned RP $RP_ADDR"
+		else
+			fail "$r never learned RP $RP_ADDR (BSR/cand-RP path)"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# An election starts at a data packet arriving on an interface that is
+	# not the entry's iif, so the stream underneath all of this is not
+	# scenery: a LAN nobody is sending to keeps whatever it decided last,
+	# and every step below would read the previous step's answer.
+	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
+		>"$WORKDIR/joiner-recover.log" 2>&1 &
+	joiner=$!
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
+		>"$WORKDIR/receiver-recover.log" 2>&1 &
+	receiver=$!
+	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
+		>"$WORKDIR/sender-recover.log" 2>&1 &
+	sender=$!
+
+	print "3. An assert election settles the shared LAN on r4"
+	if wait_for "$AR_WAIT" sl_lan_is_held_by r4; then
+		ok "r4 ($SL_DR_ADDR) holds $GROUP on the LAN and r3 has been asserted off it"
+	else
+		fail "no assert settled the LAN in ${AR_WAIT}s, nothing below can be read"
+		ar_cleanup
+		ar_dump
+		return 1
+	fi
+
+	print "4. pimctl names the winner and the loser of that election"
+	st4=$(assert_state_on r4 "$SL_R4_IF" "$GROUP" || true)
+	st3=$(assert_state_on r3 "$SL_R3_IF" "$GROUP" || true)
+	if [ "$st4" = W ] && [ "$st3" = L ]; then
+		ok "r4 reads W on $SL_R4_IF, r3 reads L on $SL_R3_IF"
+	else
+		fail "assert state is wrong: r4 '${st4:-none}' (want W), r3 '${st3:-none}' (want L)"
+	fi
+	[ "$FAILED" -eq 0 ] || { ar_cleanup; ar_dump; return 1; }
+
+	print "5. The winner restarts and the loser stops waiting for it"
+	# Not in the default debug set, and nothing else reports this one
+	pimctl r3 debug asserts >/dev/null 2>&1 || true
+	resumes=$(ar_resumes)
+	restart_pimd r4
+	if wait_for "$AR_WAIT" ar_resumed_since "$resumes"; then
+		ok "r3 returned to NoInfo on the new GenID, rather than waiting Assert_Time out"
+	else
+		fail "r3 is still the assert loser of a router that has restarted; sec. 4.6.1 'Current Winner's GenID Changes' did nothing"
+		if [ "$(ar_resumes)" -eq "$resumes" ] && logged r3 "went away, resuming"; then
+			dprint "   r3 got there through NLT instead: r4 was not killed hard enough to stay a neighbour"
+		fi
+	fi
+	[ "$FAILED" -eq 0 ] || { ar_cleanup; ar_dump; return 1; }
+
+	print "6. The LAN goes back to r4 once it is up again"
+	if wait_for "$AR_WAIT" sl_lan_is_held_by r4; then
+		ok "r4 won the election again after its restart"
+	else
+		fail "the LAN never came back to r4 after its restart, the renumbering below cannot be read"
+		ar_cleanup
+		ar_dump
+		return 1
+	fi
+
+	print "7. The winner is renumbered and still knows it won the election"
+	jrun r4 ifconfig "$SL_R4_IF" inet "$SL_DR_ADDR" delete
+	jrun r4 ifconfig "$SL_R4_IF" inet "$AR_DR_NEW/24" alias
+	if wait_for 60 iface_is r4 "$SL_R4_IF" "$AR_DR_NEW"; then
+		ok "r4: the VIF on $SL_R4_IF moved to $AR_DR_NEW"
+	else
+		fail "r4: pimd never picked the new address up, see $WORKDIR/r4.log"
+		ar_restore_addr
+		ar_cleanup
+		ar_dump
+		return 1
+	fi
+
+	# 'L' here is the bug, and with it reintroduced this is the
+	# assertion that reports it: measured, 2 runs out of 2.  Holding
+	# nothing is neither answer -- r4 has just bounced the VIF, and an
+	# entry it has already rebuilt from scratch has no assert state yet
+	# for an honest reason -- so that case is reported and not judged.
+	st4=$(assert_state_on r4 "$SL_R4_IF" "$GROUP" || true)
+	case $st4 in
+	W)	ok "r4 still reads W on $SL_R4_IF, it kept the election it had won" ;;
+	L)	fail "r4 reads L on $SL_R4_IF: it is the loser of its own election, the winner was remembered as an address that has since moved" ;;
+	*)	dprint "   r4 holds no assert state on $SL_R4_IF yet, it rebuilt the entry before this was read: neither answer" ;;
+	esac
+
+	# Not a second reading of step 7, and deliberately not described as
+	# one: with the bug reintroduced this still passed, both runs.  The
+	# inverted state is real and step 7 sees it, but r4 tears its entry
+	# down and builds it again while the VIF is bouncing, and the rebuilt
+	# entry asserts from NoInfo like any other -- so the LAN converges on
+	# one forwarder either way and the duplicate this was expected to
+	# leave behind does not happen.  What it is worth keeping for is the
+	# convergence itself, which nothing else here covers: a renumbering
+	# on a segment where an election has been decided has to end with one
+	# forwarder, and within seconds rather than within Assert_Time.
+	print "8. The LAN settles on one forwarder again after the renumbering"
+	if wait_for "$AR_WAIT" sl_lan_is_held_by r4; then
+		ok "r4 holds $GROUP alone from $AR_DR_NEW, r3 gave it up"
+	else
+		fail "r3 and r4 both still forward $GROUP ${AR_WAIT}s after the renumbering, nothing settled the LAN again"
+	fi
+
+	# Back to the addressing the header describes, for a lab left running
+	ar_restore_addr
+	ar_cleanup
+
+	echo
+	if [ "$FAILED" -eq 0 ]; then
+		if [ "$XFAILED" -gt 0 ]; then
+			print "RESULT: PASS ($XFAILED known deviation(s), see above)"
+		else
+			print "RESULT: PASS"
+		fi
+		return 0
+	fi
+	ar_dump
+	return 1
+}
+
 check() {
 	jls -j "$(jname r1)" jid >/dev/null 2>&1 || die "lab is not running, run '$0 start'"
 
@@ -1920,6 +2307,7 @@ check() {
 	gif-tunnel) check_gif_tunnel; return $? ;;
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
+	assert-recover) check_assert_recover; return $? ;;
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
 	alias)      check_alias; return $? ;;
@@ -3454,8 +3842,9 @@ run() {
 
 	if [ "${1:-}" = all ]; then
 		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
-			 gif-tunnel-staticrp shared-lan shared-lan-spt ssm \
-			 ssm-range alias ifgone renumber; do
+			 gif-tunnel-staticrp shared-lan shared-lan-spt \
+			 assert-recover ssm ssm-range alias ifgone \
+			 renumber; do
 			set_scenario "$s"
 			print "===== scenario: $s ====="
 			run_one || rc=$?

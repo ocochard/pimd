@@ -104,6 +104,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Log the assert transition of RFC 7761 section 4.6.1 and 4.6.2 that had
+  no log line, a loser returning to NoInfo because the winner restarted
+  or stopped answering, and say which of the two it was.  Every other way
+  out of the loser state already reported itself under `-d asserts`, and
+  the one that did not was also the one nothing could be written a test
+  against
 - Give back the assert state a restarting PIM neighbor had won on the
   interface that neighbor is on, rather than on every interface whose
   recorded winner happens to hold the same address.  An assert from a
@@ -124,8 +130,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   interface read its own winner state back as loser state.  It stopped
   resending its assert, stopped defending the interface when challenged,
   and never sent the AssertCancel of RFC 7761 section 4.6.4 when it
-  stopped forwarding there.  The visible half was duplicate traffic on
-  the segment until the assert timer ran out, up to three minutes
+  stopped forwarding there.  Measured in the lab afterwards rather than
+  predicted: what it costs is the wrong state and not the traffic.  A
+  renumbered router tears its routing entry down and builds it again
+  while the interface is bouncing, and the entry that comes back asserts
+  from NoInfo like any other, so the segment settles on one forwarder
+  either way.  The assert-recover scenario of test/freebsd-lab.sh holds
+  both halves of that, the deviation at assertion 7 and the convergence
+  that happens regardless at assertion 8
 - Discard a PIM assert whose group is not a multicast group, or whose
   source is not a valid host address.  `receive_pim_assert()` took both
   straight off the wire and used them as routing table keys, the

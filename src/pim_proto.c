@@ -74,7 +74,7 @@ static int  assert_send            (uint32_t source,
 				    uint32_t metric);
 static void assert_noinfo          (mrtentry_t *mrt, vifi_t vifi);
 static int  assert_clear           (mrtentry_t *mrt, vifi_t vifi);
-static void assert_neighbor_gone   (vifi_t vifi, uint32_t addr);
+static void assert_neighbor_gone   (vifi_t vifi, uint32_t addr, const char *why);
 
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
@@ -192,7 +192,7 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 		refresh_upstream_joins(nbr);
 		/* It no longer knows it won any Assert, RFC 7761 sec. 4.6.1
 		 * and sec. 4.6.2, "Current Winner's GenID Changes". */
-		assert_neighbor_gone(vifi, src);
+		assert_neighbor_gone(vifi, src, "restarted");
 		goto rebooted;
 	    }
 
@@ -494,7 +494,7 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 
     /* "NLT Expires" in the Loser state of both Assert state machines: an
      * interface held off for a winner that is gone is loss for nothing. */
-    assert_neighbor_gone(nbr_delete->vifi, nbr_delete->address);
+    assert_neighbor_gone(nbr_delete->vifi, nbr_delete->address, "went away");
 
     free(nbr_delete);
 }
@@ -3111,7 +3111,8 @@ int age_asserts(mrtentry_t *mrt)
  * interface off for the rest of Assert_Time costs up to three minutes of
  * complete loss for nothing.
  */
-static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr)
+static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr,
+				 const char *why)
 {
     struct assert_state *as;
 
@@ -3131,13 +3132,27 @@ static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr)
     if (!as || as->winner != addr)
 	return;
 
-    if (assert_clear(mrt, vifi))
+    if (assert_clear(mrt, vifi)) {
+	/* The other ways out of the Loser state each say so, and this one
+	 * left no trace at all -- which also made it the one transition of
+	 * sec. 4.6 that nothing could be written a test against.  `why`
+	 * tells the two events that land here apart: "Current Winner's
+	 * GenID Changes" is a router that is already back, "NLT Expires"
+	 * is one that is not, and a graceful shutdown reaches the second
+	 * through the zero holdtime Hello of cleanup() (src/main.c), so
+	 * only a router that was cut off reaches the first at all. */
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_INFO, 0, "Assert winner %s on %s %s, resuming %s",
+		  inet_fmt(addr, s1, sizeof(s1)), uvifs[vifi].uv_name, why,
+		  inet_fmt(mrt->group ? mrt->group->group : INADDR_ANY_N, s2, sizeof(s2)));
+
 	change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
 			  mrt->pruned_oifs, mrt->leaves,
 			  mrt->asserted_oifs, 0);
+    }
 }
 
-static void assert_neighbor_gone(vifi_t vifi, uint32_t addr)
+static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
 {
     grpentry_t *grp, *grp_next;
     mrtentry_t *mrt, *mrt_next;
@@ -3150,11 +3165,11 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr)
      * saved because assert_forget_winner() ends in change_interfaces(). */
     for (grp = grplist; grp; grp = grp_next) {
 	grp_next = grp->next;
-	assert_forget_winner(grp->grp_route, vifi, addr);
+	assert_forget_winner(grp->grp_route, vifi, addr, why);
 
 	for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
 	    mrt_next = mrt->grpnext;
-	    assert_forget_winner(mrt, vifi, addr);
+	    assert_forget_winner(mrt, vifi, addr, why);
 	}
     }
 }
