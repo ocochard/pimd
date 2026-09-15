@@ -199,15 +199,20 @@ load average under one, `-j 14` passed all fourteen scenarios, and a
 scenario run alone beside three slots churning labs up and down passed
 too.
 
-One scenario is sensitive to it.  `shared-lan-spt` failed assertion 9 —
-*both r3 and r4 still forward, no assert settled it* — in all three
-`-j 4 run all` runs, and passes on its own in any slot.  That is not a
-harness artifact: R3 never sets SPTbit for the source, so it asserts as
-an RPT forwarder, the two `MRTF_SPT` guards in `assert_machine()` make
-each router decline the other's Assert, and the LAN is left with two
-forwarders permanently.  The scenario is reporting a pimd deviation that
-a sequential run happens not to provoke.  `rp-lasthop` failed once in
-four runs and has not repeated.
+What a pool does change is which states the scenarios reach, and that has
+already paid for itself.  `shared-lan-spt` failed assertion 9 — *both r3
+and r4 still forward, no assert settled it* — in all three `-j 4 run all`
+runs while passing on its own in any slot, and it was reporting a real
+pimd deviation rather than a harness artifact: R3 never set SPTbit for
+the source, so it asserted as an RPT forwarder, the two `MRTF_SPT` guards
+in `assert_machine()` had each router decline the other's Assert, and the
+LAN was left with two forwarders permanently.  The pool is what leaves a
+router the Assert loser on its own RPF interface often enough to reach
+that state; a sequential run never provoked it.  Fixed in `076343d` —
+`update_sptbit()` asks the shared tree's olist now, not whether a `(*,G)`
+entry exists — and `-j 4 run all` has been 14 of 14 since.  Run the pool
+for that, not despite it.  `rp-lasthop` failed once in four runs and has
+not repeated.
 
 
 The Arista vEOS interoperability lab

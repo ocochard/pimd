@@ -219,17 +219,21 @@
 #               right and one that falls through to the tiebreak give
 #               opposite answers, and the scenario can tell them apart.
 #
-#               pimd gets it wrong today, and the scenario says so rather
-#               than skipping the case: assertion 9 reports KNOWN instead
-#               of FAIL, and turns into an ok the day the RPT bit is set
-#               correctly.  send_pim_assert() (src/pim_proto.c) takes the
-#               bit straight from MRTF_RP on the entry it is forwarding
-#               off, and MRTF_RP is only ever set from an explicit
-#               (S,G,rpt) Join/Prune or when an entry's iif changes to
-#               point at the RP (src/route.c, src/mrt.c) - never on the
-#               (S,G) that a cache miss builds underneath a (*,G).  So R4
-#               claims the shortest path tree it never joined, the metrics
-#               tie, and the address hands it a win the spec does not.
+#               pimd used to get it wrong, and the scenario carried this
+#               file's only live xfail() for it: send_pim_assert() and
+#               receive_pim_assert() (src/pim_proto.c) both took the RPT
+#               bit straight from MRTF_RP on the entry they were
+#               forwarding off, and MRTF_RP is only ever set from an
+#               explicit (S,G,rpt) Join/Prune or when an entry's iif
+#               changes to point at the RP (src/route.c, src/mrt.c) -
+#               never on the (S,G) that a cache miss builds underneath a
+#               (*,G).  So R4 claimed the shortest path tree it never
+#               joined, the metrics tied, and the address handed it a win
+#               the spec does not.
+#               Fixed in 4cb79f1, which gave both paths one
+#               my_assert_metric() deriving the bit from MRTF_SPT, the
+#               flag that really is the spec's SPTbit.  Assertion 9
+#               reports ok and is kept as a tripwire, its xfail() with it.
 #               Takes about 3 minutes.
 #   assert-recover
 #               The same LAN and the same two contenders once more, and the
@@ -437,13 +441,18 @@
 # here the cost of a pool is not load: fourteen labs at once is a load
 # average under one, and -j 14 passed all fourteen scenarios.
 #
-# shared-lan-spt is the one scenario sensitive to it, and what it reports
-# is real.  It failed assertion 9 in all three -j 4 runs and passes on
-# its own in any slot: R3 never sets SPTbit for the source, so it asserts
-# as an RPT forwarder, the two MRTF_SPT guards in assert_machine()
-# (src/pim_proto.c) have each router decline the other's Assert, and the
-# LAN keeps two forwarders for good.  A sequential run happens not to
-# provoke it.
+# What a pool does change is which states the scenarios reach, and that
+# is worth having rather than working around.  shared-lan-spt failed its
+# assert election in four -j 4 runs out of four while passing alone in
+# every slot, and it was right to: R3 never set SPTbit for the source,
+# so it asserted as an RPT forwarder, the two MRTF_SPT guards in
+# assert_machine() (src/pim_proto.c) had each router decline the other's
+# Assert, and the LAN kept two forwarders for good.  The pool is simply
+# what left a router the Assert loser on its own RPF interface often
+# enough to get there; a sequential run never provoked it.  Fixed in
+# 076343d -- update_sptbit() (src/route.c) now asks the shared tree's
+# olist rather than whether a (*,G) entry exists -- and "-j 4 run all"
+# has been 14 of 14 since.  Run the pool for that, not despite it.
 #
 # The second is net.inet.ip.mcast.loop, which is not VNET-ized and is the
 # one piece of host state the slots share: they hold it between them and
@@ -4068,20 +4077,22 @@ check_shared_lan() {
 	#
 	# In shared-lan-spt R5's switch gives R3 real (S,G) state while R4
 	# still has only ED3's (*,G) leaf, so R3 must win with the *lower*
-	# address.  pimd does not do that today.  It takes the RPT bit
-	# straight from MRTF_RP on whichever entry it is forwarding off
-	# (send_pim_assert(), src/pim_proto.c), and MRTF_RP is only ever set
-	# from an explicit (S,G,rpt) Join/Prune or when an entry's iif changes
-	# to point at the RP (src/route.c, src/mrt.c) - never on the (S,G) a
-	# cache miss builds under a (*,G).  So R4 asserts as though it were on
-	# the shortest path tree too, both metrics tie, and the address hands
-	# it a win the spec does not.
+	# address.  pimd did not do that before 4cb79f1: send_pim_assert() and
+	# receive_pim_assert() (src/pim_proto.c) took the RPT bit straight
+	# from MRTF_RP on whichever entry they were forwarding off, and
+	# MRTF_RP is only ever set from an explicit
+	# (S,G,rpt) Join/Prune or when an entry's iif changes to point at the
+	# RP (src/route.c, src/mrt.c) - never on the (S,G) a cache miss builds
+	# under a (*,G).  So R4 asserted as though it were on the shortest
+	# path tree too, both metrics tied, and the address handed it a win
+	# the spec does not.  One my_assert_metric() derives the bit from
+	# MRTF_SPT for both paths now; the xfail() below stays as a tripwire.
 	if [ "$SCENARIO" = shared-lan-spt ]; then
 		print "9. The assert winner is the router with the better tree"
 		if [ -z "$sg3" ]; then
 			fail "r3 never got (S,G) state from r5, the election below cannot be read; r5 never switched, see $WORKDIR/r5.log"
 		elif [ -n "$fwd3" ] && [ -z "$fwd4" ]; then
-			ok "r3 won with the lower address, off its (S,G): pimd now sets the RPT bit as RFC 7761 4.6.1 requires, this can stop being a known deviation"
+			ok "r3 won with the lower address, off its (S,G): pimd sets the RPT bit as RFC 7761 4.6.1 requires"
 		elif [ -n "$fwd4" ] && [ -z "$fwd3" ]; then
 			xfail "r4 ($SL_DR_ADDR) won on the address; per RFC 7761 4.6.1 r3 has (S,G) state and r4 only (*,G), so r4 must assert with the RPT bit set and lose"
 		elif [ -n "$fwd3" ] && [ -n "$fwd4" ]; then
