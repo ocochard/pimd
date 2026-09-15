@@ -104,6 +104,17 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Record which router won a PIM assert when the election is decided,
+  instead of re-deriving it later by comparing the winner against the
+  address of the interface.  That address is not fixed for the life of a
+  routing entry: an interface renumbered under a running pimd, a moved
+  DHCP lease being the ordinary case, keeps every routing entry and every
+  assert those entries hold, so a router that had won an election on the
+  interface read its own winner state back as loser state.  It stopped
+  resending its assert, stopped defending the interface when challenged,
+  and never sent the AssertCancel of RFC 7761 section 4.6.4 when it
+  stopped forwarding there.  The visible half was duplicate traffic on
+  the segment until the assert timer ran out, up to three minutes
 - Discard a PIM assert whose group is not a multicast group, or whose
   source is not a valid host address.  `receive_pim_assert()` took both
   straight off the wire and used them as routing table keys, the

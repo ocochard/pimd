@@ -2822,9 +2822,10 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 #define PIM_ASSERT_INFINITE_METRIC	0xffffffff
 
 /*
- * The three states of RFC 7761 sec. 4.6.1 and sec. 4.6.2, read off the
- * per-interface winner: NoInfo has none, "I am Assert Winner" has our own
- * address on that interface, anything else is "I am Assert Loser".
+ * The three states of RFC 7761 sec. 4.6.1 and sec. 4.6.2: NoInfo holds no
+ * winner, and the `is_winner` flag of struct assert_state tells the other
+ * two apart.  Not the interface's own address, which renumber_vif() can
+ * replace under an entry that is holding assert state -- see src/mrt.h.
  */
 static struct assert_state *assert_state(mrtentry_t *mrt, vifi_t vifi)
 {
@@ -2838,14 +2839,14 @@ int assert_winner_is_me(mrtentry_t *mrt, vifi_t vifi)
 {
     struct assert_state *as = assert_state(mrt, vifi);
 
-    return as && as->winner != INADDR_ANY_N && as->winner == uvifs[vifi].uv_lcl_addr;
+    return as && as->winner != INADDR_ANY_N && as->is_winner;
 }
 
 int assert_lost_on(mrtentry_t *mrt, vifi_t vifi)
 {
     struct assert_state *as = assert_state(mrt, vifi);
 
-    return as && as->winner != INADDR_ANY_N && as->winner != uvifs[vifi].uv_lcl_addr;
+    return as && as->winner != INADDR_ANY_N && !as->is_winner;
 }
 
 /*
@@ -2920,13 +2921,14 @@ static void assert_won(mrtentry_t *mrt, vifi_t vifi, uint32_t source,
 {
     struct assert_state *as = assert_state(mrt, vifi);
 
-    /* Our own address is what marks the Winner state, so an interface
-     * without one cannot hold it -- storing zero there would read back as
-     * NoInfo and leave the timer running with nothing to expire. */
+    /* An interface with no address of its own has none to win an election
+     * with, and a zero winner reads back as NoInfo, which would leave the
+     * timer running with nothing to expire. */
     if (!as || uvifs[vifi].uv_lcl_addr == INADDR_ANY_N)
 	return;
 
     as->winner     = uvifs[vifi].uv_lcl_addr;
+    as->is_winner  = TRUE;
     as->preference = preference;
     as->metric     = metric;
     as->source     = source;
@@ -2945,6 +2947,7 @@ static void assert_lost(mrtentry_t *mrt, vifi_t vifi, uint32_t winner,
 	return;
 
     as->winner     = winner;
+    as->is_winner  = FALSE;
     as->preference = preference;
     as->metric     = metric;
     SET_TIMER(as->timer, PIM_ASSERT_TIMEOUT);
@@ -2966,6 +2969,7 @@ static void assert_noinfo(mrtentry_t *mrt, vifi_t vifi)
 	return;
 
     as->winner     = INADDR_ANY_N;
+    as->is_winner  = FALSE;
     as->preference = 0;
     as->metric     = 0;
     as->source     = INADDR_ANY_N;
@@ -3064,7 +3068,7 @@ int age_asserts(mrtentry_t *mrt)
 	if (as->winner == INADDR_ANY_N)
 	    continue;
 
-	if (as->winner != uvifs[vifi].uv_lcl_addr && vifi != mrt->incoming) {
+	if (!as->is_winner && vifi != mrt->incoming) {
 	    my_assert_metric(mrt, &preference, &metric);
 
 	    /* Actions A5, and sec. 4.6.1 lets the normal Join/Prune
@@ -3085,7 +3089,7 @@ int age_asserts(mrtentry_t *mrt)
 	}
 
 	IF_TIMEOUT(as->timer) {
-	    if (as->winner != uvifs[vifi].uv_lcl_addr) {
+	    if (!as->is_winner) {
 		if (assert_clear(mrt, vifi))
 		    change = TRUE;
 		continue;

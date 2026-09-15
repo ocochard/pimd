@@ -193,9 +193,17 @@ typedef struct grpentry {
 /*
  * RFC 7761 sec. 4.6.1 and sec. 4.6.2 keep one Assert state machine per
  * (S,G,I) and per (*,G,I): who won on that interface, the metric it won
- * with, and an Assert Timer.  The three states are read off `winner`:
- * NoInfo is INADDR_ANY_N, "I am Assert Winner" is our own address on I,
- * anything else is "I am Assert Loser".
+ * with, and an Assert Timer.  `winner` is INADDR_ANY_N in NoInfo and the
+ * address that won the election otherwise, and `is_winner` says whether
+ * that address was ours.
+ *
+ * The flag is not redundant with comparing `winner` against the address of
+ * the interface: renumber_vif() (src/vif.c) replaces that address while
+ * every routing entry keeps the state it holds, so a router that had won
+ * an election read its own Winner state back as Loser state, stopped
+ * defending the interface, and never sent the AssertCancel of sec. 4.6.4
+ * for it.  Which router won is settled when the election is, so record it
+ * then rather than re-derive it from a value that moves.
  *
  * `source` is the address the Assert we sent named, so that the resend of
  * sec. 4.6.1 Actions A3 and the AssertCancel of Actions A4 repeat it.  An
@@ -209,6 +217,7 @@ struct assert_state {
     uint32_t		 metric;	/*   the RPT bit in the preference  */
     uint32_t		 source;	/* Source our own Assert named	    */
     uint16_t		 timer;		/* AT(S,G,I) / AT(*,G,I)	    */
+    uint8_t		 is_winner;	/* `winner` is this router	    */
 };
 
 typedef struct mrtentry {
