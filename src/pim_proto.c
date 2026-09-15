@@ -74,7 +74,7 @@ static int  assert_send            (uint32_t source,
 				    uint32_t metric);
 static void assert_noinfo          (mrtentry_t *mrt, vifi_t vifi);
 static int  assert_clear           (mrtentry_t *mrt, vifi_t vifi);
-static void assert_neighbor_gone   (uint32_t addr);
+static void assert_neighbor_gone   (vifi_t vifi, uint32_t addr);
 
 build_jp_message_t *build_jp_message_pool;
 int build_jp_message_pool_counter;
@@ -192,7 +192,7 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 		refresh_upstream_joins(nbr);
 		/* It no longer knows it won any Assert, RFC 7761 sec. 4.6.1
 		 * and sec. 4.6.2, "Current Winner's GenID Changes". */
-		assert_neighbor_gone(src);
+		assert_neighbor_gone(vifi, src);
 		goto rebooted;
 	    }
 
@@ -494,7 +494,7 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 
     /* "NLT Expires" in the Loser state of both Assert state machines: an
      * interface held off for a winner that is gone is loss for nothing. */
-    assert_neighbor_gone(nbr_delete->address);
+    assert_neighbor_gone(nbr_delete->vifi, nbr_delete->address);
 
     free(nbr_delete);
 }
@@ -3111,34 +3111,38 @@ int age_asserts(mrtentry_t *mrt)
  * interface off for the rest of Assert_Time costs up to three minutes of
  * complete loss for nothing.
  */
-static void assert_forget_winner(mrtentry_t *mrt, uint32_t addr)
+static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr)
 {
-    int change = FALSE;
-    vifi_t vifi;
+    struct assert_state *as;
 
-    if (!mrt || !mrt->asserts)
+    /* No assert state on any interface, which is the usual answer: a router
+     * holds it only where it has contended for a link.  One flag test, so
+     * that a neighbor restarting does not cost a walk of every interface of
+     * every routing entry to find nothing. */
+    if (!mrt || !(mrt->flags & MRTF_ASSERTED))
 	return;
 
-    for (vifi = 0; vifi < numvifs; vifi++) {
-	if (mrt->asserts[vifi].winner != addr)
-	    continue;
+    /* And only the interface the neighbor is on.  An Assert from it was
+     * received there and nowhere else, so its address cannot be the winner
+     * of an election held on another link -- where the same address may
+     * well be some other router's, which is what two interfaces numbered
+     * out of the same private range look like. */
+    as = assert_state(mrt, vifi);
+    if (!as || as->winner != addr)
+	return;
 
-	if (assert_clear(mrt, vifi))
-	    change = TRUE;
-    }
-
-    if (change)
+    if (assert_clear(mrt, vifi))
 	change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
 			  mrt->pruned_oifs, mrt->leaves,
 			  mrt->asserted_oifs, 0);
 }
 
-static void assert_neighbor_gone(uint32_t addr)
+static void assert_neighbor_gone(vifi_t vifi, uint32_t addr)
 {
     grpentry_t *grp, *grp_next;
     mrtentry_t *mrt, *mrt_next;
 
-    if (addr == INADDR_ANY_N)
+    if (addr == INADDR_ANY_N || vifi >= numvifs)
 	return;
 
     /* Every mrtentry_t is either a group's grp_route or on its mrtlink, so
@@ -3146,11 +3150,11 @@ static void assert_neighbor_gone(uint32_t addr)
      * saved because assert_forget_winner() ends in change_interfaces(). */
     for (grp = grplist; grp; grp = grp_next) {
 	grp_next = grp->next;
-	assert_forget_winner(grp->grp_route, addr);
+	assert_forget_winner(grp->grp_route, vifi, addr);
 
 	for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
 	    mrt_next = mrt->grpnext;
-	    assert_forget_winner(mrt, addr);
+	    assert_forget_winner(mrt, vifi, addr);
 	}
     }
 }

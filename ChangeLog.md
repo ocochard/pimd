@@ -104,6 +104,17 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Give back the assert state a restarting PIM neighbor had won on the
+  interface that neighbor is on, rather than on every interface whose
+  recorded winner happens to hold the same address.  An assert from a
+  neighbor is received on one link and can only have won an election
+  there, so a router with two links numbered out of the same private
+  range could have a neighbor restarting on one of them hand back an
+  interface that the winner of the other link still held.  Looking at the
+  one interface, and only where the routing entry holds assert state at
+  all, also stops a neighbor that restarts -- or one sending a new
+  generation ID with every hello -- from costing a walk of every
+  interface of every routing entry to find nothing
 - Record which router won a PIM assert when the election is decided,
   instead of re-deriving it later by comparing the winner against the
   address of the interface.  That address is not fixed for the life of a
