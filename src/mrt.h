@@ -96,6 +96,10 @@ typedef struct build_jp_message_ {
     uint16_t holdtime;	      /* Join/Prune message holdtime field	    */
     uint32_t curr_group;	      /* Current group address			    */
     uint8_t  curr_group_msklen;/* Current group masklen			    */
+    uint8_t  curr_group_wc;    /* Current group set carries a (*,G) Join,   *
+				* so RFC 7761 sec. 4.9.5.2 will not let the  *
+				* (S,G,rpt) Prunes qualifying it be split    *
+				* away from it				    */
     uint8_t *join_list;	      /* The working area for the join addresses    */
     uint32_t join_list_size;   /* The size of the join_list (in bytes)       */
     uint16_t join_addr_number; /* Number of the join addresses in join_list  */

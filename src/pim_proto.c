@@ -55,6 +55,8 @@ static void return_jp_working_buff (pim_nbr_entry_t *pim_nbr);
 static void pack_jp_message_grp    (pim_nbr_entry_t *pim_nbr);
 static void pack_jp_message_rp     (pim_nbr_entry_t *pim_nbr);
 static void send_jp_message        (pim_nbr_entry_t *pim_nbr);
+static int flush_packed_groups     (pim_nbr_entry_t *pim_nbr);
+static void jp_message_restart     (pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm);
 static int compare_metrics         (uint32_t local_preference,
 				    uint32_t local_metric,
 				    uint32_t local_address,
@@ -2500,6 +2502,88 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 }
 
 
+/*
+ * How large the Join/Prune message would be once the group set in the
+ * working area is packed into it and one more source entry is added.  The
+ * group set costs its own header the first time anything lands in it.
+ */
+static uint32_t jp_pending_size(build_jp_message_t *bjpm, int new_grp, int rp_flag)
+{
+    uint32_t size = bjpm->jp_message_size;
+
+    if (bjpm->join_list_size + bjpm->prune_list_size) {
+	size += sizeof(pim_jp_encod_grp_t);
+	size += bjpm->join_list_size;
+	size += bjpm->prune_list_size;
+    } else if (new_grp == TRUE) {
+	size += sizeof(pim_jp_encod_grp_t);
+    }
+
+    if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
+	size += sizeof(pim_jp_encod_grp_t);
+	size += bjpm->rp_list_join_size;
+	size += bjpm->rp_list_prune_size;
+    } else if (rp_flag == TRUE) {
+	size += sizeof(pim_jp_encod_grp_t);
+    }
+
+    /* Check also would the new entry push us over the limit. */
+    return size + sizeof(pim_encod_src_addr_t);
+}
+
+/*
+ * The overflow rule of RFC 7761 sec. 4.9.5.2: when more (S,G,rpt) Prunes
+ * are pending than one message can carry, the ones that go are the N
+ * numerically smallest source addresses in network byte order, and the rest
+ * are ignored rather than sent in a message of their own.
+ *
+ * The list is not reordered -- sec. 4.9.5 says the order inside a source
+ * list does not matter -- so this looks for the largest (S,G,rpt) Prune
+ * already in it and gives up its place, or leaves the new entry out when it
+ * is the largest itself.  Only the entries carrying the RP bit are the
+ * section's to drop: a plain (S,G) Prune sharing the group set is a prune in
+ * its own right and not a qualifier of the (*,G) Join.
+ *
+ * Returns TRUE either way.  An entry the section tells us to leave out is
+ * not a failure to add one.
+ */
+static int jp_prune_keep_smallest(build_jp_message_t *bjpm, uint32_t source, uint8_t src_msklen)
+{
+    uint8_t *entry, *largest = NULL;
+    uint32_t off, dropped;
+
+    for (off = 0; off + PIM_ENCODE_SRC_ADDR_LEN <= bjpm->prune_list_size;
+	 off += PIM_ENCODE_SRC_ADDR_LEN) {
+	entry = bjpm->prune_list + off;
+
+	if (!(entry[2] & USADDR_RP_BIT))
+	    continue;
+
+	if (!largest || memcmp(entry + 4, largest + 4, sizeof(uint32_t)) > 0)
+	    largest = entry;
+    }
+
+    /* Network byte order is big endian, so memcmp() over the four address
+     * bytes is the comparison the section asks for. */
+    if (!largest || memcmp(largest + 4, &source, sizeof(source)) < 0) {
+	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	    logit(LOG_INFO, 0, "Join/Prune group set full, leaving out Prune(%s,G,rpt)",
+		  inet_fmt(source, s1, sizeof(s1)));
+
+	return TRUE;
+    }
+
+    memcpy(&dropped, largest + 4, sizeof(dropped));
+    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	logit(LOG_INFO, 0, "Join/Prune group set full, Prune(%s,G,rpt) takes the place of %s",
+	      inet_fmt(source, s1, sizeof(s1)), inet_fmt(dropped, s2, sizeof(s2)));
+
+    entry = largest;
+    PUT_ESADDR(source, src_msklen, USADDR_S_BIT | USADDR_RP_BIT, entry);
+
+    return TRUE;
+}
+
 int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 		 uint8_t grp_msklen, uint32_t source, uint8_t src_msklen,
 		 uint16_t addr_flags, uint8_t join_prune)
@@ -2539,31 +2623,40 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
     }
 
     if (bjpm) {
-	uint32_t jp_message_size = bjpm->jp_message_size;
-
-	/* sizeof(pim_jp_encod_grp_t) is used to precalculate the size. */
-	if (bjpm->join_list_size + bjpm->prune_list_size) {
-	    jp_message_size += sizeof(pim_jp_encod_grp_t);
-	    jp_message_size += bjpm->join_list_size;
-	    jp_message_size += bjpm->prune_list_size;
-	} else if (new_grp == TRUE) {
-	    jp_message_size += sizeof(pim_jp_encod_grp_t);
-	}
-
-	/* sizeof(pim_jp_encod_grp_t) is used to precalculate the size. */
-	if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
-	    jp_message_size += sizeof(pim_jp_encod_grp_t);
-	    jp_message_size += bjpm->rp_list_join_size;
-	    jp_message_size += bjpm->rp_list_prune_size;
-	} else if (rp_flag == TRUE) {
-	    jp_message_size += sizeof(pim_jp_encod_grp_t);
-	}
-
-	/* Check also would the new entry push us over the limit. */
-	jp_message_size += sizeof(pim_encod_src_addr_t);
+	/*
+	 * RFC 7761 sec. 4.9.5.2: a group set carrying a (*,G) Joined entry
+	 * says the router wants the whole group off the shared tree except
+	 * for the sources it prunes in the same set, so that list of
+	 * (S,G,rpt) Prunes MUST NOT be split across messages.  An upstream
+	 * that reads the Join(*,G) without the tail moves every (S,G,rpt) it
+	 * holds for the group to NoInfo, and the sources in the tail flood
+	 * the shared tree until the next period repeats the mistake.
+	 *
+	 * Flushing on size alone is what split it.  Send the group sets
+	 * already packed instead and leave this one in the working area, so
+	 * that the split falls between sets rather than through the middle of
+	 * one.
+	 */
+	int unsplittable = rp_flag == FALSE && new_grp == FALSE && bjpm->curr_group_wc;
 
 	/* TODO: Should check the jp_message_size also against MTU. */
-	if (jp_message_size > MAX_JP_MESSAGE_SIZE) {
+	if (jp_pending_size(bjpm, new_grp, rp_flag) > MAX_JP_MESSAGE_SIZE) {
+	    if (unsplittable) {
+		flush_packed_groups(pim_nbr);
+	    } else {
+		pack_and_send_jp_message(pim_nbr);
+		bjpm = pim_nbr->build_jp_message;	/* The buffer will be freed */
+	    }
+	}
+
+	/* A message to itself was not enough, so more (S,G,rpt) Prunes are
+	 * pending than any one message can carry.  The same section says
+	 * which N to send and to ignore the rest; anything else in the set
+	 * still has to go out, split or not. */
+	if (bjpm && jp_pending_size(bjpm, new_grp, rp_flag) > MAX_JP_MESSAGE_SIZE) {
+	    if (unsplittable && join_prune == PIM_ACTION_PRUNE && (addr_flags & MRTF_RP))
+		return jp_prune_keep_smallest(bjpm, source, src_msklen);
+
 	    pack_and_send_jp_message(pim_nbr);
 	    bjpm = pim_nbr->build_jp_message;	/* The buffer will be freed */
 	}
@@ -2577,14 +2670,8 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	}
 
 	pim_nbr->build_jp_message = bjpm;
-	data = bjpm->jp_message;
-	PUT_EUADDR(pim_nbr->address, data);
-	PUT_BYTE(0, data);			/* Reserved */
-	bjpm->num_groups_ptr = data++;	/* The pointer for numgroups */
-	*(bjpm->num_groups_ptr) = 0;		/* Zero groups */
-	PUT_HOSTSHORT(holdtime, data);
 	bjpm->holdtime = holdtime;
-	bjpm->jp_message_size = data - bjpm->jp_message;
+	jp_message_restart(pim_nbr, bjpm);
 
 	if (rp_flag == FALSE)
 	    new_grp = TRUE;
@@ -2593,6 +2680,7 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
     if (new_grp == TRUE) {
 	bjpm->curr_group = group;
 	bjpm->curr_group_msklen = grp_msklen;
+	bjpm->curr_group_wc = FALSE;
     }
 
     switch (join_prune) {
@@ -2620,6 +2708,11 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
     if (addr_flags & MRTF_WC)
 	flags |= USADDR_WC_BIT;
     PUT_ESADDR(source, src_msklen, flags, data);
+
+    /* The WC bit on a Joined entry is what makes this group set one sec.
+     * 4.9.5.2 will not let us split, from here until it is packed. */
+    if (rp_flag == FALSE && join_prune == PIM_ACTION_JOIN && (flags & USADDR_WC_BIT))
+	bjpm->curr_group_wc = TRUE;
 
     switch (join_prune) {
 	case PIM_ACTION_JOIN:
@@ -2712,6 +2805,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 
 	bjpm->curr_group = INADDR_ANY_N;
 	bjpm->curr_group_msklen = 0;
+	bjpm->curr_group_wc = FALSE;
 	bjpm->holdtime = 0;
 
 	return bjpm;
@@ -2727,6 +2821,7 @@ static build_jp_message_t *get_jp_working_buff(void)
     bjpm->prune_addr_number = 0;
     bjpm->curr_group        = INADDR_ANY_N;
     bjpm->curr_group_msklen = 0;
+    bjpm->curr_group_wc     = FALSE;
 
     return bjpm;
 }
@@ -2779,6 +2874,7 @@ static void pack_jp_message_grp(pim_nbr_entry_t *pim_nbr)
 	bjpm->jp_message_size = (data - bjpm->jp_message);
 	bjpm->curr_group = INADDR_ANY_N;
 	bjpm->curr_group_msklen = 0;
+	bjpm->curr_group_wc = FALSE;
 	bjpm->join_list_size = 0;
 	bjpm->join_addr_number = 0;
 	bjpm->prune_list_size = 0;
@@ -2826,16 +2922,12 @@ void pack_and_send_jp_message(pim_nbr_entry_t *pim_nbr)
 }
 
 
-static void send_jp_message(pim_nbr_entry_t *pim_nbr)
+/* The wire half, split out so that a group set that may not be split can
+ * send the sets packed ahead of it and go on being built. */
+static void jp_message_send(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
 {
-    build_jp_message_t *bjpm;
-    vifi_t vifi;
+    vifi_t vifi = pim_nbr->vifi;
 
-    bjpm = pim_nbr->build_jp_message;
-    if (!bjpm)
-	return;
-
-    vifi = pim_nbr->vifi;
     memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t),
 	   bjpm->jp_message, bjpm->jp_message_size);
     IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
@@ -2843,6 +2935,58 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 	      inet_fmt(uvifs[vifi].uv_lcl_addr, s1, sizeof(s1)), uvifs[vifi].uv_name);
     send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
 	     PIM_JOIN_PRUNE, bjpm->jp_message_size);
+}
+
+/* An empty Join/Prune message: the upstream neighbor, the holdtime already
+ * chosen for this buffer, and no group sets yet. */
+static void jp_message_restart(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
+{
+    uint8_t *data = bjpm->jp_message;
+
+    PUT_EUADDR(pim_nbr->address, data);
+    PUT_BYTE(0, data);			/* Reserved */
+    bjpm->num_groups_ptr = data++;	/* The pointer for numgroups */
+    *(bjpm->num_groups_ptr) = 0;	/* Zero groups */
+    PUT_HOSTSHORT(bjpm->holdtime, data);
+    bjpm->jp_message_size = data - bjpm->jp_message;
+}
+
+/*
+ * Send the group sets already packed and start a new message, leaving the
+ * one still under construction in the working area.  RFC 7761 sec. 4.9.5.2
+ * lets a router split its Join/Prune information across messages but not a
+ * group set that carries a (*,G) Join, so the split has to fall between
+ * sets.
+ *
+ * Returns TRUE if anything went out, FALSE when that set is the only thing
+ * in the message and there is nothing to make room with.
+ */
+static int flush_packed_groups(pim_nbr_entry_t *pim_nbr)
+{
+    build_jp_message_t *bjpm = pim_nbr->build_jp_message;
+
+    if (!bjpm || !bjpm->num_groups_ptr || *bjpm->num_groups_ptr == 0)
+	return FALSE;
+
+    /* A (*,*,RP) set is a group set of its own and has no reason to wait
+     * behind this one. */
+    pack_jp_message_rp(pim_nbr);
+
+    jp_message_send(pim_nbr, bjpm);
+    jp_message_restart(pim_nbr, bjpm);
+
+    return TRUE;
+}
+
+static void send_jp_message(pim_nbr_entry_t *pim_nbr)
+{
+    build_jp_message_t *bjpm;
+
+    bjpm = pim_nbr->build_jp_message;
+    if (!bjpm)
+	return;
+
+    jp_message_send(pim_nbr, bjpm);
     return_jp_working_buff(pim_nbr);
 }
 

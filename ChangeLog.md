@@ -117,6 +117,17 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Do not split the group set carrying a (\*,G) Join across two Join/Prune
+  messages.  RFC 7761 sec. 4.9.5.2 makes the list of (S,G,rpt) Prunes that
+  qualifies such a Join unsplittable: an upstream router that reads the
+  Join(\*,G) without the prunes moves every (S,G,rpt) it holds for the group
+  to NoInfo, and the sources in the tail flood the shared tree until the
+  next period repeats the mistake.  pimd flushed on message size alone,
+  which above roughly 65 pruned sources did exactly that.  The group sets
+  already packed are now sent first so the split falls between sets, and
+  where even a message of its own is not enough the section's own rule
+  applies: the numerically smallest N source addresses are sent and the
+  rest left out
 - Keep the olist PIM forwards off apart from the one it makes Join/Prune
   decisions with.  `lost_assert(S,G,I)` of RFC 7761 sec. 4.6.5 asks, as its
   third term, whether the assert winner would still beat the metric this
