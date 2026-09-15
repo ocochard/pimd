@@ -124,9 +124,13 @@ from the host, a jail may not `kldload`.
 
 Most scenarios share one topology, a chain of three routers with an end
 device at each end; the ones that do not say so below.  Unicast routing
-is static on purpose — pimd reads distance and metric from `pimd.conf`,
-not from the kernel, so a routing daemon here would only add a
-dependency and a second thing to debug.
+is static on purpose — a static route carries a metric of its own, which
+`route change -metric` moves and pimd reads back out of the kernel for
+its Asserts, so a routing daemon here would only add a dependency and a
+second thing to debug.  The administrative distance pimd puts beside
+that metric does still come from `pimd.conf`, and no routing daemon
+would change that either — deviation **M4** in
+`doc/rfc7761-compliance.md`.
 
 An assertion that reproduces a known deviation reports **KNOWN** through
 `xfail()` instead of failing the run, and turns into an `ok` the day
