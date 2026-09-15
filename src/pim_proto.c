@@ -1032,7 +1032,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 }
 
 
-int send_pim_register(char *packet)
+int send_pim_register(char *packet, size_t len)
 {
     struct ip  *ip;
     uint32_t     source, group;
@@ -1044,9 +1044,27 @@ int send_pim_register(char *packet)
     int		reg_mtu, pktlen = 0;
     char       *buf;
 
+    /* `len` is what the kernel actually handed up behind its own header.
+     * Both the addresses read here and the copy further down are inside the
+     * encapsulated packet, so neither may be reached on the word of its own
+     * ip_len: a header that claims more than arrived would have us send the
+     * bytes that follow it in the receive buffer to the RP.
+     */
+    if (len < sizeof(struct ip)) {
+	logit(LOG_WARNING, 0, "Kernel upcall too short (%zu bytes) for the packet to register", len);
+	return FALSE;
+    }
+
     ip     = (struct ip *)packet;
     source = ip->ip_src.s_addr;
     group  = ip->ip_dst.s_addr;
+
+    pktlen = ntohs(ip->ip_len);
+    if (pktlen < (int)sizeof(struct ip) || (size_t)pktlen > len) {
+	logit(LOG_WARNING, 0, "Kernel upcall for %s claims %d bytes, %zu arrived",
+	      inet_fmt(group, s1, sizeof(s1)), pktlen, len);
+	return FALSE;
+    }
 
     if (IN_PIM_SSM_RANGE(group))
 	return FALSE; /* Group is in PIM-SSM range, don't send register. */
@@ -1105,8 +1123,9 @@ int send_pim_register(char *packet)
 	memset(buf, 0, sizeof(pim_register_t)); /* No flags set */
 	buf += sizeof(pim_register_t);
 
-	/* Copy the data packet at the back of the register packet */
-	pktlen = ntohs(ip->ip_len);
+	/* Copy the data packet at the back of the register packet, at the
+	 * length checked against what arrived at the top of this function.
+	 */
 	memcpy(buf, ip, pktlen);
 
 	pktlen += sizeof(pim_register_t); /* 'sizeof(struct ip) + sizeof(pim_header_t)' added by send_pim()  */

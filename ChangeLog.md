@@ -104,6 +104,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Pay for the bytes of a kernel upcall before reading them.  `accept_igmp()`
+  admits anything an IP header long, and everything behind that was then
+  read on trust: `process_kernel_call()` reads a `struct igmpmsg` that is
+  only the same size by the kernel header's own admission of a "convenient
+  similarity", and an `IGMPMSG_WHOLEPKT` upcall had `send_pim_register()`
+  dereference an encapsulated IP header past it and then copy `ip_len`
+  bytes -- a length out of that header rather than out of what arrived --
+  into the Register sent to the RP.  The received length is a parameter of
+  all three now, and a packet claiming more than the kernel delivered is
+  dropped with a warning instead of sending whatever followed it in the
+  receive buffer.  Not reachable from the wire, since the upcall branch
+  needs the IP protocol field zeroed as only the kernel does it, which is
+  why this is hardening rather than a fix for something seen
 - Copy the ECN bits and the DSCP of an encapsulated packet into the
   Register that carries it, which RFC 7761 section 4.4.1 asks for and
   `send_pim_unicast()` had no way to express: the outgoing Type of Service

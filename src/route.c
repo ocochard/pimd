@@ -106,7 +106,7 @@ rpentry_t  rpentry_save;
  */
 static void   process_cache_miss  (struct igmpmsg *igmpctl);
 static void   process_wrong_iif   (struct igmpmsg *igmpctl);
-static void   process_whole_pkt   (char *buf);
+static void   process_whole_pkt   (char *buf, size_t len);
 static void   check_spt_threshold (mrtentry_t *mrt);
 
 /*
@@ -1137,9 +1137,21 @@ int delete_vif_from_mrt(vifi_t vifi __attribute__((unused)))
 }
 
 
-void process_kernel_call(void)
+void process_kernel_call(ssize_t recvlen)
 {
     struct igmpmsg *igmpctl = (struct igmpmsg *)igmp_recv_buf;
+
+    /* accept_igmp() lets us in on an IP header's worth of bytes, and struct
+     * igmpmsg happens to be laid out to that same size -- "note the
+     * convenient similarity to an IP packet", as the kernel header puts it.
+     * Happening to be is not a guarantee, and the message an upcall carries
+     * behind its header is not covered by it at all, so say what is needed
+     * here rather than inherit a check written for something else.
+     */
+    if (recvlen < (ssize_t)sizeof(struct igmpmsg)) {
+	logit(LOG_WARNING, 0, "Kernel upcall too short (%zd bytes) for its header", recvlen);
+	return;
+    }
 
     switch (igmpctl->im_msgtype) {
 	case IGMPMSG_NOCACHE:
@@ -1151,7 +1163,7 @@ void process_kernel_call(void)
 	    break;
 
 	case IGMPMSG_WHOLEPKT:
-	    process_whole_pkt(igmp_recv_buf);
+	    process_whole_pkt(igmp_recv_buf, (size_t)recvlen - sizeof(struct igmpmsg));
 	    break;
 
 	default:
@@ -1393,9 +1405,9 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
  * in the kernel, and calls the send_pim_register procedure to
  * encapsulate the packets and unicasts them to the RP.
  */
-static void process_whole_pkt(char *buf)
+static void process_whole_pkt(char *buf, size_t len)
 {
-    send_pim_register((char *)(buf + sizeof(struct igmpmsg)));
+    send_pim_register((char *)(buf + sizeof(struct igmpmsg)), len);
 }
 
 mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)

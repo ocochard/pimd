@@ -558,7 +558,7 @@ extern void	delete_pim_nbr		(pim_nbr_entry_t *nbr_delete);
 extern int	receive_pim_register	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_null_register	(mrtentry_t *r);
 extern int	receive_pim_register_stop (uint32_t src, uint32_t dst, char *msg, size_t len);
-extern int	send_pim_register	(char *pkt);
+extern int	send_pim_register	(char *pkt, size_t len);
 extern int	receive_pim_join_prune	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	join_or_prune		(mrtentry_t *mrtentry_ptr, pim_nbr_entry_t *upstream_router);
 extern int	receive_pim_assert	(uint32_t src, uint32_t dst, char *msg, size_t len);
@@ -593,7 +593,7 @@ extern int	change_interfaces	(mrtentry_t *mrtentry_ptr,  vifi_t new_iif,
                                          uint8_t *new_joined_oifs_, uint8_t *new_pruned_oifs,
                                          uint8_t *new_leaves_, uint8_t *new_asserted_oifs, uint16_t flags);
 extern void	calc_oifs		(mrtentry_t *mrtentry_ptr, uint8_t *oifs_ptr);
-extern void	process_kernel_call	(void);
+extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);

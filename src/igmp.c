@@ -206,7 +206,7 @@ static void accept_igmp(int ifi, ssize_t recvlen)
 		inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 	else
 #endif
-	    process_kernel_call();
+	    process_kernel_call(recvlen);
 	return;
     }
 
