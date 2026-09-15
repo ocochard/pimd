@@ -469,21 +469,6 @@ Effort: medium; a per-vif triggered-Hello timer, separate from the periodic
 one, and the RFC 5059 Bootstrap has to wait for it.  Test: none; it is startup
 timing, and every lab here starts its routers together.*
 
-**T5.  `hello-interval` has no lower bound.**
-`man/pimd.conf.5:119` documents 30 to 18724 and calls anything under 30
-unsupported.  `src/config.c:1451` enforces the ceiling only, so 0 and 1 to 29
-are all accepted silently and drag the holdtime, 3.5 times this value, down
-with them.  `hello-interval 0` has pimd announce a zero Holdtime -- the value
-that tells a neighbor the sender is going down -- in every Hello, on a timer
-that fires every tick.  Until T3 above it was worse than that and killed the
-daemon: `start_vif()` reached `RANDOM() % pim_timer_hello_interval` and took
-SIGFPE on the first vif started.  Every other range check in `config.c` warns
-and falls back to the default.  Not an RFC item; listed because the audit
-walked into it.
-*Check: no rule to check against; the nearest thing the spec says is the
-`Hello_Period` row of sec. 4.11, `doc/rfc7761.txt:6956`, which gives the
-30-second default and no range.  Effort: small.  Test: none.  It is a config
-parse, so it wants a unit test rather than a lab.*
 
 Interop details
 ---------------

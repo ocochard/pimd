@@ -131,7 +131,8 @@ Default value, per RFC2236: 380
 The PIM Hello message interval can be tuned by changing this setting.
 It also affects the hold-time value included in Hello messages.  The
 hold-time value is 3.5 times hello-interval.  Anything less than 30 sec
-is considered an "aggressive" setting and is unsupported.
+is considered an "aggressive" setting and is unsupported: a value outside
+the range above is refused, with a warning, and the default used instead.
 .Pp
 Default value: 30 sec.
 .It Cm no phyint

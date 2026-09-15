@@ -104,6 +104,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Refuse a `hello-interval` outside the 30 to 18724 seconds
+  man/pimd.conf.5 documents, warn, and use the default, the way every
+  other range check in `pimd.conf` behaves.  Only the ceiling was enforced,
+  so 0 was accepted and had pimd announce a zero Holdtime -- the value that
+  tells a neighbor the sender is going down -- in every Hello, and 1 to 29
+  were accepted silently and dragged the hold-time down with them
 - Send the Hello with Holdtime zero of RFC 7761 section 4.3.1 before a
   restart takes the interfaces down, so neighbors elect a new DR at once
   instead of waiting out the Neighbor Liveness Timer.  `cleanup()` already

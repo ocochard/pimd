@@ -1448,10 +1448,16 @@ int parse_hello_interval(char *s)
 	    period = PIM_TIMER_HELLO_INTERVAL;
 	    holdtime = PIM_TIMER_HELLO_HOLDTIME;
 	} else {
-	    if (period <= (u_int)(UINT16_MAX / 3.5)) {
+	    /* The floor matters as much as the ceiling, and man/pimd.conf.5
+	     * already documents both: the holdtime is derived from this value,
+	     * so 0 has us announce a zero Holdtime -- our own death -- in
+	     * every Hello, on a timer that fires every tick.
+	     */
+	    if (period >= PIM_TIMER_HELLO_INTERVAL && period <= (u_int)(UINT16_MAX / 3.5)) {
 		holdtime = period * 3.5;
 	    } else {
-		logit(LOG_WARNING, 0, "Too large hello-interval %s; defaulting to %u", w, PIM_TIMER_HELLO_INTERVAL);
+		logit(LOG_WARNING, 0, "Invalid hello-interval %s, must be %u to %u; defaulting to %u",
+		      w, PIM_TIMER_HELLO_INTERVAL, (u_int)(UINT16_MAX / 3.5), PIM_TIMER_HELLO_INTERVAL);
 		period = PIM_TIMER_HELLO_INTERVAL;
 		holdtime = PIM_TIMER_HELLO_HOLDTIME;
 	    }
