@@ -1370,8 +1370,17 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 	/* TODO: check again */
 	if (mrtentry->upstream == upstream_router) {
 	    if (!(mrtentry->flags & MRTF_RP)) {
-		/* Upstream router toward S */
-		if (PIMD_VIFM_ISEMPTY(entry_oifs)) {
+		/* Upstream router toward S.  RFC 7761 sec. 4.5.5 drives this
+		 * machine off JoinDesired(S,G), which is state maintenance and
+		 * reads the olists of sec. 4.1.5 that subtract lost_assert(S,G)
+		 * -- not the one sec. 4.2 forwards off.  Asking calc_oifs()
+		 * here, as pimd did, asked the forwarding question of the
+		 * Join/Prune machine: a router that lost an assert on the shared
+		 * tree to a winner it would beat from the shortest path tree
+		 * then pruned the source whose traffic it needs to get there,
+		 * and the two never resolved.
+		 */
+		if (!join_desired(mrtentry)) {
 		    if (mrtentry->group->active_rp_grp &&
 			i_am_rp(mrtentry->group->rpaddr)) {
 			/* (S,G) at the RP. Don't send Join/Prune
@@ -2889,18 +2898,18 @@ int assert_lost_on(mrtentry_t *mrt, vifi_t vifi)
 /*
  * lost_assert(S,G,I) of sec. 4.6.5, which is more than "I am Assert Loser":
  * it is that, and the winner's metric being better than spt_assert_metric(S,I)
- * as well.  The third term is what lets an entry that has since reached the
- * shortest path tree take back an interface it lost from the shared tree,
- * where its own metric carried the RPT bit and lost on the bit before any
- * number was compared.  Without it the interface stays out until the Assert
- * Timer expires or the winner cancels, though the re-election is already
- * ours to win.
+ * as well.  The Note under the macro says what the third term is for -- "the
+ * transition phase when a router has (S,G) join state but has not yet set
+ * the SPTbit.  In this case, it needs to ignore the assert state if it will
+ * win the assert once the SPTbit is set" -- so the term is asked exactly
+ * where the bit is still clear, and gating it on the bit, as pimd did, is
+ * the one reading that makes it dead code.
  *
- * The term belongs to this macro alone.  lost_assert(*,G,I) and
- * lost_assert(S,G,rpt,I) read the same winner and stop at "not me", so a
- * (*,G) entry, the (S,G,rpt) variant and an (S,G) still forwarding on the
- * shared tree all answer from assert_lost_on() directly.  calc_oifs()
- * (src/route.c) is the caller, once per interface the entry has lost.
+ * This is the macro the state-maintenance olists subtract, sec. 4.1.5:
+ * immediate_olist(S,G), which JoinDesired(S,G) is read off, and the
+ * source-specific half of inherited_olist(S,G).  Forwarding asks
+ * lost_assert_rpt() below instead.  A (*,G) entry has no third term to ask:
+ * lost_assert(*,G,I) stops at "not me", and so the two agree there.
  */
 int lost_assert(mrtentry_t *mrt, vifi_t vifi)
 {
@@ -2917,20 +2926,33 @@ int lost_assert(mrtentry_t *mrt, vifi_t vifi)
     if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_RP))
 	return TRUE;
 
-    /* Sec. 4.2 forwards off inherited_olist(S,G,rpt) until SPTbit(S,G) is
-     * set, and that olist loses the interface to lost_assert(S,G,rpt),
-     * which has no such term.  So the question is only worth asking once
-     * this entry really is the one on the shortest path tree.
-     */
-    if (!(mrt->flags & MRTF_SPT))
-	return TRUE;
-
     spt_assert_metric(mrt, &preference, &metric);
 
     /* compare_metrics() answers for its first pair, so ask it whether the
      * winner beats what we would assert with from the shortest path tree. */
     return compare_metrics(as->preference, as->metric, as->winner,
 			   preference, metric, uvifs[vifi].uv_lcl_addr);
+}
+
+/*
+ * lost_assert(S,G,rpt,I) of the same section, and lost_assert(*,G,I) where
+ * the entry is the (*,G) itself: the same winner, read without the metric
+ * comparison.  This is the one the olist sec. 4.2 forwards off subtracts,
+ * because until SPTbit(S,G) is set what it forwards off is
+ * inherited_olist(S,G,rpt) -- a router that has decided to take the source
+ * off the shared tree, and would win the election once it does, still must
+ * not forward there while the winner is the one delivering the traffic.
+ *
+ * Keeping the two apart is what breaks the deadlock the Note describes: the
+ * router goes on asking for the source it needs to reach the shortest path
+ * tree while it stops forwarding what it has not got yet.
+ */
+int lost_assert_rpt(mrtentry_t *mrt, vifi_t vifi)
+{
+    if ((mrt->flags & MRTF_SG) && !(mrt->flags & MRTF_RP) && !(mrt->flags & MRTF_SPT))
+	return assert_lost_on(mrt, vifi) && vifi != mrt->incoming;
+
+    return lost_assert(mrt, vifi);
 }
 
 /* Does any interface hold assert state?  MRTF_ASSERTED mirrors that, for the

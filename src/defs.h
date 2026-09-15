@@ -567,6 +567,7 @@ extern void	send_pim_assert_cancel	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_winner_is_me	(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	assert_lost_on		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	lost_assert		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
+extern int	lost_assert_rpt		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	age_asserts		(mrtentry_t *mrtentry_ptr);
 extern void     send_pim_join           (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern void     send_pim_prune          (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
@@ -593,6 +594,7 @@ extern int	change_interfaces	(mrtentry_t *mrtentry_ptr,  vifi_t new_iif,
                                          uint8_t *new_joined_oifs_, uint8_t *new_pruned_oifs,
                                          uint8_t *new_leaves_, uint8_t *new_asserted_oifs, uint16_t flags);
 extern void	calc_oifs		(mrtentry_t *mrtentry_ptr, uint8_t *oifs_ptr);
+extern int	join_desired		(mrtentry_t *mrtentry_ptr);
 extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);

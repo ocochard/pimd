@@ -544,7 +544,7 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
  * through this, and only this: it returns false in CheckSwitchToSpt(S,G), no
  * Keepalive Timer is started, and the chain sec. 4.2.1 describes stays down.
  */
-static int join_desired(mrtentry_t *mrt)
+int join_desired(mrtentry_t *mrt)
 {
     uint8_t oifs[MAXVIFS];
     mrtentry_t *grp;
@@ -824,13 +824,18 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
      *
      * lost_assert(*,G) is the (*,G) entry's own `asserted_oifs`, subtracted
      * from the inherited half alone.  The other two are this entry's, and
-     * which of them applies is what lost_assert() (src/pim_proto.c) answers:
-     * until SPTbit(S,G) is set sec. 4.2 forwards off inherited_olist(S,G,rpt)
-     * and the answer is lost_assert(S,G,rpt), plain assert state, taking the
+     * lost_assert_rpt() (src/pim_proto.c) is which of them applies: until
+     * SPTbit(S,G) is set sec. 4.2 forwards off inherited_olist(S,G,rpt) and
+     * the answer is lost_assert(S,G,rpt), plain assert state, taking the
      * interface away wherever it came from.  Once it is set the olist is
      * inherited_olist(S,G) and the answer is lost_assert(S,G), which also
      * asks whether the winner would still beat us now that we assert from
      * the shortest path tree, sec. 4.6.5.
+     *
+     * This is the forwarding olist and only that.  join_desired()
+     * (src/route.c) builds the state-maintenance ones of sec. 4.1.5, which
+     * subtract lost_assert(S,G) whatever the bit says; the two answers part
+     * company exactly where sec. 4.6.5's Note says they must.
      */
 
     if (!mrt) {
@@ -859,7 +864,7 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
     /* lost_assert(S,G) or lost_assert(S,G,rpt) here, and lost_assert(*,G)
      * where this entry is the (*,G) itself */
     for (vifi = 0; vifi < numvifs; vifi++) {
-	if (PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs) && lost_assert(mrt, vifi))
+	if (PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs) && lost_assert_rpt(mrt, vifi))
 	    PIMD_VIFM_CLR(vifi, oifs);
     }
 

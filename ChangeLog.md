@@ -117,6 +117,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Keep the olist PIM forwards off apart from the one it makes Join/Prune
+  decisions with.  `lost_assert(S,G,I)` of RFC 7761 sec. 4.6.5 asks, as its
+  third term, whether the assert winner would still beat the metric this
+  router will have once it reaches the shortest path tree, and the Note
+  under the macro says the term exists for the phase before SPTbit is set.
+  pimd asked it only once the bit *was* set and used one olist for both
+  purposes, so a router that lost an assert while still forwarding on the
+  shared tree pruned the very source whose traffic would have taken it to
+  the shortest path tree, and the two never resolved
 - Let an Assert reach the (S,G) state machine that owns it after the (\*,G)
   has lost the interface.  Sec. 4.6.1 gates the NoInfo-to-Loser transition
   on AssertTrackingDesired(S,G,I), which is join and membership state;
