@@ -266,7 +266,11 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     memset(rta, 0, sizeof(rta));
     parse_rtattr(rta, RTA_MAX, RTM_RTA(rtm), msglen - sizeof(*rtm));
     
-    if (!rta[RTA_OIF]) {
+    /* RTA_OK() only says an attribute is not longer than what is left of
+     * the message, a four byte one with no payload at all passes it, so
+     * every attribute read below asks for its bytes first -- as the metric
+     * further down already did. */
+    if (!rta[RTA_OIF] || RTA_PAYLOAD(rta[RTA_OIF]) < (int)sizeof(uint32_t)) {
 	logit(LOG_WARNING, 0, "Missing outbound interface in netlink reply");
 	return FALSE;
     }
@@ -288,7 +292,7 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     IF_DEBUG(DEBUG_RPF)
 	logit(LOG_DEBUG, 0, "netlink: vif %d, ifindex=%d", vifi, ifindex);
 
-    if (rta[RTA_GATEWAY]) {
+    if (rta[RTA_GATEWAY] && RTA_PAYLOAD(rta[RTA_GATEWAY]) >= (int)sizeof(uint32_t)) {
 	uint32_t gw = *(uint32_t *)RTA_DATA(rta[RTA_GATEWAY]);
 
 	IF_DEBUG(DEBUG_RPF)

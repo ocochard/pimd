@@ -117,6 +117,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the other way
 
 ### Fixes
+- Ask a netlink attribute for its bytes before reading them.  `RTA_OK()`
+  only says an attribute is no longer than what is left of the message, so
+  a four byte one with no payload passes it, and `getmsg()` then read the
+  outgoing interface index and the gateway address out of nothing.  Both
+  are now checked the way the route metric already was.  The kernel is the
+  only writer of these, so this is hardening and not a fix for anything
+  seen on a running router
 - Check the interface index of a kernel upcall against the interfaces that
   are in service before using it.  `process_cache_miss()` and
   `process_wrong_iif()` took `im_vif`, one byte of the message the kernel
