@@ -5,8 +5,15 @@
 # rest of this directory is Linux-only, it is built on network namespaces,
 # veth pairs and `unshare`, so on FreeBSD none of it can even start, and it
 # is not in TESTS for that reason.  Everything asserted here goes through
-# routesock.c (RPF lookups over the PF_ROUTE socket) and the kern.c BSD
-# branches, rather than netlink.c and the Linux ones.
+# the kern.c BSD branches, and through routesock.c (RPF lookups over the
+# PF_ROUTE socket) rather than netlink.c and the Linux ones.
+#
+# NETLINK=yes runs the very same scenarios against the other RPF backend:
+# FreeBSD 13.2 and later answer the same lookups over netlink(4), and a
+# pimd built with `configure --enable-netlink` asks them that way.  The two
+# are indistinguishable from the outside, which is the point of running
+# both, so the knob does not take the tree on trust -- it asks the daemon
+# what it was built with before a single assertion runs.
 #
 # What makes this possible on FreeBSD:
 #   - sys/netinet/ip_mroute.c is fully VNET-ized (V_viftable, V_numvifs,
@@ -407,7 +414,8 @@
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
-# ./configure && gmake).
+# ./configure && gmake).  With NETLINK=yes, that tree has to be configured
+# --enable-netlink and netlink.ko has to be loadable.
 
 set -eu
 
@@ -433,6 +441,17 @@ SCENARIO=${SCENARIO:-rpt}
 KEEP_GROUP=${KEEP_GROUP:-239.1.1.5}
 KEEP_NUM=${KEEP_NUM:-3}
 KEEP_SECONDS=${KEEP_SECONDS:-240}
+
+# Which RPF backend the tree under test was built with, "routing socket"
+# by default and "netlink" with NETLINK=yes.  The string is what pimctl
+# show status prints, i.e. what src/routesock.c and src/netlink.c call
+# themselves.
+NETLINK=${NETLINK:-no}
+if [ "$NETLINK" = yes ]; then
+	RPF_BACKEND="netlink"
+else
+	RPF_BACKEND="routing socket"
+fi
 
 # pimd debug flags, e.g. DEBUG="-l debug -d mrt,rpf" or "-l debug -d all"
 DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap"}
@@ -1035,6 +1054,12 @@ check_req() {
 	# ip_mroute is a module on GENERIC and a jail may not kldload
 	${SUDO} kldload -n ip_mroute 2>/dev/null || \
 		die "cannot load ip_mroute.ko, kernel has no multicast routing"
+	# Same for netlink: a pimd built --enable-netlink opens its routing
+	# socket in the jail, and the module has to be there before it does
+	if [ "$NETLINK" = yes ]; then
+		${SUDO} kldload -n netlink 2>/dev/null || \
+			die "cannot load netlink.ko, needed for NETLINK=yes"
+	fi
 }
 
 # net.inet.ip.mcast.loop must be 0 for any PIM router on FreeBSD.
@@ -1599,7 +1624,35 @@ start_pimd() {
 		-u "$WORKDIR/$r.sock"
 }
 
-pimd_is_down() { ! pimctl "$1" show status >/dev/null 2>&1; }
+pimd_is_up()   { pimctl "$1" show status >/dev/null 2>&1; }
+pimd_is_down() { ! pimd_is_up "$1"; }
+
+# Which of routesock.c and netlink.c the pimd under test was built with.
+# Nothing about a running lab betrays it -- both backends answer the same
+# RPF lookups, and a netlink build that quietly fell back to the routing
+# socket tree would produce an identical, green, meaningless run.  So ask
+# the daemon before asserting anything, and stop here if the answer is not
+# the one NETLINK asked for.  One router settles it, they all run the same
+# binary.
+verify_rpf_backend() {
+	r=$1
+
+	# Whatever is wrong here is wrong with the tree, not with the lab, so
+	# take the jails back down on the way out rather than leave a half
+	# started lab for the next run to trip over.
+	die_stopped() { stop; die "$@"; }
+
+	wait_for 20 pimd_is_up "$r" || \
+		die_stopped "pimd on $r did not come up, see $WORKDIR/$r.log"
+
+	got=$(pimctl "$r" show status | sed -n 's/^RPF Backend *: *//p')
+	if [ -z "$got" ]; then
+		die_stopped "pimd has no \"RPF Backend\" in show status, it predates the netlink knob"
+	fi
+	[ "$got" = "$RPF_BACKEND" ] || \
+		die_stopped "pimd was built for the \"$got\" RPF backend, not \"$RPF_BACKEND\"" \
+		    "(configure --enable-netlink for netlink, without it for the routing socket)"
+}
 
 # Stop and start pimd on one router, leaving the lab around it alone.  The
 # point of it for assert-recover is the generation ID: RFC 7761 sec. 4.3.1
@@ -1654,10 +1707,11 @@ start() {
 		create_box "$box"
 	done
 
-	print "Starting pimd on $(pim_routers | tr ' ' ',') ..."
+	print "Starting pimd on $(pim_routers | tr ' ' ',') ($RPF_BACKEND RPF) ..."
 	for r in $(pim_routers); do
 		start_pimd "$r"
 	done
+	verify_rpf_backend "$(pim_routers | awk '{ print $1 }')"
 
 	if [ "$SCENARIO" = keepalive ]; then
 		print "Starting the source on ED1, $KEEP_NUM groups from $KEEP_GROUP ..."
@@ -2623,6 +2677,7 @@ kern_vif_addr() {
 logged() {
 	${SUDO} grep -q "$2" "$WORKDIR/$1.log" 2>/dev/null
 }
+
 
 # Address column of one interface in "pimctl show interface", i.e. the
 # address pimd gave the VIF out of the several the interface may carry

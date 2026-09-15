@@ -19,11 +19,16 @@ pimd_LDADD       = $(LIBS) $(LIBOBJS)
 
 if LINUX
 AM_CPPFLAGS     += -DRAW_OUTPUT_IS_RAW -DIOCTL_OK_ON_RAW_SOCKET
-pimd_SOURCES    += netlink.c
 endif
 
+# The RPF lookups, one file or the other: netlink.c always on Linux, and
+# on BSD only when configured with --enable-netlink.
+if NETLINK
+pimd_SOURCES    += netlink.c
+else
 if BSD
 pimd_SOURCES    += routesock.c
+endif
 endif
 
 pimctl_SOURCES   = pimctl.c		queue.h

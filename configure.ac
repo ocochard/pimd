@@ -50,6 +50,7 @@ PKG_PROG_PKG_CONFIG
 
 AC_HEADER_STDC
 AC_CHECK_HEADERS([fcntl.h ifaddrs.h netinet/pim.h net/if_dl.h sys/time.h sys/ioctl.h linux/netlink.h termios.h])
+AC_CHECK_HEADERS([netlink/netlink.h netlink/netlink_route.h])
 AC_CHECK_HEADERS([net/if.h], [], [], [
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -107,6 +108,18 @@ AC_ARG_ENABLE(memory_save,
 			new interfaces.]),,
 	enable_memory_save=no)
 
+#   The unicast RPF lookups PIM depends on.  netlink.c is the only way to
+#   ask on Linux, where it is not a choice at all, but FreeBSD 13.2 and
+#   later answer the same RTM_GETROUTE through netlink(4), and map its
+#   RTA_PRIORITY onto the same rt_metrics.rmx_metric routesock.c reads.
+#   The routing socket stays the default there: it needs no kernel module
+#   and it is what test/freebsd-lab.sh exercises.
+AC_ARG_ENABLE(netlink,
+	AS_HELP_STRING([--enable-netlink], [Use netlink(4) for RPF lookups instead of the
+			routing socket.  Always used on Linux; elsewhere needs
+			FreeBSD 13.2 or later and the netlink kernel module.]),,
+	enable_netlink=no)
+
 AC_ARG_ENABLE(test,
         AS_HELP_STRING([--enable-test], [enable tests, requries unshare, tshark, etc.]),
         enable_test="$enableval", enable_test="no")
@@ -152,8 +165,18 @@ AS_IF([test "x$with_systemd" = "xyes" -o "x$with_systemd" = "xauto"], [
 AS_IF([test "x$with_systemd" != "xno"],
      [AC_SUBST([systemddir], [$with_systemd])])
 
+# Linux has no routing socket to fall back to, so netlink is not optional
+# there.  Everywhere else it is, and the headers have to be in place.
+AS_IF([test "x$ac_cv_header_linux_netlink_h" = "xyes"], [enable_netlink=yes])
+AS_IF([test "x$enable_netlink" = "xyes" -a "x$ac_cv_header_linux_netlink_h" != "xyes" \
+	    -a "x$ac_cv_header_netlink_netlink_route_h" != "xyes"], [
+	AC_MSG_ERROR([--enable-netlink given, but neither <linux/netlink.h> nor <netlink/netlink_route.h> was found])])
+
+AS_IF([test "x$enable_netlink" = "xyes"], [rpf_backend="netlink"], [rpf_backend="routing socket"])
+
 AM_CONDITIONAL(BSD,         [test "x$ac_cv_header_net_if_dl_h"     = "xyes"])
 AM_CONDITIONAL(LINUX,       [test "x$ac_cv_header_linux_netlink_h" = "xyes"])
+AM_CONDITIONAL(NETLINK,     [test "x$enable_netlink"               = "xyes"])
 AM_CONDITIONAL(SYSTEMD,     [test "x$with_systemd"                != "xno"])
 AM_CONDITIONAL(ENABLE_TEST, [test "x$enable_test"                 != "xno"])
 
@@ -190,6 +213,7 @@ cat <<EOF
   C Compiler............: $CC $CFLAGS $CPPFLAGS $LDFLAGS $LIBS
 
 Optional features:
+  RPF backend...........: $rpf_backend
   Kernel register encap.: $enable_kernel_encap
   Kernel (*,G) support..: $enable_kernel_mfc
   Kernel MAX VIFs.......: $max_vifs

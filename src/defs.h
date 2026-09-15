@@ -598,11 +598,12 @@ extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
 
-/* routesock.c and netlink.c */
+/* routesock.c and netlink.c, only one of which is built */
 extern int	init_routesock		(void);
 extern void     routesock_clean         (void);
 extern int	k_req_incoming		(uint32_t source, struct rpfctl *rpfp);
 extern int	routing_socket;
+extern const char *rpf_backend;
 
 /* rp.c */
 extern void	init_rp_and_bsr		(void);

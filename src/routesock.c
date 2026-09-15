@@ -61,6 +61,7 @@ union sockunion {
     struct  sockaddr_dl sdl;
 } so_dst, so_ifp;
 typedef union sockunion *sup;
+const char *rpf_backend = "routing socket";
 int routing_socket = -1;
 int rtm_addrs;
 static pid_t pid;
@@ -445,6 +446,8 @@ static int getmsg(struct rt_msghdr *rtm, int msglen __attribute__((unused)), str
 
 
 #else /* !HAVE_ROUTING_SOCKETS -- if we want to run on Linux without Netlink */
+
+const char *rpf_backend = "SIOCGETRPF";
 
 /* API compat dummy. */
 int init_routesock(void)

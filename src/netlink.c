@@ -18,7 +18,20 @@
 #include <paths.h>
 #include "defs.h"
 
+/*
+ * FreeBSD 13.2 and later speak the same protocol through netlink(4), and
+ * its headers spell the RTM_*, RTN_*, RTA_* and nlmsghdr/rtmsg/rtattr the
+ * parser below uses the Linux way, under "#ifndef _KERNEL" in
+ * netlink/route/route.h.  Only the include line differs.
+ */
+#ifdef HAVE_NETLINK_NETLINK_ROUTE_H
+#include <netlink/netlink.h>
+#include <netlink/netlink_route.h>
+#else
 #include <linux/rtnetlink.h>
+#endif
+
+const char *rpf_backend = "netlink";
 
 int routing_socket = -1;
 static uint32_t pid; /* pid_t, but /usr/include/linux/netlink.h says __u32 ... */
@@ -224,6 +237,13 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     rpf->rpfneighbor.s_addr = INADDR_ANY;
     rpf->metric = RPF_METRIC_UNKNOWN;
 
+    /* Only Linux ever says this: FreeBSD's netlink(4) has no RTN_LOCAL
+     * ("not supported" in netlink/route/route.h) and answers for one of
+     * our own addresses with an ordinary RTN_UNICAST route out of lo0,
+     * which is no VIF, so the lookup below fails.  That is what
+     * routesock.c does there too, it matches lo0 by name and finds no
+     * VIF either, so the daemon sees no change of behaviour.
+     */
     if (rtm->rtm_type == RTN_LOCAL) {
 	IF_DEBUG(DEBUG_RPF)
 	    logit(LOG_DEBUG, 0, "netlink: local address");
@@ -283,6 +303,11 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
      * kernel leaves the attribute out when it is zero, and zero is what an
      * ordinary route has, so an absent one is the metric and not a missing
      * answer.
+     *
+     * FreeBSD fills the same attribute from nhop_get_metric(), which is
+     * the rt_metrics.rmx_metric `route -metric` sets (sys/net/route/
+     * nhop_ctl.c), the number routesock.c reads out of a routing socket
+     * reply there.  Its default is RT_DEFAULT_METRIC, 1, not 0.
      */
     rpf->metric = 0;
     if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))

@@ -105,6 +105,16 @@ Run as root the lab uses no `sudo` at all; as an ordinary user it wraps
 every privileged command in one, and `SUDO=` in the environment overrides
 that either way.
 
+`NETLINK=yes` runs the same scenarios against the other RPF backend.
+FreeBSD 13.2 and later answer the lookups `routesock.c` makes over the
+routing socket through `netlink(4)` as well, and a tree configured
+`--enable-netlink` builds `netlink.c` for them instead, the same file
+Linux uses.  Nothing about a running lab betrays which one is in there,
+both answer the same lookups, so before asserting anything the lab asks
+`pimctl show status` what the daemon was built with and stops if it is
+not what was asked for.  `netlink.ko` has to be loadable, for the same
+reason as `ip_mroute.ko`.
+
 What makes it possible: `sys/netinet/ip_mroute.c` is fully VNET-ized, so
 each vnet jail owns a private forwarding cache and vif table, and
 `prison_priv_check()` grants `PRIV_NETINET_MROUTE`, `PRIV_NETINET_RAW`

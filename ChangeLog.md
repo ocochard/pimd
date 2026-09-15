@@ -102,6 +102,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
   anyone having to write the subnet out in `pimd.conf`.  Until now
   `config_vifs_from_kernel()` dropped it with an "alias for vif#N?" at
   debug level.  Ported from mrouted, commit `48a7a11`
+- New `--enable-netlink` configure flag, which makes the RPF lookups go
+  over `netlink(4)` instead of the routing socket.  FreeBSD has had
+  netlink since 13.2, and answers the same `RTM_GETROUTE` there with the
+  same attributes, down to mapping `RTA_PRIORITY` onto the
+  `rt_metrics.rmx_metric` the routing socket reply carries, so `netlink.c`
+  needed one `#include` to build on it.  The routing socket stays the
+  default on BSD: it needs no kernel module.  Linux is unaffected, netlink
+  is the only interface it has and the flag is implied there.  `pimctl
+  show status` now reports which of the two a daemon was built with, as
+  nothing else about a running router does
+- `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
+  such a build, and refuses to run if the tree it was pointed at was built
+  the other way
 
 ### Fixes
 - Check the interface index of a kernel upcall against the interfaces that

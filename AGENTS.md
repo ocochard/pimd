@@ -25,6 +25,8 @@ make                                          # `make V=1` for full command line
 
 Useful configure flags: `--enable-test` (build `test/` subdir),
 `--with-max-vifs=NUM` (must match kernel `MAXVIFS`), `--disable-exit-on-error`,
+`--enable-netlink` (RPF lookups over `netlink(4)` rather than the routing socket; implied
+on Linux, needs FreeBSD 13.2 or later elsewhere),
 `--enable-kernel-encap` / `--enable-kernel-mfc` (patched BSD kernels only).
 
 CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
@@ -56,7 +58,9 @@ never expires while the emulated device is on the LAN.
 
 `test/freebsd-lab.sh` is the FreeBSD counterpart and is deliberately **not** in `TESTS`: it needs
 vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for the shared segment scenarios), and it drives the
-`routesock.c` and `kern.c` BSD branches the Linux suite can never reach. `run all` walks its
+`routesock.c` and `kern.c` BSD branches the Linux suite can never reach. `NETLINK=yes` points
+it at a `--enable-netlink` build instead, so the same scenarios run over `netlink.c` on FreeBSD;
+it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
 `renumber`); see the script

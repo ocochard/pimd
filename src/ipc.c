@@ -851,6 +851,11 @@ static int show_status(FILE *fp)
 	fprintf(fp, "    Priority         : %d\n", my_cand_rp_priority);
 	fprintf(fp, "    Holdtime         : %d sec\n", my_cand_rp_holdtime);
 
+	/* Which of routesock.c and netlink.c was built in.  On Linux there is
+	 * only ever one answer, but a FreeBSD pimd can be either, and nothing
+	 * else about a running router says which: both answer the same
+	 * lookups. */
+	fprintf(fp, "RPF Backend          : %s\n", rpf_backend);
 	fprintf(fp, "Join/Prune Interval  : %d sec\n", PIM_JOIN_PRUNE_PERIOD);
 	fprintf(fp, "Hello Interval       : %d sec\n", pim_timer_hello_interval);
 	fprintf(fp, "Hello Holdtime       : %d sec\n", pim_timer_hello_holdtime);

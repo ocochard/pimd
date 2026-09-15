@@ -376,6 +376,13 @@ On FreeBSD the build is the same, only the tools differ: the Makefiles
 are GNU make ones, so use `gmake` from the `gmake` package instead of
 the base system `make`.
 
+The RPF lookups PIM depends on go over the routing socket there.  On
+FreeBSD 13.2 and later `--enable-netlink` uses `netlink(4)` for them
+instead, the interface Linux has always used, which then needs the
+`netlink` kernel module at run time.  Both read the same routing table
+and the same per-route metric, so this is a build-time choice and
+nothing more; `pimctl show status` reports which one a daemon has.
+
 
 Building from GIT
 -----------------
