@@ -727,6 +727,30 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 # leaving the case untested.
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
+# The verdict a scenario ends on, and its exit status.  Every check_*()
+# has to print one: "run all" is a long log, and a scenario that stops
+# after its last assertion without saying anything reads like one that
+# merely got quieter.  ssm, ssm-range, ifgone and renumber each ended on a
+# bare "[ $FAILED -eq 0 ] || return 1" until this existed, so the only sign
+# that one of them had failed was the exit status of the whole run.
+#
+# The scenarios that dump state on failure still print their own line
+# before the dump, which has to come between the verdict and the return.
+result() {
+	echo
+	if [ "$FAILED" -ne 0 ]; then
+		print "RESULT: FAIL ($FAILED assertion(s))"
+		return 1
+	fi
+
+	if [ "$XFAILED" -gt 0 ]; then
+		print "RESULT: PASS ($XFAILED known deviation(s), see above)"
+	else
+		print "RESULT: PASS"
+	fi
+
+	return 0
+}
 
 usage() {
 	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover] | run all | stop"
@@ -2575,8 +2599,7 @@ check_ssm() {
 		fail "R3 kept $num sources, the list is not bounded"
 	fi
 
-	[ "$FAILED" -eq 0 ] || return 1
-	return 0
+	result
 }
 
 # ssm-range: the SSM range moved off 232.0.0.0/8 by pimd.conf.  What makes
@@ -2648,8 +2671,7 @@ check_ssm_range() {
 		fail "R3 still treats $SSMR_OLD_GROUP as SSM, holding $(group_sources "$SSMR_OLD_GROUP" | tr '\n' ' ')"
 	fi
 
-	[ "$FAILED" -eq 0 ] || return 1
-	return 0
+	result
 }
 
 # Send one IGMPv3 report for a group from ED2
@@ -3001,8 +3023,7 @@ check_ifgone() {
 		ok "r1: $IFGONE_KEPT_IF held $PIM_GROUPS for ${GROUP_WATCH}s after $IFGONE_IF went"
 	fi
 
-	[ "$FAILED" -eq 0 ] || return 1
-	return 0
+	result
 }
 
 # An interface renumbered under a running pimd.  The VIF keeps naming an
@@ -3132,8 +3153,7 @@ check_renumber() {
 		ok "r2: every group was re-joined, none was still held"
 	fi
 
-	[ "$FAILED" -eq 0 ] || return 1
-	return 0
+	result
 }
 
 check_keepalive() {
