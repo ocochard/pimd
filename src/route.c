@@ -621,11 +621,34 @@ int join_desired(mrtentry_t *mrt)
  * pimd can answer since it keeps the assert winner for the incoming
  * interface.
  *
- * The third alternative is the one still missing: it asks whether anything is
- * being forwarded off the shared tree for this source, and pimd has no
- * (S,G,rpt) state to ask.  A missing alternative only delays the bit; where
- * there is no (*,G) at all there is nothing to inherit either, which is the
- * part of it that can be answered.
+ * The third alternative asks whether anything is still being forwarded off
+ * the shared tree for this source.  sec. 4.1.3 spells the list out as
+ *
+ *   inherited_olist(S,G,rpt) = ( joins(*,G) (-) prunes(S,G,rpt) )
+ *                          (+) ( pim_include(*,G) (-) pim_exclude(S,G) )
+ *                          (-) ( lost_assert(*,G) (+) lost_assert(S,G,rpt) )
+ *
+ * which is the (*,G) olist calc_oifs() already keeps, less three terms that
+ * are (S,G,rpt) state pimd does not have.  All three subtract, so an empty
+ * (*,G) olist is an empty inherited_olist(S,G,rpt) whatever they would have
+ * removed: answering the alternative from it can only set the bit where the
+ * spec sets it too, and a non-empty one is left alone as before.
+ *
+ * Asking instead whether a (*,G) exists at all, which is what this did,
+ * is not the conservative half of that: it is false exactly when the
+ * alternative matters most.  A last hop router that has lost the assert on
+ * its own RPF interface holds a (*,G) whose olist is empty, and the two
+ * upstream routers then differ -- the (*,G) follows the assert winner while
+ * the (S,G) keeps the MRIB next hop -- so the fourth alternative is false
+ * as well, and the paragraph after the pseudocode in sec. 4.2.2 says what
+ * the third is there for: "item (3) above is needed because there may not
+ * be any (*,G) state to trigger an Assert(S,G) to happen".  With all five
+ * false the bit is never set, not merely set late, and the router asserts
+ * as an RPT forwarder for the life of the entry -- CouldAssert(S,G,I) is
+ * false without the bit, so sec. 4.6.1 compares the RPT bit and stops.  Two
+ * routers on one LAN then hold Winner on different entries and both keep
+ * forwarding; shared-lan-spt of test/freebsd-lab.sh reproduces it under
+ * "-j 4 run all".
  */
 static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 {
@@ -648,7 +671,7 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 
     directly_connected = !mrt->source->upstream;
     different_iif      = !rp || mrt->source->incoming != rp->incoming;
-    no_rpt_olist       = !mwc;
+    no_rpt_olist       = !mwc || PIMD_VIFM_ISEMPTY(mwc->oifs);
     same_rpf_nbr       = mwc && mrt->upstream && mrt->upstream == mwc->upstream;
     assert_loser       = assert_lost_on(mrt, iif);
 

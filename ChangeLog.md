@@ -130,6 +130,25 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Answer `inherited_olist(S,G,rpt) == NULL` of RFC 7761 sec. 4.2.2 from the
+  shared tree's outgoing interfaces rather than from whether a (\*,G) entry
+  exists.  The two are not the same question, and the difference is the one
+  case the third alternative of `Update_SPTbit(S,G,iif)` is there for: a
+  last hop router that has lost an Assert on its own RPF interface holds a
+  (\*,G) whose olist is empty, so nothing wants the packet on the RP tree,
+  while the fourth alternative is false as well because the (\*,G) follows
+  the Assert winner and the (S,G) keeps the MRIB next hop.  With all five
+  alternatives false the SPTbit was never set -- not merely set late -- and
+  `CouldAssert(S,G,I)` stayed false with it, so the router asserted as an
+  RPT forwarder for the life of the entry.  Two routers on one LAN then
+  each held Assert Winner on a different entry, one on its (S,G) and one on
+  its (\*,G), and both went on forwarding the same stream: a duplicate on
+  the segment that no further Assert could resolve.  The three terms
+  sec. 4.1.3 subtracts from `inherited_olist(S,G,rpt)` are (S,G,rpt) state
+  pimd does not keep, and all three only subtract, so an empty (\*,G) olist
+  is an empty inherited olist whatever they would have removed.  Found by
+  `shared-lan-spt` of `test/freebsd-lab.sh`, which reproduces it under
+  `-j 4 run all`
 - Send and parse the LAN Prune Delay Hello option, RFC 7761 sec. 4.3.3,
   and derive the Prune-Pending Timer from it.  pimd advertised neither
   Propagation_Delay nor Override_Interval and kept neither from its
