@@ -133,6 +133,34 @@ parser, the group set an RP mismatch used to discard, and the Joins and
 Prunes a change of upstream router owes.  What is left below needs state
 pimd does not keep.
 
+The last of the SPTbit conditions is worth writing down, because the shape
+of the mistake was not a missing feature but a question asked in the wrong
+words, and because what looked like a delay was permanent.  The third
+alternative of `Update_SPTbit(S,G,iif)` is `inherited_olist(S,G,rpt) ==
+NULL`, and `update_sptbit()` (`src/route.c`) answered it with "is there a
+(\*,G) entry at all", on the reasoning that where there is none there is
+nothing to inherit.  A last hop router that loses an Assert on its own RPF
+interface has one, with an empty olist -- that is what losing does -- so
+nothing wants the packet on the RP tree and the alternative should fire,
+while the entry test says no.  The fourth cannot cover for it: `RPF'(*,G)`
+follows the Assert winner where `RPF'(S,G)` keeps the MRIB next hop, which
+is the case the paragraph after the pseudocode singles out as the one
+needing item (3), "because there may not be any (\*,G) state to trigger an
+Assert(S,G) to happen".  With every alternative false the bit was never set,
+`CouldAssert(S,G,I)` false with it, and the router asserted as an RPT
+forwarder for the life of the entry: two routers on one segment then held
+Assert Winner on different entries, one on its (S,G) and one on its (\*,G),
+and both kept forwarding a stream no later Assert could settle.  The olist
+`calc_oifs()` already keeps answers the alternative as written, since the
+three terms sec. 4.1.3 subtracts are (S,G,rpt) state pimd does not have and
+all three only subtract.  *Check: sec. 4.2.2 `doc/rfc7761.txt:1522`, the
+paragraph that needs item (3) at `:1565`, the macro at `:1137`.  Test:
+`shared-lan-spt` of `test/freebsd-lab.sh` reproduces it, and only in
+parallel -- `-j 4 run all` failed its assert election four runs out of four
+while the scenario passed alone in every slot, the pool being what leaves a
+router the Assert loser on its RPF interface often enough to reach the
+state.*
+
 
 State machines pimd does not have
 ---------------------------------
