@@ -34,6 +34,10 @@
 #      .10        .1   .1        .2   .2        .3   .1        .10
 #     epair101a/b     epair112a/b    epair123a/b    epair203a/b
 #
+# The interface and jail names throughout this file are the ones slot 0
+# uses; -s N puts N in front of every epair and bridge unit number and
+# after the "pimd" of every jail name, see SLOT below.
+#
 # Unicast routing is static on purpose: a static route carries a metric of
 # its own, which `route change -metric` moves and pimd reads back out of
 # the kernel for its Asserts, so bird or frr here would only add a
@@ -414,14 +418,45 @@
 #               -- and another interface's is dropped in its place.  Takes
 #               about 50s.
 #
-# The scenarios cannot run in parallel: they use the same jail names and
-# epairs, and net.inet.ip.mcast.loop is a host-global sysctl.
+# Scenarios run in parallel, several labs at a time on one host: -s picks
+# a slot, 0 to 31, and every name the lab puts on the host carries it, so
+# slot 3's jails, epairs, bridges and work directory are not slot 0's.
+# The addresses inside the jails are the same in every slot and can be,
+# a vnet jail having an interface namespace and a forwarding cache of its
+# own.  "-j N run all" does the bookkeeping: N scenarios at a time, each
+# in a slot of its own, longest first, each one's output printed whole
+# when it ends.  Measured on a 16-core host, 4m35s at -j 4 and 4m11s with
+# all fourteen at once, against the half hour they take one after
+# another.  The two are close because keepalive is a floor no job count
+# moves: it has to outlive PIM_DATA_TIMEOUT, so it runs 240s whatever
+# else is happening.
+#
+# Two things are worth knowing before turning -j up.  The first is that
+# every assertion here is a poll against a timeout, so a slower lab can
+# fail an assertion rather than merely take longer -- though measured
+# here the cost of a pool is not load: fourteen labs at once is a load
+# average under one, and -j 14 passed all fourteen scenarios.
+#
+# shared-lan-spt is the one scenario sensitive to it, and what it reports
+# is real.  It failed assertion 9 in all three -j 4 runs and passes on
+# its own in any slot: R3 never sets SPTbit for the source, so it asserts
+# as an RPT forwarder, the two MRTF_SPT guards in assert_machine()
+# (src/pim_proto.c) have each router decline the other's Assert, and the
+# LAN keeps two forwarders for good.  A sequential run happens not to
+# provoke it.
+#
+# The second is net.inet.ip.mcast.loop, which is not VNET-ized and is the
+# one piece of host state the slots share: they hold it between them and
+# the last one out puts it back, see disable_mcast_loop().
 #
 # Usage:
-#   ./freebsd-lab.sh start [scenario]   build the lab, start pimd on its routers
-#   ./freebsd-lab.sh check [scenario]   run the assertions (start must have run)
-#   ./freebsd-lab.sh run   [scenario]   start + check + stop, exit 0 if all pass
-#   ./freebsd-lab.sh stop               tear everything down
+#   ./freebsd-lab.sh [-s SLOT] start [scenario]  build the lab, start pimd on its routers
+#   ./freebsd-lab.sh [-s SLOT] check [scenario]  run the assertions (start must have run)
+#   ./freebsd-lab.sh [-s SLOT] run   [scenario]  start + check + stop, exit 0 if all pass
+#   ./freebsd-lab.sh [-s SLOT] stop              tear that slot down
+#   ./freebsd-lab.sh -j 4 run all                every scenario, four at a time
+#   ./freebsd-lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
+#                                                three of them, all at once
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
@@ -435,6 +470,28 @@
 
 set -eu
 
+# The options come before the command, "$0 -s 3 run rpt", and are read
+# here rather than beside the dispatch at the foot of the file: -s picks
+# the slot, and the slot is what every name in the next hundred lines is
+# derived from.  usage() cannot be called yet for the same reason, so a
+# bad option says where to find it instead of printing it.
+SLOT=${SLOT:-0}
+JOBS=${JOBS:-1}
+HELP=
+while getopts "s:j:h" opt; do
+	case "$opt" in
+	s) SLOT=$OPTARG ;;
+	j) JOBS=$OPTARG ;;
+	h) HELP=yes ;;
+	*) echo "EXIT: run \"$0 -h\" for usage" >&2; exit 2 ;;
+	esac
+done
+shift $((OPTIND - 1))
+
+case $JOBS in
+""|*[!0-9]*|0) echo "EXIT: -j wants a job count of 1 or more, not \"$JOBS\"" >&2; exit 1 ;;
+esac
+
 # Root needs no sudo, and the places this runs unattended -- CI in a VM,
 # a jail host -- often do not have it installed at all.  An explicitly
 # empty SUDO= is honoured either way; ${SUDO:-sudo} would have quietly
@@ -447,10 +504,71 @@ fi
 # The tree this script lives in, so it tests the pimd next to it rather
 # than whatever is installed.  Override to point somewhere else.
 PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
-WORKDIR=${WORKDIR:-/tmp/pimd-test}
+
+# Which of the labs this invocation is, 0 to 31, from -s.  Every name that
+# lives on the host carries it -- the jails, the epairs, the bridges, the
+# work directory, the interface group -- so several scenarios can be built
+# on one machine at once and none of them can see, or tear down, another's.
+# Slot 0 is spelled the way this lab always was, "pimd_r1", "epair101a",
+# /tmp/pimd-test, so a single run reads exactly as it used to.
+#
+# What is deliberately *not* per slot is the topology inside the jails:
+# every slot uses the same 10.0.0.0/8 addresses, and can, because a vnet
+# jail has an interface namespace, a routing table and a multicast
+# forwarding cache of its own.  Only the host side has to be kept apart,
+# and the epair unit number is where that is done -- slot N turns 101 into
+# N101, which no other slot can create and which stays well inside both
+# IFNAMSIZ and the cloner's unit range.
+#
+# The one thing the slots still share is net.inet.ip.mcast.loop, which is
+# not VNET-ized; see disable_mcast_loop() for how they take turns with it.
+# 31 is where the kernel stops, not where the lab does: an epair unit is
+# the slot followed by this lab's own three digits, and if_clone refuses a
+# unit above 32767 -- slot 32 would ask for epair32863.
+case $SLOT in
+[0-9]|[12][0-9]|3[01]) ;;
+*) echo "EXIT: slot must be 0 to 31, not \"$SLOT\"" >&2; exit 1 ;;
+esac
+if [ "$SLOT" -eq 0 ]; then
+	TAG=
+else
+	TAG=$SLOT
+fi
+
+# The host-visible names, all derived from the slot.  $EPU is the
+# deliberately capitalised epair of renames(), and has to carry the tag
+# the same way its lower case twin does.
+EP=epair$TAG
+EPU=Epair$TAG
+JAIL_PREFIX=pimd${TAG}_
+
+# The ifconfig(8) group every interface this lab creates is put in, so a
+# human can find or destroy one lab's links and not another's.  The slot
+# is spelled in letters, digit by digit -- slot 0 is "pimda" and slot 31
+# "pimddb" -- because a group name may not end in a digit: it would be
+# ambiguous with an interface name, and setifgroup refuses it outright.
+IFGROUP=pimd$(echo "$SLOT" | tr 0-9 a-j)
+
+# Set in the environment it is one directory for every slot, which cannot
+# work once more than one of them runs; run_parallel() refuses it.
+WORKDIR_PINNED=${WORKDIR:+yes}
+WORKDIR=${WORKDIR:-/tmp/pimd-test$TAG}
 GROUP=${GROUP:-225.1.2.3}
 GROUP_DEFAULT=$GROUP
 SCENARIO=${SCENARIO:-rpt}
+
+# Every scenario, in the order "run all" walks them one at a time, and the
+# same set ordered by how long each takes for when they run several at a
+# time.  Longest first is not a preference, it is what keeps a pool busy:
+# started in the written order a pool of four spends its last five minutes
+# running keepalive alone with three slots idle, because the longest
+# scenario in the list was picked up last.
+SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
+	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
+	   ifgone renumber"
+SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
+		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
+		     rpt alias ssm ifgone renumber ssm-range"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -483,8 +601,8 @@ MSEND="$WORKDIR/msend"
 
 BOXES="ed1 r1 r2 r3 ed2"
 ROUTERS="r1 r2 r3"
-EPAIRS="epair101 epair112 epair123 epair203"
-ED2_IF=epair203b
+EPAIRS="${EP}101 ${EP}112 ${EP}123 ${EP}203"
+ED2_IF=${EP}203b
 
 # Kept so set_scenario() can put them back: "run all" walks the scenarios
 # in one shell, and a shared segment scenario replaces all four
@@ -502,18 +620,18 @@ DEFAULT_ED2_IF=$ED2_IF
 # create_box() like every link in the other scenarios.
 SHARED_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
 SHARED_ROUTERS="r1 r2 r3 r4 r5"
-BR_UPSTREAM=bridge223
-BR_RECEIVER=bridge303
-BR_UPSTREAM_EPAIRS="epair223 epair323 epair423"
-BR_RECEIVER_EPAIRS="epair503 epair303 epair403 epair603"
-SHARED_EPAIRS="$BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS epair510"
+BR_UPSTREAM=bridge${TAG}223
+BR_RECEIVER=bridge${TAG}303
+BR_UPSTREAM_EPAIRS="${EP}223 ${EP}323 ${EP}423"
+BR_RECEIVER_EPAIRS="${EP}503 ${EP}303 ${EP}403 ${EP}603"
+SHARED_EPAIRS="$BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS ${EP}510"
 
 # rp-offpath: one extra link closes the chain into a triangle, straight
 # from the first hop router to the last hop one, so the RP no longer sits
 # on the path the traffic takes once the shortest path tree is up.
-OFFPATH_EPAIRS="$DEFAULT_EPAIRS epair113"
-OFFPATH_R1_IF=epair113a
-OFFPATH_R3_IF=epair113b
+OFFPATH_EPAIRS="$DEFAULT_EPAIRS ${EP}113"
+OFFPATH_R1_IF=${EP}113a
+OFFPATH_R3_IF=${EP}113b
 OFFPATH_R1_ADDR=10.0.13.1
 OFFPATH_R3_ADDR=10.0.13.3
 # The RP and the BSR sit on R2's interface facing the last hop router, so
@@ -523,7 +641,7 @@ OFFPATH_RP_ADDR=10.0.23.2
 # Everything any scenario can create, so stop() cleans up without having to
 # be told which one was running.
 ALL_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
-ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS epair113"
+ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS ${EP}113"
 
 # Source and RP addresses the assertions expect.  set_scenario() puts
 # SRC_ADDR back from the default, the alias scenario moves it.
@@ -536,7 +654,7 @@ RP_ADDR=10.0.12.2
 # keeps the primary address, so reaching the sender at all depends on
 # config_vifs_from_kernel() (src/config.c) keeping the second subnet as an
 # altnet of the same vif.
-ALIAS_IF=epair101b
+ALIAS_IF=${EP}101b
 ALIAS_ADDR=10.0.101.1
 ALIAS_NET=10.0.101.0/24
 ALIAS_SRC_ADDR=10.0.101.10
@@ -557,8 +675,8 @@ RPLH_ADDR=10.0.3.1
 # would be its own incoming interface and calc_oifs() would drop it: were R5
 # the DR, ED3's membership would give nobody a usable oif and the scenario
 # would have one forwarder instead of two.
-SL_R3_IF=epair303b
-SL_R4_IF=epair403b
+SL_R3_IF=${EP}303b
+SL_R4_IF=${EP}403b
 SL_R3_ADDR=10.0.3.2
 SL_DR_ADDR=10.0.3.3
 SL_QUERIER_ADDR=10.0.3.1
@@ -663,11 +781,11 @@ SSMR_DEFAULT_RANGE=232.0.0.0/8
 # because an epair can only be destroyed from the jail that owns an end,
 # and both ends of this one live in jails.  IFGONE_KEPT is the address on
 # R1's other interface, the one the register VIF has to fall back to.
-IFGONE_IF=${IFGONE_IF:-epair101b}
-IFGONE_PEER_IF=${IFGONE_PEER_IF:-epair101a}
+IFGONE_IF=${IFGONE_IF:-${EP}101b}
+IFGONE_PEER_IF=${IFGONE_PEER_IF:-${EP}101a}
 IFGONE_ADDR=${IFGONE_ADDR:-10.0.1.1}
 IFGONE_KEPT=${IFGONE_KEPT:-10.0.12.1}
-IFGONE_KEPT_IF=${IFGONE_KEPT_IF:-epair112a}
+IFGONE_KEPT_IF=${IFGONE_KEPT_IF:-${EP}112a}
 
 # renumber: R2's address on the R1 link moves, inside its own subnet, which
 # is what an interface renumbered under a running pimd looks like -- a DHCP
@@ -680,12 +798,12 @@ IFGONE_KEPT_IF=${IFGONE_KEPT_IF:-epair112a}
 # (see renames()) and r2.conf names it in bsr-candidate and rp-candidate, so
 # renumbering it would move the RP address as well and the scenario would be
 # about something else.  The R3 link carries no such role.
-RENUM_IF=${RENUM_IF:-epair123a}
+RENUM_IF=${RENUM_IF:-${EP}123a}
 RENUM_OLD=${RENUM_OLD:-10.0.23.2}
 RENUM_NEW=${RENUM_NEW:-10.0.23.22}
 RENUM_PEER=${RENUM_PEER:-r3}
 RENUM_KEPT=${RENUM_KEPT:-10.0.12.1}
-RENUM_KEPT_IF=${RENUM_KEPT_IF:-Epair112b}
+RENUM_KEPT_IF=${RENUM_KEPT_IF:-${EPU}112b}
 
 # The groups pimd joins on every link it runs PIM on: ALL-PIM-ROUTERS on
 # the PIM socket, ALL-ROUTERS and the IGMPv3 report group on the IGMP one.
@@ -753,7 +871,24 @@ result() {
 }
 
 usage() {
-	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover] | run all | stop"
+	cat <<-EOF
+	usage: $0 [-s SLOT] [-j JOBS] start|check|run [scenario...] | run all | stop
+
+	  start [scenario]  build the lab and start pimd on its routers
+	  check [scenario]  run the assertions against a lab that is up
+	  run   [scenario]  start, check, stop; exit 0 if every assertion passed
+	  run   s1 s2 ...   those scenarios
+	  run   all         every scenario below
+	  stop              tear this slot's lab down
+
+	  -s SLOT  which lab this is, 0 to 31, default 0.  A slot names its
+	           jails, its links and its work directory apart from every
+	           other, so one machine can hold several labs at once.
+	  -j JOBS  how many scenarios to run at the same time, in slots
+	           $SLOT upwards, one slot each.  Default 1, one after another.
+
+	Scenarios: $(echo $SCENARIOS)
+	EOF
 }
 
 # Three scenarios, one topology: it is the only one in this file with more
@@ -786,8 +921,8 @@ set_scenario() {
 	if is_shared_lan; then
 		BOXES=$SHARED_BOXES
 		ROUTERS=$SHARED_ROUTERS
-		EPAIRS="epair101 epair112 $SHARED_EPAIRS"
-		ED2_IF=epair510b
+		EPAIRS="${EP}101 ${EP}112 $SHARED_EPAIRS"
+		ED2_IF=${EP}510b
 		# assert-recover needs a DR address it can renumber
 		# downwards from, see AR_DR_ADDR
 		if [ "$SCENARIO" = assert-recover ]; then
@@ -842,35 +977,35 @@ ifaces() {
 		# The bridged segments hand out "b" ends only, their "a" ends
 		# stay on the host in $BR_UPSTREAM / $BR_RECEIVER
 		case $1 in
-		ed1) echo "epair101a" ;;
-		r1)  echo "epair101b epair112a" ;;
-		r2)  echo "epair112b epair223b" ;;
-		r3)  echo "epair323b epair303b" ;;
-		r4)  echo "epair423b epair403b" ;;
-		r5)  echo "epair503b epair510a" ;;
-		ed2) echo "epair510b" ;;
-		ed3) echo "epair603b" ;;
+		ed1) echo "${EP}101a" ;;
+		r1)  echo "${EP}101b ${EP}112a" ;;
+		r2)  echo "${EP}112b ${EP}223b" ;;
+		r3)  echo "${EP}323b ${EP}303b" ;;
+		r4)  echo "${EP}423b ${EP}403b" ;;
+		r5)  echo "${EP}503b ${EP}510a" ;;
+		ed2) echo "${EP}510b" ;;
+		ed3) echo "${EP}603b" ;;
 		esac
 		return
 	fi
 
 	if [ "$SCENARIO" = rp-offpath ]; then
 		case $1 in
-		ed1) echo "epair101a" ;;
-		r1)  echo "epair101b epair112a $OFFPATH_R1_IF" ;;
-		r2)  echo "epair112b epair123a" ;;
-		r3)  echo "epair123b epair203a $OFFPATH_R3_IF" ;;
-		ed2) echo "epair203b" ;;
+		ed1) echo "${EP}101a" ;;
+		r1)  echo "${EP}101b ${EP}112a $OFFPATH_R1_IF" ;;
+		r2)  echo "${EP}112b ${EP}123a" ;;
+		r3)  echo "${EP}123b ${EP}203a $OFFPATH_R3_IF" ;;
+		ed2) echo "${EP}203b" ;;
 		esac
 		return
 	fi
 
 	case $1 in
-	ed1) echo "epair101a" ;;
-	r1)  echo "epair101b epair112a" ;;
-	r2)  echo "epair112b epair123a" ;;
-	r3)  echo "epair123b epair203a" ;;
-	ed2) echo "epair203b" ;;
+	ed1) echo "${EP}101a" ;;
+	r1)  echo "${EP}101b ${EP}112a" ;;
+	r2)  echo "${EP}112b ${EP}123a" ;;
+	r3)  echo "${EP}123b ${EP}203a" ;;
+	ed2) echo "${EP}203b" ;;
 	esac
 }
 
@@ -887,7 +1022,7 @@ ifaces() {
 # See https://github.com/troglobit/pimd/pull/252.
 renames() {
 	case $1 in
-	r2) echo "epair112b Epair112b" ;;
+	r2) echo "${EP}112b ${EPU}112b" ;;
 	*)  echo "" ;;
 	esac
 }
@@ -896,46 +1031,46 @@ renames() {
 addrs() {
 	if is_shared_lan; then
 		case $1 in
-		ed1) echo "epair101a 10.0.1.10/24" ;;
-		r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24" ;;
-		r2)  echo "Epair112b 10.0.12.2/24 epair223b 10.0.23.2/24" ;;
-		r3)  echo "epair323b 10.0.23.3/24 epair303b $SL_R3_ADDR/24" ;;
-		r4)  echo "epair423b 10.0.23.4/24 epair403b $SL_DR_ADDR/24" ;;
-		r5)  echo "epair503b $SL_QUERIER_ADDR/24 epair510a 10.0.5.1/24" ;;
-		ed2) echo "epair510b 10.0.5.10/24" ;;
-		ed3) echo "epair603b $SL_ED3_ADDR/24" ;;
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}223b 10.0.23.2/24" ;;
+		r3)  echo "${EP}323b 10.0.23.3/24 ${EP}303b $SL_R3_ADDR/24" ;;
+		r4)  echo "${EP}423b 10.0.23.4/24 ${EP}403b $SL_DR_ADDR/24" ;;
+		r5)  echo "${EP}503b $SL_QUERIER_ADDR/24 ${EP}510a 10.0.5.1/24" ;;
+		ed2) echo "${EP}510b 10.0.5.10/24" ;;
+		ed3) echo "${EP}603b $SL_ED3_ADDR/24" ;;
 		esac
 		return
 	fi
 
 	if [ "$SCENARIO" = rp-offpath ]; then
 		case $1 in
-		ed1) echo "epair101a 10.0.1.10/24" ;;
-		r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24 $OFFPATH_R1_IF $OFFPATH_R1_ADDR/24" ;;
-		r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
-		r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24 $OFFPATH_R3_IF $OFFPATH_R3_ADDR/24" ;;
-		ed2) echo "epair203b 10.0.3.10/24" ;;
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24 $OFFPATH_R1_IF $OFFPATH_R1_ADDR/24" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 $OFFPATH_R3_IF $OFFPATH_R3_ADDR/24" ;;
+		ed2) echo "${EP}203b 10.0.3.10/24" ;;
 		esac
 		return
 	fi
 
 	if [ "$SCENARIO" = alias ]; then
 		case $1 in
-		ed1) echo "epair101a $ALIAS_SRC_ADDR/24" ;;
-		r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24" ;;
-		r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
-		r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24" ;;
-		ed2) echo "epair203b 10.0.3.10/24" ;;
+		ed1) echo "${EP}101a $ALIAS_SRC_ADDR/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24" ;;
+		ed2) echo "${EP}203b 10.0.3.10/24" ;;
 		esac
 		return
 	fi
 
 	case $1 in
-	ed1) echo "epair101a 10.0.1.10/24" ;;
-	r1)  echo "epair101b 10.0.1.1/24 epair112a 10.0.12.1/24" ;;
-	r2)  echo "Epair112b 10.0.12.2/24 epair123a 10.0.23.2/24" ;;
-	r3)  echo "epair123b 10.0.23.3/24 epair203a 10.0.3.1/24" ;;
-	ed2) echo "epair203b 10.0.3.10/24" ;;
+	ed1) echo "${EP}101a 10.0.1.10/24" ;;
+	r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
+	r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
+	r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24" ;;
+	ed2) echo "${EP}203b 10.0.3.10/24" ;;
 	esac
 }
 
@@ -1079,7 +1214,7 @@ route_metrics() {
 	esac
 }
 
-jname() { echo "pimd_$1"; }
+jname() { echo "$JAIL_PREFIX$1"; }
 
 jrun() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
 
@@ -1137,17 +1272,52 @@ check_req() {
 #
 # The sysctl is a plain global, not VNET-ized (in_mcast_loop in
 # sys/netinet/in_mcast.c has no CTLFLAG_VNET), so it cannot be set per
-# jail: the value has to be changed on the host, and is restored by stop.
-MCAST_LOOP_SAVED="$WORKDIR/mcast_loop.saved"
+# jail: the value has to be changed on the host.
+#
+# It is therefore the one thing the slots cannot each have their own of,
+# and the one thing a lab must not restore on its own: a stop that put the
+# host value back while another slot -- or freebsd-interop.sh, which wants
+# the same 0 -- was still forwarding would black-hole that run, for the
+# reason spelled out above, and it would do it silently.  So the value is
+# saved once, by whichever lab arrives first, in a directory on the host
+# that every lab shares; each one leaves a file of its own there while it
+# runs, and the last to leave is the one that puts the value back.
+#
+# lockf(1) around both halves, because a pool of slots starts one scenario
+# as another finishes, which is exactly when "am I the first" and "am I the
+# last" are asked at the same moment.  It holds a real flock, so a lab that
+# is killed outright leaves no stale lock behind -- only, as before, a
+# sysctl still at 0, which the next stop on that slot puts right.
+MCAST_LOOP_DIR=${MCAST_LOOP_DIR:-/var/run/pimd-lab-mcastloop}
+MCAST_LOOP_LOCK=$MCAST_LOOP_DIR.lock
+MCAST_LOOP_TOKEN=lab$SLOT
 
 disable_mcast_loop() {
-	sysctl -n net.inet.ip.mcast.loop > "$MCAST_LOOP_SAVED"
-	${SUDO} sysctl -q net.inet.ip.mcast.loop=0
+	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
+		dir=$1
+		if [ ! -d "$dir" ]; then
+			mkdir -p "$dir" || exit 1
+			sysctl -n net.inet.ip.mcast.loop > "$dir/saved"
+		fi
+		: > "$dir/$2"
+		sysctl -q net.inet.ip.mcast.loop=0
+	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
 }
 
 restore_mcast_loop() {
-	[ -f "$MCAST_LOOP_SAVED" ] || return 0
-	${SUDO} sysctl -q net.inet.ip.mcast.loop="$(cat "$MCAST_LOOP_SAVED")"
+	[ -d "$MCAST_LOOP_DIR" ] || return 0
+	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
+		dir=$1
+		rm -f "$dir/$2"
+		for f in "$dir"/*; do
+			[ -e "$f" ] || continue
+			[ "${f##*/}" = saved ] || exit 0
+		done
+		if [ -f "$dir/saved" ]; then
+			sysctl -q net.inet.ip.mcast.loop="$(cat "$dir/saved")"
+		fi
+		rm -rf "$dir"
+	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
 }
 
 # R2 is the only BSR and RP candidate, pinned to its 10.0.12.2 address so
@@ -1170,8 +1340,8 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: DR for $SRC_ADDR *and* RP for the groups it sends to
 		spt-threshold infinity
-		bsr-candidate epair101b priority 1 interval 10
-		rp-candidate epair101b priority 20 interval 10
+		bsr-candidate ${EP}101b priority 1 interval 10
+		rp-candidate ${EP}101b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -1189,8 +1359,8 @@ write_configs() {
 		# R2: bootstrap router and rendezvous point.  Not used by an
 		# SSM group, which never has a shared tree, but the domain
 		# needs one for pimd to consider itself converged
-		bsr-candidate Epair112b priority 1 interval 10
-		rp-candidate Epair112b priority 20 interval 10
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -1219,8 +1389,8 @@ write_configs() {
 		# ordinary any-source groups once the configured range has
 		# replaced 232.0.0.0/8, and an any-source group needs an RP.
 		ssm-range $SSMR_RANGE
-		bsr-candidate Epair112b priority 1 interval 10
-		rp-candidate Epair112b priority 20 interval 10
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -1262,8 +1432,8 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r2.conf"
 		# R2: bootstrap router and rendezvous point, one hop off the
 		# path the traffic takes once the SPT is up
-		bsr-candidate epair123a priority 1 interval 10
-		rp-candidate epair123a priority 20 interval 10
+		bsr-candidate ${EP}123a priority 1 interval 10
+		rp-candidate ${EP}123a priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -1322,8 +1492,8 @@ write_configs() {
 		# to fire, so a failure here is pimd, not timer luck.
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: bootstrap router, rendezvous point *and* last hop router
-		bsr-candidate epair203a priority 1 interval 10
-		rp-candidate epair203a priority 20 interval 10
+		bsr-candidate ${EP}203a priority 1 interval 10
+		rp-candidate ${EP}203a priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		spt-threshold packets 0 interval 10
 		EOF
@@ -1356,9 +1526,9 @@ write_configs() {
 		# scenario so the result does not depend on timer phase.
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: first hop router for $SRC_ADDR, tunnel endpoint
-		phyint epair101b enable
+		phyint ${EP}101b enable
 		phyint $GIF_IF enable
-		phyint epair112a disable
+		phyint ${EP}112a disable
 		rp-address $RPLH_ADDR 224.0.0.0/16
 		EOF
 
@@ -1366,9 +1536,9 @@ write_configs() {
 
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: tunnel endpoint, static RP, and last hop router
-		phyint epair203a enable
+		phyint ${EP}203a enable
 		phyint $GIF_IF enable
-		phyint epair123b disable
+		phyint ${EP}123b disable
 		rp-address $RPLH_ADDR 224.0.0.0/16
 		spt-threshold packets 0 interval 10
 		EOF
@@ -1383,20 +1553,20 @@ write_configs() {
 		# answer for the remote LAN unambiguously $GIF_IF.
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: first hop router for $SRC_ADDR, tunnel endpoint
-		phyint epair101b enable
+		phyint ${EP}101b enable
 		phyint $GIF_IF enable
-		phyint epair112a disable
+		phyint ${EP}112a disable
 		EOF
 
 		: > "$WORKDIR/r2.conf"
 
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: tunnel endpoint, RP, and last hop router for $RCV_ADDR
-		phyint epair203a enable
+		phyint ${EP}203a enable
 		phyint $GIF_IF enable
-		phyint epair123b disable
-		bsr-candidate epair203a priority 1 interval 10
-		rp-candidate epair203a priority 20 interval 10
+		phyint ${EP}123b disable
+		bsr-candidate ${EP}203a priority 1 interval 10
+		rp-candidate ${EP}203a priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		spt-threshold packets 0 interval 10
 		EOF
@@ -1412,8 +1582,8 @@ write_configs() {
 		# R2: bootstrap router and rendezvous point, one hop upstream
 		# of the shared segment.  Epair112b is spelled with an
 		# uppercase letter on purpose, see renames()
-		bsr-candidate Epair112b priority 1 interval 10
-		rp-candidate Epair112b priority 20 interval 10
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -1483,8 +1653,8 @@ write_configs() {
 	cat <<-EOF > "$WORKDIR/r2.conf"
 	# R2: bootstrap router and rendezvous point for all of 224.0.0.0/4
 	# Epair112b is spelled with an uppercase letter on purpose, see renames()
-	bsr-candidate Epair112b priority 1 interval 10
-	rp-candidate Epair112b priority 20 interval 10
+	bsr-candidate ${EPU}112b priority 1 interval 10
+	rp-candidate ${EPU}112b priority 20 interval 10
 	group-prefix 224.0.0.0 masklen 4
 	EOF
 
@@ -1574,11 +1744,11 @@ create_lans() {
 	${SUDO} kldload -n if_bridge 2>/dev/null || \
 		die "cannot load if_bridge.ko, needed for the shared segments"
 
-	${SUDO} ifconfig "$BR_UPSTREAM" create group pimd up >/dev/null
-	${SUDO} ifconfig "$BR_RECEIVER" create group pimd up >/dev/null
+	${SUDO} ifconfig "$BR_UPSTREAM" create group "$IFGROUP" up >/dev/null
+	${SUDO} ifconfig "$BR_RECEIVER" create group "$IFGROUP" up >/dev/null
 
 	for e in $BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS; do
-		${SUDO} ifconfig "$e" create group pimd >/dev/null
+		${SUDO} ifconfig "$e" create group "$IFGROUP" >/dev/null
 		${SUDO} ifconfig "${e}a" up
 	done
 
@@ -1603,7 +1773,7 @@ create_box() {
 	for i in "$@"; do
 		# The "a" end creates both ends of the pair
 		case $i in
-		*a) ${SUDO} ifconfig "${i%a}" create group pimd >/dev/null ;;
+		*a) ${SUDO} ifconfig "${i%a}" create group "$IFGROUP" >/dev/null ;;
 		esac
 		vnetargs="$vnetargs vnet.interface=$i"
 	done
@@ -1756,7 +1926,7 @@ start() {
 	cc -O2 -o "$IGMPV3" "$PIMD_SRC/test/igmpv3.c" || \
 		die "failed building $PIMD_SRC/test/igmpv3.c"
 
-	print "Disabling multicast loopback on the host (restored by stop) ..."
+	print "Disabling multicast loopback on the host (restored by the last stop) ..."
 	disable_mcast_loop
 
 	print "Creating vnet jails and links ..."
@@ -1993,7 +2163,7 @@ iface_querier() {
 # Seen for real: `run all` failed here twice on a host compiling LLVM
 # alongside it, with the same pimd that passed the scenario on its own.
 queriers_settled() {
-	[ "$(iface_querier r5 epair503b)" = "Local" ] || return 1
+	[ "$(iface_querier r5 ${EP}503b)" = "Local" ] || return 1
 	[ "$(iface_querier r3 "$SL_R3_IF")" = "$SL_QUERIER_ADDR" ] || return 1
 	[ "$(iface_querier r4 "$SL_R4_IF")" = "$SL_QUERIER_ADDR" ] || return 1
 
@@ -2014,7 +2184,7 @@ queriers_settled() {
 # towards the source, which is the state router A shows in #243.
 run_stream_and_sample() {
 	regs_before=$(registers_seen)
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 &
 	sender=$!
 
@@ -2066,7 +2236,7 @@ run_stream_and_sample() {
 # ED2's membership within seconds, after which both routers drop the leaf
 # and the assert state goes with it.
 run_stream_and_sample_shared() {
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 
 	fwd3=
@@ -2142,13 +2312,13 @@ sl_set_rp_metric() {
 check_assert_metric() {
 	print "12. The assert election follows the unicast route metric"
 
-	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/joiner-metric.log" 2>&1 &
 	joiner=$!
 	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver-metric.log" 2>&1 &
 	receiver=$!
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$SL_METRIC_PKTS" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
 		-w "$SL_METRIC_PKTS" "$GROUP" \
 		>"$WORKDIR/sender-metric.log" 2>&1 &
 	sender=$!
@@ -2287,13 +2457,13 @@ check_assert_recover() {
 	# not the entry's iif, so the stream underneath all of this is not
 	# scenery: a LAN nobody is sending to keeps whatever it decided last,
 	# and every step below would read the previous step's answer.
-	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
+	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
 		>"$WORKDIR/joiner-recover.log" 2>&1 &
 	joiner=$!
 	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
 		>"$WORKDIR/receiver-recover.log" 2>&1 &
 	receiver=$!
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
 		>"$WORKDIR/sender-recover.log" 2>&1 &
 	sender=$!
 
@@ -2442,12 +2612,12 @@ check() {
 	if wait_for 60 has_neighbor r1 10.0.12.2; then
 		ok "r1 sees r2 (10.0.12.2)"
 	else
-		fail "r1 never saw r2, PIM hello is not crossing epair112"
+		fail "r1 never saw r2, PIM hello is not crossing ${EP}112"
 	fi
 	if wait_for 60 has_neighbor r2 10.0.23.3; then
 		ok "r2 sees r3 (10.0.23.3)"
 	else
-		fail "r2 never saw r3, PIM hello is not crossing epair123"
+		fail "r2 never saw r3, PIM hello is not crossing ${EP}123"
 	fi
 	if wait_for 60 has_neighbor r3 10.0.23.2; then
 		ok "r3 sees r2 (10.0.23.2)"
@@ -2475,7 +2645,7 @@ check() {
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	sleep 2
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c 40 -w 60 "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -2868,7 +3038,7 @@ check_alias() {
 	if wait_for 60 has_neighbor r1 10.0.12.2; then
 		ok "r1 sees r2 (10.0.12.2)"
 	else
-		fail "r1 never saw r2, PIM hello is not crossing epair112"
+		fail "r1 never saw r2, PIM hello is not crossing ${EP}112"
 	fi
 	for r in $ROUTERS; do
 		if wait_for 90 has_rp "$r" "$RP_ADDR"; then
@@ -2884,7 +3054,7 @@ check_alias() {
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	sleep 2
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c 40 -w 60 "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -3350,7 +3520,7 @@ check_rp_lasthop() {
 # runs, because killing the receiver expires the membership and the (S,G)
 # with it.
 run_stream_and_sample_offpath() {
-	jrun ed1 "$MPING" -s -i epair101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 &
 	sender=$!
 
@@ -3400,22 +3570,22 @@ check_rp_offpath() {
 	if wait_for 60 has_neighbor r1 10.0.12.2; then
 		ok "r1 sees r2 (10.0.12.2)"
 	else
-		fail "r1 never saw r2, PIM hello is not crossing epair112"
+		fail "r1 never saw r2, PIM hello is not crossing ${EP}112"
 	fi
 	if wait_for 60 has_neighbor r3 "$OFFPATH_RP_ADDR"; then
 		ok "r3 sees r2 ($OFFPATH_RP_ADDR)"
 	else
-		fail "r3 never saw r2, PIM hello is not crossing epair123"
+		fail "r3 never saw r2, PIM hello is not crossing ${EP}123"
 	fi
 	if wait_for 60 has_neighbor r1 "$OFFPATH_R3_ADDR"; then
 		ok "r1 sees r3 over the direct link ($OFFPATH_R3_ADDR)"
 	else
-		fail "r1 never saw r3 on epair113, the triangle has no short edge"
+		fail "r1 never saw r3 on ${EP}113, the triangle has no short edge"
 	fi
 	if wait_for 60 has_neighbor r3 "$OFFPATH_R1_ADDR"; then
 		ok "r3 sees r1 over the direct link ($OFFPATH_R1_ADDR)"
 	else
-		fail "r3 never saw r1 on epair113"
+		fail "r3 never saw r1 on ${EP}113"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
@@ -3462,7 +3632,7 @@ check_rp_offpath() {
 	# and the switch cannot be seen from the outside at all.
 	print "6. The last hop router switches to the shortest path tree"
 	direct=$(vif_index r3 "$OFFPATH_R3_IF")
-	rpt=$(vif_index r3 epair123b)
+	rpt=$(vif_index r3 ${EP}123b)
 	if [ -n "$sg_first" ]; then
 		ok "r3 created an ($SRC_ADDR,$GROUP) entry while the stream was running"
 	else
@@ -3776,7 +3946,7 @@ check_shared_lan() {
 	print "3. The DR election on the shared LAN takes the highest address"
 	dr3=$(iface_dr r3 "$SL_R3_IF")
 	dr4=$(iface_dr r4 "$SL_R4_IF")
-	dr5=$(iface_dr r5 epair503b)
+	dr5=$(iface_dr r5 ${EP}503b)
 	if [ "$dr3" = "$SL_DR_ADDR" ] && [ "$dr4" = "$SL_DR_ADDR" ] &&
 	   [ "$dr5" = "$SL_DR_ADDR" ]; then
 		ok "r3, r4 and r5 all call $SL_DR_ADDR (r4) the DR"
@@ -3792,7 +3962,7 @@ check_shared_lan() {
 	else
 		q3=$(iface_querier r3 "$SL_R3_IF")
 		q4=$(iface_querier r4 "$SL_R4_IF")
-		q5=$(iface_querier r5 epair503b)
+		q5=$(iface_querier r5 ${EP}503b)
 		fail "querier disagreement: r5 '$q5' (want Local), r3 '$q3', r4 '$q4' (want $SL_QUERIER_ADDR)"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
@@ -3816,7 +3986,7 @@ check_shared_lan() {
 	# trigger PIM joins" - a deliberate deviation, and the reason this
 	# scenario needs a downstream router to get its second forwarder.
 	print "6. An IGMP report on the LAN is taken by the DR and by nobody else"
-	jrun ed3 "$MPING" -r -i epair603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/joiner.log" 2>&1 &
 	joiner=$!
 	if wait_for 60 has_mrt r4 "$GROUP"; then
@@ -3856,14 +4026,14 @@ check_shared_lan() {
 	# the receivers on it get every packet twice until an assert election
 	# settles it -- an election only a data packet on the wrong interface
 	# can even start.
-	if [ "$(iface_dr r5 epair503b)" = "$SL_DR_ADDR" ]; then
-		if map_isset r5 epair503b "$(route_map r5 ANY "$GROUP" Outgoing)"; then
+	if [ "$(iface_dr r5 ${EP}503b)" = "$SL_DR_ADDR" ]; then
+		if map_isset r5 ${EP}503b "$(route_map r5 ANY "$GROUP" Outgoing)"; then
 			fail "r5 is not the DR on the LAN but forwards $GROUP onto it"
 		else
 			ok "r5, not the DR, keeps the LAN out of its oifs"
 		fi
 	else
-		dprint "r5 reads the DR as $(iface_dr r5 epair503b), not $SL_DR_ADDR, skipping"
+		dprint "r5 reads the DR as $(iface_dr r5 ${EP}503b), not $SL_DR_ADDR, skipping"
 	fi
 
 	print "8. Multicast reaches the receiver at the far end of the tree"
@@ -3987,7 +4157,11 @@ stop() {
 		[ -f "$WORKDIR/$r.pid" ] && \
 			${SUDO} pkill -F "$WORKDIR/$r.pid" 2>/dev/null || true
 	done
-	${SUDO} pkill -f "$PIMD -i" 2>/dev/null || true
+	# Every other slot runs the same three binaries out of the same
+	# tree, so the work directory is what tells this lab's processes
+	# from theirs: pimd is named by the control socket it was given,
+	# mping and msend by the copy that was built for this slot.
+	${SUDO} pkill -f -- "-u $WORKDIR/" 2>/dev/null || true
 	${SUDO} pkill -f "$MPING" 2>/dev/null || true
 	${SUDO} pkill -f "$MSEND" 2>/dev/null || true
 
@@ -4027,25 +4201,190 @@ run_one() {
 	return $rc
 }
 
+# Scenarios started by run_parallel() and not yet reaped, "slot:name", and
+# the shells they run in.  Globals because the INT handler is what reads
+# them, and it runs in this shell however deep the loop below is.
+PARALLEL_BUSY=
+PARALLEL_PIDS=
+
+parallel_abort() {
+	trap - INT TERM
+
+	echo
+	print "Interrupted, taking down the labs that were still up ..."
+	for pid in $PARALLEL_PIDS; do
+		kill "$pid" 2>/dev/null || true
+	done
+	# The scenario shell is gone, its jails are not: each slot is asked
+	# to stop itself, which is the same teardown a finished run does.
+	for entry in $PARALLEL_BUSY; do
+		"$0" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
+	done
+
+	exit 130
+}
+
+# "run all -j N": N scenarios at a time, each in a lab slot of its own.
+#
+# Nothing here makes that safe -- the slot does, by naming every jail,
+# link, bridge and work directory apart, so two scenarios never meet
+# except on the host's CPUs and on net.inet.ip.mcast.loop, which
+# disable_mcast_loop() has them take turns with.  What it costs is timing
+# headroom: every assertion in this file polls with a timeout, and a host
+# running eight labs converges more slowly than one running a single lab,
+# so a job count well under the core count is worth more than one at it.
+#
+# Each scenario writes its output to a file and it is printed whole when
+# the scenario ends.  Interleaved line by line the assertions of eight
+# runs are unreadable, and worse, they are unattributable: every scenario
+# here prints "ok 3." and means a different thing by it.
+run_parallel() {
+	jobs=$JOBS
+	pending=$1
+
+	[ -z "$WORKDIR_PINNED" ] || \
+		die "WORKDIR is set in the environment, so every slot would" \
+		    "share one work directory; unset it to run in parallel"
+
+	last=$((SLOT + jobs - 1))
+	[ "$last" -le 31 ] || \
+		die "-j $jobs from slot $SLOT wants slots up to $last, and 31 is the last one"
+
+	out=$(mktemp -d "${TMPDIR:-/tmp}/pimd-lab-parallel.XXXXXX")
+	free=
+	n=$SLOT
+	while [ "$n" -le "$last" ]; do
+		free="$free $n"
+		n=$((n + 1))
+	done
+
+	results=
+	rc=0
+
+	trap parallel_abort INT TERM
+
+	while [ -n "$pending" ] || [ -n "$PARALLEL_BUSY" ]; do
+		while [ -n "$pending" ] && [ -n "$free" ]; do
+			# shellcheck disable=SC2086
+			set -- $pending; scenario=$1; shift; pending=$*
+			# shellcheck disable=SC2086
+			set -- $free; slot=$1; shift; free=$*
+
+			print "===== scenario: $scenario, slot $slot, started ====="
+			(
+				# set +e because the redirection failing, or
+				# the run itself, would otherwise take the
+				# subshell out before it could say so; the
+				# status is moved into place rather than
+				# written there, so the file cannot be seen
+				# half written by the loop below
+				set +e
+				"$0" -s "$slot" run "$scenario" \
+					> "$out/$slot.log" 2>&1
+				echo $? > "$out/$slot.rc.part"
+				mv "$out/$slot.rc.part" "$out/$slot.rc"
+			) &
+			PARALLEL_PIDS="$PARALLEL_PIDS $!"
+			PARALLEL_BUSY="$PARALLEL_BUSY $slot:$scenario"
+		done
+
+		sleep 2
+
+		# A child cannot be waited for one at a time in POSIX sh, so
+		# it says it is done by writing its exit status out.
+		running=
+		for entry in $PARALLEL_BUSY; do
+			slot=${entry%%:*}
+			scenario=${entry#*:}
+			if [ ! -f "$out/$slot.rc" ]; then
+				running="$running $entry"
+				continue
+			fi
+
+			status=$(cat "$out/$slot.rc")
+			print "===== scenario: $scenario, slot $slot, done ====="
+			cat "$out/$slot.log"
+			[ "$status" -eq 0 ] || rc=1
+			results="$results $scenario:$status"
+			mv "$out/$slot.log" "$out/$scenario.log"
+			rm -f "$out/$slot.rc"
+			free="$free $slot"
+		done
+		PARALLEL_BUSY=$running
+	done
+
+	trap - INT TERM
+	wait
+
+	echo
+	print "===== $(echo $results | wc -w | tr -d " ") scenarios, $jobs at a time ====="
+	for entry in $results; do
+		if [ "${entry#*:}" -eq 0 ]; then
+			printf "  \033[32mpass\033[0m  %s\n" "${entry%:*}"
+		else
+			printf "  \033[31mFAIL\033[0m  %s (exit %s)\n" \
+			    "${entry%:*}" "${entry#*:}"
+		fi
+	done
+
+	if [ "$rc" -eq 0 ]; then
+		rm -rf "$out"
+	else
+		echo
+		echo "per-scenario logs kept in $out"
+	fi
+
+	return $rc
+}
+
+# "run", "run <scenario>", "run <scenario> <scenario> ...", "run all".
+# With -j the named scenarios are run several at a time, each in a slot of
+# its own; without it they are run one after another, as they always were.
 run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		for s in rpt keepalive rp-lasthop rp-offpath gif-tunnel \
-			 gif-tunnel-staticrp shared-lan shared-lan-spt \
-			 assert-recover ssm ssm-range alias ifgone \
-			 renumber; do
-			set_scenario "$s"
-			print "===== scenario: $s ====="
-			run_one || rc=$?
-		done
+		# The same fourteen either way, ordered by how long they
+		# take when a pool is what picks them up
+		if [ "$JOBS" -gt 1 ]; then
+			list=$SCENARIOS_BY_LENGTH
+		else
+			list=$SCENARIOS
+		fi
+	elif [ $# -gt 1 ]; then
+		list=$*
+	else
+		# One scenario, which is the common case: run it in this
+		# shell, so its assertions reach the terminal as they are
+		# made rather than in one block at the end.
+		[ "$JOBS" -eq 1 ] || \
+			die "-j needs more than one scenario to run in parallel"
+		set_scenario "${1:-}"
+		run_one || rc=$?
 		exit $rc
 	fi
 
-	set_scenario "${1:-}"
-	run_one || rc=$?
+	# Every name, before anything is built: a typo in the last of them
+	# is worth hearing about now and not in twenty minutes.
+	for s in $list; do
+		set_scenario "$s"
+	done
+
+	if [ "$JOBS" -gt 1 ]; then
+		run_parallel "$list" || rc=$?
+		exit $rc
+	fi
+
+	for s in $list; do
+		set_scenario "$s"
+		print "===== scenario: $s ====="
+		run_one || rc=$?
+	done
+
 	exit $rc
 }
+
+[ -z "$HELP" ] || { usage; exit 0; }
 
 if [ $# -eq 0 ]; then
 	usage
@@ -4056,7 +4395,7 @@ cmd=$1
 shift
 case $cmd in
 start|check) set_scenario "${1:-}"; $cmd ;;
-run)         run "${1:-}" ;;
+run)         run "$@" ;;
 stop)        stop ;;
 *)           usage; exit 2 ;;
 esac

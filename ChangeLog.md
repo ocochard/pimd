@@ -115,6 +115,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
+- `test/freebsd-lab.sh` and `test/freebsd-interop.sh` run several
+  scenarios at a time.  `-s SLOT`, 0 to 31, names everything a lab puts on
+  the host after its slot -- jails, epairs, bridges, interface group, work
+  directory, and in the interoperability lab the taps, the bhyve VM and
+  the management subnet -- so labs in different slots cannot see or tear
+  down each other, and `-j JOBS` runs that many scenarios at once, a slot
+  each: on a 16-core host `-j 4 run all` takes 4m35s and `-j 14` 4m11s,
+  where the sequential walk takes about half an hour.  `net.inet.ip.mcast.loop` is the one piece of host state the
+  slots share, and it is now held between them under a lock, the last lab
+  to stop putting the host value back -- before this, the first one to
+  stop restored it under every other.  `test/veos-bhyve.sh` keeps each
+  VM's files in `$WORK/<name>`, two guests having never been able to share
+  the one disk image
 
 ### Fixes
 - Send and parse the LAN Prune Delay Hello option, RFC 7761 sec. 4.3.3,

@@ -66,6 +66,14 @@
 # here -- its kexec is the very thing that does not survive bhyve, see
 # above, so this script never reads it.
 #
+# Several VMs can run at once: -n names one, and everything that belongs
+# to it -- the raw disk, the kernel and initrd taken out of it, the grub
+# files, the console device, the pid file -- is named or kept apart by
+# that name.  What they must not share is the disk image, which is why
+# each VM converts one of its own under $WORK/<name>; see VMWORK below.
+# test/freebsd-interop.sh drives this to run its scenarios in parallel,
+# one VM per lab slot.
+#
 # Requires: sysutils/grub2-bhyve, emulators/qemu-tools (qemu-img),
 # sysutils/e2fsprogs (debugfs, fsck.ext4), root.
 
@@ -115,7 +123,7 @@ Commands:
 Options:
   -q FILE   vEOS-lab qcow2 image.  Required by start, inject and
             cloudinit; no default, and $QCOW is read when -q is absent.
-  -w DIR    work directory                   [$WORK]
+  -w DIR    work directory, a subdirectory per VM under it  [$WORK]
   -n NAME   bhyve VM name                    [$VM]
   -c NUM    vCPUs                            [$CPUS]
   -m MB     memory                           [$MEM]
@@ -156,13 +164,27 @@ shift $((OPTIND - 1))
 CMD=${1:-start}
 shift || true
 
-RAW=$WORK/$(basename "${QCOW%.qcow2}").raw
-KERNEL=$WORK/linux-i386
-INITRD=$WORK/initrd-veos-bhyve.img
+# One directory per VM under the work directory, rather than one work
+# directory shared by every VM.  Two guests cannot share a disk image:
+# each writes its own startup-config onto the flash, and bhyve opens the
+# raw image read-write, so a second VM booting the same file corrupts
+# both.  The kernel and initrd come out of that image, and the grub.cfg
+# and device.map name it, so they belong to the VM as well -- and
+# grub-bhyve reads grub.cfg from a directory it is given, which is why
+# these live in one rather than carrying the VM name in each file name.
+#
+# The cost is a converted 4G image per VM name; the first boot of a new
+# name pays it.  A tree that converted an image under an older version of
+# this script has it one level up and unused, $WORK/<image>.raw, and can
+# delete it.
+VMWORK=$WORK/$VM
+RAW=$VMWORK/$(basename "${QCOW%.qcow2}").raw
+KERNEL=$VMWORK/linux-i386
+INITRD=$VMWORK/initrd-veos-bhyve.img
 CONSOLE=/dev/nmdm-$VM.A
 CONSOLE_PEER=/dev/nmdm-$VM.B
-CIDISK=$WORK/$VM-config-drive.iso
-PIDFILE=$WORK/$VM.pid
+CIDISK=$VMWORK/$VM-config-drive.iso
+PIDFILE=$VMWORK/$VM.pid
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -216,7 +238,7 @@ extract_boot_files() {
     mnt=$(mktemp -d)
     trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true; detach_flash "$md"' EXIT
     mount -t ext2fs -o ro "/dev/${md}s2" "$mnt"
-    unzip -oq "$mnt/vEOS-lab.swi" linux-i386 initrd-i386 -d "$WORK"
+    unzip -oq "$mnt/vEOS-lab.swi" linux-i386 initrd-i386 -d "$VMWORK"
     umount "$mnt"; rmdir "$mnt"; detach_flash "$md"
     trap - EXIT
 
@@ -226,9 +248,9 @@ extract_boot_files() {
     mkdir -p "$stub/bin"
     printf '#!/bin/sh\nexit 1\n' > "$stub/bin/flashrom"
     chmod 755 "$stub/bin/flashrom"
-    (cd "$stub" && find . | cpio -o -H newc --quiet) > "$WORK/flashrom-stub.cpio"
+    (cd "$stub" && find . | cpio -o -H newc --quiet) > "$VMWORK/flashrom-stub.cpio"
     rm -rf "$stub"
-    cat "$WORK/initrd-i386" "$WORK/flashrom-stub.cpio" > "$INITRD"
+    cat "$VMWORK/initrd-i386" "$VMWORK/flashrom-stub.cpio" > "$INITRD"
 }
 
 # Put one local file on the guest flash under the given name, replacing
@@ -296,7 +318,7 @@ nic_args() {
 # --- run --------------------------------------------------------------
 
 write_boot_config() {
-    cat > "$WORK/device.map" <<EOF
+    cat > "$VMWORK/device.map" <<EOF
 (hd0) $RAW
 EOF
     # Only when a config drive is armed: it makes EosCloudInit take its KVM
@@ -310,7 +332,7 @@ EOF
     # The command line mirrors what Aboot's boot0 builds for platform=veos;
     # dmamem=0M is what keeps the EOS kernel from trying to reserve a CMA
     # region it cannot get.
-    cat > "$WORK/grub.cfg" <<EOF
+    cat > "$VMWORK/grub.cfg" <<EOF
 linux (host)$KERNEL nmi_watchdog=panic tsc=reliable pcie_ports=native reboot=p usb-storage.delay_use=0 pti=off watchdog.stop_on_reboot=0 mds=off nohz=off SWI=flash:/vEOS-lab.swi CONSOLESPEED=9600 console=ttyS0 Aboot=Aboot-veos-8.0.2-32351763 platform=veos log_buf_len=2M systemd.show_status=0 loglevel=4 dmamem=0M$simenv
 initrd (host)$INITRD
 boot
@@ -328,7 +350,7 @@ run_loop() {
 
     while true; do
         bhyvectl --destroy --vm="$VM" 2>/dev/null || true
-        grub-bhyve -m "$WORK/device.map" -M "$MEM" -r host -d "$WORK" \
+        grub-bhyve -m "$VMWORK/device.map" -M "$MEM" -r host -d "$VMWORK" \
             ${console:+-c "$console"} "$VM"
 
         set +e
@@ -362,7 +384,7 @@ do_start() {
         die "$VM already exists, run '$0 -n $VM stop' first"
     fi
 
-    mkdir -p "$WORK"
+    mkdir -p "$VMWORK"
     kldload -n vmm nmdm
     convert_image
     extract_boot_files
@@ -423,7 +445,7 @@ do_inject() {
     [ -n "$cfg" ] && [ -f "$cfg" ] || die "usage: $0 inject FILE"
     [ -e /dev/vmm/"$VM" ] && die "$VM is running, stop it first"
 
-    mkdir -p "$WORK"
+    mkdir -p "$VMWORK"
     convert_image
     flash_put "$cfg" startup-config
     echo "==> wrote $cfg to flash:/startup-config"
@@ -435,7 +457,7 @@ do_cloudinit() {
     [ -n "$cfg" ] || die "usage: $0 cloudinit FILE|off"
     [ -e /dev/vmm/"$VM" ] && die "$VM is running, stop it first"
 
-    mkdir -p "$WORK"
+    mkdir -p "$VMWORK"
     convert_image
 
     if [ "$cfg" = off ]; then

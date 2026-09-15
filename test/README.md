@@ -88,6 +88,7 @@ The FreeBSD vnet jail lab
 -------------------------
 
     sh test/freebsd-lab.sh run all          # every scenario, one after another
+    sh test/freebsd-lab.sh -j 4 run all     # four at a time, ~4.5 min instead of ~31
     sh test/freebsd-lab.sh run rp-offpath   # one of them
     sh test/freebsd-lab.sh start rpt        # build it and leave it up
     sh test/freebsd-lab.sh check rpt        # assertions against a running lab
@@ -136,8 +137,7 @@ An assertion that reproduces a known deviation reports **KNOWN** through
 `xfail()` instead of failing the run, and turns into an `ok` the day
 pimd starts doing the right thing.
 
-The scenarios cannot run in parallel: they share jail names, epair names
-and the host-global `net.inet.ip.mcast.loop` sysctl.
+Scenarios run in parallel, several labs at a time — `-s` and `-j` below.
 
 | Scenario              | Time | What only this one covers |
 |-----------------------|------|---------------------------|
@@ -156,7 +156,58 @@ and the host-global `net.inet.ip.mcast.loop` sysctl.
 | `renumber`            | ~50s | The counterpart: the interface stays and its address moves, inside its own subnet.  Asserts that pimd notices, takes the VIF out of service and back in, that the neighbour on the far side sees the new address without waiting for a periodic Hello, and that neither link lost a group membership on the way — a neighbour outlives the membership that feeds it, so it has to be asked for separately. |
 
 Set `DEBUG` at the top of the script for pimd logs; each router's log
-and control socket land in `/tmp/pimd-test`.
+and control socket land in `/tmp/pimd-test`, or `/tmp/pimd-testN` for a
+lab started with `-s N`.
+
+### Several labs at once
+
+`-s SLOT`, 0 to 31, picks which lab an invocation is.  Everything the lab
+puts on the host carries the slot — the jails (`pimd3_r1`), the epairs
+(`epair3101a`), the bridges, the interface group and the work directory
+(`/tmp/pimd-test3`) — so labs in different slots cannot see, or tear
+down, each other:
+
+    sh test/freebsd-lab.sh -s 1 start shared-lan    # one lab
+    sh test/freebsd-lab.sh -s 2 start rp-offpath    # another, beside it
+    sh test/freebsd-lab.sh -s 1 stop                # just that one
+
+The addresses inside the jails are the same in every slot and can be: a
+vnet jail has an interface namespace, a routing table and a multicast
+forwarding cache of its own.  What the slots do share is
+`net.inet.ip.mcast.loop`, which is not VNET-ized, so they hold it between
+them under a lock and the last one to stop puts the host value back —
+`freebsd-interop.sh` takes part in the same count.
+
+`-j JOBS` runs several scenarios at a time, one slot each, and prints
+each one's output whole when it ends rather than interleaving them:
+
+    sh test/freebsd-lab.sh -j 4 run all
+    sh test/freebsd-lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
+
+`-j N run all` walks the scenarios longest first, so the pool does not end
+up running `keepalive` alone with three slots idle.  Measured on a
+16-core host: `-j 4` 4m35s, `-j 14` — every scenario at once — 4m11s,
+against the half hour the per-scenario times above add up to.  The two
+are so close because `keepalive` is a floor no job count moves: it runs
+`KEEP_SECONDS` 240s to outlive `PIM_DATA_TIMEOUT`, so nothing finishes in
+much under four minutes.
+
+Every assertion here is a poll against a timeout, so a slower lab can
+fail an assertion rather than merely take longer.  Measured on a 16-core
+host, though, what a pool costs is not load: fourteen labs at once is a
+load average under one, `-j 14` passed all fourteen scenarios, and a
+scenario run alone beside three slots churning labs up and down passed
+too.
+
+One scenario is sensitive to it.  `shared-lan-spt` failed assertion 9 —
+*both r3 and r4 still forward, no assert settled it* — in all three
+`-j 4 run all` runs, and passes on its own in any slot.  That is not a
+harness artifact: R3 never sets SPTbit for the source, so it asserts as
+an RPT forwarder, the two `MRTF_SPT` guards in `assert_machine()` make
+each router decline the other's Assert, and the LAN is left with two
+forwarders permanently.  The scenario is reporting a pimd deviation that
+a sequential run happens not to provoke.  `rp-lasthop` failed once in
+four runs and has not repeated.
 
 
 The Arista vEOS interoperability lab
@@ -166,6 +217,9 @@ The Arista vEOS interoperability lab
     sh test/freebsd-interop.sh -i ~/vEOS.qcow2 run pimd-rp     # one of them
     sh test/freebsd-interop.sh -i ~/vEOS.qcow2 start assert-lan # leave it up
     sh test/freebsd-interop.sh stop                            # no image needed
+
+    sh test/freebsd-interop.sh -i ~/vEOS.qcow2 -j 3 run all    # three at a time
+    sh test/freebsd-interop.sh -i ~/vEOS.qcow2 -s 2 run pimd-rp  # in slot 2
 
 `-i` names the vEOS-lab qcow2 image, and there is no default: it is a
 licensed Arista download that cannot ship with this tree, so where it
@@ -300,10 +354,17 @@ kernel, `sysutils/grub2-bhyve`, `emulators/qemu-tools`,
 `sysutils/e2fsprogs`, `python3` (eAPI is JSON), and the image named by
 `-i` above.
 
-It cannot run beside `freebsd-lab.sh` — the two share
-`net.inet.ip.mcast.loop` and the 10.0.0.0/8 addresses — and says so on
-startup.  Their jails, epairs and bridges are named apart, so both can
-be built in one tree.
+`-s SLOT` and `-j JOBS` work as they do in the vnet jail lab, and name
+the same things apart plus the taps, the bhyve VM (`veos2`) and the
+management subnet eAPI is reached over (`172.20.2.0/24`).  What bounds
+`-j` here is not cores: each scenario boots a vEOS of its own, 4 GiB of
+guest memory and a converted 4 GiB disk apiece.
+
+`freebsd-lab.sh` must not be up **in the same slot** — the two labs use
+the same 10.0.0.0/8 addresses inside their jails, and `check_req()` says
+so on startup — but another slot of it may be, and
+`net.inet.ip.mcast.loop` is shared between the two labs the same way it
+is shared between slots.
 
 ### The VM runner
 
@@ -324,6 +385,15 @@ It is `bash`, not `sh`, and every subcommand needs root.  `-q` names the
 image and is needed only by the three that touch the disk — `start`,
 `inject` and `cloudinit`; `stop`, `console`, `status` and `cli` do not
 care where it lives.
+
+`-n` names the VM, and several can run at once: everything belonging to
+one — the raw disk converted from the qcow2, the kernel and initrd taken
+out of it, the grub files, the console device, the pid file — is kept in
+`$WORK/<name>`, or named after it.  Two guests cannot share a disk image
+(each writes its own startup-config onto the flash, and bhyve opens it
+read-write), so a new VM name converts a 4 GiB image of its own on first
+boot.  A tree converted by an older version of the script has an unused
+`~/veos-bhyve/<image>.raw` one level up, and can delete it.
 
 Its header documents what booting a vEOS under bhyve actually takes, all
 of it learned the hard way: the disk holds no bootloader and the kexec

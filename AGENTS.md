@@ -64,7 +64,14 @@ it asks `pimctl show status` which backend the daemon has rather than trust the 
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
 `renumber`); see the script
-header for the topologies and which upstream issue each one pins down. `shared-lan`,
+header for the topologies and which upstream issue each one pins down. `-s SLOT` (0-31) puts every
+host-visible name the lab creates -- jails, epairs, bridges, interface group, work directory -- in a
+namespace of its own, so several labs run side by side, and `-j JOBS` runs that many scenarios at
+once, a slot each (measured on 16 cores: `-j 4 run all` 4m35s, `-j 14` 4m11s, against the ~31
+minutes the scenarios add up to sequentially; `keepalive` alone is a 4 minute floor). The addresses inside
+the jails are the same in every slot, `net.inet.ip.mcast.loop` is the one piece of host state they
+share, and they hold it between them under a lock in `/var/run/pimd-lab-mcastloop`, last one out
+restoring it -- `freebsd-interop.sh` counts in the same place. `shared-lan`,
 `shared-lan-spt` and `assert-recover` are one topology and the only one with several PIM routers on
 a link, so DR election, IGMP querier election and the assert election only ever run there
 (`shared-lan` is also the only one that gives two routers different
@@ -127,11 +134,15 @@ same way as its encoder passes one and fails the other:
   `ok` and stay as tripwires. `AL_SKIP_RESEND=yes` skips the 180s case.
 
 `run all` walks all three. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
-`-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path).
+`-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path). `-s` and `-j` work as
+in `freebsd-lab.sh` and additionally name the taps, the bhyve VM and the management subnet apart;
+what bounds `-j` here is a vEOS per scenario, 4G of RAM and a converted 4G disk each. A lab in the
+*same* slot of `freebsd-lab.sh` is refused, one in another slot is not.
 `test/veos-bhyve.sh` is the VM runner it drives (see its header for how a vEOS boots under bhyve at
 all), usable on its own: `start`/`stop`/`console`, `inject` to write a startup-config onto the guest
 flash with `debugfs`, `cloudinit` for the vendor `ARISTA_CONFIG_DRIVE` day0 path, and `cli` to run
-EOS commands over eAPI.
+EOS commands over eAPI. Everything belonging to one VM lives in `$WORK/<name>`, `-n` naming it, so
+several guests run at once; sharing one raw disk image, which is what they did before, corrupts it.
 
 ## Running
 

@@ -31,6 +31,11 @@
 # of each is a bhyve tap and the other is a jail: a bridge is the only thing
 # that joins the two.  They carry no host address, the host is a wire here.
 #
+# Those names, and the management subnet with them, are the ones slot 0
+# uses; -s N puts N in front of every epair, bridge and tap unit number,
+# names the VM veosN and moves the management segment to 172.20.N.0/24,
+# see SLOT below.
+#
 # Two scenarios run on that topology, and they are each other's mirror.  Who
 # holds which role is the whole difference: every message below is a message
 # one implementation builds and the other has to believe, and swapping the
@@ -151,9 +156,21 @@
 #
 # Which is also why this is not another scenario in freebsd-lab.sh: that
 # script needs nothing but jails, and this one needs a 4G VM image, bhyve
-# and a vendor OS.  The two labs use different jail, epair and bridge names
-# and can be built side by side, but not run at the same time: they share
-# net.inet.ip.mcast.loop and the 10.0.0.0/8 addresses.
+# and a vendor OS.
+#
+# Scenarios run in parallel, as they do there and for the same reason: -s
+# picks a slot, 0 to 31, and every name this lab puts on the host carries
+# it -- jails, epairs, bridges, taps, the bhyve VM, the management subnet
+# and the work directory -- so two of them never meet.  "run all -j N", or
+# a list of scenarios and -j, does the bookkeeping.  Unlike the jail-only
+# lab it is not cores that bound N: every scenario boots a vEOS of its
+# own, 4G of memory and a converted 4G disk apiece.
+#
+# The same slot of freebsd-lab.sh must not be up at the same time -- the
+# two labs use the same 10.0.0.0/8 addresses and check_req() says so --
+# but another slot of it may be, and the one piece of host state they both
+# want, net.inet.ip.mcast.loop, they now hold between them; see
+# disable_mcast_loop().
 #
 # The VM is driven by veos-bhyve.sh (see $VEOS_SH), which boots the vEOS
 # image under bhyve, writes the startup-config this script generates onto
@@ -170,7 +187,36 @@
 # needed, see the header of veos-bhyve.sh.  Neither can ship here, which is
 # why there is no default path and why this lab is not in TESTS.
 #
-# Usage: freebsd-interop.sh start|check|run [arista-rp|pimd-rp] | run all | stop
+# Usage: freebsd-interop.sh [-i image] [-s SLOT] [-j JOBS] start|check|run
+#        [scenario...] | run all | stop
+
+# The options come before the command, "$0 -i image.qcow2 -s 1 run
+# pimd-rp", and are read here rather than beside the dispatch at the foot
+# of the file: -s picks the slot, and the slot is what the names in the
+# next hundred lines are derived from.  usage() cannot be called yet for
+# the same reason, so a bad option says where to find it instead.
+SLOT=${SLOT:-0}
+JOBS=${JOBS:-1}
+HELP=
+# The vEOS-lab image.  No default: it is a licensed Arista download that
+# cannot live in this tree, and where a given machine keeps it is nothing
+# this script can guess -- so it is named with -i, or in $VEOS_QCOW, and
+# the run stops with a usage message if neither says where it is.
+VEOS_QCOW=${VEOS_QCOW:-}
+while getopts "i:s:j:h" opt; do
+	case "$opt" in
+	i) VEOS_QCOW=$OPTARG ;;
+	s) SLOT=$OPTARG ;;
+	j) JOBS=$OPTARG ;;
+	h) HELP=yes ;;
+	*) echo "EXIT: run \"$0 -h\" for usage" >&2; exit 2 ;;
+	esac
+done
+shift $((OPTIND - 1))
+
+case $JOBS in
+""|*[!0-9]*|0) echo "EXIT: -j wants a job count of 1 or more, not \"$JOBS\"" >&2; exit 1 ;;
+esac
 
 # Root needs no sudo, and the places this runs unattended -- CI in a VM,
 # a jail host -- often do not have it installed at all.  An explicitly
@@ -183,7 +229,49 @@ else
 fi
 
 PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
-WORKDIR=${WORKDIR:-/tmp/pimd-interop}
+
+# Which of the interoperability labs this invocation is, 0 to 31, from -s.
+# Everything this lab puts on the host carries it -- the jails, the
+# epairs, the bridges, the taps, the bhyve VM, the management subnet eAPI
+# is reached over and the work directory -- so scenarios can be run
+# several at a time.  Slot 0 is spelled the way this lab always was, so a
+# single run reads as it used to.
+#
+# The addresses inside the jails are not per slot and do not need to be: a
+# vnet jail has an interface namespace and a forwarding cache of its own.
+# The management segment is the exception, because the host itself holds
+# an address on it and talks eAPI over it, so that one is
+# 172.20.<slot>.0/24.
+#
+# A vEOS is 4G of RAM and a converted 4G disk image apiece, which is the
+# real limit on how many of these run at once; see run_parallel().
+# 31 is where the kernel stops, not where the lab does: an epair unit is
+# the slot followed by this lab's own three digits, and if_clone refuses a
+# unit above 32767 -- slot 32 would ask for epair32863.
+case $SLOT in
+[0-9]|[12][0-9]|3[01]) ;;
+*) echo "EXIT: slot must be 0 to 31, not \"$SLOT\"" >&2; exit 1 ;;
+esac
+if [ "$SLOT" -eq 0 ]; then
+	TAG=
+else
+	TAG=$SLOT
+fi
+
+EP=epair$TAG
+JAIL_PREFIX=pimx${TAG}_
+
+# The ifconfig(8) group everything this lab creates is put in, and which
+# stop() sweeps.  The slot is spelled in letters, digit by digit -- slot 0
+# is "pimxa" and slot 31 "pimxdb" -- because a group name may not end in a
+# digit: it would be ambiguous with an interface name and setifgroup
+# refuses it.
+IFGROUP=pimx$(echo "$SLOT" | tr 0-9 a-j)
+
+# Set in the environment it is one directory for every slot, which cannot
+# work once more than one of them runs; run_parallel() refuses it.
+WORKDIR_PINNED=${WORKDIR:+yes}
+WORKDIR=${WORKDIR:-/tmp/pimd-interop$TAG}
 
 PIMD="$PIMD_SRC/src/pimd"
 PIMCTL="$PIMD_SRC/src/pimctl"
@@ -199,13 +287,7 @@ DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp"}
 # reboots - was learned for this lab.  The image itself is not in the tree
 # and cannot be: it is a licensed Arista download.
 VEOS_SH=${VEOS_SH:-$(cd "$(dirname "$0")" && pwd)/veos-bhyve.sh}
-VEOS_VM=${VEOS_VM:-veos}
-
-# The vEOS-lab image.  No default: it is a licensed Arista download that
-# cannot live in this tree, and where a given machine keeps it is nothing
-# this script can guess -- so it is named with -i, or in $VEOS_QCOW, and
-# the run stops with a usage message if neither says where it is.
-VEOS_QCOW=${VEOS_QCOW:-}
+VEOS_VM=${VEOS_VM:-veos$TAG}
 
 SCENARIO=${SCENARIO:-arista-rp}
 SCENARIOS="arista-rp pimd-rp assert-lan"
@@ -225,45 +307,45 @@ ROUTERS=$DEFAULT_ROUTERS
 
 # Host bridges: the PIM links the Arista sits on, plus the management
 # segment eAPI is reached over.
-BR12=bridge812
-BR23=bridge823
-BR4=bridge804
-BR3=bridge803
-BR_MGMT=bridge800
+BR12=bridge${TAG}812
+BR23=bridge${TAG}823
+BR4=bridge${TAG}804
+BR3=bridge${TAG}803
+BR_MGMT=bridge${TAG}800
 
 # bhyve taps, in PCI order.  The first NIC a vEOS sees is Management1, the
 # ones after it are Ethernet1, Ethernet2, ...  All four are always plugged
 # in, because the guest numbers its interfaces by PCI slot and Ethernet3
 # would move if the list changed between scenarios; only pimd-rp bridges
 # the last one to anything.
-TAP_MGMT=tap800
-TAP_ET1=tap812
-TAP_ET2=tap823
-TAP_ET3=tap804
+TAP_MGMT=tap${TAG}800
+TAP_ET1=tap${TAG}812
+TAP_ET2=tap${TAG}823
+TAP_ET3=tap${TAG}804
 
 # epairs.  The "b" end goes into a jail; for the bridged links the "a" end
 # stays on the host and joins the bridge.
-DEFAULT_EPAIRS="epair801 epair812 epair823 epair803"
-REVERSED_EPAIRS="$DEFAULT_EPAIRS epair804"
-ASSERT_EPAIRS="epair801 epair812 epair832 epair833 epair853 epair863 epair805 epair836"
+DEFAULT_EPAIRS="${EP}801 ${EP}812 ${EP}823 ${EP}803"
+REVERSED_EPAIRS="$DEFAULT_EPAIRS ${EP}804"
+ASSERT_EPAIRS="${EP}801 ${EP}812 ${EP}832 ${EP}833 ${EP}853 ${EP}863 ${EP}805 ${EP}836"
 EPAIRS=$DEFAULT_EPAIRS
 
 # Every epair either scenario can create, for a teardown that does not
 # depend on which one built the lab
-ALL_EPAIRS="$DEFAULT_EPAIRS epair804 epair832 epair833 epair853 epair863 epair805 epair836"
+ALL_EPAIRS="$DEFAULT_EPAIRS ${EP}804 ${EP}832 ${EP}833 ${EP}853 ${EP}863 ${EP}805 ${EP}836"
 ALL_BOXES="ed1 r1 r3 r5 ed2 ed3 ed4 ed6"
 
-ED1_IF=epair801a
-ED2_IF=epair803b
-ED4_IF=epair804b
+ED1_IF=${EP}801a
+ED2_IF=${EP}803b
+ED4_IF=${EP}804b
 
 # assert-lan renames things: ED2 moves behind R5, and ED3 sits on the
 # contested LAN itself
-AL_ED2_IF=epair805b
-AL_ED3_IF=epair863b
-AL_ED6_IF=epair836b
-AL_R3_LAN_IF=epair833b
-AL_R3_UP_IF=epair832b
+AL_ED2_IF=${EP}805b
+AL_ED3_IF=${EP}863b
+AL_ED6_IF=${EP}836b
+AL_R3_LAN_IF=${EP}833b
+AL_R3_UP_IF=${EP}832b
 
 SRC_ADDR=${SRC_ADDR:-10.0.1.10}
 RCV_ADDR=${RCV_ADDR:-10.0.3.10}
@@ -449,8 +531,10 @@ AL_STREAM_LIFE=$((AL_FWD_WAIT + AL_ASSERT_TIME + 2 * AL_ELECTION_WAIT + 150))
 # is also its duration in seconds.
 AL_STREAM_PKTS=${AL_STREAM_PKTS:-$AL_STREAM_LIFE}
 
-MGMT_HOST=172.20.0.1
-MGMT_VEOS=172.20.0.2
+# One /24 per slot: the host has an address on this segment, unlike every
+# other one in this lab, so two slots cannot share it.
+MGMT_HOST=172.20.$SLOT.1
+MGMT_VEOS=172.20.$SLOT.2
 
 EAPI_USER=${EAPI_USER:-admin}
 EAPI_PASS=${EAPI_PASS:-admin}
@@ -499,12 +583,20 @@ xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
 usage() {
 	cat <<-EOF
-	usage: $0 [-i image.qcow2] start|check|run [scenario] | run all | stop
+	usage: $0 [-i image.qcow2] [-s SLOT] [-j JOBS] start|check|run
+	          [scenario...] | run all | stop
 
 	  -i FILE   the vEOS-lab qcow2 image to boot.  Required for start and
 	            run, and \$VEOS_QCOW is read when -i is not given.  There is
 	            no default: the image is a licensed Arista download that
 	            cannot ship with this tree.
+	  -s SLOT   which lab this is, 0 to 31, default 0.  A slot names its
+	            jails, links, taps, bhyve VM and work directory apart from
+	            every other, so one machine can hold several at once.
+	  -j JOBS   how many scenarios to run at the same time, in slots \$SLOT
+	            upwards, one slot each.  Default 1, one after another.
+	            Each one boots a vEOS of its own, so this is bounded by
+	            memory and disk before it is bounded by cores.
 
 	Scenarios: $SCENARIOS.  "run all" walks them in that order.
 	EOF
@@ -541,53 +633,53 @@ set_scenario() {
 
 # --- boxes ------------------------------------------------------------
 
-jname() { echo "pimx_$1"; }
+jname() { echo "$JAIL_PREFIX$1"; }
 jrun() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
 pimctl() { j=$1; shift; jrun "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
 ifaces() {
 	if [ "$SCENARIO" = assert-lan ]; then
 		case $1 in
-		ed1) echo "epair801a" ;;
-		r1)  echo "epair801b epair812b" ;;
-		r3)  echo "epair832b epair833b epair836a" ;;
-		r5)  echo "epair853b epair805a" ;;
-		ed2) echo "epair805b" ;;
-		ed3) echo "epair863b" ;;
-		ed6) echo "epair836b" ;;
+		ed1) echo "${EP}801a" ;;
+		r1)  echo "${EP}801b ${EP}812b" ;;
+		r3)  echo "${EP}832b ${EP}833b ${EP}836a" ;;
+		r5)  echo "${EP}853b ${EP}805a" ;;
+		ed2) echo "${EP}805b" ;;
+		ed3) echo "${EP}863b" ;;
+		ed6) echo "${EP}836b" ;;
 		esac
 		return
 	fi
 
 	case $1 in
-	ed1) echo "epair801a" ;;
-	r1)  echo "epair801b epair812b" ;;
-	r3)  echo "epair823b epair803a" ;;
-	ed2) echo "epair803b" ;;
-	ed4) echo "epair804b" ;;
+	ed1) echo "${EP}801a" ;;
+	r1)  echo "${EP}801b ${EP}812b" ;;
+	r3)  echo "${EP}823b ${EP}803a" ;;
+	ed2) echo "${EP}803b" ;;
+	ed4) echo "${EP}804b" ;;
 	esac
 }
 
 addrs() {
 	if [ "$SCENARIO" = assert-lan ]; then
 		case $1 in
-		ed1) echo "epair801a 10.0.1.10/24" ;;
-		r1)  echo "epair801b 10.0.1.1/24 epair812b 10.0.12.1/24" ;;
-		r3)  echo "epair832b 10.0.12.3/24 epair833b $AL_R3_ADDR/24 epair836a 10.0.6.1/24" ;;
-		r5)  echo "epair853b $AL_R5_ADDR/24 epair805a 10.0.5.1/24" ;;
-		ed2) echo "epair805b $AL_ED2_ADDR/24" ;;
-		ed3) echo "epair863b $AL_ED3_ADDR/24" ;;
-		ed6) echo "epair836b $AL_ED6_ADDR/24" ;;
+		ed1) echo "${EP}801a 10.0.1.10/24" ;;
+		r1)  echo "${EP}801b 10.0.1.1/24 ${EP}812b 10.0.12.1/24" ;;
+		r3)  echo "${EP}832b 10.0.12.3/24 ${EP}833b $AL_R3_ADDR/24 ${EP}836a 10.0.6.1/24" ;;
+		r5)  echo "${EP}853b $AL_R5_ADDR/24 ${EP}805a 10.0.5.1/24" ;;
+		ed2) echo "${EP}805b $AL_ED2_ADDR/24" ;;
+		ed3) echo "${EP}863b $AL_ED3_ADDR/24" ;;
+		ed6) echo "${EP}836b $AL_ED6_ADDR/24" ;;
 		esac
 		return
 	fi
 
 	case $1 in
-	ed1) echo "epair801a 10.0.1.10/24" ;;
-	r1)  echo "epair801b 10.0.1.1/24 epair812b 10.0.12.1/24" ;;
-	r3)  echo "epair823b 10.0.23.3/24 epair803a 10.0.3.1/24" ;;
-	ed2) echo "epair803b 10.0.3.10/24" ;;
-	ed4) echo "epair804b $ED4_ADDR/24" ;;
+	ed1) echo "${EP}801a 10.0.1.10/24" ;;
+	r1)  echo "${EP}801b 10.0.1.1/24 ${EP}812b 10.0.12.1/24" ;;
+	r3)  echo "${EP}823b 10.0.23.3/24 ${EP}803a 10.0.3.1/24" ;;
+	ed2) echo "${EP}803b 10.0.3.10/24" ;;
+	ed4) echo "${EP}804b $ED4_ADDR/24" ;;
 	esac
 }
 
@@ -692,25 +784,53 @@ check_req() {
 	${SUDO} kldload -n vmm nmdm 2>/dev/null || \
 		die "cannot load vmm.ko, bhyve is not available"
 
-	if ${SUDO} jls -j pimd_r1 jid >/dev/null 2>&1; then
-		die "freebsd-lab.sh is running, the two labs share addresses"
+	if ${SUDO} jls -j "pimd${TAG}_r1" jid >/dev/null 2>&1; then
+		die "freebsd-lab.sh is running in slot $SLOT, the two labs share" \
+		    "addresses -- stop it, or run this one in another slot"
 	fi
 }
 
 # net.inet.ip.mcast.loop must be 0 for any PIM router on FreeBSD; see the
 # long comment on the same sysctl in freebsd-lab.sh.  It is a plain global,
-# not VNET-ized, so it has to be changed on the host and restored by stop.
-MCAST_LOOP_SAVED="$WORKDIR/mcast_loop.saved"
+# not VNET-ized, so it has to be changed on the host -- which makes it the
+# one thing the slots, and the two labs, cannot each have their own of.
+#
+# So it is not restored by whoever happens to stop first: the value is
+# saved once, by whichever lab arrives first, in a directory on the host
+# they all share, each one leaves a file of its own there while it runs,
+# and the last to leave is the one that puts the value back.  The same
+# directory and the same lock as freebsd-lab.sh, deliberately -- the two
+# labs want the same 0 and must not undo it under each other.
+MCAST_LOOP_DIR=${MCAST_LOOP_DIR:-/var/run/pimd-lab-mcastloop}
+MCAST_LOOP_LOCK=$MCAST_LOOP_DIR.lock
+MCAST_LOOP_TOKEN=interop$SLOT
 
 disable_mcast_loop() {
-	sysctl -n net.inet.ip.mcast.loop > "$MCAST_LOOP_SAVED"
-	${SUDO} sysctl -q net.inet.ip.mcast.loop=0
+	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
+		dir=$1
+		if [ ! -d "$dir" ]; then
+			mkdir -p "$dir" || exit 1
+			sysctl -n net.inet.ip.mcast.loop > "$dir/saved"
+		fi
+		: > "$dir/$2"
+		sysctl -q net.inet.ip.mcast.loop=0
+	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
 }
 
 restore_mcast_loop() {
-	[ -f "$MCAST_LOOP_SAVED" ] || return 0
-	${SUDO} sysctl -q net.inet.ip.mcast.loop="$(cat "$MCAST_LOOP_SAVED")"
-	rm -f "$MCAST_LOOP_SAVED"
+	[ -d "$MCAST_LOOP_DIR" ] || return 0
+	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
+		dir=$1
+		rm -f "$dir/$2"
+		for f in "$dir"/*; do
+			[ -e "$f" ] || continue
+			[ "${f##*/}" = saved ] || exit 0
+		done
+		if [ -f "$dir/saved" ]; then
+			sysctl -q net.inet.ip.mcast.loop="$(cat "$dir/saved")"
+		fi
+		rm -rf "$dir"
+	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
 }
 
 # --- configuration ----------------------------------------------------
@@ -793,8 +913,8 @@ write_configs() {
 		# upstream of both contenders and never on the contested LAN,
 		# so nothing it does decides the election.
 		hello-interval 10
-		bsr-candidate epair812b priority $PIMD_BSR_PRIORITY interval 10
-		rp-candidate epair812b priority 20 interval 10
+		bsr-candidate ${EP}812b priority $PIMD_BSR_PRIORITY interval 10
+		rp-candidate ${EP}812b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		EOF
 
@@ -830,8 +950,8 @@ write_configs() {
 		# last hop router in this scenario, R1 only holds the roles
 		# it originates protocol state for.
 		hello-interval 10
-		bsr-candidate epair812b priority $PIMD_BSR_PRIORITY interval 10
-		rp-candidate epair812b priority 20 interval 10
+		bsr-candidate ${EP}812b priority $PIMD_BSR_PRIORITY interval 10
+		rp-candidate ${EP}812b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
 		spt-threshold packets 0 interval 10
 		EOF
@@ -1032,37 +1152,37 @@ create_lans() {
 			if ifconfig "$br" >/dev/null 2>&1; then
 				die "$br already exists, it is not ours to reuse"
 			fi
-			${SUDO} ifconfig bridge create name "$br" group pimx up >/dev/null
+			${SUDO} ifconfig bridge create name "$br" group "$IFGROUP" up >/dev/null
 		done
 		${SUDO} ifconfig "$BR_MGMT" inet "$MGMT_HOST/24" alias
 
-		for e in epair812 epair832 epair833 epair853 epair863; do
-			${SUDO} ifconfig "$e" create group pimx >/dev/null
+		for e in ${EP}812 ${EP}832 ${EP}833 ${EP}853 ${EP}863; do
+			${SUDO} ifconfig "$e" create group "$IFGROUP" >/dev/null
 			${SUDO} ifconfig "${e}a" up
 		done
 		# R1 and R3 meet the Arista's Ethernet1 here
-		${SUDO} ifconfig "$BR12" addm epair812a
-		${SUDO} ifconfig "$BR12" addm epair832a
+		${SUDO} ifconfig "$BR12" addm ${EP}812a
+		${SUDO} ifconfig "$BR12" addm ${EP}832a
 		# The contested LAN: R3, R5 and ED3, plus tap for Ethernet2
-		${SUDO} ifconfig "$BR3" addm epair833a
-		${SUDO} ifconfig "$BR3" addm epair853a
-		${SUDO} ifconfig "$BR3" addm epair863a
+		${SUDO} ifconfig "$BR3" addm ${EP}833a
+		${SUDO} ifconfig "$BR3" addm ${EP}853a
+		${SUDO} ifconfig "$BR3" addm ${EP}863a
 
 		return 0
 	fi
 
 	bridges="$BR12 $BR23 $BR_MGMT"
-	bridged_epairs="epair812 epair823"
+	bridged_epairs="${EP}812 ${EP}823"
 	if [ "$SCENARIO" = pimd-rp ]; then
 		bridges="$bridges $BR4"
-		bridged_epairs="$bridged_epairs epair804"
+		bridged_epairs="$bridged_epairs ${EP}804"
 	fi
 
 	for br in $bridges; do
 		if ifconfig "$br" >/dev/null 2>&1; then
 			die "$br already exists, it is not ours to reuse"
 		fi
-		${SUDO} ifconfig bridge create name "$br" group pimx up >/dev/null
+		${SUDO} ifconfig bridge create name "$br" group "$IFGROUP" up >/dev/null
 	done
 
 	# The management segment is the only one the host has an address on:
@@ -1071,12 +1191,12 @@ create_lans() {
 
 	# The host ends of the PIM links.  Their peers are in the jails.
 	for e in $bridged_epairs; do
-		${SUDO} ifconfig "$e" create group pimx >/dev/null
+		${SUDO} ifconfig "$e" create group "$IFGROUP" >/dev/null
 		${SUDO} ifconfig "${e}a" up
 	done
-	${SUDO} ifconfig "$BR12" addm epair812a
-	${SUDO} ifconfig "$BR23" addm epair823a
-	[ "$SCENARIO" = pimd-rp ] && ${SUDO} ifconfig "$BR4" addm epair804a
+	${SUDO} ifconfig "$BR12" addm ${EP}812a
+	${SUDO} ifconfig "$BR23" addm ${EP}823a
+	[ "$SCENARIO" = pimd-rp ] && ${SUDO} ifconfig "$BR4" addm ${EP}804a
 
 	return 0
 }
@@ -1096,7 +1216,7 @@ create_box() {
 		# links were created by create_lans, which kept their "a" end
 		case $i in
 		*a) ifconfig "${i%a}" >/dev/null 2>&1 || \
-			${SUDO} ifconfig "${i%a}" create group pimx >/dev/null ;;
+			${SUDO} ifconfig "${i%a}" create group "$IFGROUP" >/dev/null ;;
 		esac
 		vnetargs="$vnetargs vnet.interface=$i"
 	done
@@ -1245,7 +1365,7 @@ stop() {
 	done
 
 	# Anything else this lab created and did not hand to a jail
-	for i in $(ifconfig -g pimx 2>/dev/null); do
+	for i in $(ifconfig -g "$IFGROUP" 2>/dev/null); do
 		${SUDO} ifconfig "$i" destroy 2>/dev/null || true
 	done
 
@@ -1622,10 +1742,10 @@ check_pimd_rp() {
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 
-	if wait_for 90 joined_on r1 epair812b "$GROUP"; then
-		ok "R1 has epair812b in the oifs of (*, $GROUP)"
+	if wait_for 90 joined_on r1 ${EP}812b "$GROUP"; then
+		ok "R1 has ${EP}812b in the oifs of (*, $GROUP)"
 	else
-		fail "R1 never added epair812b to (*, $GROUP) from the Arista's Join"
+		fail "R1 never added ${EP}812b to (*, $GROUP) from the Arista's Join"
 		dprint "$(pimctl r1 show mrt detail | head -20)"
 		kill "$receiver" 2>/dev/null
 		return 1
@@ -1762,7 +1882,7 @@ establish_election() {
 
 	# R3 has to know about ED6 before the first packet, or the SPTbit
 	# check sees an empty outgoing list and returns early on every pass
-	if ! wait_for 90 has_leaf r3 epair836a; then
+	if ! wait_for 90 has_leaf r3 ${EP}836a; then
 		fail "$case_name: R3 never saw ED6's membership, it cannot reach the SPT"
 		kill "$receiver" "$joiner6" 2>/dev/null
 		wait "$receiver" "$joiner6" 2>/dev/null
@@ -1948,10 +2068,10 @@ check_assert_lan() {
 	else
 		fail "R3 says the DR is '$(pimd_dr r3 "$AL_R3_LAN_IF")', expected $AL_EOS_ADDR"
 	fi
-	if wait_for 60 pimd_dr_is r5 epair853b "$AL_EOS_ADDR"; then
+	if wait_for 60 pimd_dr_is r5 ${EP}853b "$AL_EOS_ADDR"; then
 		ok "R5 agrees the Arista is DR"
 	else
-		fail "R5 says the DR is '$(pimd_dr r5 epair853b)', expected $AL_EOS_ADDR"
+		fail "R5 says the DR is '$(pimd_dr r5 ${EP}853b)', expected $AL_EOS_ADDR"
 	fi
 	if wait_for 60 eos_dr_is Ethernet2 "$AL_EOS_ADDR"; then
 		ok "the Arista agrees it is DR"
@@ -2231,10 +2351,10 @@ check() {
 	# one second ago has not been through an election yet, and the first
 	# router to answer would otherwise report whatever it believed while
 	# it was still alone on the link.
-	if wait_for 60 pimd_dr_is r1 epair812b 10.0.12.2; then
+	if wait_for 60 pimd_dr_is r1 ${EP}812b 10.0.12.2; then
 		ok "R1 made the Arista DR on 10.0.12.0/24"
 	else
-		fail "R1 says the DR on 10.0.12.0/24 is '$(pimd_dr r1 epair812b)', expected 10.0.12.2"
+		fail "R1 says the DR on 10.0.12.0/24 is '$(pimd_dr r1 ${EP}812b)', expected 10.0.12.2"
 	fi
 	if wait_for 60 eos_dr_is Ethernet1 10.0.12.2; then
 		ok "the Arista agrees it is DR on 10.0.12.0/24"
@@ -2242,10 +2362,10 @@ check() {
 		fail "the Arista says the DR on 10.0.12.0/24 is '$(eos_dr Ethernet1)', expected 10.0.12.2"
 		dprint "$(eos 'show ip pim interface')"
 	fi
-	if wait_for 60 pimd_dr_is r3 epair823b 10.0.23.3; then
+	if wait_for 60 pimd_dr_is r3 ${EP}823b 10.0.23.3; then
 		ok "R3 made itself DR on 10.0.23.0/24"
 	else
-		fail "R3 says the DR on 10.0.23.0/24 is '$(pimd_dr r3 epair823b)', expected 10.0.23.3"
+		fail "R3 says the DR on 10.0.23.0/24 is '$(pimd_dr r3 ${EP}823b)', expected 10.0.23.3"
 	fi
 	if wait_for 60 eos_dr_is Ethernet2 10.0.23.3; then
 		ok "the Arista agrees R3 is DR on 10.0.23.0/24"
@@ -2354,40 +2474,198 @@ run_one() {
 	return $rc
 }
 
-while getopts "i:h" opt; do
-	case "$opt" in
-	i) VEOS_QCOW=$OPTARG ;;
-	*) usage; exit 2 ;;
-	esac
-done
-shift $((OPTIND - 1))
+# Scenarios started by run_parallel() and not yet reaped, "slot:name", and
+# the shells they run in.  Globals because the INT handler is what reads
+# them, and it runs in this shell however deep the loop below is.
+PARALLEL_BUSY=
+PARALLEL_PIDS=
 
-case ${1:-} in
-start) set_scenario "${2:-}"; start ;;
+parallel_abort() {
+	trap - INT TERM
+
+	echo
+	print "Interrupted, taking down the labs that were still up ..."
+	for pid in $PARALLEL_PIDS; do
+		kill "$pid" 2>/dev/null || true
+	done
+	# The scenario shell is gone, its jails and its VM are not: each
+	# slot is asked to stop itself, which is the teardown a finished
+	# run does, vEOS included.
+	for entry in $PARALLEL_BUSY; do
+		"$0" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
+	done
+
+	exit 130
+}
+
+# Several scenarios at a time, each in a slot of its own.
+#
+# What makes that safe is the slot: every jail, link, bridge, tap, VM name
+# and work directory carries one, so two scenarios meet only on the host
+# itself.  What bounds it is the vEOS, not the lab -- each scenario boots
+# one, and each one is 4G of RAM and a 4G raw disk converted from the
+# qcow2 the first time that VM name is used.  Three scenarios in parallel
+# is 12G of guest memory and 12G of disk.
+#
+# Each scenario's output is collected and printed whole when it ends.
+# Interleaved line by line the assertions of three runs are unreadable,
+# and worse, unattributable: each scenario prints "ok 3." and means a
+# different thing by it.
+run_parallel() {
+	jobs=$JOBS
+	pending=$1
+
+	[ -z "$WORKDIR_PINNED" ] || \
+		die "WORKDIR is set in the environment, so every slot would" \
+		    "share one work directory; unset it to run in parallel"
+
+	last=$((SLOT + jobs - 1))
+	[ "$last" -le 31 ] || \
+		die "-j $jobs from slot $SLOT wants slots up to $last, and 31 is the last one"
+
+	out=$(mktemp -d "${TMPDIR:-/tmp}/pimd-interop-parallel.XXXXXX")
+	free=
+	n=$SLOT
+	while [ "$n" -le "$last" ]; do
+		free="$free $n"
+		n=$((n + 1))
+	done
+
+	results=
+	rc=0
+
+	trap parallel_abort INT TERM
+
+	while [ -n "$pending" ] || [ -n "$PARALLEL_BUSY" ]; do
+		while [ -n "$pending" ] && [ -n "$free" ]; do
+			# shellcheck disable=SC2086
+			set -- $pending; scenario=$1; shift; pending=$*
+			# shellcheck disable=SC2086
+			set -- $free; slot=$1; shift; free=$*
+
+			print "===== scenario: $scenario, slot $slot, started ====="
+			(
+				# set +e because the redirection failing, or
+				# the run itself, would otherwise take the
+				# subshell out before it could say so; the
+				# status is moved into place rather than
+				# written there, so the file cannot be seen
+				# half written by the loop below
+				set +e
+				"$0" -i "$VEOS_QCOW" -s "$slot" run "$scenario" \
+					> "$out/$slot.log" 2>&1
+				echo $? > "$out/$slot.rc.part"
+				mv "$out/$slot.rc.part" "$out/$slot.rc"
+			) &
+			PARALLEL_PIDS="$PARALLEL_PIDS $!"
+			PARALLEL_BUSY="$PARALLEL_BUSY $slot:$scenario"
+		done
+
+		sleep 2
+
+		# A child cannot be waited for one at a time in POSIX sh, so
+		# it says it is done by writing its exit status out.
+		running=
+		for entry in $PARALLEL_BUSY; do
+			slot=${entry%%:*}
+			scenario=${entry#*:}
+			if [ ! -f "$out/$slot.rc" ]; then
+				running="$running $entry"
+				continue
+			fi
+
+			status=$(cat "$out/$slot.rc")
+			print "===== scenario: $scenario, slot $slot, done ====="
+			cat "$out/$slot.log"
+			[ "$status" -eq 0 ] || rc=1
+			results="$results $scenario:$status"
+			mv "$out/$slot.log" "$out/$scenario.log"
+			rm -f "$out/$slot.rc"
+			free="$free $slot"
+		done
+		PARALLEL_BUSY=$running
+	done
+
+	trap - INT TERM
+	wait
+
+	echo
+	print "===== $(echo $results | wc -w | tr -d " ") scenarios, $jobs at a time ====="
+	for entry in $results; do
+		if [ "${entry#*:}" -eq 0 ]; then
+			printf "  \033[32mpass\033[0m  %s\n" "${entry%:*}"
+		else
+			printf "  \033[31mFAIL\033[0m  %s (exit %s)\n" \
+			    "${entry%:*}" "${entry#*:}"
+		fi
+	done
+
+	if [ "$rc" -eq 0 ]; then
+		rm -rf "$out"
+	else
+		echo
+		echo "per-scenario logs kept in $out"
+	fi
+
+	return $rc
+}
+
+# "run", "run <scenario>", "run <scenario> <scenario>", "run all".  With
+# -j the named scenarios are run several at a time, each in a slot of its
+# own; without it they are run one after another, as they always were.
+run() {
+	if [ "${1:-}" = all ]; then
+		list=$SCENARIOS
+	elif [ $# -gt 1 ]; then
+		list=$*
+	else
+		# One scenario, which is the common case: run it in this
+		# shell, so its assertions reach the terminal as they are
+		# made rather than in one block at the end.
+		[ "$JOBS" -eq 1 ] || \
+			die "-j needs more than one scenario to run in parallel"
+		run_one "${1:-}"
+		exit $?
+	fi
+
+	# Every name, before anything is built: a typo in the last of them
+	# is worth hearing about now and not in ten minutes.
+	for s in $list; do
+		set_scenario "$s"
+	done
+
+	if [ "$JOBS" -gt 1 ]; then
+		run_parallel "$list"
+		exit $?
+	fi
+
+	# Every scenario runs even when an earlier one failed: the point of
+	# a second implementation is the whole matrix, and a red first
+	# scenario says nothing about the second.
+	total=0
+	for s in $list; do
+		run_one "$s" || total=$((total + 1))
+	done
+	[ "$total" -eq 0 ] || die "$total scenario(s) failed"
+	exit 0
+}
+
+[ -z "$HELP" ] || { usage; exit 0; }
+
+cmd=${1:-}
+[ $# -eq 0 ] || shift
+case $cmd in
+start) set_scenario "${1:-}"; start ;;
 check)
-	set_scenario "${2:-}"
+	set_scenario "${1:-}"
 	check
 	rc=$?
 	verdict
 	exit $rc
 	;;
-run)
-	if [ "${2:-}" = all ]; then
-		# Every scenario runs even when an earlier one failed: the
-		# point of a second implementation is the whole matrix, and
-		# a red first scenario says nothing about the second.
-		total=0
-		for s in $SCENARIOS; do
-			run_one "$s" || total=$((total + 1))
-		done
-		[ "$total" -eq 0 ] || die "$total scenario(s) failed"
-		exit 0
-	fi
-	run_one "${2:-}"
-	exit $?
-	;;
-stop) set_scenario "${2:-}"; stop ;;
-*) usage; exit 2 ;;
+run)   run "$@" ;;
+stop)  set_scenario "${1:-}"; stop ;;
+*)     usage; exit 2 ;;
 esac
 
 # Local Variables:
