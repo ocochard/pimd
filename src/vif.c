@@ -318,7 +318,14 @@ static void start_vif(vifi_t vifi)
 	/* https://tools.ietf.org/html/draft-ietf-pim-hello-genid-01 */
 	v->uv_genid = RANDOM();
 
-	SET_TIMER(v->uv_hello_timer, 1 + RANDOM() % pim_timer_hello_interval);
+	/* RFC 7761 sec. 4.3.1: the first Hello on an interface waits
+	 * rand(0, Triggered_Hello_Delay).  The delay used to be drawn from the
+	 * whole Hello_Period and then thrown away, because start_vif() went on
+	 * to send a Hello itself and send_pim_hello() re-arms this timer: no
+	 * randomized value survived a single tick, every router's first Hello
+	 * went out at t=0, and the LAN converged onto one clock.
+	 */
+	SET_TIMER(v->uv_hello_timer, RANDOM() % (PIM_TRIGGERED_HELLO_DELAY + 1));
 	SET_TIMER(v->uv_jp_timer, 1 + RANDOM() % PIM_JOIN_PRUNE_PERIOD);
 	/* TODO: CHECK THE TIMERS!!!!! Set or reset? */
 	RESET_TIMER(v->uv_gq_timer);
@@ -353,8 +360,10 @@ static void start_vif(vifi_t vifi)
 	v->uv_stquery_cnt = IGMP_STARTUP_QUERY_COUNT;
 	query_groups(v);
 
-	/* Send a probe via the new vif to look for neighbors. */
-	send_pim_hello(v, pim_timer_hello_holdtime);
+	/* No Hello here: age_vifs() sends the first one when the randomized
+	 * uv_hello_timer set above runs out, which is what makes that delay
+	 * mean anything.
+	 */
     }
 #ifdef __linux__
     else {
@@ -554,7 +563,8 @@ static void renumber_vif(vifi_t vifi, uint32_t addr, uint32_t mask)
     else
 	v->uv_subnetbcast = 0xffffffff;
 
-    /* Back in service, and the Hello it sends carries the new address. */
+    /* Back in service; the first Hello off the randomized timer start_vif()
+     * arms carries the new address. */
     start_vif(vifi);
 }
 

@@ -104,6 +104,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Delay the first PIM Hello on an interface by a random 0 to 5 seconds, the
+  Triggered_Hello_Delay of RFC 7761 section 4.3.1.  A delay was drawn at
+  startup, from the wrong range, and then thrown away: `start_vif()` went
+  on to send a Hello itself and `send_pim_hello()` re-arms the timer, so no
+  randomized value survived a single tick and every router's first Hello
+  went out at t=0.  The triggered Hello answering a new neighbor is still
+  sent at once, deliberately -- the Bootstrap of RFC 5059 section 3.5 that
+  follows it is dropped by a router that has not yet had our Hello
 - Draw the Join/Prune suppression interval from 1.1 to 1.4 times the
   periodic interval, 66 to 84 seconds, as the t_suppressed row of RFC 7761
   section 4.11 asks.  It was RFC 2362's range, 60 to 89, whose low end

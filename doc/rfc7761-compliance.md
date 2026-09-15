@@ -383,7 +383,7 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | Spec name | Spec default | pimd | Verdict |
 |---|---|---|---|
 | Hello\_Period | 30 s | `PIM_TIMER_HELLO_INTERVAL`, settable | ok |
-| Triggered\_Hello\_Delay | rand(0, 5 s) | rand(1, 30 s) at boot, immediate on trigger | T3 |
+| Triggered\_Hello\_Delay | rand(0, 5 s) | rand(0, 5 s) at boot, immediate on trigger | T3 |
 | Default\_Hello\_Holdtime | 105 s | 105 s, sent and used as the NLT fallback | ok |
 | J/P\_HoldTime | from message | as received | ok |
 | J/P Holdtime sent | 210 s | `PIM_JOIN_PRUNE_HOLDTIME` 210 s | ok |
@@ -448,31 +448,37 @@ assignment, reproducing what it broke is the work.  Test: none.  Join
 suppression needs two routers wanting the same group on one segment, which
 `shared-lan` and `assert-lan` both have.*
 
-**T3.  `Triggered_Hello_Delay` is not implemented in either direction.**
-`src/vif.c:321` picks rand(1, Hello_Period) rather than rand(0, 5 s), and
-`send_pim_hello()` overwrites `uv_hello_timer` unconditionally at its end
-(`src/pim_proto.c:759`), 36 lines later in the same call path — so the
-randomized startup value never survives a single tick and every router's first
-Hello goes out at t=0.  The triggered Hello answering a new or rebooted neighbor
-is sent immediately instead of after rand(0, 5 s), and resets the periodic
-schedule, so a whole LAN answers a rebooting router in the same instant and then
-converges onto its clock.
-*Check: sec. 4.3.1, `doc/rfc7761.txt:1612` (startup) and `:1670` (the triggered
-Hello answering a new neighbor); the value is the `Triggered_Hello_Delay` row
-of sec. 4.11, `:6958`.  Effort: small; it needs a `send_pim_hello()` variant
-that leaves the timer alone.  Test: none; it is startup timing, and every lab
-here starts its routers together.*
+**T3.  The triggered Hello answering a new neighbor is not delayed.**  The
+startup half is done: `start_vif()` (`src/vif.c`) arms `uv_hello_timer` with
+rand(0, `PIM_TRIGGERED_HELLO_DELAY`) and no longer sends a Hello itself, so
+the randomized value survives instead of being overwritten by
+`send_pim_hello()` before the first tick.  The Hello that answers a new or
+rebooted neighbor (`src/pim_proto.c:270`) is still sent at once rather than
+after rand(0, 5 s), so a whole LAN answers a rebooting router in the same
+instant and then converges onto its clock.
+
+That one is deliberate for now, and moving it needs a second timer rather than
+a delay: sec. 3.5 of RFC 5059 has the DR unicast a Bootstrap to the new
+neighbor immediately afterwards (`src/pim_proto.c:277`), and
+`receive_pim_bootstrap()` drops a Bootstrap from a router it has had no Hello
+from.  Delaying the Hello on the existing `uv_hello_timer` would have us send
+that Bootstrap into a peer that discards it.
+*Check: sec. 4.3.1, `doc/rfc7761.txt:1670` (the triggered Hello answering a new
+neighbor); the value is the `Triggered_Hello_Delay` row of sec. 4.11, `:6958`.
+Effort: medium; a per-vif triggered-Hello timer, separate from the periodic
+one, and the RFC 5059 Bootstrap has to wait for it.  Test: none; it is startup
+timing, and every lab here starts its routers together.*
 
 **T4.  `stop_vif()` sends no goodbye Hello, on paths that could no longer send
 one.**  Sec. 4.3.1 wants a zero-holdtime Hello so a DR can be re-elected at
 once, and the send half is there in both places that can use it: `cleanup()`
 sends one on every vif before the daemon exits (`src/main.c:590`), and
 `renumber_vif()` sends one from the old address before taking the VIF down
-(`src/vif.c:545`).  `stop_vif()` itself still has the two TODOs
-(`src/vif.c:429-433`), but every path into it has either sent the Hello
+(`src/vif.c:554`).  `stop_vif()` itself still has the two TODOs
+(`src/vif.c:438-442`), but every path into it has either sent the Hello
 already or cannot send one: `check_vif_state()` reaches it only once
-`SIOCGIFFLAGS` reports the interface gone or `IFF_UP` clear (`src/vif.c:662`,
-`:677`), and `update_reg_vif()` only for the register vif, which has no
+`SIOCGIFFLAGS` reports the interface gone or `IFF_UP` clear (`src/vif.c:672`,
+`:687`), and `update_reg_vif()` only for the register vif, which has no
 neighbors.  That leaves `restart()` (`src/main.c:770`), where the interfaces
 are still up -- and it starts them again immediately, so the Hello that follows
 carries a new GenID and the neighbors re-elect on that instead.
@@ -482,19 +488,21 @@ carries a new GenID and the neighbors re-elect on that instead.
 reports rather than asserts whether it arrived -- a poll cannot get ahead of an
 address that has already gone.*
 
-**T5.  `hello-interval` has no lower bound, and 0 is fatal.**
+**T5.  `hello-interval` has no lower bound.**
 `man/pimd.conf.5:119` documents 30 to 18724 and calls anything under 30
-unsupported.  `src/config.c:1451` enforces the ceiling only, so
-`hello-interval 0` reaches `RANDOM() % pim_timer_hello_interval`
-(`src/vif.c:321`) and kills the daemon with SIGFPE on the first vif started,
-while 1 to 29 are accepted silently and drag the holdtime down with them.  Every
-other range check in `config.c` warns and falls back to the default.  Not an RFC
-item; listed because the audit walked into it.
+unsupported.  `src/config.c:1451` enforces the ceiling only, so 0 and 1 to 29
+are all accepted silently and drag the holdtime, 3.5 times this value, down
+with them.  `hello-interval 0` has pimd announce a zero Holdtime -- the value
+that tells a neighbor the sender is going down -- in every Hello, on a timer
+that fires every tick.  Until T3 above it was worse than that and killed the
+daemon: `start_vif()` reached `RANDOM() % pim_timer_hello_interval` and took
+SIGFPE on the first vif started.  Every other range check in `config.c` warns
+and falls back to the default.  Not an RFC item; listed because the audit
+walked into it.
 *Check: no rule to check against; the nearest thing the spec says is the
 `Hello_Period` row of sec. 4.11, `doc/rfc7761.txt:6956`, which gives the
 30-second default and no range.  Effort: small.  Test: none.  It is a config
 parse, so it wants a unit test rather than a lab.*
-
 
 Interop details
 ---------------
@@ -572,6 +580,6 @@ Checked, no action
   is also what makes the V4 sweep over `grplist` complete: every live
   `mrtentry_t` is either a group's `grp_route` or on its `mrtlink`.
 - **`send_periodic_pim_join_prune()` is dead code.**  Its only caller is inside
-  `#ifdef TOBE_DELETED` (`src/vif.c:936-948`).  All Join/Prune generation happens
+  `#ifdef TOBE_DELETED` (`src/vif.c:946-958`).  All Join/Prune generation happens
   in `age_routes()` and `send_pim_join()`.  Worth knowing before reading it as
   the periodic sender it is named after.

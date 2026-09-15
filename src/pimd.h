@@ -60,6 +60,10 @@
 #define PIM_DATA_TIMEOUT                210
 
 #define PIM_TIMER_HELLO_INTERVAL         30
+/* RFC 7761 sec. 4.3.1: the range a router randomizes its first Hello on an
+ * interface over, so that a whole LAN does not send in the same instant.
+ */
+#define PIM_TRIGGERED_HELLO_DELAY         5
 #define PIM_JOIN_PRUNE_PERIOD	         60
 #define PIM_JOIN_PRUNE_HOLDTIME        (3.5 * PIM_JOIN_PRUNE_PERIOD)
 /* RFC 7761 sec. 4.11 Override_Interval, the range t_override is drawn from.
