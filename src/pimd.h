@@ -62,7 +62,10 @@
 #define PIM_TIMER_HELLO_INTERVAL         30
 #define PIM_JOIN_PRUNE_PERIOD	         60
 #define PIM_JOIN_PRUNE_HOLDTIME        (3.5 * PIM_JOIN_PRUNE_PERIOD)
-#define PIM_RANDOM_DELAY_JOIN_TIMEOUT   4.5
+/* RFC 7761 sec. 4.11 Override_Interval, the range t_override is drawn from.
+ * This was RFC 2362's [Random-Delay-Join-Timeout], 4.5, a different quantity.
+ */
+#define PIM_OVERRIDE_INTERVAL           2.5
 
 /* TODO: XXX: cannot be shorter than 10 seconds (not in the spec)
  * MAX: Cisco max value (16383) for ip pim rp-candidate interval. */

@@ -104,6 +104,11 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Draw t_override from the Override_Interval of RFC 7761 section 4.11, 2.5
+  seconds, instead of RFC 2362's [Random-Delay-Join-Timeout] of 4.5, which
+  is a different quantity.  The result is still quantized to whole seconds
+  by the timer implementation, which is recorded in
+  doc/rfc7761-compliance.md as what is left of T1
 - Log the assert transition of RFC 7761 section 4.6.1 and 4.6.2 that had
   no log line, a loser returning to NoInfo because the winner restarted
   or stopped answering, and say which of the two it was.  Every other way

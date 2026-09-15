@@ -390,7 +390,7 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | t\_periodic | 60 s | `PIM_JOIN_PRUNE_PERIOD` 60 s | ok |
 | t\_suppressed | rand(1.1, 1.4) × t\_periodic | 60–89 s, RFC 2362's 1.25 × period | T2 |
 | Suppression\_Enabled | from the T bit | always on | M2 |
-| t\_override | rand(0, 2.5 s) | 0–4 s integer, on a 5 s tick | T1 |
+| t\_override | rand(0, 2.5 s) | 0–2 s integer, on a 5 s tick | T1 |
 | Propagation\_Delay | 0.5 s | not tracked | M2 |
 | Override\_Interval | 2.5 s | not tracked, not advertised | M2 |
 | J/P\_Override\_Interval (PPT) | 3 s | `holdtime/3`, 70 s | M2 |
@@ -412,20 +412,21 @@ resend race the refresh it exists to deliver.  The effect is a 5-second
 override interval where the spec asks for 3, which is the direction that is
 safe.
 
-**T1.  `t_override` is RFC 2362's constant, quantized away.**
-`PIM_RANDOM_DELAY_JOIN_TIMEOUT` is 4.5 (`src/pimd.h:65`), which is RFC 2362's
-`[Random-Delay-Join-Timeout]`, a different quantity from 7761's Override_Interval.
-`(RANDOM() % (int)(10 * 4.5)) / 10` into a `uint16_t` yields 0 to 4 whole
-seconds, and the timer only fires on the next 5-second tick, so the delay is
-effectively the tick phase and the randomization does nothing.  An override Join
-can therefore arrive about 5 seconds after the Prune it must cancel, against a
-conformant upstream that deleted the oif after 3.  Against another pimd it is
-masked by M2.
+**T1.  `t_override` cannot be expressed on a 5-second tick.**
+The constant is the spec's now, `PIM_OVERRIDE_INTERVAL` 2.5 (`src/pimd.h`),
+and no longer RFC 2362's `[Random-Delay-Join-Timeout]` of 4.5, which is a
+different quantity.  What is left is the quantization:
+`(RANDOM() % (int)(10 * 2.5)) / 10` in `jp_override_timeout()`
+(`src/pim_proto.c`) yields 0, 1 or 2 whole seconds, and the timer only fires
+on the next 5-second tick, so the delay is effectively the tick phase and the
+randomization does nothing.  An override Join can therefore arrive about 5
+seconds after the Prune it must cancel, against a conformant upstream that
+deleted the oif after 3.  Against another pimd it is masked by M2.
 *Check: the `t_override` row of sec. 4.11, `doc/rfc7761.txt:7077`, and
-`Effective_Override_Interval(I)` in sec. 4.3.3, `:1925`.  Effort: small for the
-constant, medium for sub-tick scheduling.  Test: none.  It needs a shared LAN and
-a peer that deletes the oif after 3 seconds rather than pimd's 5, so
-`assert-lan` in `test/freebsd-interop.sh` is the natural home.*
+`Effective_Override_Interval(I)` in sec. 4.3.3, `:1925`.  Effort: medium; it
+is sub-tick scheduling, which nothing in `timer.c` has today.  Test: none.  It
+needs a shared LAN and a peer that deletes the oif after 3 seconds rather than
+pimd's 5, so `assert-lan` in `test/freebsd-interop.sh` is the natural home.*
 
 **T2.  `t_suppressed` uses RFC 2362's range, and (\*,G) suppression is inert.**
 The interval is `PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD)`,

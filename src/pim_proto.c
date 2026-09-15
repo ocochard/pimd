@@ -82,14 +82,14 @@ int build_jp_message_pool_counter;
 /*
  * t_override: the randomized delay before a triggered Join, so that routers
  * on a LAN do not all answer in the same instant.  RFC 7761 sec. 4.11 wants
- * rand(0, Effective_Override_Interval(I)), default 2.5 seconds; the constant
- * here is RFC 2362's [Random-Delay-Join-Timeout] and the division quantizes
- * the result to whole seconds.  Both are recorded in
- * doc/rfc7761-compliance.md; this is the one place that has to change.
+ * rand(0, Effective_Override_Interval(I)), and with no LAN Prune Delay option
+ * to derive one from that is the Override_Interval default.  The division
+ * still quantizes the result to whole seconds, and SET_TIMER cannot express
+ * anything finer; that half is M2 and T1 in doc/rfc7761-compliance.md.
  */
 static uint16_t jp_override_timeout(void)
 {
-    return (RANDOM() % (int)(10 * PIM_RANDOM_DELAY_JOIN_TIMEOUT)) / 10;
+    return (RANDOM() % (int)(10 * PIM_OVERRIDE_INTERVAL)) / 10;
 }
 
 
