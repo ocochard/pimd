@@ -275,7 +275,7 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 	 * send an RP-Set message to the new neighbor.
 	 */
 	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf)))
-	    send_pim_unicast(pim_send_buf, v->uv_mtu, v->uv_lcl_addr, src, PIM_BOOTSTRAP, bsr_length);
+	    send_pim_unicast(pim_send_buf, 0, v->uv_mtu, v->uv_lcl_addr, src, PIM_BOOTSTRAP, bsr_length);
     }
 
   election:
@@ -1114,7 +1114,11 @@ int send_pim_register(char *packet)
 	reg_src = uvifs[vifi].uv_lcl_addr;
 	reg_dst = mrtentry->group->rpaddr;
 
-	send_pim_unicast(pim_send_buf, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
+	/* `ip` is still the packet the source sent, so its ToS byte is the
+	 * ECN bits and the DSCP RFC 7761 sec. 4.4.1 asks us to copy into the
+	 * encapsulating header rather than set on our own.
+	 */
+	send_pim_unicast(pim_send_buf, ip->ip_tos, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
 
 	return TRUE;
     }
@@ -1163,7 +1167,7 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     reg_dst = mrtentry->group->rpaddr;
     reg_src = uvifs[vifi].uv_lcl_addr;
 
-    send_pim_unicast(pim_send_buf, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
+    send_pim_unicast(pim_send_buf, 0, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
 
     return TRUE;
 }
@@ -1295,7 +1299,7 @@ send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, u
     data = (uint8_t *)buf;
     PUT_EGADDR(inner_grp, SINGLE_GRP_MSKLEN, 0, data);
     PUT_EUADDR(inner_src, data);
-    send_pim_unicast(pim_send_buf, 0, reg_src, reg_dst, PIM_REGISTER_STOP, data - (uint8_t *)buf);
+    send_pim_unicast(pim_send_buf, 0, 0, reg_src, reg_dst, PIM_REGISTER_STOP, data - (uint8_t *)buf);
 
     return TRUE;
 }
@@ -4303,7 +4307,7 @@ int send_pim_cand_rp_adv(void)
 
     data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
     memcpy(data, cand_rp_adv_message.buffer, cand_rp_adv_message.message_size);
-    send_pim_unicast(pim_send_buf, 0, my_cand_rp_address, curr_bsr_address,
+    send_pim_unicast(pim_send_buf, 0, 0, my_cand_rp_address, curr_bsr_address,
 		     PIM_CAND_RP_ADV, cand_rp_adv_message.message_size);
 
     return TRUE;

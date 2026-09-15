@@ -549,7 +549,7 @@ extern void	add_kernel_cache	(mrtentry_t *mrtentry_ptr, uint32_t source, uint32_
 /* pim.c */
 extern void	init_pim		(void);
 extern void	send_pim		(char *buf, uint32_t src, uint32_t dst, int type, size_t len);
-extern void	send_pim_unicast	(char *buf, int mtu, uint32_t src, uint32_t dst, int type, size_t len);
+extern void	send_pim_unicast	(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t dst, int type, size_t len);
 
 /* pim_proto.c */
 extern int	receive_pim_hello	(uint32_t src, uint32_t dst, char *msg, size_t len);

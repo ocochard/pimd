@@ -104,6 +104,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Copy the ECN bits and the DSCP of an encapsulated packet into the
+  Register that carries it, which RFC 7761 section 4.4.1 asks for and
+  `send_pim_unicast()` had no way to express: the outgoing Type of Service
+  byte was written once at startup and left at 0, so traffic a source had
+  marked crossed the DR-to-RP path as best-effort Not-ECT and arrived at
+  the RP with its marking gone.  The byte is a parameter of that function
+  now, 0 for every other message it sends
 - Put protocol 103, PIM, in the dummy IP header of a Null-Register rather
   than 17, UDP.  RFC 7761 section 4.9.3 gives the field's value, and an RP
   that inspects it can drop the probe, after which the DR re-adds the

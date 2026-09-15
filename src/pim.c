@@ -272,6 +272,7 @@ void send_pim(char *buf, uint32_t src, uint32_t dst, int type, size_t len)
     ip->ip_off         = 0;
     ip->ip_src.s_addr  = src;
     ip->ip_dst.s_addr  = dst;
+    ip->ip_tos         = 0;		    /* a Register left its own here */
     ip->ip_ttl         = MAXTTL;            /* applies to unicast only */
 #ifdef HAVE_IP_HDRINCL_BSD_ORDER
     ip->ip_len         = sendlen;
@@ -363,9 +364,12 @@ void send_pim(char *buf, uint32_t src, uint32_t dst, int type, size_t len)
 /* TODO: This can be merged with the above procedure */
 /*
  * Send an unicast PIM packet from src to dst, PIM message type = "type"
- * and data length (after the PIM common header) = "len"
+ * and data length (after the PIM common header) = "len".  `tos` is the
+ * Type of Service byte of the outgoing header: RFC 7761 sec. 4.4.1 wants
+ * the ECN bits and the DSCP of the packet a Register encapsulates copied
+ * into the Register itself.  Everything else passes 0.
  */
-void send_pim_unicast(char *buf, int mtu, uint32_t src, uint32_t dst, int type, size_t len)
+void send_pim_unicast(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t dst, int type, size_t len)
 {
     struct sockaddr_in sin;
     struct ip *ip;
@@ -378,6 +382,7 @@ void send_pim_unicast(char *buf, int mtu, uint32_t src, uint32_t dst, int type, 
     ip->ip_id	       = htons(++ip_id);
     ip->ip_src.s_addr  = src;
     ip->ip_dst.s_addr  = dst;
+    ip->ip_tos         = tos;
     ip->ip_ttl         = MAXTTL; /* TODO: XXX: setup TTL from the inner mcast packet? */
 #ifdef HAVE_IP_HDRINCL_BSD_ORDER
     ip->ip_len         = sendlen;
