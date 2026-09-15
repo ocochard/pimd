@@ -727,6 +727,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 # leaving the case untested.
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
 
+
 usage() {
 	echo "usage: $0 start|check|run [rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover] | run all | stop"
 }
@@ -2728,7 +2729,12 @@ missing_groups() {
 	mg_if=$2
 	shift 2
 
-	mg_held=$(jrun "$mg_box" ifmcstat -i "$mg_if" -f inet 2>/dev/null)
+	# ifmcstat exits non-zero for a name it cannot resolve, and the
+	# assignment would take "set -e" with it -- inside the command
+	# substitution this runs in, that is a subshell leaving quietly and a
+	# caller reading an empty answer as "nothing missing".  An interface
+	# that cannot be read holds nothing we can prove it holds, so say so.
+	mg_held=$(jrun "$mg_box" ifmcstat -i "$mg_if" -f inet 2>/dev/null) || mg_held=
 	for mg_group in "$@"; do
 		echo "$mg_held" | grep -q "group $mg_group\b" || printf '%s ' "$mg_group"
 	done
