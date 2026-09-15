@@ -30,23 +30,24 @@ confirmed to be intentional, move it to the last section with the reason.
 
 A deviation that a test reproduces should be asserted through `xfail()`, in
 `test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
-unasserted, so that it flips to `ok` the day it is fixed.  Four are carried
-that way, and three of them report `ok`, so they stay as tripwires against the
-deviation coming back: the assert RPT-bit entry of 4.6.1 in `shared-lan-spt`,
-the SPTbit entry of 4.2.2 in `assert-lan`, and the assert winner state of
-4.6.1 and 4.6.2, which `assert-lan` asserts from both sides.  The fourth is
-M14, and it depends on the order its scenario runs in: `KNOWN` where the
-sub-case runs on its own, `ok` in the full walk.  Read its `Test:` note before
-reading anything into either.
+unasserted, so that it flips to `ok` the day it is fixed.  Five are carried
+that way and all five report `ok`, so every one of them is now a tripwire
+against the deviation coming back rather than a live report: the assert
+RPT-bit entry of 4.6.1 in `shared-lan-spt`, the SPTbit entry of 4.2.2 in
+`assert-lan`, the assert winner state of 4.6.1 and 4.6.2, which `assert-lan`
+asserts from both sides, and the (S,G) machine's reach past a lost (\*,G),
+which the `rpt-bit` sub-case of `assert-lan` asks for.  A `KNOWN` line in a
+run is therefore a regression, not an expected result.
 
-Every entry therefore ends with a `Test:` note saying what reproduces it, and
-most of them say `none` -- the point of writing it down is that the gap is
-visible from this list rather than only from grepping the labs.  M14 is the
-only one a test reproduces at all.  Where an entry names a scenario without
-asserting anything, it is because that scenario builds the topology the
-deviation needs and stops short of the assertion; those are the cheap ones to
-close.  Several are not blackbox-testable at all, and say so: a five-second
-latency or a startup race cannot be told from a slow lab.
+Every entry below ends with a `Test:` note saying what reproduces it, and
+every one of them now says `none` -- M4's fixed half is the only thing any
+test covers.  The point of writing it down is that the gap is visible from
+this list rather than only from grepping the labs.  Where an entry names a
+scenario without asserting anything, it is because that scenario builds the
+topology the deviation needs and stops short of the assertion; those are the
+cheap ones to close.  Several are not
+blackbox-testable at all, and say so: a five-second latency or a startup race
+cannot be told from a slow lab.
 
 
 Input validation and trust
@@ -136,7 +137,7 @@ pimd does not keep.
 State machines pimd does not have
 ---------------------------------
 
-Four entries this section held are fixed.  M3, the assert winner state,
+Eight entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -157,27 +158,100 @@ Keepalive Timer `switch_shortest_path()` started (`MRTF_KAT`) -- so a router
 forwarding off the shared tree keeps SPTbit clear, and `spt-threshold
 infinity` keeps it clear for good.  The metric they carry is the routing
 table's now as well, so what is left around them is the preference beside it,
-M4 below, and the half of M12 that is not a metric at all.
+M4 below.
+
+M14 was the last of that family: sec. 4.6.1 gates the NoInfo-to-Loser
+transition of the (S,G) machine on `AssertTrackingDesired(S,G,I)`, which is
+join and membership state, and `assert_machine()` asked instead whether the
+interface was still in the entry's outgoing list -- which it never is once an
+assert has taken it.  A last hop router held on the shared tree beside one on
+the shortest path tree therefore recorded the loss on its (\*,G), which the
+winner never refreshes, and the two collided again every `Assert_Time`.  The
+state an (S,G) machine with no entry of its own reads is the (\*,G)'s now,
+the same entry it already borrows its metric and its olist from, and an
+AssertCancel is handed to both machines: the ordering of sec. 4.6.2 says the
+(\*,G) machine may run only where the (S,G) one held no state, and a cancel
+is the one message that leaves the (S,G) machine by giving the interface
+back, with a (\*,G) Loser state behind it that has nothing left to hold.
+
+M9 and M12 went with them.  M9 was the group set of sec. 4.9.5.2 that carries
+a (\*,G) Join: `add_jp_entry()` flushed on message size alone, so above
+roughly 65 pruned sources the Join and the tail of its (S,G,rpt) Prune list
+landed in different packets and a conformant upstream moved every (S,G,rpt)
+it held to NoInfo.  The sets already packed are sent first now, so a split
+falls between sets, and where one message is not enough for the set the
+section's own rule applies -- the numerically smallest N addresses in network
+byte order, the rest left out.  M12 was the third term of
+`lost_assert(S,G,I)` reaching the wrong olist: pimd computed one per entry and
+used it for forwarding and for Join/Prune both, so a router that lost an
+assert while forwarding on the shared tree pruned the source whose traffic it
+needed to reach the shortest path tree and win the re-election.
+`lost_assert()` is sec. 4.6.5's macro as written now, with no SPTbit gate on
+the term the Note under it says exists for exactly that phase, and
+`lost_assert_rpt()` beside it is the one `calc_oifs()` subtracts; the upstream
+machine of sec. 4.5.5 in `join_or_prune()` (`src/pim_proto.c`) reads
+`JoinDesired(S,G)` rather than the forwarding olist.  One conservative corner
+is left: `JoinDesired(S,G)`'s second half, `inherited_olist(S,G)` while the
+Keepalive Timer runs, is still `calc_oifs()`, so its source-specific term
+loses an interface to `lost_assert(S,G,rpt)` where sec. 4.1.5 subtracts only
+`lost_assert(S,G)`.  Closing that needs the two halves of `inherited_olist()`
+told apart, which is M1; `immediate_olist(S,G)`, the half the Note under
+sec. 4.6.5 is about, is exact.
+
+M2 is the eighth: the LAN Prune Delay option of sec. 4.3.3 is sent in every
+Hello and parsed out of every neighbor's, and `Effective_Propagation_Delay(I)`,
+`Effective_Override_Interval(I)` and `J/P_Override_Interval(I)` are computed
+from it the way that section computes them -- the defaults wherever one
+neighbor on the link omits the option, and otherwise the largest value anyone
+advertises, ours included.  The Prune-Pending Timer of sec. 4.5.1 and 4.5.2 is
+that interval now, where it used to be `holdtime/3`, 70 seconds for the usual
+holdtime and about six hours for a Join asking for 0xffff; it is zero where
+pimd has at most one neighbor on the interface, which is the question
+`VIFF_POINT_TO_POINT` used to stand in for, and an outgoing interface that
+came from a local member no longer goes the other way and disappears with no
+override window at all.
+
+The Propagation_Delay pimd advertises is `TIMER_INTERVAL`, 5 seconds, and not
+the 0.5 s default, which makes the interval 8 seconds between two pimds rather
+than the 3 the table below gives.  That is the lower bound the same section
+asks implementers to enforce "to allow for scheduling and processing delays
+within their router": pimd builds a triggered Join in `age_routes()` and no
+timer here expires off a tick, so its own override can be a whole
+`TIMER_INTERVAL` later than `t_override` asked for, and an upstream told to
+wait 3 seconds would stop forwarding first -- the "temporary forwarding
+outages" the section warns about, and what the old 70-second window used to
+hide.  It goes back to 0.5 when T1 below is fixed and the override can be
+scheduled inside a tick.  pimd keeps one timer per (entry,
+interface), so Prune-Pending is the Expiry Timer lowered to that delay, which
+loses nothing -- "for forwarding purposes, the Prune-Pending state functions
+exactly like the Join state" -- with `prune_pending_oifs` (`src/mrt.h`) saying
+which of the two an expiry came from, so that the PruneEcho sec. 4.5.1 owes
+the LAN is sent for a prune and not for a membership that simply ran out.  The
+T bit is advertised clear: it offers to disable Join suppression, which pimd
+cannot do, so `Suppression_Enabled(I)` is true on every link it is on and the
+explicit tracking the bit exists for stays out of reach.  Propagation_Delay
+and Override_Interval are constants rather than the configuration sec. 4.3.3
+says they SHOULD be; nobody has asked to move them yet.
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
 Prune-Pending and Override timers.  pimd has one (S,G) entry with one
 `joined_oifs`/`pruned_oifs` pair and the `MRTF_RP` flag standing in for the RPT
 variant, which produces three distinct failures.  A received Prune(S,G,rpt) is
-applied to the (S,G) machine (`src/pim_proto.c:2049-2074`), so on a LAN it
+applied to the (S,G) machine (`src/pim_proto.c:2271-2288`), so on a LAN it
 cancels an (S,G) Join another router still wants, and the two flap against each
 other with a 60-second period; `calc_oifs()` subtracts the one `pruned_oifs`
-from the (S,G) olist unconditionally (`src/route.c:847` for the inherited half
-and `:856` for the entry's own), which sec. 4.1.5 forbids.  A received
-Join(S,G,rpt) matches neither branch of the Join loop (`src/pim_proto.c:2175`
-and `:2239`) and is silently ignored, so a downstream
+from the (S,G) olist unconditionally (`src/route.c:869` for the inherited half
+and `:878` for the entry's own), which sec. 4.1.5 forbids.  A received
+Join(S,G,rpt) matches neither branch of the Join loop (`src/pim_proto.c:2383`
+and `:2450`) and is silently ignored, so a downstream
 router can never override another router's RPT prune — the one mechanism
 sec. 4.5.7 exists to provide.  And pimd never sends a Join(S,G,rpt) either:
 `join_or_prune()` can only return PRUNE for an RPbit entry
-(`src/pim_proto.c:1389-1397`), so the triggered machine of 4.5.7 has no
+(`src/pim_proto.c:1521-1529`), so the triggered machine of 4.5.7 has no
 implementation.  Note that the *compound* Join(\*,G)+Prune(S,G,rpt) of sec. 4.5.6
 is implemented, via `MRTF_RP` entries dragged into the same group set
-(`src/route.c:1879-1928`), and is wire-correct; it is the triggered half that is
+(`src/route.c:1933-1952`), and is wire-correct; it is the triggered half that is
 missing.
 *Check: sec. 4.5.3, `doc/rfc7761.txt:2975` (downstream), sec. 4.5.7, `:3983`
 (upstream triggered), sec. 4.5.6, `:3927` (the periodic compound message); the
@@ -186,33 +260,6 @@ subtracts from `joins(*,G)` alone and not from `inherited_olist(S,G)` at
 `:1142`.  Effort: large.  Test: none.  `shared-lan` in `test/freebsd-lab.sh` is
 the topology it needs -- two downstream routers on one segment, one pruning
 what the other joined.*
-
-**M2.  No LAN Prune Delay option, and no real Prune-Pending timer.**
-Sec. 4.3.3 wants the option in every Hello on a multi-access LAN, and
-`Effective_Propagation_Delay`/`Effective_Override_Interval` derived from the
-largest value any neighbor advertises; sec. 4.5.1 and 4.5.2 start a Prune-Pending
-Timer of `J/P_Override_Interval(I)`, or zero when there is only one neighbor on
-the interface.  pimd neither sends nor parses option type 2
-(`src/pim_proto.c:745-755` and `:681-706`), keeps none of the four values, and
-has no Prune-Pending state: it lowers the *Expiry* timer to
-`vif_deletion_delay[vifi]`, whose only assignment is `holdtime/3`
-(`src/pim_proto.c:2199`, `:2261`), 70 seconds for the usual 210-second holdtime.
-The single-neighbor case is approximated by `VIFF_POINT_TO_POINT`, which is not
-the same question.  So a Prune on a shared LAN leaves traffic flowing for 70
-seconds instead of 3, compounding per hop; a Join with holdtime 0xffff sets the
-delay to 21845 seconds, about six hours.  Where `vif_deletion_delay` is still 0,
-because the oif came from a local leaf rather than from a received Join, the same
-code drops the oif instantly with no override window at all.  No PruneEcho is
-sent either, so a Prune lost on the LAN is never recovered.
-*Check: sec. 4.3.3, `doc/rfc7761.txt:1812`, with the option itself in sec.
-4.3.1, `:1657`, and its wire format in sec. 4.9.2, `:6083`; the Prune-Pending
-Timer is sec. 4.5.1, `:2674`, and sec. 4.5.2, `:2899`;
-`J/P_Override_Interval(I)` is sec. 4.11, `:7013`.  Effort: large, though
-emitting the option with default values so neighbors stop falling back is
-small.  Test: none, and `assert-lan` in `test/freebsd-interop.sh` is where it
-becomes visible: the Arista advertises the LAN Prune Delay option pimd neither
-sends nor parses, so those values are already on that wire waiting to be
-asserted on.*
 
 **M4.  The assert metric preference is a configured constant, not the routing
 protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both say the metric preference and the
@@ -281,7 +328,7 @@ that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.
 Every write to `entry_timer` is a control-plane event or a kernel upcall;
 `check_spt_threshold()` reads the MFC counters and never refreshes the timer,
 and under `spt-threshold infinity` it returns before reading them at all
-(`src/route.c:1529`).
+(`src/route.c:1551`).
 
 Measured rather than reasoned about: the `rpt` topology of
 `test/freebsd-lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
@@ -291,26 +338,26 @@ cases they cover are disjoint, so the timer never reaches zero while a source
 sends:
 
 - An entry with an oif some neighbour joined is refreshed by that neighbour's
-  periodic Join every 60 seconds (`src/pim_proto.c:2202`, `:2264`).  In the run
+  periodic Join every 60 seconds (`src/pim_proto.c:2411`, `:2476`).  In the run
   above `entry_timer` went back to 210 on the same tick as `jp_timer` wrapping
   to 60, every time.
 - The DR and the RP refresh each other over the Register probe loop, also every
-  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:937`) and
+  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:1031`) and
   the Register-Stop the DR's, while a registered packet sets it at the DR
-  directly (`:1116`), which is the one refresh that is data-driven.  Stopping
+  directly (`:1239`), which is the one refresh that is data-driven.  Stopping
   pimd on the last hop router, so that no Join is ever sent again, left this
   loop holding both entries up on its own.
 - An entry with an empty oif list has no MFC, so every packet is a cache miss
-  and refreshes the timer (`src/route.c:1261`).  That is the path the
+  and refreshes the timer (`src/route.c:1283`).  That is the path the
   `keepalive` scenario pins, and it costs one upcall per packet for as long as
   the source sends, because pimd installs no negative cache entry (the TODO at
-  `src/route.c:1245`).
+  `src/route.c:1268`).
 
 One shape is left over: a last hop router's (S,G) whose only oif is a local
 member, with `spt-threshold interval` longer than 210 seconds, so that the poll
 calling `switch_shortest_path()` no longer refreshes it either.  `age_routes()`
 then deletes it through the `PIMD_VIFM_LASTHOP_ROUTER` branch
-(`src/route.c:1981`) precisely because those leaves are inherited from the
+(`src/route.c:2005`) precisely because those leaves are inherited from the
 (\*,G) -- which is also why no traffic is lost: the (\*,G) keeps forwarding and
 the entry returns at the next poll.  What that costs is the switch to the
 shortest path tree oscillating with the period of the poll interval.
@@ -322,8 +369,8 @@ masks work rather than that the timer does.*
 **M8.  Triggered Joins and Prunes wait for the next tick.**  The transitions in
 sec. 4.5.4 and 4.5.5 send immediately.  `change_interfaces()` and its callers
 turn every such transition into `FIRE_TIMER(mrt->jp_timer)`
-(`src/route.c:957` and `:1018` in `change_interfaces()` itself, `:483`, `:721`,
-`:1412` and `:1477` in its callers), and the message is only built when
+(`src/route.c:979` and `:1040` in `change_interfaces()` itself, `:483`, `:738`,
+`:1434` and `:1499` in its callers), and the message is only built when
 `age_routes()` next runs, every `TIMER_INTERVAL` = 5 seconds.  `add_leaf()`
 and the `MRTF_NEW` arms of `receive_pim_join_prune()` are the exceptions that do
 send at once.  Up to 5 seconds of added join latency on every other transition,
@@ -335,95 +382,6 @@ transition there says "Send" with no delay, and the JoinDesired-goes-FALSE row
 at `:3514` and `:3779` cancels the timer rather than re-arming it.  Effort:
 medium.  Test: none, and none is obvious: the symptom is up to five seconds of
 added latency, which no assertion here could tell from a slow lab.*
-
-**M9.  A group set carrying a (\*,G) Join can be split across messages.**
-Sec. 4.9.5.2 makes that list of (S,G,rpt) Prunes unsplittable and, when they do
-not fit, requires the numerically smallest N.  `add_jp_entry()` flushes on size
-alone (`src/pim_proto.c:2553-2560`), with no notion of the group set it is in the
-middle of and no ordering of the sources.  Above roughly 65 pruned sources the
-Join(\*,G) and the tail of its prune list land in different packets, and a
-conformant upstream moves every (S,G,rpt) it holds to NoInfo on the first one —
-a burst of duplicate traffic on the shared tree once per period, every period.
-*Check: sec. 4.9.5.2, `doc/rfc7761.txt:6684`; "MUST NOT be split" at `:6698`
-and the smallest-N rule at `:6706`.  Effort: medium.  Test: none; it needs a
-group with more than about 65 pruned sources, which no scenario builds.*
-
-**M12.  `lost_assert(S,G,I)`'s third term reaches the olist, not the Join.**
-Sec. 4.6.5 makes that test three terms: assert state on the interface, a
-winner that is not us, and the winner's metric being better than
-`spt_assert_metric(S,I)`.  The third one is computed now, in `lost_assert()`
-(`src/pim_proto.c`), and `calc_oifs()` (`src/route.c`) asks it per interface
-rather than subtracting `asserted_oifs` whole: an entry on the shortest path
-tree takes back an interface it lost to a winner whose metric no longer
-beats the one it would assert with from that tree.  Until SPTbit is set the
-answer is `lost_assert(S,G,rpt,I)`, plain assert state, because sec. 4.2
-forwards off `inherited_olist(S,G,rpt)` until then.
-
-What the term is really for is the other olist, and that half is missing.
-Sec. 4.1.5 keeps `immediate_olist(S,G)` -- `joins(S,G)` and
-`pim_include(S,G)` minus `lost_assert(S,G)` -- apart from the inherited one,
-and `JoinDesired(S,G)` is read off that, or off `inherited_olist(S,G)` while
-the Keepalive Timer runs: both of them carry the term, and neither is the
-olist sec. 4.2 forwards off while SPTbit is clear.  A router that loses an
-assert while forwarding on the shared tree, to a winner it would beat from
-the shortest path tree, is meant to keep its (S,G) Join on that strength
-alone, get traffic, set SPTbit and win the re-election.  pimd computes one
-olist per entry and uses it for forwarding and for Join/Prune both, so that
-router prunes the source whose traffic it needs to get there, and the two
-never resolve -- the deadlock the Note under the macro describes.  Closing it
-means keeping the two olists apart, not adding another term, and half of that
-is in place: `join_desired()` (`src/route.c`) builds `immediate_olist(S,G)`
-out of `sg_joined_oifs`, the `joins(S,G)` an (S,G) entry does not inherit
-from its (\*,G), and sec. 4.2.2 is read off it.  What still has one olist for
-forwarding and for Join/Prune both is `join_or_prune()` (`src/pim_proto.c`),
-which is where the deadlock is.
-*Check: sec. 4.6.5, `doc/rfc7761.txt:5294`, with the Note at `:5305`;
-`spt_assert_metric(S,I)` is sec. 4.6.3, `:5215`; the two olists are sec.
-4.1.5, `:1131`, and `JoinDesired(S,G)` sec. 4.5.5, `:3738`.  Effort: medium.
-Test: none.  It needs a router that loses an assert while forwarding on the
-shared tree to one it would beat from the shortest path tree, so the two
-metrics have to differ: `route change -metric` does that between two pimds
-now, the way step 12 of `shared-lan` in `test/freebsd-lab.sh` does it, and
-`shared-lan-spt` is the scenario that already gets one of the two onto the
-shortest path tree.*
-
-**M14.  An Assert the (S,G) machine should take is unreachable once the
-shared tree has lost the interface.**  Sec. 4.6.1 gates the NoInfo-to-Loser
-transition of the (S,G) machine on `AssertTrackingDesired(S,G,I)`, which is
-join and membership state -- `joins(*,G)` on I is enough -- and says nothing
-about the outgoing interfaces.  `assert_machine()` (`src/pim_proto.c`) asks
-instead whether the interface is still in the entry's `oifs`, or whether the
-entry the state lives on has already lost it; a router with no (S,G) entry
-yet has no such entry, and the (*,G) it borrows its metric from has just lost
-the interface, so the message reaches neither machine's NoInfo and the (*,G)
-machine's Loser state answers it instead.
-
-A last hop router held on the shared tree beside a router that is on the
-shortest path tree is exactly that case, and it keeps no `AssertWinner(S,G,I)`
-for the LAN: `lost_assert(S,G,rpt,I)` of sec. 4.6.5 reads NULL and what holds
-the interface is the (*,G) state alone.  That state is not refreshed, because
-the winner asserts per source from then on, and the downstream router that
-would clear it with a Join(*,G) now sends that Join to the winner instead.
-So the interface comes back at `Assert_Time`, the two routers collide, and the
-election runs again every 180 seconds.
-*Check: sec. 4.6.1, `doc/rfc7761.txt:4279`, with
-`AssertTrackingDesired(S,G,I)` at `:4431` and the transition it gates at
-`:4519`; `lost_assert(S,G,rpt,I)` is sec. 4.6.5, `:5284`; the AssertCancel is
-sec. 4.6.4, `:5245`.  Effort: small, but not the one-line widening of the
-`oifs` test it looks like -- that was measured, and it hands the (S,G) machine the AssertCancel of sec. 4.6.4 as
-well, which then clears the (S,G) state and returns, leaving the (*,G) Loser
-state holding the interface for the full `Assert_Time`: `assert-lan` reports
-the AssertCancel case as a known deviation the moment it is done that way.
-Both machines have to answer the cancel for that to hold together.  Test: the
-`rpt-bit` sub-case of `assert-lan` in `test/freebsd-interop.sh` goes on asking
-for the loss on the (S,G) and reports `KNOWN` through `xfail()` while it lands
-on the (*,G) instead -- but only when that sub-case is run on its own,
-`AL_CASES=rpt-bit`.  In the full walk it reports `ok`: the Arista has three
-elections behind it by then and its (S,G) Assert reaches R3 before the (*,G)
-one has taken the interface away, so the (S,G) machine is still reachable and
-takes it.  Which of the two orderings a run saw is worth checking before
-reading anything into either.*
-
 
 Timers
 ------
@@ -442,11 +400,11 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | J/P Holdtime sent | 210 s | `PIM_JOIN_PRUNE_HOLDTIME` 210 s | ok |
 | t\_periodic | 60 s | `PIM_JOIN_PRUNE_PERIOD` 60 s | ok |
 | t\_suppressed | rand(1.1, 1.4) × t\_periodic | 66–84 s | ok |
-| Suppression\_Enabled | from the T bit | always on | M2 |
-| t\_override | rand(0, 2.5 s) | 0–2 s integer, on a 5 s tick | T1 |
-| Propagation\_Delay | 0.5 s | not tracked | M2 |
-| Override\_Interval | 2.5 s | not tracked, not advertised | M2 |
-| J/P\_Override\_Interval (PPT) | 3 s | `holdtime/3`, 70 s | M2 |
+| Suppression\_Enabled | from the T bit | always on, T advertised clear | ok in effect |
+| t\_override | rand(0, Eff. Override) | 0–2 s integer, on a 5 s tick | T1 |
+| Propagation\_Delay | 0.5 s | 5000 ms, advertised and negotiated | deliberate, T1 |
+| Override\_Interval | 2.5 s | 2500 ms, advertised and negotiated | ok |
+| J/P\_Override\_Interval (PPT) | 3 s | the negotiated sum, 8 s between pimds | ok |
 | Assert\_Time | 180 s | `PIM_ASSERT_TIMEOUT` 180 s | ok |
 | Assert\_Override\_Interval | 3 s | 5 s, the TIMER\_INTERVAL floor | minor |
 | Register\_Suppression\_Time | 60 s | 60 s | ok |
@@ -466,27 +424,30 @@ override interval where the spec asks for 3, which is the direction that is
 safe.
 
 **T1.  `t_override` cannot be expressed on a 5-second tick.**
-The constant is the spec's now, `PIM_OVERRIDE_INTERVAL` 2.5 (`src/pimd.h`),
-and no longer RFC 2362's `[Random-Delay-Join-Timeout]` of 4.5, which is a
-different quantity.  What is left is the quantization:
-`(RANDOM() % (int)(10 * 2.5)) / 10` in `jp_override_timeout()`
-(`src/pim_proto.c`) yields 0, 1 or 2 whole seconds, and the timer only fires
-on the next 5-second tick, so the delay is effectively the tick phase and the
-randomization does nothing.  An override Join can therefore arrive about 5
-seconds after the Prune it must cancel, against a conformant upstream that
-deleted the oif after 3.  Against another pimd it is masked by M2.
+The interval is the link's now, `effective_override_interval()`
+(`src/pim_proto.c`) rather than a constant, and no longer RFC 2362's
+`[Random-Delay-Join-Timeout]` of 4.5, which is a different quantity.  What is
+left is the quantization: `jp_override_timeout()` divides milliseconds into
+whole seconds and yields 0, 1 or 2 of them at the default 2500, and the timer
+only fires on the next 5-second tick, so the delay is effectively the tick
+phase and the randomization does nothing.  An override Join can therefore
+arrive about 5 seconds after the Prune it must cancel, against an upstream --
+pimd included, now that the Prune-Pending Timer is the interval sec. 4.11
+asks for -- that deleted the oif after 3.
 *Check: the `t_override` row of sec. 4.11, `doc/rfc7761.txt:7077`, and
 `Effective_Override_Interval(I)` in sec. 4.3.3, `:1925`.  Effort: medium; it
 is sub-tick scheduling, which nothing in `timer.c` has today.  Test: none.  It
-needs a shared LAN and a peer that deletes the oif after 3 seconds rather than
-pimd's 5, so `assert-lan` in `test/freebsd-interop.sh` is the natural home.*
+needs a shared LAN and an oif deleted after 3 seconds where the override
+arrives at 5, which any two pimds on one segment now have: `shared-lan` in
+`test/freebsd-lab.sh` and `assert-lan` in `test/freebsd-interop.sh` both
+build it.*
 
 **T2.  (\*,G) Join suppression is inert.**  The interval itself is the spec's
 now -- `jp_suppression_timeout()` (`src/pim_proto.c`) draws 66 to 84 seconds,
 where the old range started at `t_periodic` exactly and let a suppressed router
 send inside the very period it was suppressed for.  The (\*,G) branch still
 computes its guards and then falls through with no `SET_TIMER` at all, three
-tests followed by a bare `continue` (`src/pim_proto.c:1797-1808`).  The
+tests followed by a bare `continue` (`src/pim_proto.c:2027-2040`).  The
 assignment was deleted in `892acbe`, "Fix random loss of multicast, lasts 5-10
 mins, by Ventus Networks", as a workaround, so every router on a LAN sends its
 own periodic Join(\*,G).  The effect is control-plane noise rather than lost
@@ -506,13 +467,13 @@ startup half is done: `start_vif()` (`src/vif.c`) arms `uv_hello_timer` with
 rand(0, `PIM_TRIGGERED_HELLO_DELAY`) and no longer sends a Hello itself, so
 the randomized value survives instead of being overwritten by
 `send_pim_hello()` before the first tick.  The Hello that answers a new or
-rebooted neighbor (`src/pim_proto.c:270`) is still sent at once rather than
+rebooted neighbor (`src/pim_proto.c:280`) is still sent at once rather than
 after rand(0, 5 s), so a whole LAN answers a rebooting router in the same
 instant and then converges onto its clock.
 
 That one is deliberate for now, and moving it needs a second timer rather than
 a delay: sec. 3.5 of RFC 5059 has the DR unicast a Bootstrap to the new
-neighbor immediately afterwards (`src/pim_proto.c:277`), and
+neighbor immediately afterwards (`src/pim_proto.c:287`), and
 `receive_pim_bootstrap()` drops a Bootstrap from a router it has had no Hello
 from.  Delaying the Hello on the existing `uv_hello_timer` would have us send
 that Bootstrap into a peer that discards it.
@@ -544,27 +505,26 @@ Checked, no action
 
 - **The Border bit is already compliant.**  Sec. 4.9.3 deprecates it: set 0 on
   transmission, ignore on reception, which is what the code does.  The
-  outstanding TODO at `src/pim_proto.c:768-772` describes RFC 2362 PMBR
+  outstanding TODO at `src/pim_proto.c:891-895` describes RFC 2362 PMBR
   behaviour and has no code behind it; with (\*,\*,RP) and PMBR removed from this
   tree the right change is deleting the comment.  *Check: sec. 4.9.3,
   `doc/rfc7761.txt:6233`.*
 - **Register-Stop rate limiting is not an RFC requirement.**  Sec. 4.4.2
   prescribes one Register-Stop per qualifying Register and no rate limit; the
   DR's suppression timer is the pacing mechanism.  The TODO at
-  `src/pim_proto.c:1301` can go.  Its security dimension is real but belongs to
+  `src/pim_proto.c:1424` can go.  Its security dimension is real but belongs to
   V3.  *Check: sec. 4.4.2, `doc/rfc7761.txt:2364` for the pseudocode and `:2402`
   for its Note (\*).*
 - **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  The
-  promise of a second pass in the comment at `src/pim_proto.c:1949-1950` is
+  promise of a second pass in the comment at `src/pim_proto.c:2181-2182` is
   stale — there is no second pass — but the resulting behaviour is correct.  The
   suppression half of the same function still has live (\*,\*,RP) handling, and
   `pack_and_send_jp_message()` can still encode such a group set, though no
   caller asks it to.  *Check: Appendix A, `doc/rfc7761.txt:7567`, which is where
   RFC 4601's (\*,\*,RP) support was removed.*
 - **Sec. 4.5.6's compound Join(\*,G)+Prune(S,G,rpt) is implemented**, through
-  `MRTF_RP` entries pulled into the same group set (`src/route.c:1879-1928`) and
-  the RPT bit set from that flag.  What is missing around it is M1 and M9, not
-  this.  *Check: sec. 4.5.6, `doc/rfc7761.txt:3927`.*
+  `MRTF_RP` entries pulled into the same group set (`src/route.c:1933-1952`) and
+  the RPT bit set from that flag.  What is missing around it is M1, not this.  *Check: sec. 4.5.6, `doc/rfc7761.txt:3927`.*
 - **The RP's decapsulate-and-forward step is the kernel's**, via `MRT_PIM` and
   the register vif, which is the literal reading of sec. 4.4.2's note that
   implementations should not make it a special case.  One consequence worth
@@ -575,7 +535,7 @@ Checked, no action
   right, but `mrt->oifs` is consequently not a pure function of the join/prune
   state — whether it still contains its own iif depends on which caller last ran
   — and two "did this arrive on an oif?" tests read it
-  (`src/route.c:1419`, `src/pim_proto.c:3295`).  *Check: sec. 4.2,
+  (`src/route.c:1441`, `src/pim_proto.c:3669`).  *Check: sec. 4.2,
   `doc/rfc7761.txt:1425`, where `oiflist = oiflist (-) iif` is a step of the
   forwarding rules and not part of the olist macros of sec. 4.1.5, `:1131`.*
 - **`lost_assert()` is already enforced for local members.**  `calc_oifs()`

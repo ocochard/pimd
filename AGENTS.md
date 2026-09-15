@@ -84,10 +84,12 @@ address in the second.
 Assertions that reproduce a deviation report `KNOWN` through `xfail()` instead of failing the run,
 and turn into an `ok` once pimd is fixed; `shared-lan-spt` has this file's only one, for the assert
 RPT bit of RFC 7761 4.6.1, and it now reports `ok` -- the deviation it guards was fixed in
-`4cb79f1`, so the assertion stays as a tripwire. `test/freebsd-interop.sh` has two more, both for
-deviation M3, and both report `ok` as well now that the assert state is per interface: an
-AssertCancel is acted on and a winner resends before the losers time out. No `xfail()` in either
-file is live -- a `KNOWN` line in a run is a regression, not an expected result.
+`4cb79f1`, so the assertion stays as a tripwire. `test/freebsd-interop.sh` has four more and all
+four report `ok` as well: two for deviation M3, now that the assert state is per interface -- an
+AssertCancel is acted on and a winner resends before the losers time out -- one for M10, the SPTbit
+evaluated per packet rather than only on an upcall, and one for M14, the (S,G) Assert machine
+reachable after the shared tree has lost the interface. No `xfail()` in either file is live -- a
+`KNOWN` line in a run is a regression, not an expected result.
 
 `doc/rfc7761-compliance.md` is the list these come from: every entry there ends with a `Test:` note
 naming what reproduces it, or `none`, so which deviations are covered and which are only written
