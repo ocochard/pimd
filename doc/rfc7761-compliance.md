@@ -111,17 +111,17 @@ downstream and an upstream (S,G,rpt) machine with their own Expiry,
 Prune-Pending and Override timers.  pimd has one (S,G) entry with one
 `joined_oifs`/`pruned_oifs` pair and the `MRTF_RP` flag standing in for the RPT
 variant, which produces three distinct failures.  A received Prune(S,G,rpt) is
-applied to the (S,G) machine (`src/pim_proto.c:2012-2037`), so on a LAN it
+applied to the (S,G) machine (`src/pim_proto.c:2026-2051`), so on a LAN it
 cancels an (S,G) Join another router still wants, and the two flap against each
 other with a 60-second period; `calc_oifs()` subtracts the one `pruned_oifs`
 from the (S,G) olist unconditionally (`src/route.c:847` for the inherited half
 and `:856` for the entry's own), which sec. 4.1.5 forbids.  A received
-Join(S,G,rpt) matches neither branch of the Join loop (`src/pim_proto.c:2138`
-and `:2202`) and is silently ignored, so a downstream
+Join(S,G,rpt) matches neither branch of the Join loop (`src/pim_proto.c:2152`
+and `:2216`) and is silently ignored, so a downstream
 router can never override another router's RPT prune — the one mechanism
 sec. 4.5.7 exists to provide.  And pimd never sends a Join(S,G,rpt) either:
 `join_or_prune()` can only return PRUNE for an RPbit entry
-(`src/pim_proto.c:1352-1360`), so the triggered machine of 4.5.7 has no
+(`src/pim_proto.c:1366-1374`), so the triggered machine of 4.5.7 has no
 implementation.  Note that the *compound* Join(\*,G)+Prune(S,G,rpt) of sec. 4.5.6
 is implemented, via `MRTF_RP` entries dragged into the same group set
 (`src/route.c:1847-1896`), and is wire-correct; it is the triggered half that is
@@ -140,10 +140,10 @@ Sec. 4.3.3 wants the option in every Hello on a multi-access LAN, and
 largest value any neighbor advertises; sec. 4.5.1 and 4.5.2 start a Prune-Pending
 Timer of `J/P_Override_Interval(I)`, or zero when there is only one neighbor on
 the interface.  pimd neither sends nor parses option type 2
-(`src/pim_proto.c:731-741` and `:667-693`), keeps none of the four values, and
+(`src/pim_proto.c:745-755` and `:681-706`), keeps none of the four values, and
 has no Prune-Pending state: it lowers the *Expiry* timer to
 `vif_deletion_delay[vifi]`, whose only assignment is `holdtime/3`
-(`src/pim_proto.c:2162`, `:2224`), 70 seconds for the usual 210-second holdtime.
+(`src/pim_proto.c:2176`, `:2238`), 70 seconds for the usual 210-second holdtime.
 The single-neighbor case is approximated by `VIFF_POINT_TO_POINT`, which is not
 the same question.  So a Prune on a shared LAN leaves traffic flowing for 70
 seconds instead of 3, compounding per hop; a Join with holdtime 0xffff sets the
@@ -238,13 +238,13 @@ cases they cover are disjoint, so the timer never reaches zero while a source
 sends:
 
 - An entry with an oif some neighbour joined is refreshed by that neighbour's
-  periodic Join every 60 seconds (`src/pim_proto.c:2165`, `:2227`).  In the run
+  periodic Join every 60 seconds (`src/pim_proto.c:2179`, `:2241`).  In the run
   above `entry_timer` went back to 210 on the same tick as `jp_timer` wrapping
   to 60, every time.
 - The DR and the RP refresh each other over the Register probe loop, also every
-  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:923`) and
+  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:937`) and
   the Register-Stop the DR's, while a registered packet sets it at the DR
-  directly (`:1084`), which is the one refresh that is data-driven.  Stopping
+  directly (`:1098`), which is the one refresh that is data-driven.  Stopping
   pimd on the last hop router, so that no Join is ever sent again, left this
   loop holding both entries up on its own.
 - An entry with an empty oif list has no MFC, so every packet is a cache miss
@@ -286,7 +286,7 @@ added latency, which no assertion here could tell from a slow lab.*
 **M9.  A group set carrying a (\*,G) Join can be split across messages.**
 Sec. 4.9.5.2 makes that list of (S,G,rpt) Prunes unsplittable and, when they do
 not fit, requires the numerically smallest N.  `add_jp_entry()` flushes on size
-alone (`src/pim_proto.c:2516-2523`), with no notion of the group set it is in the
+alone (`src/pim_proto.c:2530-2537`), with no notion of the group set it is in the
 middle of and no ordering of the sources.  Above roughly 65 pruned sources the
 Join(\*,G) and the tail of its prune list land in different packets, and a
 conformant upstream moves every (S,G,rpt) it holds to NoInfo on the first one —
@@ -388,7 +388,7 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | J/P\_HoldTime | from message | as received | ok |
 | J/P Holdtime sent | 210 s | `PIM_JOIN_PRUNE_HOLDTIME` 210 s | ok |
 | t\_periodic | 60 s | `PIM_JOIN_PRUNE_PERIOD` 60 s | ok |
-| t\_suppressed | rand(1.1, 1.4) × t\_periodic | 60–89 s, RFC 2362's 1.25 × period | T2 |
+| t\_suppressed | rand(1.1, 1.4) × t\_periodic | 66–84 s | ok |
 | Suppression\_Enabled | from the T bit | always on | M2 |
 | t\_override | rand(0, 2.5 s) | 0–2 s integer, on a 5 s tick | T1 |
 | Propagation\_Delay | 0.5 s | not tracked | M2 |
@@ -428,29 +428,30 @@ is sub-tick scheduling, which nothing in `timer.c` has today.  Test: none.  It
 needs a shared LAN and a peer that deletes the oif after 3 seconds rather than
 pimd's 5, so `assert-lan` in `test/freebsd-interop.sh` is the natural home.*
 
-**T2.  `t_suppressed` uses RFC 2362's range, and (\*,G) suppression is inert.**
-The interval is `PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD)`,
-60 to 89 seconds where the spec wants 66 to 84; the low end equals `t_periodic`
-exactly, so a suppressed router can still send in the same period.  Worse, the
-(\*,G) branch computes its guards and then falls through with no `SET_TIMER` at
-all — three tests followed by a bare `continue` (`src/pim_proto.c:1760-1771`).
-The assignment was deleted in `892acbe`, "Fix random loss of multicast, lasts
-5-10 mins, by Ventus Networks", as a workaround, so every router on a LAN now
-sends its own periodic Join(\*,G).  The effect is control-plane noise rather
-than lost traffic, which is why it was tolerable, but restoring it needs the
-original loss scenario reproduced first: the bug it papers over is most likely
-in `join_or_prune()` or the `jp_timer` accounting.  Note also the address
-tiebreak in those guards has no counterpart in RFC 7761.
+**T2.  (\*,G) Join suppression is inert.**  The interval itself is the spec's
+now -- `jp_suppression_timeout()` (`src/pim_proto.c`) draws 66 to 84 seconds,
+where the old range started at `t_periodic` exactly and let a suppressed router
+send inside the very period it was suppressed for.  The (\*,G) branch still
+computes its guards and then falls through with no `SET_TIMER` at all, three
+tests followed by a bare `continue` (`src/pim_proto.c:1774-1785`).  The
+assignment was deleted in `892acbe`, "Fix random loss of multicast, lasts 5-10
+mins, by Ventus Networks", as a workaround, so every router on a LAN sends its
+own periodic Join(\*,G).  The effect is control-plane noise rather than lost
+traffic, which is why it was tolerable, but restoring it needs the original
+loss scenario reproduced first: the bug it papers over is most likely in
+`join_or_prune()` or the `jp_timer` accounting.  Note also the address tiebreak
+in those guards has no counterpart in RFC 7761.
 *Check: the `t_suppressed` row of sec. 4.11, `doc/rfc7761.txt:7070`; the "See
 Join(\*,G) to RPF'(\*,G)" transition that arms it is sec. 4.5.4, `:3543`, and
-its (S,G) twin sec. 4.5.5, `:3815`.  Effort: small to fix, medium to fix
-safely.  Test: none.  Join suppression needs two routers wanting the same group
-on one segment, which `shared-lan` and `assert-lan` both have.*
+its (S,G) twin sec. 4.5.5, `:3815`.  Effort: medium -- the change is one
+assignment, reproducing what it broke is the work.  Test: none.  Join
+suppression needs two routers wanting the same group on one segment, which
+`shared-lan` and `assert-lan` both have.*
 
 **T3.  `Triggered_Hello_Delay` is not implemented in either direction.**
 `src/vif.c:321` picks rand(1, Hello_Period) rather than rand(0, 5 s), and
 `send_pim_hello()` overwrites `uv_hello_timer` unconditionally at its end
-(`src/pim_proto.c:745`), 36 lines later in the same call path — so the
+(`src/pim_proto.c:759`), 36 lines later in the same call path — so the
 randomized startup value never survives a single tick and every router's first
 Hello goes out at t=0.  The triggered Hello answering a new or rebooted neighbor
 is sent immediately instead of after rand(0, 5 s), and resets the periodic
@@ -499,7 +500,7 @@ Interop details
 ---------------
 
 **I1.  The Null-Register dummy IP header says protocol 17.**  Sec. 4.9.3 asks
-for 103.  `src/pim_proto.c:1137` sets `IPPROTO_UDP` with an `XXX: bogus` comment;
+for 103.  `src/pim_proto.c:1151` sets `IPPROTO_UDP` with an `XXX: bogus` comment;
 everything else in the dummy header matches.  An RP that inspects the inner
 protocol may drop it, after which the DR re-adds the register tunnel every
 60 to 90 seconds.
@@ -524,18 +525,18 @@ Checked, no action
 
 - **The Border bit is already compliant.**  Sec. 4.9.3 deprecates it: set 0 on
   transmission, ignore on reception, which is what the code does.  The
-  outstanding TODO at `src/pim_proto.c:754-758` describes RFC 2362 PMBR
+  outstanding TODO at `src/pim_proto.c:768-772` describes RFC 2362 PMBR
   behaviour and has no code behind it; with (\*,\*,RP) and PMBR removed from this
   tree the right change is deleting the comment.  *Check: sec. 4.9.3,
   `doc/rfc7761.txt:6233`.*
 - **Register-Stop rate limiting is not an RFC requirement.**  Sec. 4.4.2
   prescribes one Register-Stop per qualifying Register and no rate limit; the
   DR's suppression timer is the pacing mechanism.  The TODO at
-  `src/pim_proto.c:1264` can go.  Its security dimension is real but belongs to
+  `src/pim_proto.c:1278` can go.  Its security dimension is real but belongs to
   V3.  *Check: sec. 4.4.2, `doc/rfc7761.txt:2364` for the pseudocode and `:2402`
   for its Note (\*).*
 - **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  The
-  promise of a second pass in the comment at `src/pim_proto.c:1912-1913` is
+  promise of a second pass in the comment at `src/pim_proto.c:1926-1927` is
   stale — there is no second pass — but the resulting behaviour is correct.  The
   suppression half of the same function still has live (\*,\*,RP) handling, and
   `pack_and_send_jp_message()` can still encode such a group set, though no
@@ -555,7 +556,7 @@ Checked, no action
   right, but `mrt->oifs` is consequently not a pure function of the join/prune
   state — whether it still contains its own iif depends on which caller last ran
   — and two "did this arrive on an oif?" tests read it
-  (`src/route.c:1387`, `src/pim_proto.c:3258`).  *Check: sec. 4.2,
+  (`src/route.c:1387`, `src/pim_proto.c:3272`).  *Check: sec. 4.2,
   `doc/rfc7761.txt:1425`, where `oiflist = oiflist (-) iif` is a step of the
   forwarding rules and not part of the olist macros of sec. 4.1.5, `:1131`.*
 - **`lost_assert()` is already enforced for local members.**  `calc_oifs()`

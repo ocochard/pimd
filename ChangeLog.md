@@ -104,6 +104,11 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Draw the Join/Prune suppression interval from 1.1 to 1.4 times the
+  periodic interval, 66 to 84 seconds, as the t_suppressed row of RFC 7761
+  section 4.11 asks.  It was RFC 2362's range, 60 to 89, whose low end
+  equals the periodic interval exactly, so a suppressed router could still
+  send its own Join inside the very period it was suppressed for
 - Draw t_override from the Override_Interval of RFC 7761 section 4.11, 2.5
   seconds, instead of RFC 2362's [Random-Delay-Join-Timeout] of 4.5, which
   is a different quantity.  The result is still quantized to whole seconds

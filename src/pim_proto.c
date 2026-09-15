@@ -94,6 +94,20 @@ static uint16_t jp_override_timeout(void)
 
 
 /*
+ * t_suppressed: how long a router holds off its own Join after hearing an
+ * equivalent one from a neighbor.  RFC 7761 sec. 4.11 draws it from
+ * rand(1.1 * t_periodic, 1.4 * t_periodic), 66 to 84 seconds at the default
+ * period.  The old range started at t_periodic itself, so a suppressed
+ * router could still send inside the very period it was suppressed for.
+ */
+static uint16_t jp_suppression_timeout(void)
+{
+    return (PIM_JOIN_PRUNE_PERIOD * 11) / 10
+	+ RANDOM() % ((PIM_JOIN_PRUNE_PERIOD * 3) / 10 + 1);
+}
+
+
+/*
  * A neighbor whose GenID changed has restarted, and with it lost the Join
  * state we sent it.  RFC 7761 sec. 4.5.4 and 4.5.5 both answer that with
  * "If the Join Timer is set to expire in more than t_override seconds,
@@ -1657,7 +1671,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			 * routing entry by increasing the current
 			 * Join/Prune timer.
 			 */
-			jp_value = PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD);
+			jp_value = jp_suppression_timeout();
 			/* TODO: XXX: TIMER implem. dependency! */
 			if (mrt_rp->jp_timer < jp_value)
 			    SET_TIMER(mrt_rp->jp_timer, jp_value);
@@ -1692,7 +1706,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 				|| ((mrt_rp->jp_timer == holdtime) &&
 				    (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
 				/* Suppress the Prune */
-				jp_value = PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD);
+				jp_value = jp_suppression_timeout();
 				if (mrt_rp->jp_timer < jp_value)
 				    SET_TIMER(mrt_rp->jp_timer, jp_value);
 			    }
@@ -1788,7 +1802,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if ((mrt->jp_timer == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
 		    continue;
 
-		jp_value = PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD);
+		jp_value = jp_suppression_timeout();
 		if (mrt->jp_timer < jp_value)
 		    SET_TIMER(mrt->jp_timer, jp_value);
 		continue;
@@ -1820,7 +1834,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    || ((mrt->jp_timer == holdtime)
 				&& (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
 			    /* Suppress the Prune */
-			    jp_value = PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD);
+			    jp_value = jp_suppression_timeout();
 			    if (mrt->jp_timer < jp_value)
 				SET_TIMER(mrt->jp_timer, jp_value);
 			}
@@ -1861,7 +1875,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    if ((mrt->jp_timer < holdtime)
 			|| ((mrt->jp_timer == holdtime)
 			    && (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
-			jp_value = PIM_JOIN_PRUNE_PERIOD + 0.5 * (RANDOM() % PIM_JOIN_PRUNE_PERIOD);
+			jp_value = jp_suppression_timeout();
 			if (mrt->jp_timer < jp_value)
 			    SET_TIMER(mrt->jp_timer, jp_value);
 		    }
