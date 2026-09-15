@@ -87,8 +87,14 @@ it -- which is V3's rule, arrived at from the other side.
 What keeps it off the wire is the `ip_p == 0` test in `accept_igmp()`: a raw
 IGMP socket sees protocol 2 from a real packet, so only the kernel reaches the
 branch, and both Linux and FreeBSD hand up the whole packet.  Hardening, not a
-repair.  Test: none, and none is cheap -- it wants a kernel that truncates an
-upcall.*
+repair.  Test: nothing reproduces it, and nothing cheaply could -- it wants a
+kernel that truncates an upcall or lies about `ip_len`.  What the labs give is
+the other half, that the guards refuse nothing a real kernel sends: `rpt`,
+`keepalive`, `rp-lasthop`, `rp-offpath` and both `gif-tunnel` scenarios of
+`test/freebsd-lab.sh` register through this path, and `arista-rp` and
+`pimd-rp` of `test/freebsd-interop.sh` have an EOS decapsulate what pimd
+sends and pimd decapsulate what EOS sends.  All of them pass with the checks
+in.  That is a net under the fix, not a test of the deviation.*
 
 **V6.  The upcall's interface index was not bounded by the interfaces we
 have.**  `process_cache_miss()` and `process_wrong_iif()` (`src/route.c`) take
@@ -100,7 +106,12 @@ to an interface that exists.  Both refuse an index at or past `numvifs` now.
 The bound is `numvifs` and not `MAXVIFS` deliberately: an entry between the two
 is inside the array but is not an interface either function could act on.
 *Check: no RFC rule; same kernel boundary as V5, found in the same audit and
-with the same caveat -- the kernel writes that field.  Test: none.*
+with the same caveat -- the kernel writes that field.  Test: nothing
+reproduces it either, for the same reason: an out-of-range `im_vif` needs a
+kernel that invents one.  Every scenario that forwards traffic drives
+`process_cache_miss()`, and the ones that move a source onto the shortest
+path tree or run an assert drive `process_wrong_iif()` as well, so both
+guards are walked with a valid index throughout the two FreeBSD suites.*
 
 One thing V2 left undone: sec. 4.5 and sec. 4.6 both RECOMMEND a
 configuration option to keep accepting these messages from routers that fail
