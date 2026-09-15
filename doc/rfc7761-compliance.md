@@ -60,6 +60,48 @@ assert.  The section stays, and keeps its numbering, because these are the
 entries where a compliance gap was also a way in, and the next reader should
 know they were looked for rather than wonder.
 
+A later audit of the code around the register path added two more, and both
+are fixed as well.  Neither is an RFC deviation: the boundary they sit on is
+the kernel's, not the wire's, so there is no section to measure them against.
+They are here rather than nowhere for the reason the paragraph above gives,
+and because the path they guard is the one V3 above and I1 and I2 below are
+all about: what a DR does with the packet it is asked to register.
+
+**V5.  A kernel upcall was read for more than it had delivered.**
+`accept_igmp()` (`src/igmp.c`) admits a datagram once it is as long as an IP
+header, and hands it to `process_kernel_call()` (`src/route.c`) when the
+protocol field is zero, which is how the kernel marks an upcall rather than a
+packet.  Past that the length went unmentioned.  Two reads stood on it: the
+`struct igmpmsg` read there is the same 20 bytes only because the kernel
+header lays it out that way and says so, "note the convenient similarity to
+an IP packet"; and an `IGMPMSG_WHOLEPKT` upcall reached `send_pim_register()`
+(`src/pim_proto.c`) with a pointer past that header, where the encapsulated IP
+header was read, and then copied into the Register, for the `ntohs(ip->ip_len)`
+it claims about itself.  A header claiming more than the kernel delivered
+would have had the DR unicast the bytes that followed it in `igmp_recv_buf` to
+the RP.  The received length is a parameter of all three functions now, the
+claimed length is compared against what is left of the datagram before it is
+used, and a malformed upcall returns before `find_route()` creates state for
+it -- which is V3's rule, arrived at from the other side.
+*Check: no RFC rule to check against; this is pimd's own kernel interface.
+What keeps it off the wire is the `ip_p == 0` test in `accept_igmp()`: a raw
+IGMP socket sees protocol 2 from a real packet, so only the kernel reaches the
+branch, and both Linux and FreeBSD hand up the whole packet.  Hardening, not a
+repair.  Test: none, and none is cheap -- it wants a kernel that truncates an
+upcall.*
+
+**V6.  The upcall's interface index was not bounded by the interfaces we
+have.**  `process_cache_miss()` and `process_wrong_iif()` (`src/route.c`) take
+`im_vif` out of the same message and index `uvifs[]` with it, first in the
+debug log that prints the interface name and then to ask whether this router
+is the DR there.  `im_vif` is one byte and `uvifs[]` holds `MAXVIFS` entries of
+which `numvifs` are in service, so nothing in the message constrained the index
+to an interface that exists.  Both refuse an index at or past `numvifs` now.
+The bound is `numvifs` and not `MAXVIFS` deliberately: an entry between the two
+is inside the array but is not an interface either function could act on.
+*Check: no RFC rule; same kernel boundary as V5, found in the same audit and
+with the same caveat -- the kernel writes that field.  Test: none.*
+
 One thing V2 left undone: sec. 4.5 and sec. 4.6 both RECOMMEND a
 configuration option to keep accepting these messages from routers that fail
 to send Hellos on point-to-point links, disabled by default.  pimd has no
