@@ -104,6 +104,10 @@ pimd on all routers in the same domain.  See issue #93 for details.
   debug level.  Ported from mrouted, commit `48a7a11`
 
 ### Fixes
+- Put protocol 103, PIM, in the dummy IP header of a Null-Register rather
+  than 17, UDP.  RFC 7761 section 4.9.3 gives the field's value, and an RP
+  that inspects it can drop the probe, after which the DR re-adds the
+  register tunnel every 60 to 90 seconds for as long as the source sends
 - Refuse a `hello-interval` outside the 30 to 18724 seconds
   man/pimd.conf.5 documents, warn, and use the default, the way every
   other range check in `pimd.conf` behaves.  Only the ceiling was enforced,

@@ -1148,7 +1148,7 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     ip->ip_tos   = 0;
     ip->ip_id    = 0;
     ip->ip_off   = 0;
-    ip->ip_p     = IPPROTO_UDP;			/* XXX: bogus */
+    ip->ip_p     = IPPROTO_PIM;			/* RFC 7761 sec. 4.9.3: 103 */
     ip->ip_len   = htons(sizeof(struct ip));
     ip->ip_ttl   = MINTTL; /* TODO: XXX: check whether need to setup the ttl */
     ip->ip_src.s_addr = mrtentry->source->address;

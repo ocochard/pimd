@@ -473,17 +473,6 @@ timing, and every lab here starts its routers together.*
 Interop details
 ---------------
 
-**I1.  The Null-Register dummy IP header says protocol 17.**  Sec. 4.9.3 asks
-for 103.  `src/pim_proto.c:1151` sets `IPPROTO_UDP` with an `XXX: bogus` comment;
-everything else in the dummy header matches.  An RP that inspects the inner
-protocol may drop it, after which the DR re-adds the register tunnel every
-60 to 90 seconds.
-*Check: sec. 4.9.3, `doc/rfc7761.txt:6253` for the dummy header, the `IP
-Protocol` row at `:6269`.  Effort: small.  Test: no assertion, but `arista-rp` in
-`test/freebsd-interop.sh` shows the harm is not universal: EOS decapsulates
-pimd's Register with its protocol 17 dummy header and register-stops it
-normally.  An RP that does inspect the field is what this needs.*
-
 **I2.  ECN and DSCP are not copied into the Register header.**  Sec. 4.4.1 asks
 for both.  `ip_tos` is written once at startup (`src/pim.c:110`) and neither
 `send_pim_unicast()` nor `send_pim_register()` touches it per packet, so
