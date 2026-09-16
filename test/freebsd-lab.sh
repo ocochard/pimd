@@ -1108,6 +1108,9 @@ REGF_SENDER=${REGF_SENDER:-10.0.1.1}
 # outlive a timer, so this is only long enough to leave no doubt that the
 # stream ran while the filter was in force.
 REGF_PKTS=${REGF_PKTS:-20}
+# Longer than Register_Suppression_Time can hold R1 off, 90 seconds, see
+# step 9 of register-filter
+REGF_SUPP_WAIT=${REGF_SUPP_WAIT:-100}
 
 # ifgone: the link that is destroyed under R1, named from both ends
 # because an epair can only be destroyed from the jail that owns an end,
@@ -3350,27 +3353,53 @@ check_register_filter() {
 		return 1
 	fi
 
+	# Two things have to be true before these Registers can be answered,
+	# and neither is when R2 answers pimctl again.  R2 is not the RP for
+	# $GROUP until its own Cand-RP-Advertisement has rebuilt the RP set
+	# restart() dropped, up to an interval later, and a Register reaching
+	# it meanwhile gets the Register-Stop sec. 4.4.2 sends for a group the
+	# receiver is not the RP of.  The last packet of step 3's stream can be
+	# that Register: the reload comes the moment regf_send returns.  R1 then
+	# holds off for Register_Suppression_Time, a random 30 to 90 seconds,
+	# longer than the stream below, so the stream went mostly or wholly
+	# unregistered, and the Register-Stop this step looked for was that
+	# one.  R1 still holding the old RP set says nothing about either, so
+	# this waits on R2 taking the role back and on R1 registering again,
+	# and counts Register-Stops from there.
 	print "9. The same Registers are now acted on"
+	if ! wait_for 60 regf_is_rp r2; then
+		fail "r2 never took the RP role for $GROUP back after the reload"
+		return 1
+	fi
+	if ! wait_for "$REGF_SUPP_WAIT" register_oif_present r1 "$SRC_ADDR" "$GROUP"; then
+		fail "r1 did not register ($SRC_ADDR,$GROUP) again in ${REGF_SUPP_WAIT}s of the reload"
+		return 1
+	fi
+	stops=$(register_stops r1)
 	dprint "sending another $REGF_PKTS packets to $GROUP ..."
-	regf_send
-	if wait_for 60 logged r1 "Received PIM_REGISTER_STOP"; then
-		ok "r1 got its Register-Stop"
+	regf_send &
+	regf_sender=$!
+	if wait_for 60 register_stops_above r1 "$stops"; then
+		ok "r1 got a Register-Stop for this stream"
 	else
 		fail "r1 got no Register-Stop, the RP accepted but never answered"
+		wait "$regf_sender"
 		return 1
 	fi
 	# The DR acting on it, which is what tells a Register-Stop that arrived
 	# from one that was merely logged, and the mirror of assertion 3:
 	# suppress_register() (src/pim_proto.c) prunes PIMREG_VIF, so the vif
 	# that was in the oif list while the RP refused leaves it once the RP
-	# answers.  Asked of the oif list and not of the Register-Suppression
-	# timer beside it, which is seeded with a random half of
-	# PIM_REGISTER_SUPPRESSION_TIMEOUT and can run out inside a poll.
-	if wait_for 30 register_oif_gone r1 "$SRC_ADDR" "$GROUP"; then
+	# answers.  Asked while the stream still runs, and of the oif list and
+	# not of the Register-Suppression timer beside it: that timer is at
+	# least 30 seconds from the Register-Stop just counted, where asking
+	# after the stream had ended could meet it run out.
+	if wait_for 10 register_oif_gone r1 "$SRC_ADDR" "$GROUP"; then
 		ok "r1 dropped the register vif from ($SRC_ADDR,$GROUP), it stopped encapsulating"
 	else
 		fail "r1 still forwards ($SRC_ADDR,$GROUP) out the register vif, the Register-Stop changed nothing"
 	fi
+	wait "$regf_sender"
 
 	result
 }
@@ -3413,6 +3442,21 @@ route_held() {
 # Position 0 of the "Outgoing oifs" map is PIMREG_VIF, see route_oifs().
 register_oif_gone() {
 	[ "$(route_oifs "$1" "$2" "$3" | cut -c1)" != "o" ]
+}
+register_oif_present() {
+	[ "$(route_oifs "$1" "$2" "$3" | cut -c1)" = "o" ]
+}
+
+# Register-Stops router $1 has received so far, and for wait_for(), whether
+# that is more than $2
+register_stops() {
+	${SUDO} grep -c "Received PIM_REGISTER_STOP" "$WORKDIR/$1.log" 2>/dev/null || true
+}
+register_stops_above() { [ "$(register_stops "$1")" -gt "$2" ]; }
+
+# Is router $1 the RP of $GROUP by its own RP set?
+regf_is_rp() {
+	pimctl "$1" show rp 2>/dev/null | grep -q "$RP_ADDR"
 }
 
 # The register-accept-from list r2 is running with, for wait_for(): a
