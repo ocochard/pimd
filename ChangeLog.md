@@ -190,6 +190,26 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Answer a Register for a group in the SSM range with a Register-Stop, the
+  second half of RFC 7761 sec. 4.8.1's rule for one.  pimd refused to
+  forward such a Register, which is the first half, and called
+  `send_pim_register_stop()` for the second -- but that function returned
+  before building anything when the inner group was in the range, a guard
+  left from when pimd itself might have registered an SSM group.  So a
+  legacy DR was told nothing, kept encapsulating at the full data rate, and
+  the RP kept parsing and discarding one Register per packet for as long as
+  the source sent
+- Ignore a (\*,G) or (S,G,rpt) Join/Prune for a group in the SSM range,
+  RFC 7761 sec. 4.8.1 rule 4: a router MUST NOT forward packets based on
+  (\*,G) state for such a group, and the (\*,G) macros are NULL there.
+  pimd never built that state on its own -- `add_leaf()` picks (S,G) inside
+  the range and `join_or_prune()` refuses to send for a (\*,G) in it -- but
+  the receive path had no range test, so a Join(\*,G) naming the right RP
+  built one, and `calc_oifs()` merges a (\*,G)'s outgoing interfaces into
+  every (S,G) of the group, which is the forwarding rule four forbids.  The
+  RP such a Join must name is the link-local one pimd invents for an SSM
+  range, which no router that learned its RP set from the BSR would send,
+  and one that maps SSM groups to an RP of its own would
 - Discard a PIM message whose version is not 2, or whose destination is not
   one the table of RFC 7761 sec. 4.9 gives its type: the section closes by
   requiring both, `accept_pim()` carried them as TODOs, and every message

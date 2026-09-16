@@ -547,7 +547,13 @@
 #               sec. 6.2's "SHOULD NOT accept protocol messages from a
 #               router from which it has not yet received a valid Hello
 #               message", in the unicast branch of
-#               receive_pim_bootstrap().
+#               receive_pim_bootstrap(), and the two rules of sec. 4.8.1
+#               about what an SSM-unaware router may still send: no shared
+#               tree for a group in the SSM range, and a Register for one
+#               answered with a Register-Stop rather than dropped in
+#               silence.  Neither pimd nor the EOS of freebsd-interop.sh
+#               will send either message, so pimsend is the only way to
+#               ask.
 #
 #               The order the steps run in is not cosmetic.  The holdtime
 #               one needs the RPF neighbour toward the source to be a PIM
@@ -978,6 +984,13 @@ CRAFT_PRIO=${CRAFT_PRIO:-200}
 # watches, three TIMER_INTERVALs, which is long enough that a timer that
 # ages has visibly moved.
 CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
+
+# A group in the default SSM range, and the RP config.c invents for such a
+# range: a link-local address that leads nowhere, which is what an SSM group
+# resolves to and therefore the only address a (*,G) Join for one could name
+# and be believed.  See mrt.c, which installs it.
+SSM_GROUP=${SSM_GROUP:-232.1.1.1}
+SSM_VIRTUAL_RP=${SSM_VIRTUAL_RP:-169.254.0.1}
 CRAFT_HOLD=${CRAFT_HOLD:-15}
 
 # How long R1's dynamic RP may take to age out once the BSR is killed.  The
@@ -3634,7 +3647,33 @@ check_crafted() {
 	# one MUST NOT be checked, and a correct one is the control that says
 	# the first two were refused for their checksum and not for being
 	# Null-Registers.
-	print "13. A Null-Register is believed only where its checksum allows"
+	# RFC 7761 sec. 4.8.1's rules for a source-specific group, both of
+	# them about messages pimd will not send and neither implementation in
+	# test/freebsd-interop.sh will either: rule 4, no (*,G) state for a
+	# group in the range, and the second half of sec. 4.8.1's Register
+	# rule, which is the only thing that quiets an SSM-unaware DR down.
+	print "13. No shared tree is built for a group in the SSM range"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$SSM_GROUP" -w -r "$SSM_VIRTUAL_RP"
+	if wait_for 10 logged r1 "shared tree Join for SSM group $SSM_GROUP"; then
+		ok "r1 refused a (*,$SSM_GROUP) Join naming $SSM_VIRTUAL_RP"
+	else
+		fail "r1 acted on a (*,G) Join for an SSM group, sec. 4.8.1 rule 4"
+	fi
+	if has_mrt r1 "$SSM_GROUP"; then
+		fail "r1 holds $(pimctl r1 show mrt 2>/dev/null | awk -v g="$SSM_GROUP" '$2 == g { print $1 }' | tr '\n' ' ')for $SSM_GROUP, which calc_oifs() would merge into every (S,G)"
+	else
+		ok "r1 built no state for $SSM_GROUP at all"
+	fi
+
+	print "14. And a Register for one is answered, not merely dropped"
+	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -g "$SSM_GROUP" -s "$CRAFT_FAR_SRC"
+	if wait_for 10 logged r1 "REGISTER STOP.*group = $SSM_GROUP"; then
+		ok "r1 answered an SSM Register with a Register-Stop"
+	else
+		fail "r1 dropped it silently, so an SSM-unaware DR keeps encapsulating at the data rate"
+	fi
+
+	print "15. A Null-Register is believed only where its checksum allows"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -K -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "bad checksum in the dummy IP header"; then
 		ok "r1 discarded a Null-Register whose dummy header checksum is wrong"

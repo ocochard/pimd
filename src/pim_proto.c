@@ -1500,9 +1500,18 @@ send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, u
     char   *buf;
     uint8_t *data;
 
-    if (IN_PIM_SSM_RANGE(inner_grp))
-	return TRUE;
-
+    /* A Register for a group in the SSM range used to return here without
+     * building anything, which left RFC 7761 sec. 4.8.1's second half
+     * undone: an RP refuses to forward such a Register, which pimd does,
+     * and SHOULD answer it with a Register-Stop, which is the only thing
+     * that will ever quiet an SSM-unaware DR down.  Told nothing, it kept
+     * encapsulating at the full data rate and the RP kept parsing and
+     * discarding one Register per packet for as long as the source sent.
+     *
+     * The early return dates from when pimd itself might have registered
+     * an SSM group; send_pim_register() refuses to build one now, so the
+     * only Registers this can answer are somebody else's.
+     */
     IF_DEBUG(DEBUG_PIM_REGISTER)
 	logit(LOG_INFO, 0, "Send PIM REGISTER STOP from %s to router %s for src = %s and group = %s",
 	      inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)),
@@ -2364,6 +2373,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	num_j_srcs_tmp = num_j_srcs;
 	while (num_j_srcs_tmp--) {
 	    GET_ESADDR(&esaddr, data);
+
+	    /* An SSM group has no shared tree to lift (S,G) prunes off, so
+	     * there is nothing here to look for: RFC 7761 sec. 4.8.1 rule 4
+	     * makes the (*,G) macros NULL for one.  See the Join arm below.
+	     */
+	    if (IN_PIM_SSM_RANGE(group))
+		break;
+
 	    if ((esaddr.flags & USADDR_RP_BIT) && (esaddr.flags & USADDR_WC_BIT)) {
 		if (!rpentry || rpentry->address != esaddr.src_addr)
 		    break;
@@ -2388,6 +2405,31 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		continue;
 
 	    s_flags = esaddr.flags;
+
+	    /* RFC 7761 sec. 4.8.1 rule 4: a router MUST NOT forward packets
+	     * based on (*,G) state for a group in the SSM range, and the
+	     * (*,G) macros are NULL there.  pimd never builds such state of
+	     * its own -- add_leaf() picks (S,G) inside the range and
+	     * join_or_prune() refuses to send for a (*,G) in it -- but the
+	     * receive path had no range test at all, so a Join(*,G) naming
+	     * the right RP built one, and calc_oifs() merges a (*,G)'s
+	     * joined_oifs into every (S,G) of the group.  That RP is the
+	     * invented 169.254.0.1 an SSM range is given, which no router
+	     * that learned its RP set from the BSR would name, and any
+	     * router that maps SSM groups to an RP of its own would.
+	     *
+	     * The RP bit is what marks the two entry kinds rule 4 is about,
+	     * (*,G) with the WC bit beside it and (S,G,rpt) without; an
+	     * (S,G) entry carries neither and is what SSM is made of.
+	     */
+	    if (IN_PIM_SSM_RANGE(group) && (s_flags & USADDR_RP_BIT)) {
+		IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		    logit(LOG_NOTICE, 0, "Ignoring a shared tree Prune for SSM group %s from %s on %s",
+			  inet_fmt(group, s2, sizeof(s2)),
+			  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		continue;
+	    }
+
 	    if (!(s_flags & (USADDR_WC_BIT | USADDR_RP_BIT))) {
 		/* (S,G) prune sent toward S */
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
@@ -2522,6 +2564,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	    s_flags = esaddr.flags;
 	    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+
+	    /* Rule 4 again, and this is the arm it is really about: the one
+	     * above refuses a Prune that would have taken such state away,
+	     * this one refuses to build it.  See the Prune loop for why the
+	     * RP bit is the test.
+	     */
+	    if (IN_PIM_SSM_RANGE(group) && (s_flags & USADDR_RP_BIT)) {
+		IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		    logit(LOG_NOTICE, 0, "Ignoring a shared tree Join for SSM group %s from %s on %s",
+			  inet_fmt(group, s2, sizeof(s2)),
+			  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		continue;
+	    }
+
 	    if ((s_flags & USADDR_WC_BIT) && (s_flags & USADDR_RP_BIT)) {
 		/* (*,G) Join toward RP.  RFC 7761 sec. 4.5.1: "If the RP in
 		 * the message does not match RP(G), the Join(*,G) should be

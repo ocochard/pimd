@@ -56,10 +56,10 @@ Bootstrap that deleted a configured RP, and S5, the any-source report for an
 SSM group -- each closed with the scenario its own note named.  Several are not
 blackbox-testable at all, and say so: a five-second latency or a startup race
 cannot be told from a slow lab.  The group that wanted a message pimd will
-not send is gone too: `test/pimsend.c` builds one PIM message with any field
-set to anything and sends it once, the whole packet format section is closed
-and asserted by the `crafted` scenario of `test/freebsd-lab.sh`, and S3 and
-S4 of the SSM section are now an assertion rather than a tool away.
+not send is gone entirely: `test/pimsend.c` builds one PIM message with any
+field set to anything and sends it once, and the `crafted` scenario of
+`test/freebsd-lab.sh` closes and asserts the whole packet format section as
+well as S3 and S4 of the SSM one.
 
 
 Input validation and trust
@@ -515,14 +515,21 @@ Sec. 4.8.1 is six rules that override normal PIM-SM for a group in the SSM
 range, and the last three of them exist for one reason, which the section
 states: an SSM-unaware router may still send (\*,G) and (S,G,rpt)
 Join/Prunes, or Registers, for an SSM group, and a conformant router has to
-refuse to act on them.  pimd keeps both rules about what it sends itself.
-What follows is the two rules about what arrives that it does not keep, S3
-and S4; the IGMP side of the same problem, S5, which RFC 4604 owns rather
-than this spec; and what it costs that pimd has no SSM-specific state and
-invents an RP for every SSM group instead, S1 and S2.  S1 is the one to read
-first: the RP pimd manufactures for an SSM group is what decides `i_am_rp()`
-in S2 and what a Join has to name in S4, so the shape of all three follows
-from it.
+refuse to act on them.  pimd keeps all of them now.  The two rules about
+what arrives were S3, a Register for an SSM group dropped without the
+Register-Stop that is the only thing which quiets an SSM-unaware DR down,
+and S4, a (\*,G) or (S,G,rpt) Join/Prune for one acted on; both are fixed,
+and `crafted` in `test/freebsd-lab.sh` asserts them with messages
+`test/pimsend.c` builds, neither pimd nor the EOS of
+`test/freebsd-interop.sh` being willing to send one.  The IGMP side of the
+same problem, S5, is fixed too and belonged to RFC 4604 rather than to this
+spec.
+
+What is left is what it costs that pimd has no SSM-specific state and
+invents an RP for every SSM group instead: S1 and S2.  S1 is the one to read
+first, because the RP pimd manufactures is what decides `i_am_rp()` in S2 --
+and it was what a crafted Join had to name to reach S4 at all, which is how
+that one is asserted.
 
 **S1.  Every SSM group is given an RP that does not exist.**  An SSM group
 has no RP and the code wants one anyway, so pimd manufactures one, twice
@@ -595,46 +602,6 @@ out" read the other way round.  Effort: small -- the same range test that
 instead.  Test: none.  `ssm` in `test/freebsd-lab.sh` has R1 as the first hop
 router for the reported sources, so the assertion is a `pimctl show mrt` on R1
 that does not name the register vif in the oifs of an SSM (S,G).*
-
-**S3.  A Register for an SSM group is never answered with a Register-Stop.**
-Sec. 4.8.1 has an RP refuse to forward such a Register and SHOULD have it
-answer with a Register-Stop, which is the only thing that will ever quiet an
-SSM-unaware DR down.  `receive_pim_register()` does the first half and calls
-`send_pim_register_stop()` for the second (`src/pim_proto.c:986-997`), in the
-same branch it uses for a Register whose inner addresses are malformed.  The
-call does nothing: `send_pim_register_stop()` returns TRUE before building
-anything when the inner group is in the SSM range (`src/pim_proto.c:1432`).
-So the legacy DR is told nothing, keeps encapsulating at the full data rate,
-and the RP keeps parsing and discarding one Register per packet for as long as
-the source sends.
-*Check: sec. 4.8.1, `doc/rfc7761.txt:5681`.  Effort: small, and it is a
-deletion: the early return dates from when pimd itself might have sent a
-Register for an SSM group, which `:1192` now prevents on the sending side.
-Test: none, and none is easy -- it needs a router that registers an SSM group,
-which neither pimd nor the EOS in `test/freebsd-interop.sh` will do.  A
-hand-built Register is the realistic way to assert it.*
-
-**S4.  A (\*,G) Join/Prune for an SSM group is acted on.**  Rule four says a
-router MUST NOT forward packets based on (\*,G) state for an SSM group and
-that the (\*,G) macros are NULL there.  pimd never builds such state on its
-own -- `add_leaf()` picks (S,G) for a group in the range (`src/route.c:368`)
-and `join_or_prune()` refuses to send for a (\*,G) in it
-(`src/pim_proto.c:1463`) -- but the receive path has no range test at all.
-The only thing standing between a legacy router's Join(\*,G) for 232.1.1.1
-and a (\*,G) entry is the
-RP match of sec. 4.5.1 (`src/pim_proto.c:2389`, against the `rp_match()` at
-`:2209`), and for an SSM group that answers with the 169.254.0.1 of S1, so
-what it takes is a Join naming that address.  A router that learned its RP
-from the BSR will not; a crafted one, or an implementation that maps SSM
-groups to a real RP of its own, will.  From there `calc_oifs()` merges the
-(\*,G)'s `joined_oifs` into every (S,G) of the group
-(`src/route.c:887-896`), which is the forwarding rule four forbids.
-*Check: sec. 4.8.1, `doc/rfc7761.txt:5676`, with the last paragraph of the
-section at `:5689` for whose messages these are.  Effort: small -- refuse the
-(\*,G) and (S,G,rpt) arms of `receive_pim_join_prune()` for a group in the
-range, which is where the two rules pimd already keeps are enforced on the
-sending side.  Test: none, and pimd cannot generate the message, so this one
-wants either a hand-built Join or an implementation that still sends them.*
 
 Timers
 ------
