@@ -44,9 +44,10 @@ which the `rpt-bit` sub-case of `assert-lan` asks for.  A `KNOWN` line in a
 run is therefore a regression, not an expected result.
 
 Every entry below ends with a `Test:` note saying what reproduces it, and
-every one of them now says `none` -- M4's fixed half is the only thing any
-test covers.  The point of writing it down is that the gap is visible from
-this list rather than only from grepping the labs.  Where an entry names a
+all but two of them say `none`: M4's fixed half is covered, and so is the
+half of A3 that pimd can be held to, by the `register-filter` scenario of
+`test/freebsd-lab.sh`.  The point of writing it down is that the gap is
+visible from this list rather than only from grepping the labs.  Where an entry names a
 scenario without asserting anything, it is because that scenario builds the
 topology the deviation needs and stops short of the assertion; those are the
 cheap ones to close, and R1 and S5 are the two cheapest on the
@@ -55,8 +56,12 @@ scenario that already exists.  Several are not
 blackbox-testable at all, and say so: a five-second latency or a startup race
 cannot be told from a slow lab.  A larger group wants a message pimd will
 not send -- every entry of the packet format section and three of the SSM
-one -- and the way to reach all of them at once is a packet sender in
-`test/`, which is what the head of that section argues for.
+one.  The way to reach all of them is `test/pimsend.c`, which exists now:
+it builds one PIM message with any field set to anything and sends it once.
+The `crafted` scenario of `test/freebsd-lab.sh` is its first user, and what
+it guards is what a lab of pimds could not reach.  The entries below are
+still untested, but they are no longer untestable, and each is now an
+assertion rather than a tool away.
 
 
 Input validation and trust
@@ -816,10 +821,14 @@ be steered into reading the right bytes as the wrong thing.
 
 None of these can be reproduced by a lab of pimds, because the message that
 reproduces them is one pimd will not build.  That is the same wall S3, S4
-and S5 of the SSM section ran into, and it is the argument for a small
-packet sender in `test/`, the way `test/igmpv3.c` is one for IGMP: one tool
-that emits a single crafted PIM message would make most of this section and
-half of the SSM one assertable, and nothing else will.
+and S5 of the SSM section ran into, and `test/pimsend.c` is the way through
+it, the way `test/igmpv3.c` is for IGMP: it emits a single crafted PIM
+message -- any type, and every field that can be got wrong exposed as an
+option -- and then stops existing, so what the router does next is the
+router's own behaviour.  The `crafted` scenario of `test/freebsd-lab.sh`
+shows the shape an assertion here takes, including the positive control
+each one needs: a parser that refuses everything passes every "was it
+refused?" test ever written.
 
 **F1.  The PIM version is not checked, and neither is the destination
 address.**  Sec. 4.9 closes with one sentence asking for both: a message

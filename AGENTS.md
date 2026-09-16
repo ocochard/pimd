@@ -50,6 +50,15 @@ router), `two.sh`/`three.sh` (chains), `rp.sh` (RP + SPT switchover), `shared.sh
 (redundant paths). Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
 runtime `pimctl` dumps.
 
+`test/pimsend.c` is the PIM-socket counterpart of `test/igmpv3.c`: it builds one PIM
+message of any type, with every field that can be got wrong exposed as an option (version,
+type nibble, checksum, group and source mask lengths, address family and encoding type, the
+B and Z bits, holdtime), sends it once and exits. Most of `doc/rfc7761-compliance.md` cannot
+be reproduced by a lab of pimds at all -- two pimds share one reading of the wire, so a field
+pimd encodes wrongly it also decodes wrongly and the lab stays green -- and this is the way
+past that. The `crafted` scenario is its first user; write the positive control beside every
+"was it refused?" assertion, since a parser that refuses everything passes all of them.
+
 `ssm.sh` is the exception to "asserts on forwarded traffic": it asserts on the IGMPv3 (S,G)
 membership state one router holds, and drives it with `test/igmpv3.c`, which sends one membership
 report and exits. Use that tool, not a kernel join, whenever a test needs a router to age a
@@ -63,7 +72,7 @@ it at a `--enable-netlink` build instead, so the same scenarios run over `netlin
 it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
-`renumber`, `register-filter`); see the script
+`renumber`, `register-filter`, `crafted`); see the script
 header for the topologies and which upstream issue each one pins down. `-s SLOT` (0-31) puts every
 host-visible name the lab creates -- jails, epairs, bridges, interface group, work directory -- in a
 namespace of its own, so several labs run side by side, and `-j JOBS` runs that many scenarios at
@@ -87,7 +96,10 @@ the replacement), `alias` the only one where an interface carries more than one 
 one that reaches the alias branch of `config_vifs_from_kernel()` and the only one whose sender sits
 on a subnet the VIF does not own, `ifgone` and `renumber` the only ones about what pimd does
 when an interface it has a VIF on changes underneath it -- destroyed in the first, given a new
-address in the second -- and `register-filter` the only one about who an RP will accept a Register
+address in the second -- `crafted` the only one whose messages pimd did not build, driving
+`test/pimsend.c` to assert what the parsers refuse (mask lengths wider than an address, a
+unicast Bootstrap from a host that has sent no Hello) with a positive control beside each,
+and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the
 Register-Stop and the DR's Register-Suppression timer rather than by the RP's table, which holds

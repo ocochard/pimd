@@ -128,6 +128,25 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
+- New `test/pimsend.c`, the counterpart of `test/igmpv3.c` on the PIM
+  socket: it builds one PIM message -- hello, join, prune, bootstrap,
+  candrp, register, regstop or assert -- sends it once and exits, with
+  every field that can be got wrong exposed as an option: the version, the
+  type nibble, the checksum, group and source mask lengths, the address
+  family and encoding type bytes, the B and Z bits of an encoded group, and
+  the holdtime.  Most of what `doc/rfc7761-compliance.md` lists could not
+  be reproduced by a lab of pimds at all, two pimds sharing one reading of
+  the wire, so a field pimd encodes wrongly it also decodes wrongly and the
+  lab stays green
+- New `crafted` scenario in `test/freebsd-lab.sh`, the first user of it and
+  a regression test for the two fixes below: a Join/Prune and a Bootstrap
+  carrying a mask length no address has are refused, a unicast Bootstrap
+  from a host that has sent no Hello is refused, and the RP set survives
+  both.  Each has its positive control beside it -- the same Join correctly
+  formed, and the same Bootstrap once its sender has said Hello -- because
+  a parser that refuses everything passes every assertion about refusing.
+  ED1 sends them, a host on a subnet the router has an interface on, which
+  is the position RFC 7761 sec. 6.2 is about and all an attacker needs
 - New `register-filter` scenario in `test/freebsd-lab.sh` for
   `register-accept-from`: the RP is given a prefix that does not cover the
   address the DR registers from, which is its address on the sender's LAN
@@ -171,7 +190,11 @@ pimd on all routers in the same domain.  See issue #93 for details.
   or any of its group ranges is wider than an address, the hash mask length
   before anything is committed or forwarded; a Candidate-RP-Advertisement
   skips such a group prefix and keeps the rest.  `MASKLEN_TO_MASK()` itself
-  now clamps, so a call site that forgets is defined rather than undefined
+  now clamps, so a call site that forgets is defined rather than undefined.
+  The Bootstrap checks run in a pass of their own, before the BSR address,
+  priority and fragment tag are committed and before the message is
+  forwarded: the loop that reads the group ranges runs last of all, so a
+  message rejected there had already moved the BSR and been flooded onward
 - Ignore a unicast Bootstrap from a router no Hello has been received from,
   RFC 7761 sec. 6.2.  Join/Prune and Assert already asked, and a Bootstrap
   sent to ALL-PIM-ROUTERS has to come from the RPF neighbour toward the BSR,

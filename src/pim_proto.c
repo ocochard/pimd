@@ -4270,6 +4270,7 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 {
     uint8_t               *data;
     uint8_t               *max_data;
+    uint8_t               *scan;
     uint16_t              new_bsr_fragment_tag;
     uint8_t               new_bsr_hash_masklen;
     uint8_t               new_bsr_priority;
@@ -4468,6 +4469,50 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	/* TODO: check I am really the DR */
     }
 
+    max_data = (uint8_t *)msg + len;
+    /* TODO: XXX: this 22 is HARDCODING!!! Do a bunch of definitions
+     * and make it stylish!
+     */
+    min_datalen = 22;
+
+    /* Walk the group sets before acting on any of them.  Everything past
+     * this point changes state the rest of the domain can see -- the BSR
+     * address, priority and fragment tag, the segmented RP list -- and
+     * forwards the message onward, while the loop that actually reads the
+     * sets runs last of all.  Rejecting a malformed set down there would
+     * mean having already moved the BSR and flooded the message, so one
+     * mask length wider than an address would cost a domain its RP set
+     * whichever way the check went.  Refuse it here, where refusing is
+     * still free.
+     */
+    scan = data;
+    while (scan + min_datalen <= max_data) {
+	uint8_t frag_rp_count;
+
+	if (scan[PIM_ENCODE_MSKLEN_OFF] > PIM_MAX_MSKLEN) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Ignoring Bootstrap from %s, group mask length %u is wider than an address",
+		      inet_fmt(src, s1, sizeof(s1)), scan[PIM_ENCODE_MSKLEN_OFF]);
+
+	    return FALSE;
+	}
+
+	/* RP count, fragment RP count, reserved, then that many records */
+	scan += PIM_ENCODE_GRP_ADDR_LEN;
+	frag_rp_count = scan[1];
+	scan += sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
+
+	if ((size_t)(max_data - scan) < frag_rp_count * PIM_BOOTSTRAP_RP_RECORD_LEN) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Ignoring Bootstrap from %s, %u RP record(s) run past the end",
+		      inet_fmt(src, s1, sizeof(s1)), frag_rp_count);
+
+	    return FALSE;
+	}
+
+	scan += frag_rp_count * PIM_BOOTSTRAP_RP_RECORD_LEN;
+    }
+
     if (cand_rp_flag == TRUE) {
 	/* If change in the BSR address, schedule immediate Cand-RP-Adv */
 	/* TODO: use some random delay? */
@@ -4489,12 +4534,6 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 		 PIM_BOOTSTRAP, len - sizeof(pim_header_t));
     }
 
-    max_data = (uint8_t *)msg + len;
-    /* TODO: XXX: this 22 is HARDCODING!!! Do a bunch of definitions
-     * and make it stylish!
-     */
-    min_datalen = 22;
-
     if (new_bsr_fragment_tag != curr_bsr_fragment_tag || new_bsr_address != curr_bsr_address) {
 	/* Throw away the old segment */
 	delete_rp_list(&segmented_cand_rp_list, &segmented_grp_mask_list);
@@ -4512,23 +4551,11 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	GET_BYTE(curr_frag_rp_count, data);
 	GET_HOSTSHORT(reserved_short, data);
 
-	/* The group range this set is about, and the one value in a
-	 * Bootstrap that a mask length still decides.  Left unchecked, a
-	 * masklen of 200 for 224.0.0.0 shifted by the count modulo 32 and
-	 * installed 224.0.0.0/8, so a range nobody advertised could
-	 * displace the domain's RP set.  The whole message goes rather than
-	 * this one set: the sets are not fixed width, the RP records that
-	 * follow are what say where the next one starts, and a length this
-	 * wrong is no basis for walking past them.
+	/* The mask length is the pre-pass's, checked before any of this was
+	 * committed; left unchecked it shifted by the count modulo 32, so a
+	 * masklen of 200 for 224.0.0.0 installed 224.0.0.0/8 and a range
+	 * nobody advertised displaced the domain's RP set.
 	 */
-	if (curr_group_addr.masklen > PIM_MAX_MSKLEN) {
-	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
-		logit(LOG_NOTICE, 0, "Truncating Bootstrap from %s, group mask length %u is wider than an address",
-		      inet_fmt(src, s1, sizeof(s1)), curr_group_addr.masklen);
-
-	    return FALSE;
-	}
-
 	MASKLEN_TO_MASK(curr_group_addr.masklen, curr_group_mask);
 	if (curr_rp_count == 0) {
 	    delete_grp_mask(&cand_rp_list, &grp_mask_list,

@@ -54,7 +54,7 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Fifteen scenarios are built on that topology.  Most differ only in which
+# Sixteen scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
@@ -486,6 +486,46 @@
 #               the entry in doc/rfc7761-compliance.md stays open.
 #               Takes about 2 minutes.
 #
+#   crafted     The rpt topology with nothing forwarded, and the only
+#               scenario whose messages pimd did not build.  Every other
+#               test here has pimd at both ends, so the only messages pimd
+#               ever parses are messages pimd wrote: a field it refuses to
+#               encode wrongly is a field nothing here can test it on, and
+#               most of doc/rfc7761-compliance.md is out of reach for that
+#               reason.  test/pimsend.c is the way past it -- one PIM
+#               message, any field set to anything, sent once -- and this
+#               is its first user.
+#
+#               ED1 sends them, which is the point: a host on a subnet the
+#               router has a VIF on is the position RFC 7761 sec. 6.2 is
+#               about, and all an attacker needs.  A second address on
+#               ED1's interface gives the scenario a stranger and a
+#               neighbour on the same link at the same time, which is what
+#               tells a check that refuses a stranger from one that
+#               refuses everybody.
+#
+#               Two things are guarded, both fixed and both otherwise
+#               unreachable.  The mask length bound of sec. 4.9.1, in the
+#               Join/Prune and Bootstrap parsers: MASKLEN_TO_MASK()
+#               (src/pimd.h) shifts by 32 - masklen, so a byte above 32
+#               shifted by a negative amount, which is undefined behavior
+#               and was in practice a group range nobody advertised over
+#               the domain's RP set.  And sec. 6.2's "SHOULD NOT accept
+#               protocol messages from a router from which it has not yet
+#               received a valid Hello message", in the unicast branch of
+#               receive_pim_bootstrap() -- reachable only while a router
+#               knows no dynamic RP, which is where RFC 5059 sec. 3.5.2
+#               puts it and why step 4 kills the BSR and waits.
+#
+#               Every refusal has its positive control beside it: the same
+#               Join correctly formed, the same Bootstrap once its sender
+#               has said Hello.  Without them a parser that dropped
+#               Join/Prunes altogether would pass the whole scenario, and
+#               nothing else in this file sends one that R1 acts on.  This
+#               is also the only scenario that asks for pim_jp debugging,
+#               see set_scenario(): the lines it reads are behind it.
+#               Takes about 3 minutes, most of it step 4.
+#
 # Scenarios run in parallel, several labs at a time on one host: -s picks
 # a slot, 0 to 31, and every name the lab puts on the host carries it, so
 # slot 3's jails, epairs, bridges and work directory are not slot 0's.
@@ -534,7 +574,7 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifgone", "renumber", "register-filter", or "all" for run.
+# "ifgone", "renumber", "register-filter", "crafted", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -638,10 +678,11 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifgone renumber register-filter"
+	   ifgone renumber register-filter crafted"
 SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias ssm ifgone renumber ssm-range"
+		     rpt register-filter alias crafted ssm ifgone renumber
+		     ssm-range"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -663,10 +704,15 @@ fi
 # pimd debug flags, e.g. DEBUG="-l debug -d mrt,rpf" or "-l debug -d all"
 DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap"}
 
+# Kept so set_scenario() can put it back: "run all" walks the scenarios in
+# one shell, and crafted needs a subsystem the rest do not.
+DEBUG_DEFAULT=$DEBUG
+
 PIMD="$PIMD_SRC/src/pimd"
 PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
 IGMPV3="$WORKDIR/igmpv3"
+PIMSEND="$WORKDIR/pimsend"
 # mping joins the group it sends to, which would give the (S,G) entries a
 # leaf and hide the bug the keepalive scenario is after.  That scenario
 # needs a source that only sends, so it gets its own little sender.
@@ -850,6 +896,31 @@ SSMR_GROUP=${SSMR_GROUP:-239.232.1.1}
 SSMR_OLD_GROUP=${SSMR_OLD_GROUP:-232.1.1.1}
 SSMR_DEFAULT_RANGE=232.0.0.0/8
 
+# crafted: the addresses and the one bad byte that scenario is built on.
+#
+# $CRAFT_ADDR is a second address on ED1's interface, so the sender can be
+# a stranger on the link at the same time as $SRC_ADDR is a neighbour on
+# it; $R1_LAN_ADDR is what R1 answers to there, which a Join has to name as
+# its upstream neighbour to be acted on rather than merely overheard.
+#
+# $CRAFT_BADLEN is above 32 and below 256, which is every value the byte can
+# hold that no IPv4 address has.  200 rather than 33 because the two fail
+# differently once the shift wraps -- 33 yielded 128.0.0.0/1 and 200
+# yielded 224.0.0.0/8 -- and neither is more wrong than the other.
+#
+# $CRAFT_PRIO has to beat R2's BSR priority of 1, or the crafted Bootstrap
+# is dropped as less preferred before it reaches anything under test.
+CRAFT_ADDR=${CRAFT_ADDR:-10.0.1.99}
+CRAFT_SRC=${CRAFT_SRC:-10.0.1.10}
+R1_LAN_ADDR=${R1_LAN_ADDR:-10.0.1.1}
+CRAFT_BADLEN=${CRAFT_BADLEN:-200}
+CRAFT_PRIO=${CRAFT_PRIO:-200}
+
+# How long R1's dynamic RP may take to age out once the BSR is killed.  The
+# cand-RP holdtime is twice r2.conf's advertisement interval of 10s, and the
+# bootstrap timeout is longer, so this is the bootstrap timer's business.
+CRAFT_RP_WAIT=${CRAFT_RP_WAIT:-180}
+
 # register-filter: the two "register-accept-from" prefixes R2 is given, in
 # the order it gets them, and the address R1 actually registers from.
 #
@@ -1002,7 +1073,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1034,6 +1105,20 @@ set_scenario() {
 		ROUTERS=$DEFAULT_ROUTERS
 		EPAIRS=$DEFAULT_EPAIRS
 		ED2_IF=$DEFAULT_ED2_IF
+	fi
+
+	# What crafted asserts on is what the Join/Prune parser refuses, and
+	# every one of those lines sits behind IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	# (src/pim_proto.c) -- as does the one that says a well-formed Join
+	# was accepted, so without this the scenario's positive control fails
+	# beside its negative ones and says nothing about either.  The rest of
+	# the file does not ask for pim_jp, which is the noisiest subsystem
+	# here: every router logs every Join it sends and receives, once per
+	# Join/Prune period, for the whole run.
+	if [ "$SCENARIO" = crafted ]; then
+		DEBUG="$DEBUG_DEFAULT,pim_jp"
+	else
+		DEBUG=$DEBUG_DEFAULT
 	fi
 
 	# gif-tunnel-staticrp copies the issue down to the addresses: the
@@ -1339,6 +1424,7 @@ check_req() {
 	[ -x "$PIMCTL" ] || die "$PIMCTL not found, build it first"
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
 	[ -f "$PIMD_SRC/test/igmpv3.c" ] || die "$PIMD_SRC/test/igmpv3.c not found"
+	[ -f "$PIMD_SRC/test/pimsend.c" ] || die "$PIMD_SRC/test/pimsend.c not found"
 	# ip_mroute is a module on GENERIC and a jail may not kldload
 	${SUDO} kldload -n ip_mroute 2>/dev/null || \
 		die "cannot load ip_mroute.ko, kernel has no multicast routing"
@@ -2064,6 +2150,10 @@ start() {
 	cc -O2 -o "$IGMPV3" "$PIMD_SRC/test/igmpv3.c" || \
 		die "failed building $PIMD_SRC/test/igmpv3.c"
 
+	print "Building pimsend (crafted PIM message generator) ..."
+	cc -O2 -o "$PIMSEND" "$PIMD_SRC/test/pimsend.c" || \
+		die "failed building $PIMD_SRC/test/pimsend.c"
+
 	print "Disabling multicast loopback on the host (restored by the last stop) ..."
 	disable_mcast_loop
 
@@ -2735,6 +2825,7 @@ check() {
 	ifgone)     check_ifgone; return $? ;;
 	renumber)   check_renumber; return $? ;;
 	register-filter) check_register_filter; return $? ;;
+	crafted)    check_crafted; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -3062,6 +3153,190 @@ register_oif_gone() {
 regf_acl_is() {
 	pimctl "$1" show status 2>/dev/null | \
 		grep -q "Register accept list *: *$2"
+}
+
+
+# crafted: the checks that refuse a malformed message, driven by
+# test/pimsend.c.  Every other scenario in this file has pimd on both ends,
+# so the only messages pimd ever parses are messages pimd built, and a field
+# it refuses to encode wrongly is a field nothing here can test it on.
+# doc/rfc7761-compliance.md says so at the head of its packet format
+# section, and this is the scenario that answers it.
+#
+# The topology is rpt's, with nobody joining the group and the traffic never
+# started: nothing is forwarded here, the assertions are all about what R1
+# does with a message handed to it.  ED1 is the sender, because ED1 is a
+# host on a subnet R1 has a VIF on -- which is exactly the position
+# RFC 7761 sec. 6.2 is about, and all an attacker needs.
+#
+# $CRAFT_ADDR is a second address on ED1 rather than its own, so that the
+# scenario has one address that has said Hello and one that has not, at the
+# same time, on the same link.  That pair is what tells a check that refuses
+# a stranger from one that refuses everybody.
+#
+# What is guarded here, both fixed and both otherwise unreachable from a lab
+# of pimds:
+#
+#   - the mask length bound of RFC 7761 sec. 4.9.1, in the Join/Prune and
+#     Bootstrap parsers.  MASKLEN_TO_MASK() (src/pimd.h) shifts by
+#     32 - masklen, so a byte above 32 shifted by a negative amount:
+#     undefined behavior, and in practice a group range nobody advertised
+#     over the domain's RP set.
+#   - sec. 6.2's "SHOULD NOT accept protocol messages from a router from
+#     which it has not yet received a valid Hello message", in the unicast
+#     branch of receive_pim_bootstrap().
+#
+# Each has its positive control beside it.  A check that refuses everything
+# passes every "was it refused?" assertion ever written, and the labs this
+# file is made of cannot notice: nothing else here sends a Join or a
+# Bootstrap that R1 would act on.
+check_crafted() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The two addresses this scenario is built on.  Only the first says
+	# Hello, so from here on R1 holds one neighbour on the link and one
+	# stranger, both able to reach it.
+	jrun ed1 ifconfig "${EP}101a" inet "$CRAFT_ADDR/24" alias 2>/dev/null || \
+		die "failed adding $CRAFT_ADDR to ${EP}101a on ed1"
+	craft "$SRC_ADDR" hello -H 105
+	if wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		ok "r1 took $SRC_ADDR as a neighbour from one crafted Hello"
+	else
+		fail "r1 never saw the crafted Hello, pimsend is not reaching it"
+		return 1
+	fi
+	if has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 has $CRAFT_ADDR as a neighbour and nothing sent a Hello for it"
+		return 1
+	else
+		ok "$CRAFT_ADDR is on the link and is nobody's neighbour"
+	fi
+
+	print "2. A Join/Prune carrying a mask length no address has is refused"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -M "$CRAFT_BADLEN"
+	if wait_for 10 logged r1 "source mask length $CRAFT_BADLEN is not 32"; then
+		ok "r1 refused a Join whose source mask length is not 32"
+	else
+		fail "r1 acted on a source mask length of $CRAFT_BADLEN, sec. 4.9.1 says ignore the message"
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -m "$CRAFT_BADLEN"
+	if wait_for 10 logged r1 "group mask length $CRAFT_BADLEN is wider than an address"; then
+		ok "r1 refused a Join whose group mask length is wider than an address"
+	else
+		fail "r1 acted on a group mask length of $CRAFT_BADLEN"
+	fi
+
+	# The control.  Without it every assertion above is satisfied by a
+	# parser that drops Join/Prunes altogether.
+	print "3. And the same Join, correctly formed, is acted on"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC"
+	if wait_for 10 logged r1 "Received PIM JOIN/PRUNE from $SRC_ADDR"; then
+		ok "r1 accepted a well-formed Join from $SRC_ADDR"
+	else
+		fail "r1 ignored a well-formed Join too, the checks refuse everything"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The unicast branch is reachable only while this router knows no
+	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the
+	# RP set to a router that has just come up -- so R2 has to stop being
+	# the BSR and R1's RP set has to age out before any of it can be
+	# asked.  That is the state a booting router is in, which is the
+	# state the entry is about.
+	print "4. R1 is put back where a booting router starts, with no RP"
+	dprint "stopping the BSR and waiting for R1's dynamic RP to expire ..."
+	[ -f "$WORKDIR/r2.pid" ] && ${SUDO} pkill -9 -F "$WORKDIR/r2.pid" 2>/dev/null
+	if wait_for "$CRAFT_RP_WAIT" no_dynamic_rp r1; then
+		ok "r1 holds no dynamic RP, the unicast branch is reachable"
+	else
+		fail "r1 still holds $(pimctl r1 show rp 2>/dev/null | awk '$4 != "Forever" && NF { print $2 }' | tr '\n' ' ')after ${CRAFT_RP_WAIT}s"
+		return 1
+	fi
+
+	print "5. A unicast Bootstrap from a stranger on the LAN is refused"
+	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
+	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
+	if wait_for 10 logged r1 "Ignoring unicast Bootstrap from $CRAFT_ADDR"; then
+		ok "r1 refused the RP set of a router it has had no Hello from"
+	else
+		fail "r1 took the RP set from $CRAFT_ADDR, which never said Hello"
+	fi
+	if has_rp r1 "$CRAFT_ADDR"; then
+		fail "r1 installed $CRAFT_ADDR as RP anyway"
+	else
+		ok "r1's RP set is untouched"
+	fi
+
+	# The other half, and the reason the check is safe: the DR that
+	# unicasts an RP set has sent its Hello first, on the same path,
+	# immediately before.  Here that Hello is sent explicitly.
+	print "6. The same Bootstrap, once its sender has said Hello, is taken"
+	craft "$CRAFT_ADDR" hello -H 105
+	if wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		ok "r1 took $CRAFT_ADDR as a neighbour"
+	else
+		fail "r1 never saw the Hello from $CRAFT_ADDR"
+		return 1
+	fi
+	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
+	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
+	if wait_for 15 has_rp r1 "$CRAFT_ADDR"; then
+		ok "r1 learned RP $CRAFT_ADDR from the unicast Bootstrap"
+	else
+		fail "r1 refused it even from a neighbour, RFC 5059 sec. 3.5.2 cannot work"
+		return 1
+	fi
+
+	# Now that R1 holds an RP from a sender it trusts, a malformed
+	# Bootstrap from that same sender must cost it nothing.  Rejecting
+	# one after the BSR address, the fragment tag and the segmented RP
+	# list have been committed -- which is where the group ranges are
+	# read -- would hand any neighbour the domain's RP set for the price
+	# of one bad byte.
+	print "7. A malformed Bootstrap from that neighbour changes nothing"
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 \
+	      -m "$CRAFT_BADLEN" -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
+	if wait_for 10 logged r1 "Ignoring Bootstrap from $CRAFT_ADDR, group mask length"; then
+		ok "r1 refused a group range wider than an address"
+	else
+		fail "r1 installed a group range whose mask length is $CRAFT_BADLEN"
+	fi
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
+	      -M "$CRAFT_BADLEN" -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
+	if wait_for 10 logged r1 "hash mask length $CRAFT_BADLEN is wider than an address"; then
+		ok "r1 refused a hash mask length wider than an address"
+	else
+		fail "r1 accepted a hash mask length of $CRAFT_BADLEN"
+	fi
+	if has_rp r1 "$CRAFT_ADDR"; then
+		ok "r1 still holds the RP it had, both were refused before anything moved"
+	else
+		fail "r1 lost its RP set to a malformed Bootstrap"
+	fi
+
+	result
+}
+
+# Send one crafted PIM message from ED1, sourced at $1
+craft() {
+	addr=$1
+	shift
+	jrun ed1 "$PIMSEND" -i "$addr" "$@" || \
+		die "failed sending a crafted $1 from $addr"
+}
+
+# Has router $1 no RP left but the static ones config.c installs for the
+# SSM range?  "show rp" prints Forever in the holdtime column for those.
+no_dynamic_rp() {
+	! pimctl "$1" show rp 2>/dev/null | grep -q "Dynamic"
 }
 
 # Issue #251: R1 is the DR for the directly connected source and the RP
@@ -4715,7 +4990,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same fifteen either way, ordered by how long they
+		# The same sixteen either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH
