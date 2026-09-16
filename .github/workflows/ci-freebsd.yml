@@ -73,7 +73,7 @@ jobs:
             /tmp/inst/sbin/pimctl -u /tmp/pimd.sock kill
 
   lab:
-    # The vnet jail lab: fourteen PIM-SM scenarios over real jails, epairs
+    # The vnet jail lab: fifteen PIM-SM scenarios over real jails, epairs
     # and bridges, asserting on forwarded traffic and on the kernel MFC in
     # each vnet.  It is the only regression test that exercises the RPF
     # lookups in routesock.c and the kern.c BSD branches, rather than merely
@@ -129,8 +129,8 @@ jobs:
             # Already root in the VM, so the script's sudo wrapper is empty.
             #
             # Two scenarios at a time, each in a lab slot of its own.  The
-            # numbers in freebsd-lab.sh's header -- 4m35s at -j 4, and all
-            # fourteen at once under a load average of one -- were measured
+            # numbers in freebsd-lab.sh's header -- 4m35s at -j 4, and the
+            # whole list at once under a load average of one -- were measured
             # on a 16-core host, and this runner has four vCPUs.  Every
             # assertion in the lab is a poll against a timeout, so on an
             # unmeasured machine a job count well under the core count is

@@ -1074,10 +1074,22 @@ literal reading of sec. 4.4.2, and the kernel does it first: FreeBSD's
 packet to `if_simloop()` on the register vif
 (`/usr/src/sys/netinet/ip_mroute.c`), and Linux's `ipmr` is built to the
 same model.  Neither asks whether the outer destination is an RP address,
-let alone who sent it.  So for a group whose shared tree is up -- which is
-the only case where the forged packet has anywhere to go -- sec. 6.1.2's
+let alone who sent it.  So for a group whose shared tree is up, sec. 6.1.2's
 first attack still lands, and every userspace filter pimd could grow lands
 after it.
+
+"Whose shared tree is up" is a weaker condition than it sounds, and the
+scenario named below is what showed it.  A group nobody has joined is not
+safe: `send_pim_register()` (`src/pim_proto.c:1250-1254`) fires the Join/Prune
+timer of the group entry as the DR registers, so the DR itself joins the
+tree it is registering to, and by the time the second Register arrives the
+RP has a (\*,G) for the inner packets to land on.  Measured on the lab, an
+RP refusing every Register from the only DR sending them still held both a
+(\*,G) and an (S,G) for the group, the second built by
+`process_cache_miss()` (`src/route.c`) out of the decapsulated packets on
+the register vif.  What the setting keeps off the RP is the entry the
+*Register* would have made and the Register-Stop; the entry the traffic
+makes arrives anyway.
 
 That leaves the honest answer being a packet filter for IP protocol 103 in
 front of the RP, which `pimd.conf.5` now says.  It is worth writing down
@@ -1089,10 +1101,20 @@ provided; the attack that outlives it is sec. 6.1.2, `:7352`, and the note
 that makes the decapsulation the kernel's is sec. 4.4.2, `:2420`.  Effort:
 out of reach from here -- it wants a kernel that filters before it
 decapsulates, or a `MRT_*` interface that hands the Register to the daemon
-first.  Test: none.  Asserting the half that is fixed is within reach of
-`test/freebsd-lab.sh`, whose `rpt` scenario has an RP and a registering DR:
-a `register-accept-from` that excludes the DR, and a `pimctl show mrt` on
-the RP with no (S,G) in it.*
+first.  Test: `register-filter` in `test/freebsd-lab.sh`, which covers the
+half that is fixed and counts the half that is not.  R2 is the RP and is
+given a `register-accept-from` that does not cover the address R1 registers
+from -- the DR's address on the sender's LAN, sec. 4.4.2's `outer.src`, and
+not the one the RP has in its neighbour table -- so every Register is
+refused; then the prefix is replaced with one that does cover it and the
+same stream is sent again.  The two halves are compared on the
+Register-Stop, and on whether the DR still has the register vif in the oif
+list of its (S,G).  Not on the RP's table: this entry used to propose "a `pimctl show mrt` on the RP with no
+(S,G) in it" and that assertion cannot be had, for the reason given above.
+The scenario asserts the state is there instead, so that a kernel which
+ever filtered before decapsulating fails it and this entry gets rewritten,
+and reads `netstat -sp pim` in the RP's vnet for the count of Registers its
+kernel opened while pimd refused them.*
 
 **A4.  Nothing bounds the state a stranger can make pimd hold.**  Sec. 6.4
 names two attacks, packets to many group addresses and a flood of forged

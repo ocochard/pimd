@@ -128,6 +128,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
+- New `register-filter` scenario in `test/freebsd-lab.sh` for
+  `register-accept-from`: the RP is given a prefix that does not cover the
+  address the DR registers from, which is its address on the sender's LAN
+  and not the one the RP has in its neighbour table, and then one that
+  does.  The two are told apart by the Register-Stop and by the DR's
+  Register-Suppression timer.  Not by the RP's routing table, which holds
+  entries for the group either way: the kernel decapsulates a Register
+  before pimd is handed it, and the registering DR joins the shared tree
+  itself, so the inner packets have somewhere to land even where nobody
+  has joined the group.  The scenario asserts that, and counts the
+  Registers the RP's kernel opened while pimd refused them, so the limit
+  is measured rather than described
 - `test/freebsd-lab.sh` and `test/freebsd-interop.sh` run several
   scenarios at a time.  `-s SLOT`, 0 to 31, names everything a lab puts on
   the host after its slot -- jails, epairs, bridges, interface group, work

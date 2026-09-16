@@ -63,7 +63,7 @@ it at a `--enable-netlink` build instead, so the same scenarios run over `netlin
 it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
-`renumber`); see the script
+`renumber`, `register-filter`); see the script
 header for the topologies and which upstream issue each one pins down. `-s SLOT` (0-31) puts every
 host-visible name the lab creates -- jails, epairs, bridges, interface group, work directory -- in a
 namespace of its own, so several labs run side by side, and `-j JOBS` runs that many scenarios at
@@ -85,9 +85,15 @@ different interfaces, `ssm` and `ssm-range` are the only ones about IGMP state r
 forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asserts both halves of
 the replacement), `alias` the only one where an interface carries more than one address, so the only
 one that reaches the alias branch of `config_vifs_from_kernel()` and the only one whose sender sits
-on a subnet the VIF does not own, and `ifgone` and `renumber` the only ones about what pimd does
+on a subnet the VIF does not own, `ifgone` and `renumber` the only ones about what pimd does
 when an interface it has a VIF on changes underneath it -- destroyed in the first, given a new
-address in the second.
+address in the second -- and `register-filter` the only one about who an RP will accept a Register
+from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
+does not cover the address the DR registers from and then one that does, told apart by the
+Register-Stop and the DR's Register-Suppression timer rather than by the RP's table, which holds
+entries for the group either way because the kernel decapsulates before pimd is handed the message.
+That last part is A3 of `doc/rfc7761-compliance.md`, and the scenario asserts it rather than working
+around it.
 Assertions that reproduce a deviation report `KNOWN` through `xfail()` instead of failing the run,
 and turn into an `ok` once pimd is fixed; `shared-lan-spt` has this file's only one, for the assert
 RPT bit of RFC 7761 4.6.1, and it now reports `ok` -- the deviation it guards was fixed in

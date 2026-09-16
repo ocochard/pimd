@@ -54,7 +54,7 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Thirteen scenarios are built on that topology.  Most differ only in which
+# Fifteen scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
@@ -422,6 +422,70 @@
 #               -- and another interface's is dropped in its place.  Takes
 #               about 50s.
 #
+#   register-filter
+#               The rpt topology with nobody joining the group, and the
+#               only scenario about who an RP will accept a Register from:
+#               RFC 7761 sec. 6.2's "option to restrict the range of
+#               source addresses from which it accepts
+#               Register-encapsulated packets", which pimd.conf spells
+#               "register-accept-from".  It is A3 in
+#               doc/rfc7761-compliance.md, and this covers the half of A3
+#               that pimd can be held to.
+#
+#               R2 is given a prefix that does not cover the address R1
+#               registers from, so every Register is refused, and then the
+#               prefix is replaced with one that does and the same stream
+#               is sent again.  Both halves are needed: an RP that refuses
+#               correctly and an RP that never heard a Register at all
+#               leave the same absence behind, so the first half on its own
+#               is an assertion a broken lab passes.
+#
+#               What the two halves are compared on is the Register-Stop
+#               and whether the DR still encapsulates, not the RP's
+#               table.  doc/rfc7761-compliance.md used to propose the
+#               table -- "a pimctl show mrt on the RP with no (S,G) in it"
+#               -- and it cannot be made to say that.  The RP holds
+#               entries for the group either way, and assertion 7 asserts
+#               that it does, because it is A3 rather than a flaw in the
+#               setup: the kernel decapsulates first, the inner packets
+#               reach the register vif, and process_cache_miss()
+#               (src/route.c) treats them as the traffic they are.  A
+#               shared tree is there for them to land on even with nobody
+#               listening, because send_pim_register() fires the
+#               Join/Prune timer of the group entry as it registers, so
+#               the DR itself joins the tree it is registering to.
+#
+#               Which address the filter matches is the subtle part and
+#               the reason for the prefixes chosen.  send_pim_register()
+#               (src/pim_proto.c) sources the Register from the VIF the
+#               source is directly connected to, so R1 registers from
+#               10.0.1.1 on the sender's LAN, not from the 10.0.12.1 that
+#               the RP has in its own neighbour table.  Matching the
+#               former is right -- sec. 6.2 restricts by the source
+#               address of the Register and sec. 4.4.2 names that
+#               outer.src, "the DR's address" -- and a DR with several
+#               addresses has several, only one of which the RP ever
+#               sees.  The denying prefix is 10.0.12.0/24 for that
+#               reason: it covers the address an operator is likelier to
+#               reach for and not the one that decides, so a pimd
+#               matching the wrong address, or matching nothing at all,
+#               fails here rather than passing.
+#
+#               Nobody joins the group, which keeps R3 and the receiver
+#               out of the RP's table and the scenario down to the two
+#               routers it is about.  It is not what makes the table
+#               readable -- nothing does.
+#
+#               "netstat -sp pim" in R2's vnet is where the packet half of
+#               A3 is counted: pim_input() (sys/netinet/ip_mroute.c) bumps
+#               that counter and hands the inner packet to the register
+#               vif before the daemon is given the header, so the count
+#               rises for every Register pimd refuses.  That is why
+#               pimd.conf.5 points an operator who needs the packet
+#               stopped at a packet filter for IP protocol 103, and why
+#               the entry in doc/rfc7761-compliance.md stays open.
+#               Takes about 2 minutes.
+#
 # Scenarios run in parallel, several labs at a time on one host: -s picks
 # a slot, 0 to 31, and every name the lab puts on the host carries it, so
 # slot 3's jails, epairs, bridges and work directory are not slot 0's.
@@ -429,9 +493,9 @@
 # a vnet jail having an interface namespace and a forwarding cache of its
 # own.  "-j N run all" does the bookkeeping: N scenarios at a time, each
 # in a slot of its own, longest first, each one's output printed whole
-# when it ends.  Measured on a 16-core host, 4m35s at -j 4 and 4m11s with
-# all fourteen at once, against the half hour they take one after
-# another.  The two are close because keepalive is a floor no job count
+# when it ends.  Measured on a 16-core host, 4m35s at -j 4 and 4m11s at
+# -j 14, which was the whole list when it was taken, against the half hour
+# they take one after another.  The two are close because keepalive is a floor no job count
 # moves: it has to outlive PIM_DATA_TIMEOUT, so it runs 240s whatever
 # else is happening.
 #
@@ -470,7 +534,7 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifgone", "renumber", or "all" for run.
+# "ifgone", "renumber", "register-filter", or "all" for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -574,10 +638,10 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifgone renumber"
+	   ifgone renumber register-filter"
 SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt alias ssm ifgone renumber ssm-range"
+		     rpt register-filter alias ssm ifgone renumber ssm-range"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -786,6 +850,27 @@ SSMR_GROUP=${SSMR_GROUP:-239.232.1.1}
 SSMR_OLD_GROUP=${SSMR_OLD_GROUP:-232.1.1.1}
 SSMR_DEFAULT_RANGE=232.0.0.0/8
 
+# register-filter: the two "register-accept-from" prefixes R2 is given, in
+# the order it gets them, and the address R1 actually registers from.
+#
+# $REGF_DENY covers R1's address on the link to the RP and not the one it
+# registers from, and picking it that way is the point.  send_pim_register()
+# (src/pim_proto.c) sources the Register from the VIF the *source* is
+# directly connected to, so what the RP matches against its list is
+# $REGF_SENDER, on the sender's LAN, and not the 10.0.12.1 that the
+# neighbour table of every router on the path shows.  An operator who reads
+# the two addresses the other way round writes a filter that denies nothing
+# and one that denies everything, and this scenario is shaped so that either
+# mistake in pimd shows up as a failure rather than as a run that passes.
+REGF_DENY=${REGF_DENY:-10.0.12.0/24}
+REGF_ACCEPT=${REGF_ACCEPT:-10.0.1.0/24}
+REGF_SENDER=${REGF_SENDER:-10.0.1.1}
+
+# Packets ED1 sends in each half, one per second.  Nothing here has to
+# outlive a timer, so this is only long enough to leave no doubt that the
+# stream ran while the filter was in force.
+REGF_PKTS=${REGF_PKTS:-20}
+
 # ifgone: the link that is destroyed under R1, named from both ends
 # because an epair can only be destroyed from the jail that owns an end,
 # and both ends of this one live in jails.  IFGONE_KEPT is the address on
@@ -917,7 +1002,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1409,6 +1494,50 @@ write_configs() {
 		# R3: last hop router for the receiver LAN
 		ssm-range $SSMR_RANGE
 		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = register-filter ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router and DR for $SRC_ADDR, so the only
+		# router here that ever sends a Register
+		EOF
+
+		# The candidacies are the ones every rpt scenario uses and
+		# the last line is the whole difference: $REGF_DENY is a
+		# prefix R1 has an address out of and does not register
+		# from, see REGF_DENY above.
+		#
+		# The SPT interval is cut from the 100s default for the
+		# reason rp-lasthop cuts it, and here it decides an
+		# assertion rather than a measurement.  Once the RP accepts
+		# the Register it answers from the MRTF_WC arm of
+		# receive_pim_register() (src/pim_proto.c), which sends a
+		# Register-Stop only for an empty oif list -- and the list
+		# is not empty, the DR having joined the shared tree as it
+		# registered.  What does send one is the MRTF_SPT arm, so
+		# the Register-Stop waits on the switch to the shortest path
+		# tree, taken only from age_routes() gated on
+		# pim_spt_threshold_timer.  At the default it lands inside
+		# or after the second stream depending on timer phase:
+		# observed both ways, one run answering in a second and the
+		# next taking 41.
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point, refusing every
+		# Register that reaches it
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		spt-threshold packets 0 interval 10
+		register-accept-from $REGF_DENY
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: in the domain with nothing to do.  Nobody joins the
+		# group here, which is what leaves the RP's table holding
+		# the Register's work and nobody else's, see
+		# check_register_filter()
 		EOF
 		return
 	fi
@@ -2605,6 +2734,7 @@ check() {
 	alias)      check_alias; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	renumber)   check_renumber; return $? ;;
+	register-filter) check_register_filter; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -2702,6 +2832,236 @@ check() {
 		pimctl "$r" show pim detail 2>&1 | tail -40 || true
 	done
 	return 1
+}
+
+
+# Does router $1 hold an (S,G) for source $2 and group $3?  "show mrt"
+# prints one row per entry, the source in the first column and "ANY" there
+# for a (*,G), so this is the (S,G) half of has_mrt() and does not match a
+# shared tree entry for the same group.
+has_sg() {
+	pimctl "$1" show mrt 2>/dev/null | \
+		awk -v s="$2" -v g="$3" '$1 == s && $2 == g { found = 1 } END { exit !found }'
+}
+
+# How many PIM Registers the kernel in $1's vnet has taken in, out of
+# netstat(1).  pim_input() (sys/netinet/ip_mroute.c) counts one here, and
+# hands the inner packet to if_simloop() on the register vif, before the
+# daemon is given its copy of the header -- so this is what arrived and was
+# decapsulated, whatever pimd then made of it.  The counter is per vnet,
+# pimstat being a VNET_PCPUSTAT, so it is this jail's own.
+#
+# Both halves of the pattern are load bearing.  netstat writes "1 data
+# register message received" and "2 data register messages received", and
+# the RP that accepts a Register stops the DR after the first one, so a
+# plural-only match reads zero on exactly the run that should show one.
+# The trailing anchor keeps out the "... received on wrong iif" line, which
+# is a superstring of this one.
+registers_rcvd() {
+	jrun "$1" netstat -sp pim 2>/dev/null | \
+		awk '/data register messages? received$/ { print $1; exit }'
+}
+
+# Let ED1 send to the group with nobody listening.  mping counts replies and
+# exits non-zero when it gets none, which here is the expected outcome.
+regf_send() {
+	jrun ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$REGF_PKTS" \
+		-w $((REGF_PKTS + 20)) "$GROUP" >"$WORKDIR/sender.log" 2>&1 || true
+}
+
+# register-filter: the Register filter of RFC 7761 sec. 6.2, which is A3 in
+# doc/rfc7761-compliance.md.  R2 is the RP and starts with a
+# "register-accept-from" that does not cover the address R1 registers from,
+# so every Register it sends is refused; then the prefix is replaced with one
+# that does cover it and the same traffic is sent again.  The second half is
+# there because the first on its own proves nothing: a router that never
+# registered, or an RP that never heard it, leaves exactly the same empty
+# table as a filter that is working.
+#
+# The two halves are compared on the Register-Stop, and on whether the DR
+# still has the register vif in the oif list of the entry.  Not on the RP's
+# table: A3's own Test note
+# proposed "a pimctl show mrt on the RP with no (S,G) in it" and that cannot
+# be had.  The RP holds entries for the group whether it accepted the
+# Register or refused it, because the kernel decapsulates first -- and a
+# shared tree is waiting for the inner packets even with nobody listening,
+# send_pim_register() (src/pim_proto.c) firing the Join/Prune timer of the
+# group entry as it registers, so the DR joins the tree it registers to.
+# Assertion 7 asserts that state rather than working around it: it is A3,
+# and a kernel that ever filtered before decapsulating should fail there and
+# have the entry rewritten.
+#
+# Nobody joins the group all the same, which keeps R3 and the receiver out
+# of the RP's table and the run down to the two routers it is about.
+check_register_filter() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# Before a packet moves: a pimd that parsed the keyword and threw the
+	# prefix away would refuse nothing and pass every assertion below by
+	# accident.  dump_reg_acl() (src/config.c) prints the list only when
+	# there is one, so the line existing is half the answer.
+	print "2. The RP has the filter, and the domain has the RP"
+	if pimctl r2 show status 2>/dev/null | grep -q "Register accept list *: *$REGF_DENY"; then
+		ok "r2: accepting Registers from $REGF_DENY and nowhere else"
+	else
+		fail "r2: 'show status' has no 'Register accept list : $REGF_DENY'"
+		return 1
+	fi
+	if wait_for 90 has_rp r1 "$RP_ADDR"; then
+		ok "r1 learned RP $RP_ADDR, so it has somewhere to register"
+	else
+		fail "r1 never learned RP $RP_ADDR (BSR/cand-RP path)"
+		return 1
+	fi
+
+	print "3. The source sends and the DR encapsulates"
+	dprint "sending $REGF_PKTS packets to $GROUP with nobody listening ..."
+	regf_send
+	if has_sg r1 "$SRC_ADDR" "$GROUP"; then
+		ok "r1 has ($SRC_ADDR,$GROUP), the entry it registers for"
+	else
+		fail "r1 has no ($SRC_ADDR,$GROUP), the sender never reached its DR"
+		return 1
+	fi
+	# The register vif in the oif list is what a DR encapsulating to the RP
+	# looks like from the outside: process_cache_miss() (src/route.c) puts
+	# PIMREG_VIF there for a directly connected source whose RP is somebody
+	# else, and every packet then leaves by it.  Asked of the entry rather
+	# than of the log, because the "Send PIM REGISTER" line sits inside the
+	# MRTF_NEW arm of send_pim_register() and a cache miss has already
+	# cleared that flag by the time the first Register goes out.
+	if [ "$(route_oifs r1 "$SRC_ADDR" "$GROUP" | cut -c1)" = "o" ]; then
+		ok "r1 forwards ($SRC_ADDR,$GROUP) out the register vif"
+	else
+		fail "r1 has no register vif in the oifs of ($SRC_ADDR,$GROUP), it never encapsulated"
+		return 1
+	fi
+
+	print "4. The RP refuses every one of them"
+	if logged r2 "PIM register from $REGF_SENDER: sender not in the register-accept-from list"; then
+		ok "r2 refused Registers from $REGF_SENDER, outside $REGF_DENY"
+	else
+		fail "r2 logged no refusal for $REGF_SENDER, the filter let them through"
+	fi
+
+	# The address the RP matched is the one this scenario is shaped
+	# around: R1 has 10.0.12.1 on the link to the RP, inside $REGF_DENY,
+	# and registers from $REGF_SENDER, outside it.  A pimd that matched
+	# the wrong one accepts here and assertion 6 is what says so.
+	if logged r2 "PIM register from 10.0.12.1"; then
+		fail "r2 matched R1's address on the RP link, not the one it registered from"
+	else
+		ok "r2 matched the Register's own source address"
+	fi
+
+	print "5. The kernel opened them regardless, which is what A3 is about"
+	rcvd=$(registers_rcvd r2)
+	rcvd=${rcvd:-0}
+	if [ "$rcvd" -gt 0 ]; then
+		ok "r2's kernel took in and decapsulated $rcvd Register(s) pimd refused"
+	else
+		fail "r2's kernel counted no Registers at all, nothing reached the RP"
+		return 1
+	fi
+
+	print "6. And the RP answers nothing"
+	# Withheld on purpose: answering a sender outside the list tells a
+	# forger it found the RP, see receive_pim_register() (src/pim_proto.c).
+	if logged r1 "Received PIM_REGISTER_STOP"; then
+		fail "r1 got a Register-Stop, the RP answered a sender it had refused"
+	else
+		ok "r1 got no Register-Stop back"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# A3 itself, and the reason this scenario does not assert an empty
+	# table on the RP the way doc/rfc7761-compliance.md once suggested it
+	# could.  The RP holds entries for the group although it refused every
+	# Register that named it: the kernel counted in assertion 5 handed the
+	# inner packets to the register vif, and process_cache_miss()
+	# (src/route.c) made of them what it makes of any traffic arriving on
+	# an incoming interface it has a route for.  A kernel that filtered
+	# before decapsulating would fail this, and A3 would be the entry that
+	# needed rewriting, not the scenario.
+	print "7. The state the filter cannot refuse is there all the same"
+	if has_mrt r2 "$GROUP"; then
+		ok "r2 holds $(pimctl r2 show mrt 2>/dev/null | awk -v g="$GROUP" '$2 == g { print $1 }' | tr '\n' ' ')for $GROUP, built from the decapsulated packets"
+		dprint "A3: the filter refuses the state a Register makes, never the packet"
+	else
+		fail "r2 has no $GROUP entry at all, the kernel no longer decapsulates a refused Register"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# Everything above is an absence, and an absence is what a lab that
+	# quietly did nothing also produces.  The same three routers, the same
+	# stream, one prefix changed.
+	print "8. The prefix is replaced with one that covers the sender"
+	sed "s|^register-accept-from .*|register-accept-from $REGF_ACCEPT|" \
+		"$WORKDIR/r2.conf" > "$WORKDIR/r2.conf.new" && \
+		mv "$WORKDIR/r2.conf.new" "$WORKDIR/r2.conf" || \
+		die "failed rewriting $WORKDIR/r2.conf"
+	pimctl r2 restart >/dev/null 2>&1 || die "failed reloading pimd on r2"
+	if wait_for 60 regf_acl_is r2 "$REGF_ACCEPT"; then
+		ok "r2: accepting Registers from $REGF_ACCEPT after the reload"
+	else
+		fail "r2: 'show status' still reads '$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register accept list *: *//p')'"
+		return 1
+	fi
+	# restart() (src/main.c) tears the RP and BSR state down with
+	# everything else, so R1 has to be given time to learn the RP again
+	# before it has anywhere to register to.
+	if wait_for 90 has_rp r1 "$RP_ADDR"; then
+		ok "r1 learned RP $RP_ADDR again"
+	else
+		fail "r1 never got the RP set back after r2 reloaded"
+		return 1
+	fi
+
+	print "9. The same Registers are now acted on"
+	dprint "sending another $REGF_PKTS packets to $GROUP ..."
+	regf_send
+	if wait_for 60 logged r1 "Received PIM_REGISTER_STOP"; then
+		ok "r1 got its Register-Stop"
+	else
+		fail "r1 got no Register-Stop, the RP accepted but never answered"
+		return 1
+	fi
+	# The DR acting on it, which is what tells a Register-Stop that arrived
+	# from one that was merely logged, and the mirror of assertion 3:
+	# suppress_register() (src/pim_proto.c) prunes PIMREG_VIF, so the vif
+	# that was in the oif list while the RP refused leaves it once the RP
+	# answers.  Asked of the oif list and not of the Register-Suppression
+	# timer beside it, which is seeded with a random half of
+	# PIM_REGISTER_SUPPRESSION_TIMEOUT and can run out inside a poll.
+	if wait_for 30 register_oif_gone r1 "$SRC_ADDR" "$GROUP"; then
+		ok "r1 dropped the register vif from ($SRC_ADDR,$GROUP), it stopped encapsulating"
+	else
+		fail "r1 still forwards ($SRC_ADDR,$GROUP) out the register vif, the Register-Stop changed nothing"
+	fi
+
+	result
+}
+
+# For wait_for(): has the register vif left the oif list of ($2,$3) on $1?
+# Position 0 of the "Outgoing oifs" map is PIMREG_VIF, see route_oifs().
+register_oif_gone() {
+	[ "$(route_oifs "$1" "$2" "$3" | cut -c1)" != "o" ]
+}
+
+# The register-accept-from list r2 is running with, for wait_for(): a
+# reload has to be given time to land, and "show status" is where the
+# running list shows.
+regf_acl_is() {
+	pimctl "$1" show status 2>/dev/null | \
+		grep -q "Register accept list *: *$2"
 }
 
 # Issue #251: R1 is the DR for the directly connected source and the RP
@@ -4355,7 +4715,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same fourteen either way, ordered by how long they
+		# The same fifteen either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH
