@@ -190,6 +190,18 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Keep the register vif out of the outgoing interfaces of a directly
+  connected source in the SSM range.  RFC 7761 sec. 4.8.1 rule 3 has no
+  Register for such a group and `send_pim_register()` never built one, so
+  nothing went on the wire -- but `process_cache_miss()` added the vif to
+  any (S,G) this router is the DR for unless it was the RP for the group,
+  and for an SSM group the RP is the link-local address pimd invents, never
+  this router.  Nothing took it back out either: the Register-Stop that
+  prunes it for an ASM source cannot arrive for a group nobody is the RP
+  of.  The kernel therefore raised an upcall for every packet of every such
+  stream and the daemon dropped each one, which is the whole SSM data rate
+  of every directly connected source crossing into user space and back, on
+  the one router in the domain guaranteed to see all of it
 - Answer a Register for a group in the SSM range with a Register-Stop, the
   second half of RFC 7761 sec. 4.8.1's rule for one.  pimd refused to
   forward such a Register, which is the first half, and called

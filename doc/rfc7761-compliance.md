@@ -525,11 +525,18 @@ and `crafted` in `test/freebsd-lab.sh` asserts them with messages
 same problem, S5, is fixed too and belonged to RFC 4604 rather than to this
 spec.
 
-What is left is what it costs that pimd has no SSM-specific state and
-invents an RP for every SSM group instead: S1 and S2.  S1 is the one to read
-first, because the RP pimd manufactures is what decides `i_am_rp()` in S2 --
-and it was what a crafted Join had to name to reach S4 at all, which is how
-that one is asserted.
+Rule 3 is kept on both sides now.  `send_pim_register()` never built a
+Register for an SSM group, and S2 was the state that led there: the DR put
+the register vif in the oifs of every directly connected SSM source, because
+the RP it asked about was the invented one of S1 and never itself, and
+nothing took it back out -- the Register-Stop that prunes it for an ASM
+source cannot arrive for a group nobody is the RP of.  The whole SSM data
+rate of those sources crossed into user space to be dropped, on the one
+router guaranteed to see all of it.  `ssm` asserts the oif is absent.
+
+What is left is S1, one entry: that an SSM group carries RP state at all.
+Its dangerous half is closed -- see the entry -- and its remaining half is
+worth reading before anyone estimates it.
 
 **S1.  Every SSM group is given an RP that does not exist.**  An SSM group
 has no RP and the code wants one anyway, so pimd manufactures one, twice
@@ -554,10 +561,17 @@ holdtime is never reached.  Were it ever reached, 90 seconds later
 answer NULL, and `remap_grpentry()` would do the only thing it can with a
 group it cannot map: `delete_grpentry()` (`src/rp.c:745`), freeing every
 (S,G) of the group and every kernel cache entry with it (`src/mrt.c:378`).
-R1 is the way in, and the only one: a Bootstrap carrying the same group
-prefix as the synthesized static RP deletes it through the fragment tag
-collector, and from the next packet on the group is running on a 90-second
-RP that takes the group down with it when it expires.
+R1 was the way in, and the only one: a Bootstrap carrying the same group
+prefix as the synthesized static RP deleted it through the fragment tag
+collector, and from the next packet on the group ran on a 90-second RP that
+would take the group down with it when it expired.  That is closed.  The
+synthesized entry goes in through `parse_rp_address()` like any other
+`rp-address` (`src/config.c:2112`), so `add_static_rp()` marks it and the
+collector leaves it alone, and `crafted` in `test/freebsd-lab.sh` asserts
+exactly that: a well-formed Bootstrap for 232.0.0.0/8 from a real neighbor,
+and the invented RP still there afterwards.  The second copy in
+`find_route()` stays unreachable, which is what keeps its 90-second
+holdtime from mattering.
 
 So what is wrong here is not a live teardown, it is that an SSM group
 carries RP state at all: a fictional address in `pimctl show rp`, a
@@ -566,42 +580,21 @@ implementation of the same fiction behind it with a timer the first one does
 not have.
 *Check: sec. 4.8.1, `doc/rfc7761.txt:5685`, is the rule pimd is on the far
 side of -- it MAY optimize the (\*,G) state out for SSM, and pimd instead
-gives an SSM group more RP state than an ASM group has.  Effort: medium, and
-it is the TODO's answer rather than a smaller one: keep SSM groups out of the
-RP machinery, which deletes both copies.  Test: none.  The first copy is
-visible in any run -- `pimctl show rp` on any router lists 169.254.0.1 -- and
-reaching the second needs R1 first, which no scenario builds.*
-
-**S2.  The DR puts the register vif in the oifs of an SSM source.**  Rule
-three of sec. 4.8.1 is kept where it is written: `send_pim_register()` returns
-without sending for a group in the SSM range (`src/pim_proto.c:1192`), so
-nothing goes on the wire.  What is not kept is the state that leads there.
-`process_cache_miss()` adds `PIMREG_VIF` to the outgoing interfaces of any
-(S,G) this router is the DR for, gated only on not being the RP for the group
-(`src/route.c:1270-1272`), and for an SSM group the RP it asks about is either
-the invented 169.254.0.1 of S1 or whichever RP covers 232.0.0.0/8 -- never
-this router.  `calc_oifs()` does not filter it out afterwards, so the kernel
-MFC is installed with the register vif among the oifs and the kernel sends an
-`IGMPMSG_WHOLEPKT` upcall for every packet of the stream, which
-`send_pim_register()` then drops.  Nothing ever takes the vif back out: the
-Register-Stop that prunes it for an ASM source (`src/pim_proto.c:1343`) cannot
-arrive for a group nobody is the RP of.  The cost is the whole SSM data rate
-of every directly connected source crossing into user space and back, on the
-one router in the domain that is guaranteed to see all of it.  On a
-kernel-encapsulation build (`--enable-kernel-encap`) it would be more than a
-cost: `k_chg_mfc()` hands that kernel `mrt->group->rpaddr` as the address to
-encapsulate to (`src/kern.c:536`), which for an SSM group is the invented RP
-or whichever real one covers the range, so the Register `send_pim_register()`
-refuses to build would be built below it instead.  That is reasoning about a
-patched kernel this tree cannot test, and is here as a caution for whoever
-fixes the oif, not as a claim about a build anybody runs.
-*Check: sec. 4.8.1, `doc/rfc7761.txt:5673`.  pimd meets the rule as written;
-this is the implementation note under it, sec. 4.8.1's "a router MAY optimize
-out" read the other way round.  Effort: small -- the same range test that
-`send_pim_register()` already makes, made at the point the oif is added
-instead.  Test: none.  `ssm` in `test/freebsd-lab.sh` has R1 as the first hop
-router for the reported sources, so the assertion is a `pimctl show mrt` on R1
-that does not name the register vif in the oifs of an SSM (S,G).*
+gives an SSM group more RP state than an ASM group has.  Effort: larger than
+it looks, and larger than this entry used to say.  The fix is the TODO's --
+keep SSM groups out of the RP machinery -- and what stands in the way is that
+`find_route()` returns NULL for a group `rp_grp_match()` cannot answer
+(`src/mrt.c:221-228`), so deleting the invented RP stops SSM working
+altogether rather than cleaning it up.  Giving an SSM group no RP means every
+reader of `grp->active_rp_grp` and `grp->rpaddr` needs an answer for "there
+is none": 35 and 27 uses respectively, across `mrt.c`, `rp.c`, `route.c`,
+`pim_proto.c`, `ipc.c` and `debug.c`, plus eleven `rp_match()` call sites.
+That is the SSM-specific state the TODO names, and it is a structural change
+to `grpentry_t` rather than a deletion.  What is left to gain is also
+smaller than it was: the teardown is closed, S2 is fixed, and what remains is
+a fictional address in `pimctl show rp` and a second implementation behind it
+that nothing reaches.  Test: the half that is closed is asserted by
+`crafted`; the rest has nothing to assert until the state exists.*
 
 Timers
 ------

@@ -101,7 +101,8 @@ address in the second -- `crafted` the only one whose messages pimd did not buil
 `doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules
 about what arrives (no shared tree for a group in the range, a Register for one answered
-rather than dropped), and a unicast Bootstrap from a host that has sent no Hello -- with a positive control beside each,
+rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents for it
+alone, and a unicast Bootstrap from a host that has sent no Hello -- with a positive control beside each,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that

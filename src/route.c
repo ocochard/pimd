@@ -1267,8 +1267,24 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	    return;
 
 	mrt->flags &= ~MRTF_NEW;
-	/* set PIMREG_VIF as outgoing interface ONLY if I am not the RP */
-	if (!i_am_rp(mrt->group->rpaddr))
+
+	/* Set PIMREG_VIF as outgoing interface only where a Register could
+	 * follow: not when I am the RP, and not for a group in the SSM
+	 * range, which RFC 7761 sec. 4.8.1 rule 3 has no Register for at
+	 * all.  send_pim_register() already refuses to build one, so
+	 * nothing ever went on the wire -- but the vif went into the oifs
+	 * regardless, the RP asked about for an SSM group being the
+	 * invented link-local one or whatever covers the range and never
+	 * this router.
+	 *
+	 * Nothing took it back out either: the Register-Stop that prunes it
+	 * for an ASM source cannot arrive for a group nobody is the RP of.
+	 * So the kernel raised an IGMPMSG_WHOLEPKT upcall for every packet
+	 * of every directly connected SSM source, and send_pim_register()
+	 * dropped each one -- the whole SSM data rate crossing into user
+	 * space and back, on the one router guaranteed to see all of it.
+	 */
+	if (!i_am_rp(mrt->group->rpaddr) && !IN_PIM_SSM_RANGE(group))
 	    PIMD_VIFM_SET(PIMREG_VIF, mrt->joined_oifs);
 	change_interfaces(mrt,
 			  mrt->incoming,

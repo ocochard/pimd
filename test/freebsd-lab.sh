@@ -991,6 +991,10 @@ CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
 # and be believed.  See mrt.c, which installs it.
 SSM_GROUP=${SSM_GROUP:-232.1.1.1}
 SSM_VIRTUAL_RP=${SSM_VIRTUAL_RP:-169.254.0.1}
+
+# Packets the ssm scenario sends from its first hop router's LAN, only to
+# give that router an (S,G) to look at
+SSM_PKTS=${SSM_PKTS:-6}
 CRAFT_HOLD=${CRAFT_HOLD:-15}
 
 # How long R1's dynamic RP may take to age out once the BSR is killed.  The
@@ -3578,6 +3582,24 @@ check_crafted() {
 	else
 		fail "r1 lost its RP set to a malformed Bootstrap"
 	fi
+
+	# And a well-formed one for the SSM range, which is the way in S1 of
+	# doc/rfc7761-compliance.md describes.  config.c synthesizes a static
+	# RP at $SSM_VIRTUAL_RP for every SSM range in effect, and it lands
+	# on a grp_mask_t of its own: a Bootstrap naming that same prefix
+	# used to stamp the mask with its fragment tag and have the collector
+	# delete the synthesized entry, after which the group ran on the
+	# 90-second RP the second copy in find_route() adds and went down
+	# with it.  Static entries are marked now, so what arrives is kept
+	# beside what was configured.
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 232.0.0.0 -m 8 \
+	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
+	sleep 2
+	if has_static_rp r1 "$SSM_VIRTUAL_RP"; then
+		ok "r1 kept the RP it invents for the SSM range"
+	else
+		fail "a Bootstrap for the SSM range deleted it, and the group now runs on a 90s RP"
+	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
 	# The packet format section of doc/rfc7761-compliance.md, which is
@@ -3813,6 +3835,34 @@ check_ssm() {
 		fail "R3 holds $SSM_V2_GROUP as a source of itself, the v2 report's destination was read as one"
 	else
 		ok "R3 holds no membership whose source is $SSM_V2_GROUP"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# RFC 7761 sec. 4.8.1 rule 3: there is no Register for a group in the
+	# SSM range.  send_pim_register() has always refused to build one, so
+	# nothing went on the wire -- but process_cache_miss() put the
+	# register vif in the oifs of any (S,G) this router is the DR for
+	# unless it was the RP, and for an SSM group the RP is the invented
+	# link-local address of S1, never this router.  Nothing took it back
+	# out either, the Register-Stop that prunes it for an ASM source
+	# never arriving for a group nobody is the RP of, so the kernel
+	# raised an upcall for every packet of the stream and the daemon
+	# dropped each one.
+	#
+	# R1 is the DR for $SSM_SRC1, so a few packets from it are all this
+	# needs; the stream is short because what is asserted is the shape of
+	# the entry and not anything that has to be forwarded.
+	print "7. A directly connected SSM source gets no register vif"
+	jrun ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$SSM_PKTS" \
+		-w $((SSM_PKTS + 10)) "$GROUP" >"$WORKDIR/sender.log" 2>&1 || true
+	if ! wait_for 15 has_sg r1 "$SSM_SRC1" "$GROUP"; then
+		fail "r1 built no ($SSM_SRC1,$GROUP), the stream never reached its DR"
+		return 1
+	fi
+	if [ "$(route_oifs r1 "$SSM_SRC1" "$GROUP" | cut -c1)" = "o" ]; then
+		fail "r1 forwards ($SSM_SRC1,$GROUP) out the register vif, so every packet of it crosses into user space to be dropped"
+	else
+		ok "r1 keeps the register vif out of the oifs of an SSM source"
 	fi
 
 	result
