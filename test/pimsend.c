@@ -107,6 +107,7 @@
 #define PIM_HELLO_GENID			20
 
 #define PIM_REGISTER_NULL_BIT		0x40000000
+#define PIM_BOOTSTRAP_NO_FORWARD	0x80
 #define PIM_ASSERT_RPT_BIT		0x80000000
 
 /* Encoded-Source flags, RFC 7761 sec. 4.9.1 */
@@ -148,6 +149,7 @@ struct opts {
 	int	 nsources;
 	int	 wildcard;		/* a (*,G) entry rather than (S,G) */
 	int	 null_register;
+	int	 no_forward;		/* Bootstrap N bit, RFC 5059 sec. 4.1 */
 	int	 zerosum;		/* leave the dummy header's checksum 0 */
 	int	 rpt;			/* Assert RPT bit */
 	unsigned pref;
@@ -460,6 +462,8 @@ static int usage(int rc)
 		"  -r ADDR    The RP: of a Bootstrap, a candrp, or a (*,G) Join\n"
 		"  -w         Make the Join/Prune a (*,G) rather than an (S,G)\n"
 		"  -N         Make the Register a Null-Register\n"
+		"  -n         Set the Bootstrap No-Forward bit, RFC 5059 sec. 3.5.1:\n"
+		"             the receiver skips the RPF check and does not pass it on\n"
 		"  -0         Leave the Register's inner header checksum zero, which\n"
 		"             sec. 4.9.3 says the RP MUST NOT check\n"
 		"  -p PRIO    Priority: DR, BSR or candidate RP, default 1\n"
@@ -537,7 +541,7 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "0BC:d:E:e:F:f:g:H:h?i:KM:m:Np:P:Rr:s:T:u:V:wZ")) != -1) {
+	while ((c = getopt(argc, argv, "0BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wZ")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
@@ -554,6 +558,7 @@ int main(int argc, char *argv[])
 		case 'M': o.smasklen = num(optarg, "source mask length"); break;
 		case 'm': o.gmasklen = num(optarg, "group mask length");	break;
 		case 'N': o.null_register = 1;				break;
+		case 'n': o.no_forward = 1;				break;
 		case 'P': o.pref = num(optarg, "metric preference");	break;
 		case 'p': o.priority = num(optarg, "priority");		break;
 		case 'R': o.rpt = 1;					break;
@@ -592,7 +597,7 @@ int main(int argc, char *argv[])
 	p = buf;
 	p = put_byte(p, ((o.version & 0xf) << 4) |
 		     ((o.type < 0 ? type : o.type) & 0xf));
-	p = put_byte(p, 0);
+	p = put_byte(p, o.no_forward ? PIM_BOOTSTRAP_NO_FORWARD : 0);
 	p = put_short(p, 0);
 
 	switch (type) {

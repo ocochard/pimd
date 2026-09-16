@@ -1055,6 +1055,75 @@ static int parse_phyint(char *s)
 		logit(LOG_DEBUG, 0, "SCOPED %s/%x", inet_fmt(v_acl->acl_addr, s1, sizeof(s1)), v_acl->acl_mask);
 	    } /* scoped */
 
+	    /* RFC 7761 sec. 6.2: "A PIM router SHOULD provide an option to
+	     * limit the set of neighbors from which it will accept
+	     * Join/Prune, Assert, and Hello messages", by static
+	     * configuration of addresses or by an IPsec SA.  This is the
+	     * first of those.  Without it every router that sends a
+	     * syntactically valid Hello on a subnet pimd has a VIF on
+	     * becomes a neighbor of it, and from there can take the DR
+	     * role, take part in the assert election, and have its Joins
+	     * believed.
+	     *
+	     * Repeatable on one phyint line, like altnet above, and with
+	     * the same "addr/len" or "addr masklen len" spelling.
+	     */
+	    if (EQUAL(w, "accept-nbr-from")) {
+		struct phaddr *pa;
+		uint32_t acl_addr;
+		uint32_t acl_masklen = 0;
+
+		if (EQUAL((w = next_word(&s)), "")) {
+		    WARN("Missing accept-nbr-from prefix for phyint %s", inet_fmt(local, s1, sizeof(s1)));
+		    continue;
+		}
+
+		parse_prefix_len(w, &acl_masklen);
+
+		acl_addr = inet_parse(w, 4);
+		if (acl_addr == 0xffffffff) {
+		    WARN("Invalid accept-nbr-from address '%s'", w);
+		    continue;
+		}
+
+		t = s;
+		if (EQUAL((w = next_word(&s)), "masklen")) {
+		    if (EQUAL((w = next_word(&s)), "") || sscanf(w, "%u", &acl_masklen) != 1) {
+			WARN("Invalid accept-nbr-from masklen for phyint %s", inet_fmt(local, s1, sizeof(s1)));
+			continue;
+		    }
+		} else {
+		    s = t;
+		}
+
+		if (!acl_masklen)
+		    acl_masklen = 32;	/* one router, the common case */
+
+		/* VAL_TO_MASK() shifts by 32 - masklen, the same hazard the
+		 * altnet branch above guards.
+		 */
+		if (acl_masklen > 32) {
+		    WARN("Too large (%u) accept-nbr-from masklen for phyint %s",
+			 acl_masklen, inet_fmt(local, s1, sizeof(s1)));
+		    continue;
+		}
+
+		pa = calloc(1, sizeof(*pa));
+		if (!pa) {
+		    logit(LOG_WARNING, 0, "Out of memory when adding accept-nbr-from");
+		    continue;
+		}
+
+		VAL_TO_MASK(pa->pa_subnetmask, acl_masklen);
+		pa->pa_subnet = acl_addr & pa->pa_subnetmask;
+		pa->pa_next = v->uv_nbr_acl;
+		v->uv_nbr_acl = pa;
+
+		logit(LOG_INFO, 0, "Accepting PIM on %s from %s/%u", v->uv_name,
+		      inet_fmt(pa->pa_subnet, s1, sizeof(s1)), acl_masklen);
+		continue;
+	    } /* accept-nbr-from */
+
 	    if (EQUAL(w, "ttl-threshold") || EQUAL(w, "threshold")) {
 		if (EQUAL((w = next_word(&s)), "")) {
 		    WARN("Missing threshold for phyint %s", inet_fmt(local, s1, sizeof(s1)));

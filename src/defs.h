@@ -450,8 +450,13 @@ extern int		errno;
 	    (i)++;			   \
     };
 
+/* 1U rather than 1: for a mask length of 1 the shift is by 31, which
+ * overflows a signed int (C11 6.5.7p4) on the way to the right answer.
+ * A length of 0 shifts by 32 and is undefined whatever the sign, so every
+ * caller bounds it first -- see accept-nbr-from and altnet in config.c.
+ */
 #define VAL_TO_MASK(x, i) {			\
-	x = htonl(~((1 << (32 - (i))) - 1));	\
+	x = htonl(~((1U << (32 - (i))) - 1));	\
     };
 
 /*
@@ -589,6 +594,7 @@ extern int	set_incoming		(srcentry_t *srcentry_ptr, int srctype);
 extern vifi_t	get_iif			(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr	(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr_on_vif (vifi_t vifi, uint32_t addr);
+extern int	pim_nbr_accepted	(vifi_t vifi, uint32_t addr);
 extern void	recalc_local_members	(vifi_t vifi);
 extern int	add_sg_oif		(mrtentry_t *mrtentry_ptr, vifi_t vifi, uint16_t holdtime, int update_holdtime);
 extern void	add_leaf		(vifi_t vifi, uint32_t source, uint32_t group);

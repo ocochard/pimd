@@ -358,6 +358,14 @@ typedef struct pim_jp_encod_grp_ {
 
 /* Vartious options from PIM messages definitions */
 /* PIM_HELLO definitions */
+/* The No-Forward bit, RFC 5059 sec. 4.1: the top bit of the byte every
+ * other message type calls Reserved.  A Bootstrap carrying it is the quick
+ * refresh of sec. 3.5.1, handed to a router that has just come up: the
+ * receiver skips the RPF check the bit exists to waive, and does not pass
+ * it on.
+ */
+#define PIM_BOOTSTRAP_NO_FORWARD	0x80
+
 #define PIM_HELLO_HOLDTIME              1
 #define PIM_HELLO_HOLDTIME_LEN          2
 #define PIM_HELLO_HOLDTIME_FOREVER      0xffff

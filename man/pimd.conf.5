@@ -145,7 +145,7 @@ or
 For more information, see the description of
 .Cm phyint ,
 below.
-.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc
+.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm accept-nbr-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc
 .Pp
 This setting selects and alters properties of the phyiscal interfaces
 .Nm pimd
@@ -206,6 +206,31 @@ can only create one VIF per interface, so when it finds a second address
 it keeps that subnet as an altnet of the VIF the first one made.  This
 setting is for subnets reached over the interface without an address on
 it, and for overriding the prefix length of one that has.
+.It Cm accept-nbr-from Ar <address[/len]>
+The routers this interface accepts PIM messages from.  RFC 7761 sec. 6.2
+asks for such an option, and without it every router that sends a
+syntactically valid Hello on a subnet
+.Nm pimd
+has an interface on becomes a neighbor of it, and from there can take the
+DR role, take part in the assert election, and have its Joins believed.
+.Pp
+Repeatable on one
+.Cm phyint
+line, and with no length given the address is one router rather than a
+prefix.  An interface with no
+.Cm accept-nbr-from
+accepts every router, which the same section requires of every option of
+this kind, and which is what keeps a half-written filter from black-holing
+a domain.  Refusing a router's Hello is what does the work: a Join/Prune,
+an Assert and a unicast Bootstrap are all refused from a router no Hello
+has been accepted from.
+.Pp
+This is address-based, so it is worth only as much as the addresses on the
+link are: it keeps an unconfigured or misconfigured router out, and keeps
+an attacker to the addresses it can source from.  RFC 7761 sec. 6.3's
+IPsec is the other half, and
+.Nm pimd
+neither installs nor requires a security association.
 .It Cm scoped Ar <network/len>
 Optional scoping of multicast groups.  This allows interfaces to be
 configured as an administrative boundary for the specified group(s).

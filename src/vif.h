@@ -203,6 +203,9 @@ struct uvif {
     struct vif_acl  *uv_acl;	    /* access control list of groups        */
     int		     uv_leaf_timer; /* time until this vif is considrd leaf */
     struct phaddr   *uv_addrs;	    /* Additional subnets on this vif       */
+    struct phaddr   *uv_nbr_acl;    /* Routers we accept PIM from here, RFC
+				     * 7761 sec. 6.2; empty means all of
+				     * them, which that section requires  */
     struct vif_filter *uv_filter;   /* Route filters on this vif	    */
     uint16_t	    uv_hello_timer; /* Timer for sending PIM hello msgs     */
     uint32_t        uv_dr_prio;     /* PIM Hello DR Priority                */

@@ -458,7 +458,14 @@ void send_pim_unicast(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t ds
     pim                = (pim_header_t *)(buf + sizeof(struct ip));
     pim->pim_type      = type;
     pim->pim_vers      = PIM_PROTOCOL_VERSION;
-    pim->pim_reserved  = 0;
+
+    /* The only Bootstrap pimd unicasts is the one receive_pim_hello() sends
+     * a new neighbour, which is sec. 3.5.2's backwards-compatible form of
+     * the sec. 3.5.1 refresh: RFC 5059 has that copy carry the No-Forward
+     * bit, so that the router it is for takes it without an RPF check and
+     * passes it on to nobody.  Every other message writes the byte as zero.
+     */
+    pim->pim_reserved  = (type == PIM_BOOTSTRAP) ? PIM_BOOTSTRAP_NO_FORWARD : 0;
     pim->pim_cksum     = 0;
 
     /*

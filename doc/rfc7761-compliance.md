@@ -58,8 +58,16 @@ blackbox-testable at all, and say so: a five-second latency or a startup race
 cannot be told from a slow lab.  The group that wanted a message pimd will
 not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
-`test/freebsd-lab.sh` closes and asserts the whole packet format section as
-well as S3 and S4 of the SSM one.
+`test/freebsd-lab.sh` closes and asserts the whole packet format section,
+S3 and S4 of the SSM one, R3's No-Forward bit and A1's neighbor list.
+
+What is left divides in two.  R2, M6, M7, M8, T1 through T3 and S1 are state
+pimd does not keep, each a structural change rather than a check: (S,G,rpt)
+entries, a secondary address list, a traffic-driven Keepalive Timer, a
+triggered-message timer finer than the five-second tick, and SSM groups that
+carry no RP.  A3 and A4 are the two that stay open on purpose, one because
+the kernel decapsulates before the daemon is handed anything and the other
+because sec. 6.4 describes rather than prescribes.  No parser entry is left.
 
 
 Input validation and trust
@@ -475,39 +483,6 @@ needs one BSR advertising two prefixes that both cover the group, added in
 that order, which no scenario builds today; `rpt` and `rp-offpath` in
 `test/freebsd-lab.sh` have the BSR to build it on.*
 
-**R3.  The No-Forward bit is neither set nor honoured.**  RFC 5059 sec. 3.5
-has the DR answer a new or rebooting neighbor with a stored Bootstrap, and
-sec. 3.5.1 says that copy SHOULD carry the No-Forward bit, whose whole point
-is that the receiver skips the RPF check on it and does not pass it on.  pimd
-sends that copy (`src/pim_proto.c:287-288`, from `receive_pim_hello()`) as
-a plain unicast Bootstrap, the backwards-compatible form of sec. 3.5.2, and
-writes
-`pim_reserved` as zero like every other message (`src/pim.c:287`, `:397`).  It
-never reads the bit either: `receive_pim_bootstrap()` parses from
-`msg + sizeof(pim_header_t)` onwards and the header byte that carries N is
-not looked at.
-
-Both halves of that go wrong the same way.  A No-Forward Bootstrap from a
-conformant neighbor is put through the RPF check the bit exists to waive, so
-the quick refresh it carries is dropped unless the sender happens to be the
-RPF neighbor toward the BSR; and if it is, the forwarding loop
-(`src/pim_proto.c:4376-4387`) copies the received bytes out of every other
-interface with the bit still set, which tells every router downstream to
-accept it without an RPF check of its own.  The same loop runs for a Bootstrap
-that was unicast to us, which sec. 3.4 says is not forwarded.  What limits the
-damage is the test above it: a unicast Bootstrap is only accepted while this
-router knows no RP but its own static ones, which is pimd's stand-in for
-sec. 3.5's "MUST only be accepted at startup".
-*Check: RFC 5059 sec. 3.5.1, `doc/rfc5059.txt:1239`, and sec. 3.4, `:1142`,
-for what may be forwarded; the bit's place in the header is sec. 4.1,
-`doc/rfc5059.txt:1466`.  Effort: small -- read one bit into the parse, set it
-on the triggered copy, skip the RPF check and the forwarding loop when it is
-set.  Test: none, and pimd cannot produce the message to test against itself,
-which makes `arista-rp` in `test/freebsd-interop.sh` the place for it: the
-Arista is the BSR there, so the Bootstraps on that wire are written by
-somebody else's implementation.*
-
-
 Source-specific multicast
 -------------------------
 
@@ -754,8 +729,11 @@ setting, and A3 below is what that setting cannot reach; a fourth, "a PIM
 router SHOULD NOT accept protocol messages from a router from which it has
 not yet received a valid Hello message", is kept everywhere now that the
 unicast branch of `receive_pim_bootstrap()` asks the neighbor list the way
-the Join/Prune and Assert parsers already did.  That leaves A1, which is not
-kept at all.  A4 is what
+the Join/Prune and Assert parsers already did; and the fifth, the option to
+limit the set of neighbors a router accepts Join/Prune, Assert and Hello
+messages from, is kept as of `accept-nbr-from` in `pimd.conf`.  That is all
+five, and what is left here is A3, which is the limit of the third rather
+than a gap in it, and A4, which is what
 sec. 6.4 describes and nothing in pimd bounds.  The first section of this file is the
 neighbouring one: it holds the entries where a parser could be walked off the
 end, V1 through V6, and this one holds the entries where a well-formed
@@ -769,29 +747,6 @@ a security association the operator installs in the kernel for 224.0.0.13 and
 for the RP's address, with no code in pimd either way.  Nothing here prevents
 it, and nothing here has been tested with it -- neither lab configures an SA,
 so "pimd works under IPsec" is an untested claim rather than a false one.
-
-**A1.  There is no way to say which neighbors are acceptable.**  Sec. 6.2
-opens by asking for one: "A PIM router SHOULD provide an option to limit the
-set of neighbors from which it will accept Join/Prune, Assert, and Hello
-messages", by static configuration of addresses or by an IPsec SA.  `pimd.conf`
-has no such keyword -- `parse_option()` (`src/config.c:558`) is the whole
-vocabulary, and the only address-scoped things in it are `altnet`, which
-widens what an interface owns, and `scoped`, which filters group ranges out of
-the data plane.  Every router that sends a syntactically valid Hello on a
-subnet pimd has a vif on becomes a neighbor of it, and from there can take the
-DR role, take part in the assert election, and have its Joins believed.
-
-Such an option would have to default to accepting everything: the last
-sentence of sec. 6.2 makes that a MUST for every option of this kind, which is
-also what keeps a half-configured filter from black-holing a domain.
-*Check: sec. 6.2, `doc/rfc7761.txt:7367` for the option and `:7384` for the
-default.  Effort: medium -- a per-interface address list, checked in the four
-`receive_pim_*()` entry points that already ask `find_pim_nbr_on_vif()` or
-`find_vif_direct()`, plus the `pimd.conf` keyword, its man page and the
-sample.  Test: none, and this one is cheap to assert once it exists:
-`shared-lan` in `test/freebsd-lab.sh` has three routers on a segment, so
-denying one of them is a one-line configuration change and a `pimctl show
-neighbor` that no longer lists it.*
 
 **A3.  The Register filter cannot reach the packet it is about.**
 Sec. 6.2's mechanism "to allow an RP to restrict the range of source

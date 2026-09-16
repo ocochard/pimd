@@ -180,6 +180,20 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
     if (v->uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_REGISTER))
 	return FALSE;    /* Shoudn't come on this interface */
 
+    /* RFC 7761 sec. 6.2's option, "accept-nbr-from" in pimd.conf.  This is
+     * the one that does the work: a router refused here never becomes a
+     * neighbor, and a Join/Prune, an Assert and a unicast Bootstrap all
+     * want a neighbor.  Accepts everything while unconfigured, which the
+     * same section requires of every option of this kind.
+     */
+    if (!pim_nbr_accepted(vifi, src)) {
+	IF_DEBUG(DEBUG_PIM_HELLO)
+	    logit(LOG_NOTICE, 0, "Ignoring PIM HELLO from %s on %s, not in its accept-nbr-from list",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
+
     /* Get the Holdtime (in seconds) and any DR priority from the message. Return if error. */
     if (parse_pim_hello(msg, len, src, &opts) == FALSE)
 	return FALSE;
@@ -1875,6 +1889,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     if (!find_pim_nbr_on_vif(vifi, src)) {
 	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
 	    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, no PIM Hello seen from it",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
+
+    /* And sec. 6.2's list, which names this message.  A router refused its
+     * Hello has no neighbor entry for the test above to find, so this is
+     * the same answer twice -- said here because the section says it here.
+     */
+    if (!pim_nbr_accepted(vifi, src)) {
+	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, not in its accept-nbr-from list",
 		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
 
 	return FALSE;
@@ -4117,6 +4143,14 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
      * from is discarded without further processing.  Otherwise any host on
      * the LAN can win an election it is not even taking part in.
      */
+    if (!pim_nbr_accepted(vifi, src)) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, not in its accept-nbr-from list",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
+
     if (!find_pim_nbr_on_vif(vifi, src)) {
 	IF_DEBUG(DEBUG_PIM_ASSERT)
 	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, no PIM Hello seen from it",
@@ -4458,6 +4492,7 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
     uint8_t               *data;
     uint8_t               *max_data;
     uint8_t               *scan;
+    int                   no_forward;
     uint16_t              new_bsr_fragment_tag;
     uint8_t               new_bsr_hash_masklen;
     uint8_t               new_bsr_priority;
@@ -4508,6 +4543,8 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 
 	return FALSE;
     }
+
+    no_forward = ((pim_header_t *)msg)->pim_reserved & PIM_BOOTSTRAP_NO_FORWARD;
 
     data = (uint8_t *)(msg + sizeof(pim_header_t));
 
@@ -4564,6 +4601,30 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 
     /* Check the iif, if this was PIM-ROUTERS multicast */
     if (dst == allpimrouters_group) {
+	if (no_forward) {
+	    /* RFC 5059 sec. 3.5.1: the No-Forward bit is what waives the
+	     * RPF check, this being the refresh a DR hands a router that
+	     * has just come up rather than a message travelling the tree.
+	     * Put through the check anyway, it was dropped unless the
+	     * sender happened to be the RPF neighbour toward the BSR --
+	     * which the router that sends it has no reason to be.
+	     *
+	     * What does not go with the RPF check is sec. 6.2's rule: this
+	     * is still a protocol message, and still only acceptable from a
+	     * router we have had a Hello from.
+	     */
+	    incoming = find_vif_direct(src);
+	    if (incoming == NO_VIF || !find_pim_nbr_on_vif(incoming, src)) {
+		IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		    logit(LOG_NOTICE, 0, "Ignoring No-Forward Bootstrap from %s, no PIM Hello seen from it",
+			  inet_fmt(src, s1, sizeof(s1)));
+
+		return FALSE;
+	    }
+
+	    goto sender_ok;
+	}
+
 	k_req_incoming(new_bsr_address, &rpfc);
 	if (rpfc.iif == NO_VIF || rpfc.rpfneighbor.s_addr == INADDR_ANY_N) {
 	    /* coudn't find a route to the BSR */
@@ -4665,6 +4726,7 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	/* TODO: check I am really the DR */
     }
 
+  sender_ok:
     max_data = (uint8_t *)msg + len;
     /* TODO: XXX: this 22 is HARDCODING!!! Do a bunch of definitions
      * and make it stylish!
@@ -4731,18 +4793,26 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    SET_TIMER(pim_cand_rp_adv_timer, 0);
     }
 
-    /* Forward the BSR Message first and then update the RP-set list */
-    /* TODO: if the message was unicasted to me, resend? */
-    for (vifi = 0; vifi < numvifs; vifi++) {
-	if (vifi == incoming)
-	    continue;
+    /* Forward the BSR Message first and then update the RP-set list.
+     *
+     * RFC 5059 sec. 3.4 names the two that are not forwarded: one whose
+     * No-Forward bit is set, and one that was unicast to us.  pimd passed
+     * both on -- the first with the bit still set, which told every router
+     * downstream to accept it without an RPF check of its own, and the
+     * second in the teeth of a section that says it is not forwarded.
+     */
+    if (!no_forward && dst == allpimrouters_group) {
+	for (vifi = 0; vifi < numvifs; vifi++) {
+	    if (vifi == incoming)
+		continue;
 
-	if (uvifs[vifi].uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_NONBRS))
-	    continue;
+	    if (uvifs[vifi].uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_NONBRS))
+		continue;
 
-	memcpy(pim_send_buf + sizeof(struct ip), msg, len);
-	send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
-		 PIM_BOOTSTRAP, len - sizeof(pim_header_t));
+	    memcpy(pim_send_buf + sizeof(struct ip), msg, len);
+	    send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
+		     PIM_BOOTSTRAP, len - sizeof(pim_header_t));
+	}
     }
 
     if (new_bsr_fragment_tag != curr_bsr_fragment_tag || new_bsr_address != curr_bsr_address) {

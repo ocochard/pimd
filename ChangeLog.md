@@ -8,6 +8,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
 **Note:** command line arguments in v3.0 are not compatible with v2.x!
 
 ### Changes
+- New `accept-nbr-from` setting for a `phyint` in `pimd.conf`, the routers
+  an interface accepts PIM messages from.  RFC 7761 sec. 6.2 asks for the
+  option and requires it to default to accepting every router, which an
+  interface with no `accept-nbr-from` does, so nothing changes until it is
+  used.  Without it every router that sends a syntactically valid Hello on
+  a subnet pimd has an interface on becomes a neighbour of it, and from
+  there can take the DR role, take part in the assert election and have its
+  Joins believed.  Repeatable on one line, and with no prefix length the
+  address is one router.  Refusing a Hello is what does the work: a
+  Join/Prune, an Assert and a unicast Bootstrap are all refused from a
+  router no Hello has been accepted from.  It is worth as much as the
+  addresses on the link are -- sec. 6.3's IPsec is the other half, and pimd
+  neither installs nor requires a security association
 - New `register-accept-from` setting in `pimd.conf`, the routers an RP
   accepts PIM Register messages from.  RFC 7761 sec. 6.2 asks for it and
   requires it to default to accepting every sender, which is what a
@@ -190,6 +203,20 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Set the No-Forward bit on the Bootstrap pimd unicasts to a new neighbour,
+  and honour it on one received, RFC 5059 sec. 3.5.1.  That copy is the
+  quick refresh a DR hands a router that has just come up, and the bit is
+  what tells the receiver to skip the RPF check and not pass it on; pimd
+  sent it as a plain Bootstrap with the byte zeroed and never read the byte
+  either.  Both halves went wrong the same way: a No-Forward Bootstrap from
+  a conformant neighbour was put through the very check the bit waives, so
+  the refresh was dropped unless the sender happened to be the RPF
+  neighbour toward the BSR -- and if it was, the forwarding loop copied it
+  out of every other interface with the bit still set, telling every router
+  downstream to accept it without an RPF check of its own.  A Bootstrap
+  unicast to this router is no longer forwarded either, which sec. 3.4 also
+  asks.  What is still required of a No-Forward Bootstrap is a Hello from
+  its sender: waiving the RPF check does not waive sec. 6.2
 - Keep the register vif out of the outgoing interfaces of a directly
   connected source in the SSM range.  RFC 7761 sec. 4.8.1 rule 3 has no
   Register for such a group and `send_pim_register()` never built one, so

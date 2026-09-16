@@ -547,7 +547,11 @@
 #               sec. 6.2's "SHOULD NOT accept protocol messages from a
 #               router from which it has not yet received a valid Hello
 #               message", in the unicast branch of
-#               receive_pim_bootstrap(), and the two rules of sec. 4.8.1
+#               receive_pim_bootstrap(); RFC 5059 sec. 3.5.1's No-Forward
+#               bit, which waives the RPF check and is not forwarded on;
+#               sec. 6.2's other option, "accept-nbr-from", which R1 runs
+#               the whole scenario with configured so that every assertion
+#               above is a soak test of it; and the two rules of sec. 4.8.1
 #               about what an SSM-unaware router may still send: no shared
 #               tree for a group in the SSM range, and a Register for one
 #               answered with a Register-Stop rather than dropped in
@@ -995,6 +999,25 @@ SSM_VIRTUAL_RP=${SSM_VIRTUAL_RP:-169.254.0.1}
 # Packets the ssm scenario sends from its first hop router's LAN, only to
 # give that router an (S,G) to look at
 SSM_PKTS=${SSM_PKTS:-6}
+
+# crafted, the No-Forward assertions.  $NOFWD_BSR is deliberately off every
+# subnet the lab builds and out of every static route it installs, so the
+# RPF check toward it cannot pass and the bit is the only thing that can
+# let the message in.  The two ranges are separate so the second assertion
+# is not reading what the first installed.
+NOFWD_BSR=${NOFWD_BSR:-10.0.9.9}
+NOFWD_RANGE=${NOFWD_RANGE:-239.1.0.0}
+NOFWD_RANGE2=${NOFWD_RANGE2:-239.2.0.0}
+
+# The second assertion's BSR has to beat the first one's, or the message is
+# dropped as less preferred before anything under test is reached: the two
+# share a priority and $NOFWD_BSR is the higher address.
+NOFWD_PRIO=${NOFWD_PRIO:-250}
+
+# A third address on ED1's interface, on the same subnet as the other two
+# and named by no accept-nbr-from, which is what makes it the one the
+# filter has to refuse
+DENIED_ADDR=${DENIED_ADDR:-10.0.1.88}
 CRAFT_HOLD=${CRAFT_HOLD:-15}
 
 # How long R1's dynamic RP may take to age out once the BSR is killed.  The
@@ -1195,9 +1218,11 @@ set_scenario() {
 	# beside its negative ones and says nothing about either.  The rest of
 	# the file does not ask for pim_jp, which is the noisiest subsystem
 	# here: every router logs every Join it sends and receives, once per
-	# Join/Prune period, for the whole run.
+	# Join/Prune period, for the whole run.  pim_hello is here for the
+	# same reason: the line that says a Hello was refused by
+	# accept-nbr-from sits behind IF_DEBUG(DEBUG_PIM_HELLO).
 	if [ "$SCENARIO" = crafted ]; then
-		DEBUG="$DEBUG_DEFAULT,pim_jp"
+		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
 	else
 		DEBUG=$DEBUG_DEFAULT
 	fi
@@ -1661,6 +1686,35 @@ write_configs() {
 		# R3: last hop router for the receiver LAN
 		ssm-range $SSMR_RANGE
 		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = crafted ]; then
+		# R1 runs with RFC 7761 sec. 6.2's filter on for the whole
+		# scenario, which is as much a soak test of it as the
+		# assertion below is a test: every other step here has to go
+		# on working with one configured.  The two senders are named
+		# one address at a time rather than by their subnet, because
+		# what the assertion needs is a third address on that same
+		# subnet which is not named -- a prefix covering the link
+		# would cover it too.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: accepts PIM from the lab's two senders and from R2,
+		# and from nobody else on either link
+		phyint ${EP}101b accept-nbr-from $SRC_ADDR accept-nbr-from $CRAFT_ADDR
+		phyint ${EP}112a accept-nbr-from 10.0.12.0/24
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point for all of 224.0.0.0/4
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: in the domain with nothing to do
 		EOF
 		return
 	fi
@@ -3709,6 +3763,100 @@ check_crafted() {
 		ok "a zero checksum and a correct one were both let through"
 	else
 		fail "r1 refused a Null-Register whose checksum it must not check, or one that was correct"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# RFC 5059 sec. 3.5.1's No-Forward bit, whose whole point is that the
+	# receiver skips the RPF check.  $NOFWD_BSR is an address nothing in
+	# the lab has a route to, so the check cannot pass: without the bit
+	# the message is dropped for want of an RPF neighbour toward the BSR,
+	# with it the message is the refresh a router that has just come up
+	# is meant to take.  The same message twice is what makes it the bit
+	# and not the message.
+	# RFC 7761 sec. 6.2's other option, the one A1 was about: which
+	# routers this interface accepts PIM from.  R1 has run the whole
+	# scenario with one configured -- every assertion above passed with
+	# it on -- and $DENIED_ADDR is the address on the same subnet that it
+	# does not name.  Being on a subnet R1 has a VIF on is all that used
+	# to be asked of a router before it could become a neighbour, take
+	# the DR role, join the assert election and have its Joins believed.
+	print "16. A router the interface does not name is not a neighbour"
+	jrun ed1 ifconfig "${EP}101a" inet "$DENIED_ADDR/24" alias 2>/dev/null || \
+		die "failed adding $DENIED_ADDR to ${EP}101a on ed1"
+	craft "$DENIED_ADDR" hello -H 105
+	if wait_for 10 logged r1 "Ignoring PIM HELLO from $DENIED_ADDR"; then
+		ok "r1 refused a Hello from $DENIED_ADDR, which its accept-nbr-from does not name"
+	else
+		fail "r1 took a Hello from an address it was told not to accept"
+	fi
+	if has_neighbor r1 "$DENIED_ADDR"; then
+		fail "r1 has $DENIED_ADDR as a neighbour anyway"
+	else
+		ok "r1 has no neighbour at $DENIED_ADDR"
+	fi
+	# The control, and the whole scenario above it: the addresses the
+	# same list does name are still neighbours.
+	if has_neighbor r1 "$SRC_ADDR" && has_neighbor r1 "$CRAFT_ADDR"; then
+		ok "$SRC_ADDR and $CRAFT_ADDR are neighbours still, the list is not refusing everybody"
+	else
+		fail "r1 lost a neighbour the list names, so the filter refuses more than it was told to"
+	fi
+
+	print "17. The No-Forward bit is what waives the RPF check"
+	craft "$SRC_ADDR" bootstrap -u "$NOFWD_BSR" -g "$NOFWD_RANGE" -m 16 \
+	      -r "$SRC_ADDR" -p "$CRAFT_PRIO"
+	sleep 2
+	if has_rp r1 "$NOFWD_RANGE"; then
+		fail "r1 took a Bootstrap whose BSR it has no route to, without the bit that waives the check"
+	else
+		ok "r1 dropped it, the RPF check toward $NOFWD_BSR cannot pass"
+	fi
+	craft "$SRC_ADDR" bootstrap -n -u "$NOFWD_BSR" -g "$NOFWD_RANGE" -m 16 \
+	      -r "$SRC_ADDR" -p "$CRAFT_PRIO"
+	if wait_for 15 has_rp r1 "$NOFWD_RANGE"; then
+		ok "r1 took the same message once it carried the No-Forward bit"
+	else
+		fail "r1 dropped it even with the bit set, which is the one thing the bit is for"
+	fi
+
+	# And the other half of the same section: it is not passed on.  This
+	# one names a BSR both routers have a route to and whose RPF
+	# neighbour is the sender, so nothing but the bit stops R1 forwarding
+	# it and nothing but the bit stops R2 taking what R1 forwarded.
+	print "18. And it is not forwarded onward"
+	# Step 5 stopped the BSR, and a dead router learns nothing whatever
+	# R1 does, so this needs it back: without a live R2 the assertion
+	# below passes for the wrong reason, which is how the first version
+	# of it passed with the fix reverted.
+	start_pimd r2
+	if ! wait_for 30 pimd_is_up r2; then
+		fail "r2 did not come back, so what it learns says nothing"
+		return 1
+	fi
+	# And R1 has to have it as a neighbour again before any of this
+	# means anything: the forwarding loop skips a VIF with VIFF_NONBRS
+	# on it, which is what R1's link to R2 carries while R2 is gone, so
+	# a message sent too early is not forwarded for a reason that has
+	# nothing to do with the bit.
+	if ! wait_for 90 has_neighbor r1 "$RP_ADDR"; then
+		fail "r1 never saw r2 again, and would not forward to it whatever the bit said"
+		return 1
+	fi
+	craft "$SRC_ADDR" bootstrap -n -u "$SRC_ADDR" -g "$NOFWD_RANGE2" -m 16 \
+	      -r "$SRC_ADDR" -p "$NOFWD_PRIO"
+	if ! wait_for 15 has_rp r1 "$NOFWD_RANGE2"; then
+		fail "r1 did not take it at all, so what r2 does says nothing"
+		return 1
+	fi
+	# Asked of R2's log and not of its RP table: whether it installs the
+	# range depends on its own BSR state, and what is under test is
+	# whether the message reached it at all.  The priority is what tells
+	# this message from every other Bootstrap on the wire.
+	sleep 5
+	if logged r2 "Bootstrap candidate $SRC_ADDR, priority $NOFWD_PRIO"; then
+		fail "r2 received it, so r1 passed on a message RFC 5059 sec. 3.4 does not forward"
+	else
+		ok "r2 never saw it, r1 kept a No-Forward Bootstrap to itself"
 	fi
 
 	result

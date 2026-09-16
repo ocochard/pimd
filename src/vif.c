@@ -163,6 +163,12 @@ void zero_vif(struct uvif *v, int t)
 	free(pa);
     }
 
+    /* As is the list of routers we accept PIM messages from */
+    for (pa = v->uv_nbr_acl; pa; pa = next) {
+	next = pa->pa_next;
+	free(pa);
+    }
+
     v->uv_flags		= 0;	/* Default to IGMPv3 */
     v->uv_metric	= DEFAULT_METRIC;
     v->uv_admetric	= 0;
@@ -184,6 +190,7 @@ void zero_vif(struct uvif *v, int t)
     v->uv_acl		= (struct vif_acl *)NULL;
     RESET_TIMER(v->uv_leaf_timer);
     v->uv_addrs		= (struct phaddr *)NULL;
+    v->uv_nbr_acl	= (struct phaddr *)NULL;
     v->uv_filter	= (struct vif_filter *)NULL;
 
     RESET_TIMER(v->uv_hello_timer);

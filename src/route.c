@@ -197,6 +197,37 @@ pim_nbr_entry_t *find_pim_nbr(uint32_t source)
  * of the unicast routing table: it answers whether an address is a neighbor,
  * not which neighbor leads to an address.
  */
+/* May this router's PIM messages be acted on, on this interface?
+ *
+ * RFC 7761 sec. 6.2 asks for the option and, in its last sentence, requires
+ * every option of this kind to default to accepting everything -- which is
+ * also what keeps a half-written filter from black-holing a domain.  An
+ * empty list is that default.
+ *
+ * Denying a router its Hello is enough on its own: since a Join/Prune, an
+ * Assert and a unicast Bootstrap all require a Hello to have been seen
+ * first, a router that never becomes a neighbor here can do none of them.
+ * The checks in those parsers are what sec. 6.2 names, and they are what
+ * keeps the answer right if that ever stops being true.
+ */
+int pim_nbr_accepted(vifi_t vifi, uint32_t addr)
+{
+    struct phaddr *pa;
+
+    if (vifi >= numvifs)
+	return FALSE;
+
+    if (!uvifs[vifi].uv_nbr_acl)
+	return TRUE;
+
+    for (pa = uvifs[vifi].uv_nbr_acl; pa; pa = pa->pa_next) {
+	if ((addr & pa->pa_subnetmask) == pa->pa_subnet)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
 pim_nbr_entry_t *find_pim_nbr_on_vif(vifi_t vifi, uint32_t addr)
 {
     pim_nbr_entry_t *nbr;
