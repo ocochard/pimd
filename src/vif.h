@@ -169,6 +169,14 @@ typedef struct {
      ((sub).hi & (vifmask).hi) == ((prunes).hi & (vifmask).hi & (sub).hi))
 
 /*
+ * Secondary addresses one vif advertises in its Hello.  Each costs six bytes
+ * of a message that has to fit the smallest MTU a PIM link may have, and an
+ * interface carrying more than this many is not one pimd has been asked to
+ * route on; config.c says so when it happens.
+ */
+#define MAX_SECADDRS		32
+
+/*
  * User level Virtual Interface structure
  *
  * A "virtual interface" is either a physical, multicast-capable interface
@@ -203,6 +211,10 @@ struct uvif {
     struct vif_acl  *uv_acl;	    /* access control list of groups        */
     int		     uv_leaf_timer; /* time until this vif is considrd leaf */
     struct phaddr   *uv_addrs;	    /* Additional subnets on this vif       */
+    uint32_t	     uv_secaddrs[MAX_SECADDRS]; /* Our other addresses on the
+				     * interface, for the Hello Address List
+				     * option of RFC 7761 sec. 4.3.4        */
+    u_int	     uv_nsecaddrs;
     struct phaddr   *uv_nbr_acl;    /* Routers we accept PIM from here, RFC
 				     * 7761 sec. 6.2; empty means all of
 				     * them, which that section requires  */

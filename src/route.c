@@ -173,8 +173,6 @@ vifi_t get_iif(uint32_t address)
 pim_nbr_entry_t *find_pim_nbr(uint32_t source)
 {
     struct rpfctl rpfc;
-    pim_nbr_entry_t *nbr;
-    uint32_t addr;
 
     if (local_address(source) != NO_VIF)
 	return NULL;
@@ -184,10 +182,35 @@ pim_nbr_entry_t *find_pim_nbr(uint32_t source)
 	return NULL;
 
     /* Figure out the nexthop neighbor by checking the reverse path */
-    addr = rpfc.rpfneighbor.s_addr;
-    for (nbr = uvifs[rpfc.iif].uv_pim_neighbors; nbr; nbr = nbr->next)
-	if (nbr->address == addr)
-	    return nbr;
+    return find_pim_nbr_nexthop(rpfc.iif, rpfc.rpfneighbor.s_addr);
+}
+
+/*
+ * NBR(I, addr) of RFC 7761 sec. 4.3.4: the neighbor on interface vifi that a
+ * next hop out of the routing table stands for.  That is the neighbor whose
+ * primary address it is, or failing that the one that has listed it in the
+ * Address List option of its Hello -- a router's route to a source may name
+ * any address its upstream has on the link, and a Join still goes to the
+ * primary one, which is the address the upstream sources its PIM from.
+ */
+pim_nbr_entry_t *find_pim_nbr_nexthop(vifi_t vifi, uint32_t addr)
+{
+    pim_nbr_entry_t *nbr;
+    uint16_t i;
+
+    if (vifi >= numvifs)
+	return NULL;
+
+    nbr = find_pim_nbr_on_vif(vifi, addr);
+    if (nbr)
+	return nbr;
+
+    for (nbr = uvifs[vifi].uv_pim_neighbors; nbr; nbr = nbr->next) {
+	for (i = 0; i < nbr->nsecaddrs; i++) {
+	    if (nbr->secaddrs[i] == addr)
+		return nbr;
+	}
+    }
 
     return NULL;
 }
@@ -327,23 +350,17 @@ int set_incoming(srcentry_t *src, int type)
     /* The upstream router must be a (PIM router) neighbor, otherwise we
      * are in big trouble ;-) */
     vif = &uvifs[src->incoming];
-    for (nbr = vif->uv_pim_neighbors; nbr; nbr = nbr->next) {
-	if (ntohl(nbr_addr) < ntohl(nbr->address))
-	    continue;
+    nbr = find_pim_nbr_nexthop(src->incoming, nbr_addr);
+    if (nbr) {
+	/* The upstream router is found in the list of neighbors.
+	 * We are safe! */
+	src->upstream = nbr;
+	IF_DEBUG(DEBUG_RPF)
+	    logit(LOG_DEBUG, 0, "For src %s, iif is %s, next hop router is %s",
+		  inet_fmt(src_addr, s1, sizeof(s1)), vif->uv_name,
+		  inet_fmt(nbr->address, s2, sizeof(s2)));
 
-	if (nbr_addr == nbr->address) {
-	    /* The upstream router is found in the list of neighbors.
-	     * We are safe! */
-	    src->upstream = nbr;
-	    IF_DEBUG(DEBUG_RPF)
-		logit(LOG_DEBUG, 0, "For src %s, iif is %s, next hop router is %s",
-		      inet_fmt(src_addr, s1, sizeof(s1)), vif->uv_name,
-		      inet_fmt(nbr_addr, s2, sizeof(s2)));
-
-	    return TRUE;
-	}
-
-	break;
+	return TRUE;
     }
 
     /* TODO: control the number of messages! */

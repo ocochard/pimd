@@ -32,7 +32,7 @@
 .Nm
 .Ar show interface
 .Nm
-.Ar show neighbor
+.Ar show neighbor Op detail
 .Nm
 .Ar show mrt Op detail
 .Nm
@@ -233,8 +233,12 @@ Show IGMP group memberships, one line per group, or per source for an
 IGMPv3 (S,G) membership.
 .It Nm Ar show interfaces
 Show PIM interface table
-.It Nm Ar show neighbor
-Show PIM neighbor table
+.It Nm Ar show neighbor Op Cm detail
+Show PIM neighbor table.  With
+.Cm detail ,
+each neighbor is followed by the secondary addresses it advertises in the
+Address List option of its Hello, one to a line, which is how a route whose
+next hop is one of them is mapped to the neighbor.
 .It Nm Ar show mrt
 Show PIM multicast routing table, i.e., the state the daemon itself
 keeps.  For the flows the kernel actually forwards, see

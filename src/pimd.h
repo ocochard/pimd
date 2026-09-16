@@ -382,6 +382,9 @@ typedef struct pim_jp_encod_grp_ {
 #define PIM_HELLO_GENID                 20
 #define PIM_HELLO_GENID_LEN             4
 
+/* RFC 7761 sec. 4.9.2: a run of Encoded-Unicast addresses, no count */
+#define PIM_HELLO_ADDR_LIST             24
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

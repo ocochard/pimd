@@ -364,6 +364,7 @@ void config_vifs_from_kernel(void)
     uint32_t addr, mask, subnet;
     struct ifaddrs *ifaddr, *ifa;
     int phyint_num, count, valid, added;
+    u_int n;
     struct iflist *entry;
 
     /* Query config first for list of enabled interfaces */
@@ -509,6 +510,20 @@ init_vif_list:
 		v->uv_subnetbcast = 0xffffffff;
 
 	strlcpy(v->uv_name, ifa->ifa_name, IFNAMSIZ);
+
+	/*
+	 * The interface's other addresses, for the Address List option of
+	 * its Hello (RFC 7761 sec. 4.3.4).  Not the altnets below: those are
+	 * subnets, and one configured in pimd.conf has no address of ours
+	 * on it at all.
+	 */
+	n = vif_secaddrs(ifaddr, v->uv_name, addr, v->uv_secaddrs);
+	if (n > MAX_SECADDRS) {
+	    logit(LOG_WARNING, 0, "%s has %u secondary addresses, only the first %d go in its PIM Hello",
+		  v->uv_name, n, MAX_SECADDRS);
+	    n = MAX_SECADDRS;
+	}
+	v->uv_nsecaddrs = n;
 
 	/*
 	 * Figure out MTU of interface, needed as a seed value when

@@ -203,6 +203,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Send and use the Hello Address List option, RFC 7761 sec. 4.3.4.  An
+  interface with more than one address now lists the others in its Hello,
+  and the lists neighbors send are kept, so a route whose next hop is a
+  neighbor's secondary address finds that neighbor.  pimd used to log
+  "NOT A PIM ROUTER" for such a route and never join through it, and a
+  neighbor routing through one of pimd's own secondary addresses could not
+  tell which router it belonged to.  `pimctl show neighbor detail` lists
+  each neighbor's secondary addresses
 - Suppress a periodic Join(\*,G) that another router on the upstream link
   has just sent, RFC 7761 sec. 4.5.4, for the smaller of t_suppressed and
   the HoldTime of the Join overheard.  The timer assignment had been

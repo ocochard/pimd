@@ -62,9 +62,9 @@ field set to anything and sends it once, and the `crafted` scenario of
 S3 and S4 of the SSM one, T2's Join suppression, R2's longer group range,
 R3's No-Forward bit and A1's neighbor list.
 
-What is left divides in two.  M6, M7, M8, T1, T3 and S1 are state
+What is left divides in two.  M1, M7, M8, T1, T3 and S1 are state
 pimd does not keep, each a structural change rather than a check: (S,G,rpt)
-entries, a secondary address list, a traffic-driven Keepalive Timer, a
+entries, a traffic-driven Keepalive Timer, a
 triggered-message timer finer than the five-second tick, and SSM groups that
 carry no RP.  A3 and A4 are the two that stay open on purpose, one because
 the kernel decapsulates before the daemon is handed anything and the other
@@ -186,7 +186,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Eight entries this section held are fixed.  M3, the assert winner state,
+Nine entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -282,6 +282,29 @@ explicit tracking the bit exists for stays out of reach.  Propagation_Delay
 and Override_Interval are constants rather than the configuration sec. 4.3.3
 says they SHOULD be; nobody has asked to move them yet.
 
+M6 is the ninth, the secondary address list of sec. 4.3.4.  Every Hello
+carries the Address List option when its interface has addresses besides
+the one the VIF is built on (`vif_secaddrs()`, `src/vif.c`, at startup and
+on every interface poll, a change being announced with a Hello at once as
+sec. 4.3.1 asks), and every neighbor's list is kept, replaced by each Hello
+and cleared by one without the option.  `find_pim_nbr_nexthop()`
+(`src/route.c`) is the section's `NBR()`: an RPF next hop that is a
+neighbor's secondary address maps to that neighbor, in `set_incoming()`,
+`find_pim_nbr()` and the RPF check of a Bootstrap, where it used to be
+"NOT A PIM ROUTER" and no Join.  An address two neighbors advertise goes to
+the last one, logged at most once a Hello period.  A list pimd cannot read,
+another family or not a whole number of IPv4 entries, is taken as no list
+rather than as a reason to refuse the Hello.  Two limits: a VIF advertises
+at most 32 secondary addresses, `MAX_SECADDRS` (`src/vif.h`), and says so
+at startup when it has more; and pimd still takes a Join/Prune as its own
+only when the upstream neighbor field is its primary address, which a
+neighbor implementing this section always sends.  `alias` in
+`test/freebsd-lab.sh` asserts the encoder through tcpdump and the mapping
+between two pimds, the RP joining toward the first hop router through its
+secondary address; `crafted` asserts the parser on a list pimd did not
+write, kept, primary address excluded, unreadable and absent.  The Linux
+suite in `test/` asserts none of it.
+
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,
 Prune-Pending and Override timers.  pimd has one (S,G) entry with one
@@ -356,21 +379,6 @@ preference half has none either:
 between two pimds it is 101 on both, so `assert-lan` in
 `test/freebsd-interop.sh` is where it would be seen, the Arista being the one
 router on that wire that advertises its RIB's own numbers.*
-
-**M6.  No secondary address list.**  Sec. 4.3.4 requires the Address List option
-whenever an interface has secondary addresses, so that neighbors can map an MRIB
-next hop to the primary address a Join must be sent to.  pimd neither sends nor
-parses option 24, and both lookups compare against the primary only
-(`src/route.c:296-322`, `src/route.c:188-192`).  If the RIB's next hop for a
-source or RP is a neighbor's secondary address, pimd logs "NOT A PIM ROUTER",
-sets `upstream` to NULL and never joins; conversely a neighbor whose MRIB points
-at pimd's alias cannot map it back.  `install_altnet()` currently keeps only the
-subnet and mask (`src/config.c:266-289`), so pimd's own secondary addresses have
-to be retained before they can be advertised.  This is the `alias` lab topology.
-*Check: sec. 4.3.4, `doc/rfc7761.txt:1993`, with the option in sec. 4.3.1,
-`:1664`, and its wire format in sec. 4.9.2, `:6167`.  Effort: medium to
-large.  Test: none.  `alias` in `test/freebsd-lab.sh` builds the interface this
-needs, but asserts the altnet RPF path rather than the Address List option.*
 
 **M7.  The Keepalive Timer is not traffic-driven, and nothing in reach makes
 that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.

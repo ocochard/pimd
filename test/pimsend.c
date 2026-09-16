@@ -55,6 +55,7 @@
  *   -B         set the Bidir bit of the group    (RFC 5059 sec. 3.6)
  *   -Z         set the admin-scope bit of the group
  *   -H TIME    holdtime, default per message     (sec. 4.9.2, 4.9.5)
+ *   -A ADDR    a Hello Address List entry        (sec. 4.3.4, 4.9.2)
  *
  * Examples, each naming what it is for:
  *
@@ -105,6 +106,7 @@
 #define PIM_HELLO_HOLDTIME		1
 #define PIM_HELLO_DR_PRIO		19
 #define PIM_HELLO_GENID			20
+#define PIM_HELLO_ADDR_LIST		24
 
 #define PIM_REGISTER_NULL_BIT		0x40000000
 #define PIM_BOOTSTRAP_NO_FORWARD	0x80
@@ -147,6 +149,8 @@ struct opts {
 	struct in_addr rp;
 	struct in_addr sources[MAX_SOURCES];
 	int	 nsources;
+	struct in_addr secaddrs[MAX_SOURCES];	/* Hello Address List */
+	int	 nsecaddrs;
 	int	 wildcard;		/* a (*,G) entry rather than (S,G) */
 	int	 null_register;
 	int	 no_forward;		/* Bootstrap N bit, RFC 5059 sec. 4.1 */
@@ -264,6 +268,18 @@ static uint8_t *build_hello(uint8_t *p, const struct opts *o)
 	p = put_short(p, PIM_HELLO_GENID);
 	p = put_short(p, 4);
 	p = put_long(p, 0x0badcafe);
+
+	/* Only when asked for: a Hello without the option is the one that
+	 * has to clear a neighbour's secondaries, RFC 7761 sec. 4.3.4.  -f
+	 * and -e reach these addresses like any other encoded unicast one. */
+	if (o->nsecaddrs) {
+		int i;
+
+		p = put_short(p, PIM_HELLO_ADDR_LIST);
+		p = put_short(p, o->nsecaddrs * 6);
+		for (i = 0; i < o->nsecaddrs; i++)
+			p = put_euaddr(p, o, o->secaddrs[i]);
+	}
 
 	return p;
 }
@@ -458,6 +474,7 @@ static int usage(int rc)
 		"  -d DST     Unicast destination, default " PIM_ALL_ROUTERS "\n"
 		"  -g GROUP   Multicast group the message is about\n"
 		"  -s SOURCE  Source address, repeatable for a Join/Prune\n"
+		"  -A ADDR    A Hello Address List entry, repeatable\n"
 		"  -u ADDR    Join/Prune upstream neighbour, or the BSR of a Bootstrap\n"
 		"  -r ADDR    The RP: of a Bootstrap, a candrp, or a (*,G) Join\n"
 		"  -w         Make the Join/Prune a (*,G) rather than an (S,G)\n"
@@ -541,7 +558,7 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "0BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wZ")) != -1) {
+	while ((c = getopt(argc, argv, "0A:BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wZ")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
@@ -568,6 +585,12 @@ int main(int argc, char *argv[])
 		case 'V': o.version = num(optarg, "version");		break;
 		case 'w': o.wildcard = 1;				break;
 		case 'Z': o.scope = 1;					break;
+
+		case 'A':
+			if (o.nsecaddrs >= MAX_SOURCES)
+				errx(1, "too many secondary addresses, max %d", MAX_SOURCES);
+			o.secaddrs[o.nsecaddrs++] = addr(optarg, "secondary address");
+			break;
 
 		case 's':
 			if (o.nsources >= MAX_SOURCES)

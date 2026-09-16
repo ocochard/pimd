@@ -94,7 +94,7 @@ struct ipcmd {
 	{ IPC_PIM_IFACE,  "show interface", NULL, "Show router interface table" },
 	{ IPC_PIM_ROUTE,  "show mrt", "[detail]", "Show multicast routing table" },
 	{ IPC_PIM_MFC,    "show mfc", NULL, "Show kernel multicast forwarding cache" },
-	{ IPC_PIM_NEIGH,  "show neighbor", NULL, "Show router neighbor table" },
+	{ IPC_PIM_NEIGH,  "show neighbor", "[detail]", "Show router neighbor table" },
 	{ IPC_PIM_RP,     "show rp", NULL, "Show Rendezvous-Point (RP) set" },
 	{ IPC_PIM_CRP,    "show crp", NULL, "Show candidate Rendezvous-Point (CRP) set" },
 	{ IPC_PIM,        "show pim", "[detail]", "Show interfaces, neighbors and routes (default)"},
@@ -416,6 +416,14 @@ static int show_neighbor(FILE *fp, struct uvif *uv, pim_nbr_entry_t *n)
 		uv->uv_name,
 		inet_fmt(n->address, s1, sizeof(s1)),
 		get_dr_prio(n), tmp, buf);
+
+	/* Its Address List, RFC 7761 sec. 4.3.4, one address to a line so
+	 * that the table above keeps one neighbor to a line without it. */
+	if (detail) {
+		for (uint16_t i = 0; i < n->nsecaddrs; i++)
+			fprintf(fp, "%-16s  %-15s  secondary\n", "",
+				inet_fmt(n->secaddrs[i], s1, sizeof(s1)));
+	}
 
 	return 0;
 }

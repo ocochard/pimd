@@ -127,6 +127,11 @@ typedef struct pim_nbr_entry {
 					    * suppression                   */
     uint16_t              propagation_delay;/* Milliseconds, as on the wire  */
     uint16_t              override_interval;
+    /* Its Address List option, RFC 7761 sec. 4.3.4: the other addresses it
+     * has on this link, so that a next hop naming one of them maps to the
+     * neighbor a Join has to be sent to. */
+    uint32_t             *secaddrs;
+    uint16_t              nsecaddrs;
     vifi_t		  vifi;		  /* which interface		    */
     uint16_t		  timer;	  /* for timing out neighbor	    */
     time_t		  uptime;	  /* time since first hello	    */

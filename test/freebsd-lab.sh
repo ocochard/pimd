@@ -355,7 +355,14 @@
 #               never hears of the source, and the stream dies at the
 #               first hop.  Linux cannot show this, netlink.c answers a
 #               connected lookup with the destination as its own RPF
-#               neighbour.  Takes about 90s.
+#               neighbour.
+#
+#               R1 has a second address on its link to R2 as well, and
+#               R2's route back to the sender names that one, so it is
+#               also the only scenario where a next hop is a router's
+#               secondary address: the RP's (S,G) Join finds R1 only
+#               through the Address List option of R1's Hello, RFC 7761
+#               sec. 4.3.4.  Takes about 2 minutes.
 #   ifgone      The rpt topology again, but ED1's link is destroyed while
 #               pimd is running and the only question is what R1 does about
 #               the VIF that was sitting on it, which is
@@ -551,7 +558,10 @@
 #               bit, which waives the RPF check and is not forwarded on;
 #               sec. 6.2's other option, "accept-nbr-from", which R1 runs
 #               the whole scenario with configured so that every assertion
-#               above is a soak test of it; and the two rules of sec. 4.8.1
+#               above is a soak test of it; sec. 4.3.4's Hello Address
+#               List, which pimd sends too, but an encoder pimd did not
+#               write is the only one that can tell a list pimd reads from
+#               a list pimd reads the way it writes one; and the two rules of sec. 4.8.1
 #               about what an SSM-unaware router may still send: no shared
 #               tree for a group in the SSM range, and a Register for one
 #               answered with a Register-Stop rather than dropped in
@@ -829,6 +839,14 @@ ALIAS_ADDR=10.0.101.1
 ALIAS_NET=10.0.101.0/24
 ALIAS_SRC_ADDR=10.0.101.10
 
+# alias, the Address List half: a second address on R1's link to R2, in the
+# same subnet as the first, and R2's route back to the sender pointed at it.
+# The only next hop in any lab that is a router's secondary address, so the
+# only one where the RP's Join has no neighbour to go to unless R1's Hello
+# said which router the address belongs to (RFC 7761 sec. 4.3.4).
+ALIAS_UP_IF=${EP}112a
+ALIAS_UP_ADDR=10.0.12.11
+
 # rp-lasthop: the RP moves to R3, on the interface facing the receiver, so
 # the router that is RP is also the one with the directly connected member.
 RCV_ADDR=10.0.3.10
@@ -978,6 +996,10 @@ STATICRP_WAIT=${STATICRP_WAIT:-180}
 # $CRAFT_PRIO has to beat R2's BSR priority of 1, or the crafted Bootstrap
 # is dropped as less preferred before it reaches anything under test.
 CRAFT_ADDR=${CRAFT_ADDR:-10.0.1.99}
+# A secondary address the Hello Address List steps have ED1 advertise.  It
+# is never configured anywhere: the option is what is under test, not the
+# address.
+CRAFT_SECADDR=${CRAFT_SECADDR:-10.0.1.77}
 CRAFT_SRC=${CRAFT_SRC:-10.0.1.10}
 R1_LAN_ADDR=${R1_LAN_ADDR:-10.0.1.1}
 CRAFT_BADLEN=${CRAFT_BADLEN:-200}
@@ -1393,7 +1415,7 @@ aliases() {
 	[ "$SCENARIO" = alias ] || return 0
 
 	case $1 in
-	r1) echo "$ALIAS_IF $ALIAS_ADDR/24" ;;
+	r1) echo "$ALIAS_IF $ALIAS_ADDR/24 $ALIAS_UP_IF $ALIAS_UP_ADDR/24" ;;
 	esac
 }
 
@@ -1489,7 +1511,7 @@ routes() {
 		case $1 in
 		ed1) echo "default $ALIAS_ADDR" ;;
 		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2" ;;
-		r2)  echo "$ALIAS_NET 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
+		r2)  echo "$ALIAS_NET $ALIAS_UP_ADDR 10.0.3.0/24 10.0.23.3" ;;
 		r3)  echo "$ALIAS_NET 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
 		ed2) echo "default 10.0.3.1" ;;
 		esac
@@ -2368,6 +2390,16 @@ start() {
 # --- assertions -------------------------------------------------------
 
 has_neighbor() { pimctl "$1" show neighbor 2>/dev/null | grep -q "$2"; }
+
+# Does router $1 hold $3 as a secondary address of its neighbour $2?  The
+# detail listing puts each one on a line of its own under the neighbour's.
+has_secaddr() {
+	pimctl "$1" show neighbor detail 2>/dev/null | awk -v n="$2" -v a="$3" '
+		$NF != "secondary" { cur = $2; next }
+		cur == n && $1 == a { found = 1 }
+		END { exit !found }
+	'
+}
 has_iface()    { pimctl "$1" show interface 2>/dev/null | grep -q "^$2 "; }
 
 # config_vifs_from_kernel() logs a point-to-point vif as "(local -> peer)"
@@ -4004,6 +4036,54 @@ check_crafted() {
 		ok "r2 never saw it, r1 kept a No-Forward Bootstrap to itself"
 	fi
 
+	# RFC 7761 sec. 4.3.4, from an encoder that is not pimd's.  Each Hello
+	# replaces the list the last one left, so every step here is also the
+	# control for the one after it: the list is seen to be there before
+	# it is seen to go.
+	print "22. A Hello Address List is kept, replaced and cleared"
+	craft "$SRC_ADDR" hello -H 105 -A "$SRC_ADDR" -A "$CRAFT_SECADDR"
+	if wait_for 10 has_secaddr r1 "$SRC_ADDR" "$CRAFT_SECADDR"; then
+		ok "r1 holds $CRAFT_SECADDR as a secondary address of $SRC_ADDR"
+	else
+		fail "r1 did not take the Address List of a well-formed Hello"
+		return 1
+	fi
+	if has_secaddr r1 "$SRC_ADDR" "$SRC_ADDR"; then
+		fail "r1 lists $SRC_ADDR as a secondary address of itself, sec. 4.3.4 excludes it"
+	else
+		ok "the sender's primary address, listed too, was left out"
+	fi
+
+	# A list of another family is not one the neighbour's IPv4 next hops
+	# can be mapped through, and it is not a reason to lose the
+	# neighbour either: sec. 4.9.2 has an option never stand in the way
+	# of an adjacency.
+	craft "$SRC_ADDR" hello -H 105 -A "$CRAFT_SECADDR" -f 2
+	sleep 2
+	if has_secaddr r1 "$SRC_ADDR" "$CRAFT_SECADDR"; then
+		fail "r1 kept $CRAFT_SECADDR after a Hello whose list is not IPv4"
+	else
+		ok "a list that is not IPv4 left $SRC_ADDR no secondary addresses"
+	fi
+	if has_neighbor r1 "$SRC_ADDR"; then
+		ok "and $SRC_ADDR is still a neighbour"
+	else
+		fail "r1 dropped $SRC_ADDR over an Address List it could not read"
+	fi
+
+	craft "$SRC_ADDR" hello -H 105 -A "$CRAFT_SECADDR"
+	if ! wait_for 10 has_secaddr r1 "$SRC_ADDR" "$CRAFT_SECADDR"; then
+		fail "r1 did not take the list back, so the step below says nothing"
+		return 1
+	fi
+	craft "$SRC_ADDR" hello -H 105
+	sleep 2
+	if has_secaddr r1 "$SRC_ADDR" "$CRAFT_SECADDR"; then
+		fail "r1 kept $CRAFT_SECADDR after a Hello with no Address List, sec. 4.3.4 says delete"
+	else
+		ok "a Hello without the option cleared the list"
+	fi
+
 	result
 }
 
@@ -4495,6 +4575,63 @@ check_alias() {
 		ok "r1 kernel has an MFC entry for $GROUP"
 	else
 		fail "r1 kernel MFC is empty, pimd never pushed the route down"
+	fi
+
+	# The Address List, read by tcpdump rather than by pimd: two pimds
+	# share one reading of the option, so R2 understanding R1 says
+	# nothing about whether what R1 put on the wire is RFC 7761's.  The
+	# secondary address appears nowhere else in a Hello from R1, the IP
+	# source being the primary one.  The filter is on the PIM type nibble,
+	# a Join/Prune from R1 going to the same group; pimd sends no IP
+	# options, so the PIM header is at byte 20.  tcpdump prints the
+	# addresses of the option only from -vv up.
+	print "7. R1's Hello on $ALIAS_UP_IF lists its secondary address"
+	jrun r2 timeout 45 tcpdump -l -c 1 -nvvi "${EPU}112b" \
+		"ip proto 103 and src 10.0.12.1 and ip[20] & 0x0f = 0" \
+		>"$WORKDIR/hello.txt" 2>/dev/null || true
+	if grep -q "Address List" "$WORKDIR/hello.txt" && \
+	   grep -q "$ALIAS_UP_ADDR" "$WORKDIR/hello.txt"; then
+		ok "tcpdump decodes an Address List holding $ALIAS_UP_ADDR"
+	else
+		fail "no Address List with $ALIAS_UP_ADDR in R1's Hello, see $WORKDIR/hello.txt"
+	fi
+
+	print "8. R2 maps the secondary address to R1"
+	if wait_for 45 has_secaddr r2 10.0.12.1 "$ALIAS_UP_ADDR"; then
+		ok "r2 lists $ALIAS_UP_ADDR as a secondary address of neighbour 10.0.12.1"
+	else
+		fail "r2 has no secondary address $ALIAS_UP_ADDR for 10.0.12.1"
+	fi
+	if has_secaddr r2 10.0.12.1 10.0.12.1; then
+		fail "r2 lists R1's primary address as a secondary of itself"
+	else
+		ok "the primary address is not among them"
+	fi
+
+	# What the mapping is for.  R2 is the RP, and its route to the source
+	# names $ALIAS_UP_ADDR: without the mapping that is "NOT A PIM
+	# ROUTER", no (S,G) Join reaches R1, and the stream arrives only
+	# register encapsulated -- which is why assertion 5 passes either
+	# way and cannot be the witness.  R1 forwarding natively onto the
+	# link to R2 is the Join having arrived.
+	print "9. The RP's (S,G) Join reaches R1 through the secondary address"
+	iif=$(route_iif r2 "$SRC_ADDR" "$GROUP")
+	want=$(vif_index r2 "${EPU}112b")
+	if [ -n "$iif" ] && [ "$iif" = "$want" ]; then
+		ok "r2 (S,G) incoming interface is ${EPU}112b (vif $iif)"
+	else
+		fail "r2 (S,G) incoming interface is vif '$iif', want $want (${EPU}112b)"
+	fi
+	if logged r2 "For src $SRC_ADDR, iif is ${EPU}112b, next hop router is $ALIAS_UP_ADDR: NOT A PIM ROUTER"; then
+		fail "r2 did not map $ALIAS_UP_ADDR to a neighbour at some point, see $WORKDIR/r2.log"
+	else
+		ok "r2 never took $ALIAS_UP_ADDR for a router that does not speak PIM"
+	fi
+	oifs=$(route_oifs r1 "$SRC_ADDR" "$GROUP")
+	if map_isset r1 "$ALIAS_UP_IF" "$oifs"; then
+		ok "r1 (S,G) forwards onto $ALIAS_UP_IF, R2's Join arrived"
+	else
+		fail "r1 (S,G) outgoing map '$oifs' does not include $ALIAS_UP_IF, no Join from R2"
 	fi
 
 	echo

@@ -44,6 +44,8 @@ typedef struct {
     int8_t    tracking_support;
     uint16_t  propagation_delay;
     uint16_t  override_interval;
+    uint8_t  *addr_list;	/* Address List option, in the message */
+    uint16_t  addr_list_len;
 } pim_hello_opts_t;
 
 /*
@@ -55,6 +57,7 @@ static int dr_election             (struct uvif *v);
 static int restart_dr_election     (struct uvif *v);
 static int parse_pim_hello         (char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts);
 static void cache_nbr_settings     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
+static void cache_nbr_secaddrs     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
 static int send_pim_register_stop  (uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, uint32_t inner_source);
 static build_jp_message_t *get_jp_working_buff (void);
 static void return_jp_working_buff (pim_nbr_entry_t *pim_nbr);
@@ -558,6 +561,7 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
      * interface held off for a winner that is gone is loss for nothing. */
     assert_neighbor_gone(nbr_delete->vifi, nbr_delete->address, "went away");
 
+    free(nbr_delete->secaddrs);
     free(nbr_delete);
 }
 
@@ -764,6 +768,48 @@ static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t
 		break;
 	    }
 
+	    case PIM_HELLO_ADDR_LIST: {
+		pim_encod_uni_addr_t eua = { 0 };
+		uint8_t *list = data;
+		uint16_t i;
+
+		/* RFC 7761 sec. 4.3.4: every address in the option is of one
+		 * family.  A list that is not all IPv4, or is not a whole
+		 * number of IPv4 entries, is not one this router can map a
+		 * next hop through, and is read as no list at all -- which
+		 * takes the neighbor's secondaries away rather than keeping
+		 * ones it no longer advertises.  The Hello itself stands: the
+		 * option being there is no reason to lose the neighbor.
+		 */
+		if (opt_len % PIM_ENCODE_UNI_ADDR_LEN) {
+		    IF_DEBUG(DEBUG_PIM_HELLO)
+			logit(LOG_INFO, 0, "PIM HELLO Address List from %s: length %u is not a list of IPv4 addresses",
+			      inet_fmt(src, s1, sizeof(s1)), opt_len);
+		    opts->addr_list     = NULL;
+		    opts->addr_list_len = 0;
+		    break;
+		}
+
+		for (i = 0; i < opt_len; i += PIM_ENCODE_UNI_ADDR_LEN) {
+		    GET_EUADDR(&eua, data);
+		    if (!encoded_addr_ok(eua.addr_family, eua.encod_type))
+			break;
+		}
+
+		if (i < opt_len) {
+		    IF_DEBUG(DEBUG_PIM_HELLO)
+			logit(LOG_INFO, 0, "PIM HELLO Address List from %s: address family %u type %u is not IPv4",
+			      inet_fmt(src, s1, sizeof(s1)), eua.addr_family, eua.encod_type);
+		    opts->addr_list     = NULL;
+		    opts->addr_list_len = 0;
+		    break;
+		}
+
+		opts->addr_list     = list;
+		opts->addr_list_len = opt_len;
+		break;
+	    }
+
 	    default:
 		break;		/* Ignore any unknown options */
 	}
@@ -799,6 +845,85 @@ static void cache_nbr_settings(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
     nbr->tracking_support  = opts->tracking_support;
     nbr->propagation_delay = opts->propagation_delay;
     nbr->override_interval = opts->override_interval;
+
+    cache_nbr_secaddrs(nbr, opts);
+}
+
+/* Drop addr from the secondary addresses of neighbor nbr, if it has it */
+static int nbr_forget_secaddr(pim_nbr_entry_t *nbr, uint32_t addr)
+{
+    uint16_t i;
+
+    for (i = 0; i < nbr->nsecaddrs; i++) {
+	if (nbr->secaddrs[i] != addr)
+	    continue;
+
+	nbr->secaddrs[i] = nbr->secaddrs[--nbr->nsecaddrs];
+	return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * RFC 7761 sec. 4.3.4.  The list in a Hello replaces the one the neighbor
+ * had, and a Hello without the option leaves it none.  The neighbor's own
+ * primary address is not a secondary of itself, even when it lists it.
+ *
+ * An address another neighbor on the link has advertised belongs to whoever
+ * advertised it last, and the section wants the move reported, rate limited:
+ * two routers configured with the same address would otherwise say so twice
+ * a Hello period for as long as they both run.
+ */
+static void cache_nbr_secaddrs(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
+{
+    static time_t last_conflict;
+    pim_encod_uni_addr_t eua;
+    pim_nbr_entry_t *other;
+    uint32_t *list = NULL;
+    uint16_t num = 0, max, i;
+    uint8_t *data = opts->addr_list;
+    time_t now;
+
+    max = opts->addr_list_len / PIM_ENCODE_UNI_ADDR_LEN;
+    if (max) {
+	list = calloc(max, sizeof(*list));
+	if (!list)
+	    logit(LOG_WARNING, errno, "Failed allocating secondary addresses of PIM neighbor %s",
+		  inet_fmt(nbr->address, s1, sizeof(s1)));
+    }
+
+    for (i = 0; list && i < max; i++) {
+	GET_EUADDR(&eua, data);
+	if (eua.unicast_addr == nbr->address || !inet_valid_host(eua.unicast_addr))
+	    continue;
+
+	for (other = uvifs[nbr->vifi].uv_pim_neighbors; other; other = other->next) {
+	    if (other == nbr || !nbr_forget_secaddr(other, eua.unicast_addr))
+		continue;
+
+	    now = time(NULL);
+	    if (now - last_conflict < PIM_TIMER_HELLO_INTERVAL)
+		continue;
+
+	    last_conflict = now;
+	    logit(LOG_WARNING, 0, "PIM neighbors %s and %s on %s both advertise secondary address %s, using %s",
+		  inet_fmt(other->address, s1, sizeof(s1)), inet_fmt(nbr->address, s2, sizeof(s2)),
+		  uvifs[nbr->vifi].uv_name, inet_fmt(eua.unicast_addr, s3, sizeof(s3)),
+		  inet_fmt(nbr->address, s4, sizeof(s4)));
+	}
+
+	list[num++] = eua.unicast_addr;
+    }
+
+    if (!num) {
+	free(list);
+	list = NULL;
+    }
+
+    free(nbr->secaddrs);
+    nbr->secaddrs  = list;
+    nbr->nsecaddrs = num;
 }
 
 /*
@@ -914,6 +1039,18 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     PUT_HOSTSHORT(PIM_HELLO_GENID, data);
     PUT_HOSTSHORT(PIM_HELLO_GENID_LEN, data);
     PUT_HOSTLONG(v->uv_genid, data);
+
+    /* RFC 7761 sec. 4.3.1: MUST be included whenever the interface has
+     * secondary addresses.  Without it a neighbor whose route to a source
+     * names one of them as next hop has no PIM neighbor to join through. */
+    if (v->uv_nsecaddrs) {
+	u_int i;
+
+	PUT_HOSTSHORT(PIM_HELLO_ADDR_LIST, data);
+	PUT_HOSTSHORT(v->uv_nsecaddrs * PIM_ENCODE_UNI_ADDR_LEN, data);
+	for (i = 0; i < v->uv_nsecaddrs; i++)
+	    PUT_EUADDR(v->uv_secaddrs[i], data);
+    }
 
     len = data - (uint8_t *)buf;
     send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_HELLO, len);
@@ -4642,18 +4779,8 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    return FALSE;	/* Shoudn't arrive on that interface */
 
 	/* Find the upstream router */
-	for (n = uvifs[incoming].uv_pim_neighbors; n; n = n->next) {
-	    if (ntohl(neighbor_addr) < ntohl(n->address))
-		continue;
-
-	    if (neighbor_addr == n->address) {
-		rpf_neighbor = n;
-		break;
-	    }
-
-	    return FALSE;	/* No neighbor toward BSR found */
-	}
-
+	n = find_pim_nbr_nexthop(incoming, neighbor_addr);
+	rpf_neighbor = n;
 	if (!n || n->address != src)
 	    return FALSE;	/* Sender of this message is not the RPF neighbor */
 

@@ -190,6 +190,7 @@ void zero_vif(struct uvif *v, int t)
     v->uv_acl		= (struct vif_acl *)NULL;
     RESET_TIMER(v->uv_leaf_timer);
     v->uv_addrs		= (struct phaddr *)NULL;
+    v->uv_nsecaddrs	= 0;
     v->uv_nbr_acl	= (struct phaddr *)NULL;
     v->uv_filter	= (struct vif_filter *)NULL;
 
@@ -577,6 +578,42 @@ static void renumber_vif(vifi_t vifi, uint32_t addr, uint32_t mask)
 
 
 /*
+ * The addresses interface ifname has besides primary, the one its VIF is
+ * built on, in the order getifaddrs() gives them: what the Address List
+ * option of RFC 7761 sec. 4.3.4 advertises, so that a neighbor whose route
+ * names one of them as next hop knows the Join goes to primary.  At most
+ * MAX_SECADDRS are written to list, but the count returned is of all of
+ * them, so that the one caller that reports a longer list can; the poll
+ * below runs every tick and would repeat it.
+ */
+u_int vif_secaddrs(struct ifaddrs *ifap, const char *ifname, uint32_t primary, uint32_t *list)
+{
+    struct ifaddrs *ifa;
+    u_int num = 0;
+
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+	uint32_t addr;
+
+	if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+	    continue;
+
+	if (strcmp(ifa->ifa_name, ifname))
+	    continue;
+
+	addr = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+	if (addr == primary || !inet_valid_host(addr))
+	    continue;
+
+	if (num < MAX_SECADDRS)
+	    list[num] = addr;
+	num++;
+    }
+
+    return num;
+}
+
+
+/*
  * Compare each VIF against the address the kernel has for its interface now.
  * The first address of an interface is the one config_vifs_from_kernel()
  * builds the VIF on -- the others become altnets -- so the same walk is used
@@ -596,6 +633,10 @@ static void check_vif_addrs(void)
     }
 
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
+	uint32_t secaddrs[MAX_SECADDRS];
+	uint32_t prev_addr = v->uv_lcl_addr;
+	u_int nsecaddrs;
+
 	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_TUNNEL))
 	    continue;
 
@@ -623,6 +664,23 @@ static void check_vif_addrs(void)
 	    renumber_vif(vifi, addr, mask);
 	    break;		/* Only the first address of the interface */
 	}
+
+	/* RFC 7761 sec. 4.3.1: a secondary address that changes is announced
+	 * at once, in a Hello with the new Address List.  A renumbered VIF
+	 * needs no Hello of its own here, start_vif() has already armed the
+	 * one that will carry the list. */
+	nsecaddrs = MIN(vif_secaddrs(ifap, v->uv_name, v->uv_lcl_addr, secaddrs), MAX_SECADDRS);
+	if (nsecaddrs == v->uv_nsecaddrs &&
+	    !memcmp(secaddrs, v->uv_secaddrs, nsecaddrs * sizeof(secaddrs[0])))
+	    continue;
+
+	logit(LOG_NOTICE, 0, "VIF #%u: interface %s now has %u secondary address(es)",
+	      vifi, v->uv_name, nsecaddrs);
+	memcpy(v->uv_secaddrs, secaddrs, nsecaddrs * sizeof(secaddrs[0]));
+	v->uv_nsecaddrs = nsecaddrs;
+
+	if (prev_addr == v->uv_lcl_addr && !(v->uv_flags & VIFF_DOWN))
+	    send_pim_hello(v, pim_timer_hello_holdtime);
     }
 
     freeifaddrs(ifap);

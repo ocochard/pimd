@@ -93,8 +93,9 @@ adjacent to the BSR and the RP and where the shared tree and the shortest path t
 different interfaces, `ssm` and `ssm-range` are the only ones about IGMP state rather than PIM
 forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asserts both halves of
 the replacement), `alias` the only one where an interface carries more than one address, so the only
-one that reaches the alias branch of `config_vifs_from_kernel()` and the only one whose sender sits
-on a subnet the VIF does not own, `ifgone` and `renumber` the only ones about what pimd does
+one that reaches the alias branch of `config_vifs_from_kernel()`, the only one whose sender sits
+on a subnet the VIF does not own, and the only one where a next hop is a router's secondary
+address, reached through the Hello Address List of RFC 7761 sec. 4.3.4, `ifgone` and `renumber` the only ones about what pimd does
 when an interface it has a VIF on changes underneath it -- destroyed in the first, given a new
 address in the second -- `crafted` the only one whose messages pimd did not build, driving
 `test/pimsend.c` to assert what the parsers refuse -- the whole packet format section of
@@ -105,6 +106,7 @@ rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents 
 alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
 played by pimsend from R2's jail), a longer group range taking over the groups inside it
 (RFC 7761 sec. 4.7.1),
+the Hello Address List of sec. 4.3.4 parsed from a list pimd did not write,
 a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole
 scenario with configured so that every other assertion is a soak test of it -- with a positive control beside each,
