@@ -987,9 +987,10 @@ forged message of each kind buys an attacker, sec. 6.3 points at RFC 5796 for
 IPsec, and sec. 6.4 names two denial-of-service attacks without asking for
 anything.  The normative content is sec. 6.2, five sentences, and they are
 what this section measures.  Two of them are kept and are described in the
-last section of this file; of the other three, A2 below is kept everywhere
-but one branch and A1 and A3 are not kept at all.  A4 is what sec. 6.4
-describes and nothing in pimd bounds.  The first section of this file is the
+last section of this file; a third is kept as of the `register-accept-from`
+setting, and A3 below is what that setting cannot reach.  Of the two left,
+A2 is kept everywhere but one branch and A1 is not kept at all.  A4 is what
+sec. 6.4 describes and nothing in pimd bounds.  The first section of this file is the
 neighbouring one: it holds the entries where a parser could be walked off the
 end, V1 through V6, and this one holds the entries where a well-formed
 message from the wrong sender is acted on, or an unbounded number of them
@@ -1048,28 +1049,43 @@ of the few entries in the file a lab could reach without crafting a packet:
 `arista-rp` in `test/freebsd-interop.sh` already has a foreign BSR whose
 Bootstraps pimd accepts.*
 
-**A3.  An RP accepts a Register from anybody.**  Sec. 6.2 asks for a
-mechanism "to allow an RP to restrict the range of source addresses from which
-it accepts Register-encapsulated packets", and pimd has none.  What it does
-have is the rest of the Register path in good order: V3 stopped a Register
-from creating state before the I\_am\_RP test, and the entry that survives it
-is only created when this router really is the RP for the group and the
-Register was addressed to that RP (`src/pim_proto.c:1017-1030`).  So the
-attack this leaves is the one sec. 6.1.2 names first: a group with a live
-shared tree, and anyone in the world who can unicast to the RP encapsulating
-whatever they like to it, which the kernel decapsulates onto that tree.  There
-is no filter to configure and no address the code will refuse.
+**A3.  The Register filter cannot reach the packet it is about.**
+Sec. 6.2's mechanism "to allow an RP to restrict the range of source
+addresses from which it accepts Register-encapsulated packets" exists now:
+`register-accept-from` in `pimd.conf`, one or more prefixes, matched against
+the sender of the Register in `receive_pim_register()`, and accepting
+everything while unconfigured as the same section's last sentence requires.
+What it refuses is everything the daemon would have done -- the (S,G) the
+Register would have created, the Keepalive Timer it would have refreshed,
+and the Register-Stop that would have gone back, which is withheld on
+purpose because answering tells a forger it found the RP.
 
-Being unicast, this is the one attack in sec. 6 that does not need the
-attacker anywhere near the network -- every other message here is link-local
-and arrives only from a directly connected host.  An address range in
-`pimd.conf` is the answer sec. 6.2 gives; it defaults to allowing everything,
-per the same last sentence A1 quotes.
-*Check: sec. 6.2, `doc/rfc7761.txt:7380`, with the attack at sec. 6.1.2,
-`:7352`.  Effort: small -- one list, tested in `receive_pim_register()` beside
-the checks already there.  Test: none, and asserting it wants a host that
-registers without being a DR, which is the same hand-built packet the packet
-format section asks for.*
+What it does not refuse is the packet.  Decapsulating a Register is the
+kernel's work, which the last section of this file already records as the
+literal reading of sec. 4.4.2, and the kernel does it first: FreeBSD's
+`pim_input()` copies the header for the daemon and then hands the inner
+packet to `if_simloop()` on the register vif
+(`/usr/src/sys/netinet/ip_mroute.c`), and Linux's `ipmr` is built to the
+same model.  Neither asks whether the outer destination is an RP address,
+let alone who sent it.  So for a group whose shared tree is up -- which is
+the only case where the forged packet has anywhere to go -- sec. 6.1.2's
+first attack still lands, and every userspace filter pimd could grow lands
+after it.
+
+That leaves the honest answer being a packet filter for IP protocol 103 in
+front of the RP, which `pimd.conf.5` now says.  It is worth writing down
+rather than closing, because the entry that reads as closed is the one
+somebody will trust: the setting is real and worth having, and it is not
+the control an operator will assume it is from its name.
+*Check: sec. 6.2, `doc/rfc7761.txt:7380`, for the mechanism, which is now
+provided; the attack that outlives it is sec. 6.1.2, `:7352`, and the note
+that makes the decapsulation the kernel's is sec. 4.4.2, `:2420`.  Effort:
+out of reach from here -- it wants a kernel that filters before it
+decapsulates, or a `MRT_*` interface that hands the Register to the daemon
+first.  Test: none.  Asserting the half that is fixed is within reach of
+`test/freebsd-lab.sh`, whose `rpt` scenario has an RP and a registering DR:
+a `register-accept-from` that excludes the DR, and a `pimctl show mrt` on
+the RP with no (S,G) in it.*
 
 **A4.  Nothing bounds the state a stranger can make pimd hold.**  Sec. 6.4
 names two attacks, packets to many group addresses and a flood of forged

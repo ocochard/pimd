@@ -8,6 +8,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
 **Note:** command line arguments in v3.0 are not compatible with v2.x!
 
 ### Changes
+- New `register-accept-from` setting in `pimd.conf`, the routers an RP
+  accepts PIM Register messages from.  RFC 7761 sec. 6.2 asks for it and
+  requires it to default to accepting every sender, which is what a
+  configuration without the setting does, so nothing changes until it is
+  used.  Without it any host able to unicast to an RP can have traffic of
+  its choosing decapsulated onto a shared tree, which is the attack
+  sec. 6.1.2 describes.  It matches the sender of the Register, the DR,
+  rather than the source address of the encapsulated packet, which is a
+  different control.  Note that it refuses the routing state, the
+  keepalive and the Register-Stop, and not the encapsulated packet
+  itself: decapsulating is the kernel's work and happens before pimd is
+  handed the message, so an RP that must keep forged traffic off a shared
+  tree needs a packet filter for IP protocol 103 as well
 - Remove RSRR, Routing Support for Resource Reservation, the RSVP
   interface built with `--enable-rsrr`.  It implemented
   draft-ietf-rsvp-routing-02, an Internet-Draft that expired without

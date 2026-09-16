@@ -925,6 +925,30 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
         }
     }
 
+    /* RFC 7761 sec. 6.2: the range of senders an RP accepts
+     * Register-encapsulated packets from is configurable, and accepts
+     * everything until it is configured.  Nothing is sent back to a sender
+     * outside it: a Register-Stop would tell a forger it found the RP, and
+     * sec. 6.1.2's attacker is anywhere in the network rather than on a
+     * link we can see.
+     *
+     * This is the control plane only, and cannot be otherwise.  The kernel
+     * decapsulates a Register and loops the inner packet back on the
+     * register vif before the daemon is given its copy of the header --
+     * FreeBSD's pim_input() does it in ip_mroute.c and Linux's ipmr is
+     * built the same way -- so what this refuses is the state, the
+     * Keepalive Timer refresh and the Register-Stop, not the bytes.  An RP
+     * that has to keep forged traffic off the shared tree needs a packet
+     * filter on IP protocol 103 as well; pimd.conf.5 says so.
+     */
+    if (!register_accepted_from(reg_src)) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_DEBUG, 0, "PIM register from %s: sender not in the register-accept-from list",
+		  inet_fmt(reg_src, s1, sizeof(s1)));
+
+	return FALSE;
+    }
+
     IF_DEBUG(DEBUG_PIM_REGISTER)
         logit(LOG_DEBUG, 0, "Received PIM register: len = %zu from %s",
               len, inet_fmt(reg_src, s1, sizeof(s1)));

@@ -68,6 +68,7 @@
 #define CONF_HELLO_INTERVAL                     16
 #define CONF_DISABLE_VIFS                       17
 #define CONF_SSM_RANGE                          18
+#define CONF_REGISTER_ACCEPT_FROM               19
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -105,6 +106,24 @@ struct ssm_range {
 #define SSM_MAX_RANGES 255
 
 /*
+ * One prefix from a register-accept-from in pimd.conf: a router whose
+ * Register messages this RP is willing to act on.  RFC 7761 sec. 6.2 asks
+ * for the option and requires that it default to accepting everything, so
+ * an empty list means no restriction rather than no sender.
+ */
+struct reg_acl {
+    struct reg_acl *next;
+
+    uint32_t  addr;		/* Network byte order, masked */
+    uint32_t  mask;		/* Network byte order */
+    uint32_t  masklen;
+};
+
+/* Walked once per Register from an unknown sender, so bounded like the
+ * SSM ranges above. */
+#define REG_ACL_MAX_ENTRIES 255
+
+/*
  * Global settings
  */
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
@@ -122,6 +141,7 @@ static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
 
 static uint32_t          lineno;
 static struct ssm_range *ssm_list = NULL;
+static struct reg_acl   *reg_acl_list = NULL;
 extern struct rp_hold   *g_rp_hold;
 
 
@@ -575,6 +595,8 @@ static int parse_option(char *word)
 	return CONF_GROUP_PREFIX;
     if (EQUAL(word, "ssm-range"))
 	return CONF_SSM_RANGE;
+    if (EQUAL(word, "register-accept-from"))
+	return CONF_REGISTER_ACCEPT_FROM;
     if (EQUAL(word, "spt-threshold"))
 	return CONF_SPT_THRESHOLD;
     if (EQUAL(word, "default-route-metric"))
@@ -721,6 +743,106 @@ void dump_ssm_ranges(FILE *fp)
     fprintf(fp, "SSM group ranges     :");
     for (range = ssm_list; range; range = range->next)
 	fprintf(fp, " %s/%u", inet_fmt(range->group, s1, sizeof(s1)), range->masklen);
+    fprintf(fp, "\n");
+}
+
+
+static void reset_reg_acl(void)
+{
+    struct reg_acl *acl, *next;
+
+    for (acl = reg_acl_list; acl; acl = next) {
+	next = acl->next;
+	free(acl);
+    }
+
+    reg_acl_list = NULL;
+}
+
+static int add_reg_acl(uint32_t addr, uint32_t masklen)
+{
+    struct reg_acl *acl;
+    size_t num = 0;
+
+    /* VAL_TO_MASK() shifts by 32 - masklen, so bound it here the way
+     * add_ssm_range() does rather than trust the caller. */
+    if (masklen < 1 || masklen > sizeof(uint32_t) * 8) {
+	logit(LOG_WARNING, 0, "Invalid register-accept-from masklen %u, ignoring", masklen);
+	return FALSE;
+    }
+
+    for (acl = reg_acl_list; acl; acl = acl->next)
+	num++;
+
+    if (num >= REG_ACL_MAX_ENTRIES) {
+	logit(LOG_WARNING, 0, "Too many register-accept-from prefixes, at most %d",
+	      REG_ACL_MAX_ENTRIES);
+	return FALSE;
+    }
+
+    acl = calloc(1, sizeof(*acl));
+    if (!acl) {
+	logit(LOG_WARNING, 0, "Out of memory when adding register-accept-from %s/%u",
+	      inet_fmt(addr, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+    VAL_TO_MASK(acl->mask, masklen);
+    acl->addr    = addr & acl->mask;
+    acl->masklen = masklen;
+
+    acl->next = reg_acl_list;
+    reg_acl_list = acl;
+
+    logit(LOG_INFO, 0, "Accepting Register messages from %s/%u",
+	  inet_fmt(acl->addr, s1, sizeof(s1)), masklen);
+
+    return TRUE;
+}
+
+/**
+ * register_accepted_from - May this router register to us?
+ * @addr: Source address of the Register message, in network byte order
+ *
+ * RFC 7761 sec. 6.2: an RP SHOULD be able to restrict the addresses it
+ * accepts Register-encapsulated packets from, and every option of that
+ * kind MUST default to accepting all of them.  The default here is an
+ * empty list, which is that default.
+ *
+ * Returns:
+ * %TRUE if @addr is covered by a register-accept-from prefix, or if none
+ * is configured, o.w. %FALSE
+ */
+int register_accepted_from(uint32_t addr)
+{
+    struct reg_acl *acl;
+
+    if (!reg_acl_list)
+	return TRUE;
+
+    for (acl = reg_acl_list; acl; acl = acl->next) {
+	if ((addr & acl->mask) == acl->addr)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The Register senders we accept, for "pimctl show status".  Silent when
+ * nothing is configured, so that the common case does not grow a line
+ * saying it has no policy.
+ */
+void dump_reg_acl(FILE *fp)
+{
+    struct reg_acl *acl;
+
+    if (!reg_acl_list)
+	return;
+
+    fprintf(fp, "Register accept list :");
+    for (acl = reg_acl_list; acl; acl = acl->next)
+	fprintf(fp, " %s/%u", inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
     fprintf(fp, "\n");
 }
 
@@ -1231,6 +1353,65 @@ static int parse_ssm_range(char *s)
 
   add:
     return add_ssm_range(group, masklen);
+}
+
+
+/**
+ * parse_register_accept_from - Parse register-accept-from configuration.
+ * @s: String token
+ *
+ * The prefixes given are the routers whose Register messages this RP will
+ * act on; every other sender is ignored, silently, because an answer is
+ * what a forged Register wants.  RFC 7761 sec. 6.2 asks for the option and
+ * requires it to default to accepting everything, so an empty list, which
+ * is what a pimd.conf without this keyword leaves, accepts every sender.
+ *
+ * Note that this matches the sender of the Register, the DR, and not the
+ * source address of the packet inside it -- Cisco's 'ip pim accept-register'
+ * is the latter and is a different control.  Note also that it reaches the
+ * control plane only; see the comment in receive_pim_register().
+ *
+ * Syntax:
+ * register-accept-from <address>[/<masklen>]
+ *                      <address> [masklen <masklen>]
+ *
+ * Returns:
+ * %TRUE if the parsing was successful, o.w. %FALSE
+ */
+static int parse_register_accept_from(char *s)
+{
+    uint32_t masklen = sizeof(uint32_t) * 8;
+    const char *errstr;
+    long long num;
+    uint32_t addr;
+    char *w;
+
+    w = next_word(&s);
+    if (EQUAL(w, "")) {
+	WARN("Missing register-accept-from address");
+	return FALSE;
+    }
+
+    parse_prefix_len(w, &masklen);
+
+    addr = inet_parse(w, 4);
+    if (addr == 0xffffff || !inet_valid_host(addr)) {
+	WARN("Invalid register-accept-from address '%s'", w);
+	return FALSE;
+    }
+
+    if (EQUAL((w = next_word(&s)), "masklen")) {
+	w = next_word(&s);
+	num = strtonum(w, 1, sizeof(uint32_t) * 8, &errstr);
+	if (errstr) {
+	    WARN("Invalid register-accept-from masklen %s, %s", w, errstr);
+	    return FALSE;
+	}
+
+	masklen = (uint32_t)num;
+    }
+
+    return add_reg_acl(addr, masklen);
 }
 
 
@@ -1830,6 +2011,7 @@ void config_vifs_from_file(void)
     cand_rp_flag = FALSE;
     cand_bsr_flag = FALSE;
     reset_ssm_ranges();
+    reset_reg_acl();
 
     fp = fopen(config_file, "r");
     if (!fp) {
@@ -1875,6 +2057,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_SSM_RANGE:
 		parse_ssm_range(s);
+		break;
+
+	    case CONF_REGISTER_ACCEPT_FROM:
+		parse_register_accept_from(s);
 		break;
 
 	    case CONF_BOOTSTRAP_RP:

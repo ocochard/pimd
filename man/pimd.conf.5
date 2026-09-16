@@ -282,6 +282,41 @@ be either a unicast address or a multicast group, with an optional group
 address and netmask.  Default group and netmask is 224.0.0.0/16.
 .Sy Note:
 all static RP's are announced with priority 1 (second highest, see above).
+.It Cm register-accept-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len
+The routers this rendezvous point (RP) accepts PIM Register messages
+from.  A Register is unicast, so without this any host that can reach the
+RP can have traffic of its choosing decapsulated onto a shared tree the
+RP is the root of, which is the attack RFC 7761 sec. 6.1.2 describes.
+The same section's sec. 6.2 asks for this option and requires it to
+default to accepting every sender, so a configuration without this
+setting accepts Registers from anywhere, as earlier versions always did.
+.Pp
+Multiple lines may be given; a sender matching any of them is accepted
+and the rest are ignored without an answer, since a Register-Stop would
+tell a forged sender that it reached the RP.  A prefix length may be left
+out, in which case it is 32, a single router.
+.Pp
+.Sy Note:
+this matches the address the Register was sent from, i.e. the designated
+router that encapsulated the packet, and not the source address of the
+packet inside it.  Cisco's
+.Cm ip pim accept-register
+is the latter and is a different control.  Note also that an attacker
+able to spoof the source address of a unicast packet is not stopped by
+this, only one that cannot.
+.Pp
+.Sy Important:
+this setting reaches the control plane only.  Decapsulating a Register is
+the kernel's work, not
+.Nm pimd Ns 's,
+and the kernel loops the inner packet back on the register interface
+before the daemon is handed the header to act on.  What this setting
+refuses is the multicast routing state, the keepalive it would refresh
+and the Register-Stop that would be sent back \(em not the encapsulated
+packet, which has already been forwarded if the group has a shared tree
+to forward it on.  An RP that must keep forged traffic off that tree
+needs a packet filter for IP protocol 103 in front of it; this setting
+does not replace one.
 .It Cm spt-threshold Oo Cm rate Ar KBPS | Cm packets Ar NUM | Cm infinity Oc Oo Cm interval Ar SEC Oc
 This replaces two previous configuration settings:
 .Cm switch_data_threshold
