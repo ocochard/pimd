@@ -550,45 +550,51 @@ refuse to act on them.  pimd keeps both rules about what it sends itself.
 What follows is the two rules about what arrives that it does not keep, S3
 and S4; the IGMP side of the same problem, S5, which RFC 4604 owns rather
 than this spec; and what it costs that pimd has no SSM-specific state and
-invents an RP for every SSM group instead, S1 and S2.  Which of them
-bite depends on the RP set: an RP whose group range covers 232.0.0.0/8, which
-is what `group-prefix 224.0.0.0 masklen 4` does and what every scenario in
-`test/freebsd-lab.sh` configures, keeps S1 from ever arming and makes S4
-reachable, and a range that stops short of the SSM groups does the opposite.
+invents an RP for every SSM group instead, S1 and S2.  S1 is the one to read
+first: the RP pimd manufactures for an SSM group is what decides `i_am_rp()`
+in S2 and what a Join has to name in S4, so the shape of all three follows
+from it.
 
-**S1.  The RP pimd invents for an SSM group times out after 90 seconds and
-takes the group's state with it.**  An SSM group has no RP, and `find_route()`
-wants one anyway, so when nothing in the RP set matches it adds a virtual
-entry for 169.254.0.1 on a /32 prefix of that group's own
+**S1.  Every SSM group is given an RP that does not exist.**  An SSM group
+has no RP and the code wants one anyway, so pimd manufactures one, twice
+over and in two different places.  `config_vifs_from_file()` ends by
+synthesizing a static `rp-address 169.254.0.1` for each SSM range in effect,
+the default 232.0.0.0/8 included and even when there is no `pimd.conf` at
+all (`src/config.c:2104-2113`); and `find_route()` has a second copy of the
+same idea for a group that still matches no RP, at a /32 prefix of its own
 (`src/mrt.c:209-219`, with the TODO that says the real fix is SSM-specific
-state).  It is added with a holdtime of 90 seconds, and `age_misc()` ages
-every RP entry whose holdtime is under 60000 without caring where it came from
-(`src/rp.c:1046-1052`).  Nothing refreshes it: `find_route()` adds it only
-`if (rp_match(group) == NULL)`, and while it exists that test is false, so the
-one path that would update the holdtime of an existing entry is never reached.
+state).  The first is why the second is unreachable: a static entry answers
+`rp_match()` for every group in every range, so the branch in `find_route()`
+is dead code in any configuration a `pimd.conf` can express.
 
-Ninety seconds after the first packet of a group, therefore,
-`delete_rp_grp_entry()` remaps the groups on the entry, `rp_grp_match()`
-returns NULL because there was never another mapping, and `remap_grpentry()`
-does the only thing it can with a group it cannot map: `delete_grpentry()`
-(`src/rp.c:745`), which frees every (S,G) of that group and every kernel cache
-entry with it (`src/mrt.c:378`).  On the first hop router the next packet is a
-cache miss and the DR branch recreates the state at once.  On a last hop
-router it is not: `process_cache_miss()` looks the entry up with
-`DONT_CREATE` (`src/route.c:1280`), so nothing comes back until the next IGMP
-membership report or a downstream Join arrives, and the receiver's membership
-is refreshed at the query interval, 125 seconds by default.  The signature to
-look for is a group that `pimctl show igmp` still lists a member for while
-`pimctl show mrt` has nothing.
+That matters because the two are not equivalent.  The synthesized static RP
+carries the static holdtime, 0xffff, which `age_misc()` leaves alone
+(`src/rp.c:1046`, which ages an entry only below 60000).  The one in
+`find_route()` is added with a holdtime of 90 seconds that nothing ever
+refreshes -- it is added only `if (rp_match(group) == NULL)`, and while it
+exists that test is false, so the path that would update an existing entry's
+holdtime is never reached.  Were it ever reached, 90 seconds later
+`delete_rp_grp_entry()` would remap the groups on it, `rp_grp_match()` would
+answer NULL, and `remap_grpentry()` would do the only thing it can with a
+group it cannot map: `delete_grpentry()` (`src/rp.c:745`), freeing every
+(S,G) of the group and every kernel cache entry with it (`src/mrt.c:378`).
+R1 is the way in, and the only one: a Bootstrap carrying the same group
+prefix as the synthesized static RP deletes it through the fragment tag
+collector, and from the next packet on the group is running on a 90-second
+RP that takes the group down with it when it expires.
+
+So what is wrong here is not a live teardown, it is that an SSM group
+carries RP state at all: a fictional address in `pimctl show rp`, a
+group-to-RP mapping that decides `i_am_rp()` for S2, and a second
+implementation of the same fiction behind it with a timer the first one does
+not have.
 *Check: sec. 4.8.1, `doc/rfc7761.txt:5685`, is the rule pimd is on the far
 side of -- it MAY optimize the (\*,G) state out for SSM, and pimd instead
-gives SSM groups more RP state than an ASM group has.  Effort: small to stop
-it aging, medium to do what the TODO asks and keep SSM groups out of the RP
-machinery.  Test: none.  `ssm` in `test/freebsd-lab.sh` builds the topology
-but not the condition: its R2 advertises `group-prefix 224.0.0.0 masklen 4`,
-which covers 232.0.0.0/8, so `rp_match()` answers and the virtual RP is never
-created.  Narrowing that prefix, or dropping the RP altogether as an SSM-only
-domain would, is the whole setup.*
+gives an SSM group more RP state than an ASM group has.  Effort: medium, and
+it is the TODO's answer rather than a smaller one: keep SSM groups out of the
+RP machinery, which deletes both copies.  Test: none.  The first copy is
+visible in any run -- `pimctl show rp` on any router lists 169.254.0.1 -- and
+reaching the second needs R1 first, which no scenario builds.*
 
 **S2.  The DR puts the register vif in the oifs of an SSM source.**  Rule
 three of sec. 4.8.1 is kept where it is written: `send_pim_register()` returns
@@ -648,11 +654,12 @@ and `join_or_prune()` refuses to send for a (\*,G) in it
 The only thing standing between a legacy router's Join(\*,G) for 232.1.1.1
 and a (\*,G) entry is the
 RP match of sec. 4.5.1 (`src/pim_proto.c:2389`, against the `rp_match()` at
-`:2209`), so in a domain whose RP set covers 232.0.0.0/8 -- where the legacy
-router got the RP it names from the same BSR pimd did -- the addresses agree
-and the entry is created.  From there `calc_oifs()` merges the (\*,G)'s
-`joined_oifs` into every (S,G) of the group (`src/route.c:887-896`), which is
-the forwarding rule four forbids.
+`:2209`), and for an SSM group that answers with the 169.254.0.1 of S1, so
+what it takes is a Join naming that address.  A router that learned its RP
+from the BSR will not; a crafted one, or an implementation that maps SSM
+groups to a real RP of its own, will.  From there `calc_oifs()` merges the
+(\*,G)'s `joined_oifs` into every (S,G) of the group
+(`src/route.c:887-896`), which is the forwarding rule four forbids.
 *Check: sec. 4.8.1, `doc/rfc7761.txt:5676`, with the last paragraph of the
 section at `:5689` for whose messages these are.  Effort: small -- refuse the
 (\*,G) and (S,G,rpt) arms of `receive_pim_join_prune()` for a group in the
