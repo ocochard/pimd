@@ -54,7 +54,7 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Sixteen scenarios are built on that topology.  Most differ only in which
+# Seventeen scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
@@ -486,6 +486,40 @@
 #               the entry in doc/rfc7761-compliance.md stays open.
 #               Takes about 2 minutes.
 #
+#   static-rp   The rpt topology with nothing forwarded, and the only
+#               scenario where a router has an RP of its own configuration
+#               beside the one the BSR advertises.  RFC 7761 sec. 4.7
+#               requires both to be supported; it gives no precedence rule
+#               between them, and this is not about precedence.
+#
+#               R3 gets one "rp-address" line.  With no group after the
+#               address that covers 224.0.0.0/4 (src/config.c), which is
+#               the prefix r2.conf's Candidate-RP is advertised under, so
+#               the configured entry and the learned ones share a single
+#               grp_mask_t -- and that is the whole mechanism.  A Bootstrap
+#               stamps the prefix with its own fragment tag, and the
+#               garbage collector at the end of receive_pim_bootstrap()
+#               deletes every RP on a stamped prefix whose own tag differs.
+#               The configured entry never carried that tag, so the first
+#               Bootstrap deleted it.
+#
+#               The configured RP is R2's address on the R3 link while the
+#               BSR advertises R2's address on the R1 link: the same router
+#               under two addresses, which they have to be.  add_rp_grp_entry()
+#               (src/rp.c) merges an advertisement for an RP and prefix it
+#               already holds into the existing entry, so with one address
+#               a configured entry that survived would look exactly like
+#               one the BSR had just put back.
+#
+#               Step 5 is what it cost rather than what it was.  Only
+#               restart() reads g_rp_hold again (src/main.c), so the
+#               configured RP did not come back on its own: a router that
+#               lost it this way aged the learned RP set out when the BSR
+#               died and was left with no RP at all until somebody sent it
+#               a SIGHUP.  The scenario kills the BSR and asserts the
+#               configured RP is still there.  Takes about 3 minutes, most
+#               of it that wait.
+#
 #   crafted     The rpt topology with nothing forwarded, and the only
 #               scenario whose messages pimd did not build.  Every other
 #               test here has pimd at both ends, so the only messages pimd
@@ -574,7 +608,8 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifgone", "renumber", "register-filter", "crafted", or "all" for run.
+# "ifgone", "renumber", "register-filter", "crafted", "static-rp", or "all"
+# for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -678,11 +713,11 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifgone renumber register-filter crafted"
+	   ifgone renumber register-filter crafted static-rp"
 SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias crafted ssm ifgone renumber
-		     ssm-range"
+		     rpt register-filter alias crafted static-rp ssm ifgone
+		     renumber ssm-range"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -888,6 +923,14 @@ SSM_SRC1=${SSM_SRC1:-10.0.1.10}
 SSM_SRC2=${SSM_SRC2:-10.0.1.11}
 SSM_MAX_SOURCES=${SSM_MAX_SOURCES:-256}
 
+# A second SSM group, used only by the any-source assertion, and separate
+# from $GROUP on purpose: accept_group_report() (src/igmp_proto.c) takes the
+# "found it, reset its timer" path for a group it already holds, so a v2
+# report for a group the assertions above have built state for never reaches
+# the code that reads the report's destination as a source.  Reproducing
+# that needs a group nothing has reported yet.
+SSM_V2_GROUP=${SSM_V2_GROUP:-232.1.1.9}
+
 # ssm-range: the range pimd.conf configures, a group inside it, and the
 # group from the default range that has to stop being source specific once
 # the configured one replaces it.
@@ -895,6 +938,14 @@ SSMR_RANGE=${SSMR_RANGE:-239.232.0.0/16}
 SSMR_GROUP=${SSMR_GROUP:-239.232.1.1}
 SSMR_OLD_GROUP=${SSMR_OLD_GROUP:-232.1.1.1}
 SSMR_DEFAULT_RANGE=232.0.0.0/8
+
+# static-rp: the RP R3's pimd.conf names, and how long the learned one may
+# take to age out once the BSR is killed.  R2's address on the R3 link, so
+# the configured RP and the advertised one ($RP_ADDR, R2's address on the R1
+# link) are the same router under two addresses and cannot be merged into
+# one entry -- see check_static_rp() for why that matters.
+STATICRP_ADDR=${STATICRP_ADDR:-10.0.23.2}
+STATICRP_WAIT=${STATICRP_WAIT:-180}
 
 # crafted: the addresses and the one bad byte that scenario is built on.
 #
@@ -1073,7 +1124,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1580,6 +1631,31 @@ write_configs() {
 		# R3: last hop router for the receiver LAN
 		ssm-range $SSMR_RANGE
 		igmp-query-interval $SSM_QUERY_INTERVAL
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = static-rp ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router, no BSR/RP role
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point for all of
+		# 224.0.0.0/4, advertised under the address facing R1
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# One line, and the whole scenario.  No group after the
+		# address means 224.0.0.0/4 (src/config.c), the same prefix
+		# R2 advertises under, so the configured entry and the
+		# learned ones share one grp_mask_t -- which is what let a
+		# Bootstrap collect the configured one.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: the only router with an RP of its own configuration
+		rp-address $STATICRP_ADDR
 		EOF
 		return
 	fi
@@ -2826,6 +2902,7 @@ check() {
 	renumber)   check_renumber; return $? ;;
 	register-filter) check_register_filter; return $? ;;
 	crafted)    check_crafted; return $? ;;
+	static-rp)  check_static_rp; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -3156,6 +3233,97 @@ regf_acl_is() {
 }
 
 
+
+# static-rp: RFC 7761 sec. 4.7, "A PIM router MUST support the static
+# configuration of group-to-RP mappings", against a domain that also has a
+# BSR.  The two sources of a mapping share one list and one grp_mask_t, and
+# the Bootstrap used to take the configured entry with it.
+#
+# The topology is rpt's and nothing is forwarded: every assertion is about
+# what "pimctl show rp" holds on R3, which is the only router given an
+# rp-address.
+#
+# $STATICRP_ADDR is R2's address on the R3 link, while the BSR advertises
+# R2's address on the R1 link, so the two entries are the same router under
+# two addresses.  They have to be different addresses or the scenario
+# cannot tell what it is asking: add_rp_grp_entry() (src/rp.c) merges an
+# advertisement for an RP and prefix it already holds into the existing
+# entry, and a static entry that survived would be indistinguishable from
+# one the BSR had just put back.
+#
+# An rp-address with no group covers 224.0.0.0/4 (src/config.c), which is
+# the prefix r2.conf's "group-prefix 224.0.0.0 masklen 4" is advertised
+# under, and that is the whole mechanism: one grp_mask_t, stamped with the
+# Bootstrap's fragment tag, and a garbage collector at the end of
+# receive_pim_bootstrap() that deletes every RP on a stamped prefix whose
+# own tag differs.  The static entry never carried that tag.
+#
+# Step 5 is what the deviation cost in practice rather than on paper.  Only
+# restart() reads g_rp_hold again (src/main.c), so a router that lost its
+# configured RP this way did not get it back when the BSR died -- it aged
+# the learned RP set out and was left with no RP at all until somebody sent
+# it a SIGHUP.
+check_static_rp() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R3 starts with the RP its pimd.conf names"
+	if wait_for 30 has_static_rp r3 "$STATICRP_ADDR"; then
+		ok "r3 holds $STATICRP_ADDR as a static RP"
+	else
+		fail "r3 never installed $STATICRP_ADDR from rp-address, before any Bootstrap"
+		return 1
+	fi
+
+	print "3. And then learns the BSR's RP beside it"
+	if wait_for 90 has_dynamic_rp r3 "$RP_ADDR"; then
+		ok "r3 learned $RP_ADDR from the bootstrap router"
+	else
+		fail "r3 never learned $RP_ADDR, the BSR path is not working and step 4 would prove nothing"
+		return 1
+	fi
+
+	# The regression.  One Bootstrap for 224.0.0.0/4 was enough.
+	print "4. The configured RP survived the Bootstrap"
+	if has_static_rp r3 "$STATICRP_ADDR"; then
+		ok "r3 still holds $STATICRP_ADDR, the garbage collector left it alone"
+	else
+		fail "r3 lost the RP from its own pimd.conf to a Bootstrap; sec. 4.7 requires it to be supported"
+		return 1
+	fi
+
+	# What the deviation actually cost: a router with no RP at all.
+	print "5. And outlives the bootstrap router"
+	dprint "stopping the BSR and waiting for the learned RP to age out ..."
+	[ -f "$WORKDIR/r2.pid" ] && ${SUDO} pkill -9 -F "$WORKDIR/r2.pid" 2>/dev/null
+	if wait_for "$STATICRP_WAIT" no_dynamic_rp r3; then
+		ok "r3 aged $RP_ADDR out once the BSR stopped"
+	else
+		fail "r3 still holds a dynamic RP after ${STATICRP_WAIT}s, the ageing never ran"
+		return 1
+	fi
+	if has_static_rp r3 "$STATICRP_ADDR"; then
+		ok "r3 is left with $STATICRP_ADDR, the RP it was configured with"
+	else
+		fail "r3 has no RP at all, which is what the deviation cost until a SIGHUP"
+	fi
+
+	result
+}
+
+# Has router $1 learned $2 from the bootstrap router, i.e. holds it with a
+# holdtime rather than Forever?  The counterpart of has_static_rp().
+has_dynamic_rp() {
+	pimctl "$1" show rp 2>/dev/null | grep "$2" | grep -q Dynamic
+}
+
 # crafted: the checks that refuse a malformed message, driven by
 # test/pimsend.c.  Every other scenario in this file has pimd on both ends,
 # so the only messages pimd ever parses are messages pimd built, and a field
@@ -3411,6 +3579,41 @@ check_ssm() {
 		ok "R3 kept $num sources, at most $SSM_MAX_SOURCES"
 	else
 		fail "R3 kept $num sources, the list is not bounded"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# An any-source report for a source-specific group.  RFC 4607 has no
+	# meaning for one and RFC 4604 has the IGMPv3 spelling of it ignored,
+	# which pimd already did; the v1 and v2 spelling went the other way.
+	# accept_group_report() (src/igmp_proto.c) takes the source of an SSM
+	# membership as an argument and igmp.c passes the report's IP
+	# destination, which for those versions is the group, so the
+	# membership was recorded under a multicast "source" and add_leaf()
+	# asked for an (S,G) with it -- find_route() allowing it because the
+	# valid host test is waived inside the SSM range.
+	#
+	# The entry that made is what this asserts on rather than the
+	# membership: (G,G) is the shape nothing else can produce, and it is
+	# the one an RPF lookup for a class D address and a Join naming a
+	# multicast source would have been built on.
+	print "6. An IGMPv2 report for an SSM group is ignored"
+	group_report "$SSM_V2_GROUP" -v 2
+	sleep 2
+	if has_sg r3 "$SSM_V2_GROUP" "$SSM_V2_GROUP"; then
+		fail "R3 built a ($SSM_V2_GROUP,$SSM_V2_GROUP) entry from a v2 report, the group was read as its own source"
+	else
+		ok "R3 built no entry whose source is the group"
+	fi
+	# The membership side of the same thing.  $SSM_V2_GROUP rather than
+	# $GROUP because a group that already has memberships takes the
+	# "found it, reset its timer" path and never reaches the code this is
+	# about -- and because assertion 5 leaves a few hundred legitimate
+	# sources on $GROUP on purpose, so "no sources" was never the
+	# question either.
+	if group_sources "$SSM_V2_GROUP" | grep -qx "$SSM_V2_GROUP"; then
+		fail "R3 holds $SSM_V2_GROUP as a source of itself, the v2 report's destination was read as one"
+	else
+		ok "R3 holds no membership whose source is $SSM_V2_GROUP"
 	fi
 
 	result
@@ -4990,7 +5193,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same sixteen either way, ordered by how long they
+		# The same seventeen either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH

@@ -128,6 +128,16 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
+- `test/igmpv3.c` takes `-v 2` to send an IGMPv2 membership report instead
+  of an IGMPv3 one.  A v2 report names a group and nothing else, which is
+  the whole question where the group is in the SSM range, and a kernel join
+  cannot be used to ask it: the kernel picks the version itself and follows
+  whatever the querier on the LAN has negotiated
+- New `static-rp` scenario in `test/freebsd-lab.sh`: R3 is given an
+  `rp-address` while R2 is the BSR, and the configured RP has to survive
+  the Bootstrap and then outlive the BSR itself.  The two RPs are the same
+  router under two addresses, so a configured entry that survived cannot be
+  confused with one the BSR put back
 - New `test/pimsend.c`, the counterpart of `test/igmpv3.c` on the PIM
   socket: it builds one PIM message -- hello, join, prune, bootstrap,
   candrp, register, regstop or assert -- sends it once and exits, with
@@ -174,6 +184,38 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Keep a statically configured RP when a Bootstrap arrives for the same
+  group prefix, RFC 7761 sec. 4.7, "A PIM router MUST support the static
+  configuration of group-to-RP mappings".  An `rp-address` with no group
+  covers 224.0.0.0/4, which is the prefix a Candidate-RP advertised under
+  `group-prefix 224.0.0.0 masklen 4` lands on, so the configured entry and
+  the learned ones shared one group mask: the first Bootstrap stamped that
+  mask with its own fragment tag and the garbage collector at the end of
+  `receive_pim_bootstrap()` deleted every RP on it whose tag differed,
+  which was exactly the configured one.  RFC 5059's withdrawal of a prefix,
+  an RP count of zero, took it out the same way.  The result was not that
+  the BSR overrode the static RP, which would be a defensible reading of a
+  section that gives no precedence rule, but that the static RP ceased to
+  exist: only a SIGHUP restored it, so a router whose BSR then died aged
+  the learned RP set out and was left with no RP at all.  Entries from
+  `pimd.conf` are now marked, skipped by the collector, kept when a prefix
+  is withdrawn, and no longer given a mortal holdtime by an advertisement
+  naming the same RP.  The learned RPs are kept beside the configured one
+  and `rp_match()` picks between them as before
+- Ignore an IGMPv1 or IGMPv2 membership report for a group in the SSM
+  range.  Such a report carries no source list, and `accept_group_report()`
+  takes the source of an SSM membership as an argument, so `igmp.c` passed
+  the report's IP destination -- which for those versions is the group
+  itself.  The membership was recorded under a source that is a multicast
+  address, `add_leaf()` asked for an (S,G) with it, and `find_route()`
+  allowed it because the valid-host test is waived inside the SSM range:
+  the router was left holding a (232.1.1.1,232.1.1.1) entry, an RPF lookup
+  for a class D address behind it, and, where that landed on a PIM
+  neighbour, an upstream router to send a Join naming a multicast source
+  to.  A v2 Leave did not undo it either, that path matching the stored
+  source against the message's destination, 224.0.0.2 for a Leave.  RFC
+  4607 has no any-source membership for such a group and RFC 4604 has the
+  IGMPv3 spelling of one ignored, which pimd already did
 - Refuse a mask length off the wire that is wider than an address, RFC 7761
   sec. 4.9.1: "The mask length MUST be equal to the mask length in bits for
   the given Address Family and Encoding Type (32 for IPv4 native) ... A

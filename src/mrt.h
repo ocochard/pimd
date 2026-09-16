@@ -181,6 +181,9 @@ typedef struct rp_grp_entry {
     uint16_t		 fragment_tag; /* The fragment tag from the
 					* received BSR message		 */
     uint8_t		 priority;    /* The RP priority		 */
+    uint8_t		 is_static;   /* From pimd.conf's rp-address, so
+				       * not the BSR's to withdraw or to
+				       * collect, RFC 7761 sec. 4.7	 */
     grp_mask_t		*group;	      /* Pointer to (group,mask) entry	 */
     cand_rp_t		*rp;	      /* Pointer to the RP		 */
 } rp_grp_entry_t;

@@ -1,5 +1,5 @@
 /*
- * igmpv3 - send one IGMPv3 membership report, exactly as told
+ * igmpv3 - send one IGMP membership report, exactly as told
  *
  * Copyright (c) 2026  Olivier Cochard-Labbe <olivier@cochard.me>
  *
@@ -32,11 +32,21 @@
  * Usage:
  *   igmpv3 -i IFADDR -g GROUP -t TYPE [SOURCE ...]
  *   igmpv3 -i IFADDR -g GROUP -t allow -n COUNT -b BASE
+ *   igmpv3 -i IFADDR -g GROUP -v 2
  *
  * TYPE is one of the RFC 3376 sec. 4.2.12 record types: is_in, is_ex,
  * to_in, to_ex, allow, block.  A join of (S,G) is "allow S", dropping
  * that source is "block S", and leaving the group entirely is "to_in"
  * with no sources.
+ *
+ * "-v 2" sends an IGMPv2 membership report instead, which has no source
+ * list and no record type, so -t and any sources are ignored with it.  It
+ * is here for the groups where that is the whole point: a v2 report names
+ * a group and nothing else, and a router asked for an any-source
+ * membership in the SSM range has been asked for something RFC 4607 has no
+ * meaning for.  A kernel join cannot be used to ask the question -- it
+ * picks the version itself, and follows whatever the querier on the LAN
+ * has negotiated.
  */
 #include <arpa/inet.h>
 #include <err.h>
@@ -51,6 +61,7 @@
 #include <unistd.h>
 
 #define IGMPV3_HOST_MEMBERSHIP_REPORT	0x22
+#define IGMPV2_HOST_MEMBERSHIP_REPORT	0x16
 #define IGMPV3_ALL_ROUTERS		"224.0.0.22"
 
 #define MODE_IS_INCLUDE			1
@@ -122,7 +133,9 @@ static int usage(int rc)
 		"  -g GROUP   Multicast group to report\n"
 		"  -t TYPE    is_in, is_ex, to_in, to_ex, allow, block\n"
 		"  -n COUNT   Generate COUNT consecutive sources from -b instead\n"
-		"  -b BASE    First address of the generated range\n");
+		"  -b BASE    First address of the generated range\n"
+		"  -v VER     IGMP version, 3 (default) or 2; a v2 report has no\n"
+		"             source list, so -t and any sources are ignored\n");
 
 	return rc;
 }
@@ -133,7 +146,8 @@ int main(int argc, char *argv[])
 	struct sockaddr_in sin, dst;
 	struct in_addr ifaddr, group;
 	const char *base = NULL;
-	int type = -1, num = 0;
+	struct in_addr *dest = NULL;
+	int type = -1, num = 0, version = 3;
 	unsigned char ttl = 1;
 	size_t len;
 	int nsrcs = 0;
@@ -142,7 +156,7 @@ int main(int argc, char *argv[])
 	memset(&ifaddr, 0, sizeof(ifaddr));
 	memset(&group, 0, sizeof(group));
 
-	while ((c = getopt(argc, argv, "b:g:h?i:n:t:")) != -1) {
+	while ((c = getopt(argc, argv, "b:g:h?i:n:t:v:")) != -1) {
 		switch (c) {
 		case 'b':
 			base = optarg;
@@ -168,12 +182,21 @@ int main(int argc, char *argv[])
 				errx(1, "invalid record type %s", optarg);
 			break;
 
+		case 'v':
+			version = atoi(optarg);
+			if (version != 2 && version != 3)
+				errx(1, "unsupported IGMP version %s", optarg);
+			break;
+
 		default:
 			return usage(c == 'h' || c == '?' ? 0 : 1);
 		}
 	}
 
-	if (!group.s_addr || !ifaddr.s_addr || type < 0)
+	/* A v2 report has no record type to ask for, so -t is not required
+	 * with it and is ignored where it is given.
+	 */
+	if (!group.s_addr || !ifaddr.s_addr || (version == 3 && type < 0))
 		return usage(1);
 
 	if (num > 0) {
@@ -200,15 +223,37 @@ int main(int argc, char *argv[])
 		nsrcs++;
 	}
 
-	rep.type = IGMPV3_HOST_MEMBERSHIP_REPORT;
-	rep.ngrec = htons(1);
-	rep.grec_type = type;
-	rep.grec_nsrcs = htons(nsrcs);
-	rep.grec_mca = group.s_addr;
+	if (version == 2) {
+		/* RFC 2236 sec. 2: type, max response time (0 in a report),
+		 * checksum, group.  Eight bytes, no records and no sources,
+		 * and it goes to the group rather than to ALL-IGMPv3-ROUTERS.
+		 */
+		struct v2report {
+			uint8_t  type;
+			uint8_t  code;
+			uint16_t csum;
+			uint32_t group;
+		} __attribute__((packed)) v2;
 
-	/* Only the sources actually filled in are sent */
-	len = sizeof(rep) - sizeof(rep.grec_src) + nsrcs * sizeof(rep.grec_src[0]);
-	rep.csum = cksum(&rep, len);
+		memset(&v2, 0, sizeof(v2));
+		v2.type  = IGMPV2_HOST_MEMBERSHIP_REPORT;
+		v2.group = group.s_addr;
+		v2.csum  = cksum(&v2, sizeof(v2));
+
+		memcpy(&rep, &v2, sizeof(v2));
+		len = sizeof(v2);
+		dest = &group;
+	} else {
+		rep.type = IGMPV3_HOST_MEMBERSHIP_REPORT;
+		rep.ngrec = htons(1);
+		rep.grec_type = type;
+		rep.grec_nsrcs = htons(nsrcs);
+		rep.grec_mca = group.s_addr;
+
+		/* Only the sources actually filled in are sent */
+		len = sizeof(rep) - sizeof(rep.grec_src) + nsrcs * sizeof(rep.grec_src[0]);
+		rep.csum = cksum(&rep, len);
+	}
 
 	sd = socket(AF_INET, SOCK_RAW, IPPROTO_IGMP);
 	if (sd < 0)
@@ -228,8 +273,11 @@ int main(int argc, char *argv[])
 
 	memset(&dst, 0, sizeof(dst));
 	dst.sin_family = AF_INET;
-	if (inet_pton(AF_INET, IGMPV3_ALL_ROUTERS, &dst.sin_addr) != 1)
+	if (dest) {
+		dst.sin_addr = *dest;
+	} else if (inet_pton(AF_INET, IGMPV3_ALL_ROUTERS, &dst.sin_addr) != 1) {
 		errx(1, "invalid destination");
+	}
 
 	if (sendto(sd, &rep, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
 		err(1, "failed sending report");

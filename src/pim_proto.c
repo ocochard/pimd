@@ -4680,6 +4680,17 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
      * fragment_tag for a group-prefix is the same as curr_bsr_fragment_tag,
      * then remove all RPs for this group-prefix which have different
      * fragment tag.
+     *
+     * Except a statically configured one, which never carried this BSR's
+     * tag and was never this BSR's to collect.  An "rp-address" with no
+     * group covers 224.0.0.0/4, the same prefix a Candidate-RP advertised
+     * under "group-prefix 224.0.0.0 masklen 4" lands on, so the two share
+     * one grp_mask_t and the first Bootstrap for it used to delete
+     * pimd.conf's RP outright -- leaving a router whose BSR later died
+     * with no RP at all until it was sent a SIGHUP.  RFC 7761 sec. 4.7
+     * requires both sources to be supported; it gives no precedence rule,
+     * and this is not one: the learned RPs are kept beside the static
+     * entry and rp_match() picks between them as it always did.
      */
     for (grp_mask = grp_mask_list; grp_mask; grp_mask = grp_mask_next) {
 	grp_mask_next = grp_mask->next;
@@ -4687,6 +4698,9 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	if (grp_mask->fragment_tag == curr_bsr_fragment_tag) {
 	    for (grp_rp = grp_mask->grp_rp_next; grp_rp; grp_rp = grp_rp_next) {
 		grp_rp_next = grp_rp->grp_rp_next;
+
+		if (grp_rp->is_static)
+		    continue;
 
 		if (grp_rp->fragment_tag != curr_bsr_fragment_tag)
 		    delete_rp_grp_entry(&cand_rp_list, &grp_mask_list, grp_rp);

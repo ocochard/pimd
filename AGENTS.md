@@ -72,7 +72,7 @@ it at a `--enable-netlink` build instead, so the same scenarios run over `netlin
 it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
-`renumber`, `register-filter`, `crafted`); see the script
+`renumber`, `register-filter`, `crafted`, `static-rp`); see the script
 header for the topologies and which upstream issue each one pins down. `-s SLOT` (0-31) puts every
 host-visible name the lab creates -- jails, epairs, bridges, interface group, work directory -- in a
 namespace of its own, so several labs run side by side, and `-j JOBS` runs that many scenarios at
@@ -99,6 +99,7 @@ when an interface it has a VIF on changes underneath it -- destroyed in the firs
 address in the second -- `crafted` the only one whose messages pimd did not build, driving
 `test/pimsend.c` to assert what the parsers refuse (mask lengths wider than an address, a
 unicast Bootstrap from a host that has sent no Hello) with a positive control beside each,
+`static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the

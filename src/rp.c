@@ -389,7 +389,14 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	 * (different fragment_tag). Debug and check and eventually
 	 * delete.
 	 */
-	entry_next->holdtime = rp_holdtime;
+	/* A static entry keeps the holdtime that makes it one.  Letting the
+	 * advertisement overwrite it would leave the configured RP mortal:
+	 * age_rp_grp_entries() below spares an entry only while its holdtime
+	 * is 0xffff, so the next BSR to name the same RP for the same prefix
+	 * would arrange for pimd.conf's RP to age out when that BSR died.
+	 */
+	if (!entry_next->is_static)
+	    entry_next->holdtime = rp_holdtime;
 	entry_next->fragment_tag = fragment_tag;
 
 	return entry_next;
@@ -564,8 +571,10 @@ void delete_rp_list(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_l
 
 void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_list, uint32_t group_addr, uint32_t group_mask)
 {
-    grp_mask_t *ptr;
+    rp_grp_entry_t *entry, *entry_next;
     uint32_t prefix_h = ntohl(group_addr & group_mask);
+    int keep = FALSE;
+    grp_mask_t *ptr;
 
     for (ptr = *used_grp_mask_list; ptr; ptr = ptr->next) {
 	if (ntohl(ptr->group_addr & ptr->group_mask) > prefix_h)
@@ -584,7 +593,31 @@ void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     if (ptr == (grp_mask_t *)NULL)
 	return;       /* Not found */
 
-    delete_grp_mask_entry(used_cand_rp_list, used_grp_mask_list, ptr);
+    /* A group prefix withdrawn by a Bootstrap -- RFC 5059 sec. 4.1's RP
+     * count of zero -- takes the BSR's RPs with it and not pimd.conf's.
+     * Where a static RP is on the prefix the entries are removed one by
+     * one and the prefix itself stays, because the static entry is still
+     * on it; sec. 4.7 has this router support both sources of a
+     * group-to-RP mapping, and only one of them is the BSR's to retract.
+     */
+    for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
+	entry_next = entry->grp_rp_next;
+
+	if (entry->is_static)
+	    keep = TRUE;
+    }
+
+    if (!keep) {
+	delete_grp_mask_entry(used_cand_rp_list, used_grp_mask_list, ptr);
+	return;
+    }
+
+    for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
+	entry_next = entry->grp_rp_next;
+
+	if (!entry->is_static)
+	    delete_rp_grp_entry(used_cand_rp_list, used_grp_mask_list, entry);
+    }
 }
 
 static void delete_grp_mask_entry(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_list, grp_mask_t *grp_mask_delete)

@@ -50,9 +50,9 @@ half of A3 that pimd can be held to, by the `register-filter` scenario of
 visible from this list rather than only from grepping the labs.  Where an entry names a
 scenario without asserting anything, it is because that scenario builds the
 topology the deviation needs and stops short of the assertion; those are the
-cheap ones to close, and R1 and S5 are the two cheapest on the
-list: each is one configuration line and one `pimctl` call away from a
-scenario that already exists.  Several are not
+cheap ones to close, and the two that were cheapest are gone -- R1, the
+Bootstrap that deleted a configured RP, and S5, the any-source report for an
+SSM group -- each closed with the scenario its own note named.  Several are not
 blackbox-testable at all, and say so: a five-second latency or a startup race
 cannot be told from a slow lab.  A larger group wants a message pimd will
 not send -- every entry of the packet format section and three of the SSM
@@ -450,40 +450,6 @@ asked it to.
 *Check: sec. 4.7, `doc/rfc7761.txt:5461`; what it would take is RFC 5059
 sec. 3, which carries the scope zone through every BSR state machine it has.*
 
-**R1.  A Bootstrap message deletes the statically configured RP.**
-`add_static_rp()` (`src/main.c:726`) feeds every `rp-address` line into the
-same `cand_rp_list`/`grp_mask_list` a Bootstrap populates, with priority 1,
-holdtime 0xffff and whatever fragment tag was current at startup.  An
-`rp-address` with no group covers 224.0.0.0/4 (`src/config.c:1401-1402`),
-which is the prefix a `group-prefix 224.0.0.0 masklen 4` Candidate-RP is
-advertised under, so the two land on one `grp_mask_t`.  A Bootstrap for that
-prefix then stamps the mask with the message's own fragment tag
-(`src/rp.c:358`), and the garbage collector at the end of
-`receive_pim_bootstrap()` (`src/pim_proto.c:4537-4546`) deletes every RP on a
-mask carrying the current tag whose own tag differs -- which is exactly the
-static entry.  A group record with an RP count of zero, RFC 5059's way of
-withdrawing a prefix, takes it out through `delete_grp_mask()`
-(`src/pim_proto.c:4414`) without any tag being involved at all.
-
-The result is not that the BSR overrides the static RP, which is what several
-implementations do by default and would be a defensible reading of a section
-that gives no precedence rule.  It is that the static RP ceases to exist:
-`g_rp_hold` still holds the parsed line, but only `restart()` reads it again
-(`src/main.c:823`), so a router whose BSR then dies ages the learned RP set
-out and is left with no RP at all until somebody sends it a SIGHUP.  The
-unicast branch of the same function already knows the two sources interact --
-it refuses a unicast Bootstrap when any RP is known and tells the two apart by
-`adv_holdtime` being the static 0xffff (`src/pim_proto.c:4333-4345`) -- so
-the test a fix needs is already written, one screen up from the collector.
-*Check: sec. 4.7, `doc/rfc7761.txt:5477`, "A PIM router MUST support the
-static configuration of group-to-RP mappings"; the fragment tag and the
-zero-count withdrawal are RFC 5059 sec. 4.1, `doc/rfc5059.txt:1535`.  Effort:
-small -- a flag on the entry, honoured in the collector and in
-`delete_grp_mask()`.  Test: none, and this is the cheapest one on the list to
-close: `rpt` in `test/freebsd-lab.sh` already has a BSR and an RP, so an
-`rp-address` line in the `pimd.conf` of one of its other routers, and a
-`pimctl show rp` there after the first Bootstrap, is the whole assertion.*
-
 **R2.  A longer group prefix does not take over the groups it should.**
 Sec. 4.7.1 has the mapping recomputed whenever the set of mappings changes,
 and `rp_grp_match()` does perform the longest match every time it is asked.
@@ -671,37 +637,6 @@ section at `:5689` for whose messages these are.  Effort: small -- refuse the
 range, which is where the two rules pimd already keeps are enforced on the
 sending side.  Test: none, and pimd cannot generate the message, so this one
 wants either a hand-built Join or an implementation that still sends them.*
-
-**S5.  An IGMPv2 report for an SSM group creates an (S,G) whose source is the
-group.**  `accept_group_report()` takes the source of an SSM membership as an
-argument, and for a v1 or v2 report `igmp.c` passes the IP destination
-address of the report (`src/igmp.c:263`), which for those versions is the
-group itself.  The range test then reads it as a source: the membership is
-recorded under it, `add_leaf()` asks for an (S,G) with it
-(`src/route.c:368-370`), and `find_route()` lets it through because the check
-that a source is a valid host is waived for groups in the SSM range
-(`src/mrt.c:158-164`).  The router ends up with a (232.1.1.1, 232.1.1.1)
-entry and an RPF lookup for a class D address behind it -- a default route
-answers that lookup like any other -- and if the next hop it lands on is a
-PIM neighbor, an upstream router to send a Join naming a multicast source to.
-Another pimd drops such a source on receipt (`src/pim_proto.c:2377`); what a
-foreign implementation makes of it is its own business.  A v2 Leave does not
-undo it either: that path matches the stored source against the message's
-destination as well (`src/igmp_proto.c:538-539`), which for a Leave is
-224.0.0.2, so the entry waits out the membership timer rather than going with
-the leave that asked for it.  The rule being
-broken is the service model's: a report with no source list for a group in
-the SSM range is not a membership this router can act on, and the answer is
-to ignore it, which is what the IGMPv3 EXCLUDE path a few lines away already
-does for the same reason (`src/igmp_proto.c:708-711`, citing RFC 4604).
-*Check: no RFC 7761 rule of its own -- sec. 4.8 leaves the host side to the
-SSM service model of RFC 4607 and its IGMPv3 profile in RFC 4604, and neither
-is in `doc/`, so there is no line to point at the way the other entries do.
-Effort: small.  Test: none, and this is the second cheap one: `ssm`
-in `test/freebsd-lab.sh` already drives one router's membership state with
-`test/igmpv3.c`, and the assertion is that a v2 report for the same group
-leaves `pimctl show mrt` empty.*
-
 
 Timers
 ------

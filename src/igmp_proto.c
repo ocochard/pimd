@@ -294,6 +294,33 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 	return;
     }
 
+    /* An IGMPv1 or v2 report carries no source list, and a group in the SSM
+     * range has no any-source membership to report: RFC 4607's service
+     * model has no meaning for one, and RFC 4604 has an IGMPv3 EXCLUDE for
+     * such a group ignored for the same reason, which accept_membership_report()
+     * below already does.
+     *
+     * Acting on one was worse than useless.  accept_group_report() takes the
+     * source of an SSM membership as an argument and igmp.c passes the IP
+     * destination of the report, which for these versions is the group
+     * itself, so the membership went in under a source that is a multicast
+     * address: add_leaf() asked for an (S,G) with it, and find_route() let
+     * it through because the valid host test is waived inside the SSM range.
+     * The router was left holding a (232.1.1.1,232.1.1.1) entry, an RPF
+     * lookup for a class D address behind it -- which a default route
+     * answers like any other -- and, if that landed on a PIM neighbor, an
+     * upstream router to send a Join naming a multicast source to.  A v2
+     * Leave did not undo it either: that path matches the stored source
+     * against the message's destination, 224.0.0.2 for a Leave.
+     */
+    if (IN_PIM_SSM_RANGE(group) &&
+	(igmp_report_type == IGMP_V1_MEMBERSHIP_REPORT ||
+	 igmp_report_type == IGMP_V2_MEMBERSHIP_REPORT)) {
+	IF_DEBUG(DEBUG_IGMP)
+	    logit(LOG_DEBUG, 0, "    %-16s any-source report for an SSM group, ignoring.", s3);
+	return;
+    }
+
     if ((vifi = find_vif(ifi)) == NO_VIF &&
 	 (vifi = find_vif_direct(igmp_src)) == NO_VIF) {
 	IF_DEBUG(DEBUG_IGMP) {
