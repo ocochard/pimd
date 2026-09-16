@@ -186,7 +186,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Ten entries this section held are fixed.  M3, the assert winner state,
+Eleven entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -304,10 +304,10 @@ secondary address; `crafted` asserts the parser on a list pimd did not
 write, kept, primary address excluded, unreadable and absent.  The Linux
 suite in `test/` asserts none of it.
 
-M15 is the last one, and it was never written down as an entry: it turned
-up as `assert-recover` in `test/freebsd-lab.sh` failing one run in ten or so
-once enough labs ran beside it to move the timing.  It was sec. 4.6.2 on a
-router's RPF interface.  CouldAssert is FALSE there, so
+M15 and M16 are the last two, and neither was ever written down as an
+entry: both turned up as `assert-recover` in `test/freebsd-lab.sh` failing
+one run in ten or so once enough labs ran beside it to move the timing.  M15
+was sec. 4.6.2 on a router's RPF interface.  CouldAssert is FALSE there, so
 the router never wins and its own metric is not a question: it loses to any
 acceptable Assert, keeps the winner, which sec. 4.1.6 makes `RPF'(*,G)`, and
 replaces it only with a preferred one.  `assert_machine()` measured each
@@ -322,7 +322,16 @@ Loser state on the RPF interface is kept now, including where the winner is
 the router the routing table names, and when it ends -- the winner's inferior
 Assert or AssertCancel, the timer, the winner's GenID or its Neighbor
 Liveness Timer -- the Joins go back to the routing table's neighbor after
-`t_override` (`assert_rpf_restore()`).  Step 4 of `assert-recover` asserts M15
+`t_override` (`assert_rpf_restore()`).  M16 was a local member heard before
+the RP was known.  `add_leaf()` builds (\*,G) state only for a group with an
+RP, so the membership was recorded and never offered to PIM again until the
+host reported once more, up to a query interval later, where sec. 4.5.6 has
+`JoinDesired(*,G)` follow the membership as soon as `RP(G)` exists.  A router
+that has just started is exactly there -- its startup query draws the report
+within seconds and the RP set can take a Bootstrap period longer -- and that
+was the other way `assert-recover` failed.  `add_rp_grp_entry()`
+(`src/rp.c`) offers every membership to `add_leaf()` again when a range gains
+its first RP, `igmp_resync_leaves()`.  Step 4 of `assert-recover` asserts M15
 directly: the downstream router reads L on its RPF interface.
 
 

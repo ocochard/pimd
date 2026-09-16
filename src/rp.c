@@ -460,8 +460,11 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
      * the shorter prefixes that matched them before it existed.  The
      * segmented list holds no groups, and rp_grp_match() never reads it.
      */
-    if (mask_ptr->group_rp_number == 1 && used_grp_mask_list == &grp_mask_list)
+    if (mask_ptr->group_rp_number == 1 && used_grp_mask_list == &grp_mask_list) {
 	remap_covered_groups(mask_ptr);
+	/* And the local members that had no RP to be joined towards */
+	igmp_resync_leaves();
+    }
 
     if (mask_ptr->grp_rp_next->priority == rp_priority) {
 	/* The first entries are with the best priority. */

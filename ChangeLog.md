@@ -211,6 +211,10 @@ pimd on all routers in the same domain.  See issue #93 for details.
   its Loser state: the LAN flapped between the two routers once a
   Join/Prune period.  When that Loser state ends, the Joins go back to the
   router the routing table names
+- Offer local memberships to PIM again when a group range gains an RP.  A
+  membership report for a group without an RP was recorded and nothing
+  more until the host reported again, up to a query interval later, which
+  is where a router that has just started usually is
 - Run the Prune-Pending Timer of RFC 7761 section 4.5.1 and the Assert Timer
   of section 4.6 to the millisecond.  An upstream router let an interface go
   5 to 10 seconds after a Prune nobody overrode, where the section asks for

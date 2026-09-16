@@ -70,6 +70,46 @@ uint32_t igmp_querier_timeout = IGMP_OTHER_QUERIER_PRESENT_INTERVAL;
 
 
 /*
+ * add_leaf() builds (*,G) state only for a group that maps to an RP, so a
+ * report for a group with none is recorded in uv_groups and goes no
+ * further, and nothing offered that membership to PIM again until the host
+ * happened to report once more -- up to a whole query interval, 125
+ * seconds, later.  RFC 7761 sec. 4.5.6 has JoinDesired(*,G) follow
+ * immediate_olist(*,G), local members included, the moment RP(G) exists.
+ * A router that has just started is in exactly that position: its startup
+ * query draws the reports within seconds, and the RP set can take a
+ * Bootstrap period longer to arrive.
+ *
+ * So when a group range gains an RP, add_rp_grp_entry() calls this, and
+ * every ASM membership is offered to add_leaf() again, which ignores the
+ * ones it already holds.  From a zero-delay callout rather than at once,
+ * because the caller is in the middle of parsing a Bootstrap, and the Joins
+ * a new leaf sends would go out through the same send buffer.
+ */
+static void resync_leaves(void *arg __attribute__((unused)))
+{
+    struct listaddr *g;
+    struct uvif *v;
+    vifi_t vifi;
+
+    for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
+	if (v->uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_REGISTER))
+	    continue;
+
+	for (g = v->uv_groups; g; g = g->al_next) {
+	    if (IN_PIM_SSM_RANGE(g->al_addr))
+		continue;
+	    add_leaf(vifi, INADDR_ANY_N, g->al_addr);
+	}
+    }
+}
+
+void igmp_resync_leaves(void)
+{
+    timer_set_ms(0, resync_leaves, NULL);
+}
+
+/*
  * Send group membership queries on that interface if I am querier.
  */
 void query_groups(struct uvif *v)

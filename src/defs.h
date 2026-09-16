@@ -500,6 +500,7 @@ extern void	send_igmp		(char *buf, uint32_t src, uint32_t dst, int type, int cod
 
 /* igmp_proto.c */
 extern void	query_groups		(struct uvif *v);
+extern void	igmp_resync_leaves	(void);
 extern void	accept_membership_query	(int ifi, uint32_t src, uint32_t dst, uint32_t group, int tmo, int igmp_version);
 extern void	accept_group_report	(int ifi, uint32_t src, uint32_t dst, uint32_t group, int r_type);
 extern void	accept_leave_message	(int ifi, uint32_t src, uint32_t dst, uint32_t group);
