@@ -1858,7 +1858,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     num_groups_tmp = num_groups;
     data_start = data;
     while (num_groups_tmp--) {
-        size_t srclen;
+        size_t srclen, srcoff;
 
         /* group addr + #join + #src */
         if (len < PIM_ENCODE_GRP_ADDR_LEN + sizeof(uint32_t)) {
@@ -1868,6 +1868,23 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
             return FALSE;
         }
+
+	/* The Mask Len of this Encoded-Group, checked here rather than where
+	 * it is converted: MASKLEN_TO_MASK() (src/pimd.h) shifts by
+	 * 32 - masklen, the byte is the sender's to choose, and the two
+	 * passes below convert it at six places.  Bounded and not required
+	 * to be SINGLE_GRP_MSKLEN, which sec. 4.9.5.1 asks of a
+	 * group-specific set: the (*,*,RP) set RFC 7761 Appendix A removed
+	 * carries STAR_STAR_RP_MSKLEN, and the passes below still recognise
+	 * one in order to skip it.
+	 */
+	if (data[PIM_ENCODE_MSKLEN_OFF] > PIM_MAX_MSKLEN) {
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group mask length %u is wider than an address",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		      data[PIM_ENCODE_MSKLEN_OFF]);
+	    return FALSE;
+	}
 
         len -= (PIM_ENCODE_GRP_ADDR_LEN + sizeof(uint32_t));
         data += PIM_ENCODE_GRP_ADDR_LEN;
@@ -1883,6 +1900,26 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
             return FALSE;
         }
+
+	/* And the Mask Len of every Encoded-Source behind it, which
+	 * sec. 4.9.1 does pin to the full address length: "The mask length
+	 * MUST be equal to the mask length in bits for the given Address
+	 * Family and Encoding Type (32 for IPv4 native) ... A router SHOULD
+	 * ignore any messages received with any other mask length."  The
+	 * srclen bytes are inside the message by the check just above.
+	 */
+	for (srcoff = PIM_ENCODE_MSKLEN_OFF; srcoff < srclen;
+	     srcoff += PIM_ENCODE_SRC_ADDR_LEN) {
+	    if (data[srcoff] == SINGLE_SRC_MSKLEN)
+		continue;
+
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source mask length %u is not %u",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		      data[srcoff], SINGLE_SRC_MSKLEN);
+	    return FALSE;
+	}
+
         len -= srclen;
         data += srclen;
     }
@@ -4293,6 +4330,19 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
     GET_EUADDR(&new_bsr_uni_addr, data);
     new_bsr_address = new_bsr_uni_addr.unicast_addr;
 
+    /* The Hash Mask Len decides the group-to-RP mapping for the whole
+     * domain, and it is a byte off the wire.  Refused here, before
+     * anything is committed or forwarded, because MASKLEN_TO_MASK()
+     * (src/pimd.h) would shift by 32 - masklen with it.
+     */
+    if (new_bsr_hash_masklen > PIM_MAX_MSKLEN) {
+	IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+	    logit(LOG_NOTICE, 0, "Ignoring Bootstrap from %s, hash mask length %u is wider than an address",
+		  inet_fmt(src, s1, sizeof(s1)), new_bsr_hash_masklen);
+
+	return FALSE;
+    }
+
     if (local_address(new_bsr_address) != NO_VIF)
 	return FALSE; /* The new BSR is one of my local addresses */
 
@@ -4387,7 +4437,35 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 
 	    return FALSE;
 	}
-	/* TODO: check the sender is directly connected and I am really the DR */
+
+	/* RFC 7761 sec. 6.2: "a PIM router SHOULD NOT accept protocol
+	 * messages from a router from which it has not yet received a valid
+	 * Hello message".  The multicast branch above gets that for free,
+	 * having to match the sender against the RPF neighbor toward the
+	 * BSR, and Join/Prune and Assert ask for it directly; this branch
+	 * asked only that the sender be on a subnet we have a vif on, which
+	 * every host on that subnet is: any of them could hand a booting
+	 * router the RP set for the whole domain, and nothing in such a
+	 * message is RPF checked before we flood it onward.
+	 *
+	 * This does not close the window RFC 5059 sec. 3.5.2 opens it for.
+	 * The sender of a unicast Bootstrap is a DR answering a Hello it
+	 * has just had from us, and receive_pim_hello() above sends its own
+	 * Hello on the same path immediately before the Bootstrap, so the
+	 * Hello that makes it a neighbor is already on the wire ahead of
+	 * it.  Should that Hello be lost, what is lost with it is one
+	 * unicast delivery of the RP set and not the RP set: the BSR floods
+	 * the same message to ALL-PIM-ROUTERS every my_bsr_adv_period, and
+	 * the multicast branch above accepts it.
+	 */
+	if (!find_pim_nbr_on_vif(incoming, src)) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Ignoring unicast Bootstrap from %s on %s, no PIM Hello seen from it",
+		      inet_fmt(src, s1, sizeof(s1)), uvifs[incoming].uv_name);
+
+	    return FALSE;
+	}
+	/* TODO: check I am really the DR */
     }
 
     if (cand_rp_flag == TRUE) {
@@ -4433,6 +4511,24 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	GET_BYTE(curr_rp_count, data);
 	GET_BYTE(curr_frag_rp_count, data);
 	GET_HOSTSHORT(reserved_short, data);
+
+	/* The group range this set is about, and the one value in a
+	 * Bootstrap that a mask length still decides.  Left unchecked, a
+	 * masklen of 200 for 224.0.0.0 shifted by the count modulo 32 and
+	 * installed 224.0.0.0/8, so a range nobody advertised could
+	 * displace the domain's RP set.  The whole message goes rather than
+	 * this one set: the sets are not fixed width, the RP records that
+	 * follow are what say where the next one starts, and a length this
+	 * wrong is no basis for walking past them.
+	 */
+	if (curr_group_addr.masklen > PIM_MAX_MSKLEN) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Truncating Bootstrap from %s, group mask length %u is wider than an address",
+		      inet_fmt(src, s1, sizeof(s1)), curr_group_addr.masklen);
+
+	    return FALSE;
+	}
+
 	MASKLEN_TO_MASK(curr_group_addr.masklen, curr_group_mask);
 	if (curr_rp_count == 0) {
 	    delete_grp_mask(&cand_rp_list, &grp_mask_list,
@@ -4674,6 +4770,21 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 	}
 
 	GET_EGADDR(&egaddr, data_ptr);
+
+	/* Same byte, same shift, and here one bad prefix need not cost the
+	 * rest: every iteration of this loop consumes exactly one
+	 * Encoded-Group, so skipping one leaves data_ptr where the next
+	 * begins.  sec. 4.9.1 and RFC 5059 sec. 3.3 both have the advertised
+	 * group prefixes carry a real mask length, so a wider one is the
+	 * sender's error and not a range to install.
+	 */
+	if (egaddr.masklen > PIM_MAX_MSKLEN) {
+	    IF_DEBUG(DEBUG_PIM_CAND_RP)
+		logit(LOG_NOTICE, 0, "Skipping group prefix from %s, mask length %u is wider than an address",
+		      inet_fmt(src, s1, sizeof(s1)), egaddr.masklen);
+	    continue;
+	}
+
 	MASKLEN_TO_MASK(egaddr.masklen, grp_mask);
 	/* Do not advertise internal virtual RP for SSM groups */
 	if (!IN_PIM_SSM_RANGE(egaddr.mcast_addr)) {

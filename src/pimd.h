@@ -132,6 +132,11 @@
 					     */
 #define SINGLE_SRC_MSKLEN	         32 /* the single source mask length */
 #define SINGLE_GRP_MSKLEN	         32 /* the single group mask length  */
+#define PIM_MAX_MSKLEN		         32 /* the widest an IPv4 mask length
+					     * may be, RFC 7761 sec. 4.9.1;
+					     * anything above it off the wire
+					     * is refused by the parsers
+					     */
 #define PIM_GROUP_PREFIX_DEFAULT_MASKLEN 16 /* The default group masklen if
 					     * omitted in the config file.
 					     * XXX: not set to 4, because
@@ -231,6 +236,11 @@ typedef struct pim_encod_src_addr_ {
     uint32_t     src_addr;
 } pim_encod_src_addr_t;
 #define PIM_ENCODE_SRC_ADDR_LEN 8
+/* Byte offset of the Mask Len inside an Encoded-Group or Encoded-Source
+ * address, both of which carry it fourth: family, type, flags, mask len.
+ * See GET_EGADDR() and GET_ESADDR() below, which read them in that order.
+ */
+#define PIM_ENCODE_MSKLEN_OFF   3
 
 #define USADDR_RP_BIT 0x1
 #define USADDR_WC_BIT 0x2
@@ -364,9 +374,23 @@ typedef struct pim_jp_encod_grp_ {
         (masklen) = tmp_masklen;                                 \
     } while (0)
 
+/* A mask length wider than the address shifts by a negative amount, which
+ * is undefined behavior rather than a wrong answer (C11 6.5.7p3, SEI CERT
+ * INT34-C).  Every mask length that reaches this from a received message is
+ * a byte the sender chose, so the parsers in pim_proto.c refuse one above
+ * PIM_MAX_MSKLEN before converting it; the clamp here is what keeps a call
+ * site that forgets defined, and it converts to the all-ones mask such a
+ * length asks for rather than to the count modulo 32 the hardware would
+ * have used.
+ */
 #define MASKLEN_TO_MASK(masklen, mask)					    \
   do {									    \
-    (mask) = masklen ? htonl(~0U << ((sizeof(mask) << 3) - (masklen))) : 0; \
+    unsigned int tmp_bits = (unsigned int)(sizeof(mask) << 3);		    \
+    unsigned int tmp_len  = (unsigned int)(masklen);			    \
+									    \
+    if (tmp_len > tmp_bits)						    \
+	tmp_len = tmp_bits;						    \
+    (mask) = tmp_len ? htonl(~0U << (tmp_bits - tmp_len)) : 0;		    \
 } while (0)
 
 

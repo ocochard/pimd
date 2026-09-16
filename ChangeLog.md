@@ -155,6 +155,35 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Refuse a mask length off the wire that is wider than an address, RFC 7761
+  sec. 4.9.1: "The mask length MUST be equal to the mask length in bits for
+  the given Address Family and Encoding Type (32 for IPv4 native) ... A
+  router SHOULD ignore any messages received with any other mask length."
+  The byte was taken on trust and handed to `MASKLEN_TO_MASK()`, which
+  shifts by `32 - masklen`, so anything above 32 shifted by a negative
+  amount -- undefined behavior rather than a wrong answer (C11 6.5.7p3, SEI
+  CERT INT34-C).  In practice the shift count wrapped: a Bootstrap claiming
+  mask length 200 for 224.0.0.0 installed 224.0.0.0/8, and one claiming 33
+  installed 128.0.0.0/1, so a single message could put a group range nobody
+  advertised over a whole domain's RP set.  A Join/Prune is now ignored if
+  any encoded group carries a mask length above 32 or any encoded source
+  carries one that is not 32; a Bootstrap is ignored if its hash mask length
+  or any of its group ranges is wider than an address, the hash mask length
+  before anything is committed or forwarded; a Candidate-RP-Advertisement
+  skips such a group prefix and keeps the rest.  `MASKLEN_TO_MASK()` itself
+  now clamps, so a call site that forgets is defined rather than undefined
+- Ignore a unicast Bootstrap from a router no Hello has been received from,
+  RFC 7761 sec. 6.2.  Join/Prune and Assert already asked, and a Bootstrap
+  sent to ALL-PIM-ROUTERS has to come from the RPF neighbour toward the BSR,
+  which is the same lookup; the unicast branch asked only that the sender be
+  on a directly connected subnet, which every host on that subnet is.  Any
+  of them could hand a booting router the RP set for the domain, and nothing
+  in such a message is RPF checked before it is flooded onward.  The window
+  RFC 5059 sec. 3.5.2 opens the unicast branch for is unaffected:
+  `receive_pim_hello()` sends its own Hello on the same path immediately
+  before the Bootstrap, so the Hello that makes the DR a neighbour is on the
+  wire ahead of it, and a lost one costs one unicast delivery of the RP set
+  rather than the RP set, the BSR flooding the same message periodically
 - Answer `inherited_olist(S,G,rpt) == NULL` of RFC 7761 sec. 4.2.2 from the
   shared tree's outgoing interfaces rather than from whether a (\*,G) entry
   exists.  The two are not the same question, and the difference is the one

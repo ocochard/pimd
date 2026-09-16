@@ -878,38 +878,6 @@ family immediately above it at `:5869`, and sec. 4.9.5's mixed-family rule
 at `:6516`.  Effort: small -- one test per GET, in the four parsers that
 walk encoded addresses.  Test: none, per the head of this section.*
 
-**F3.  A mask length off the wire is neither checked nor safely
-converted.**  Two rules in sec. 4.9.1 bound it: a source address MUST carry
-the full address length, 32 for IPv4, and a router SHOULD ignore messages
-that carry any other; a group address in a group-specific set carries the
-full length too (sec. 4.9.5.1).  pimd checks neither.  In
-`receive_pim_join_prune()` the value is converted into `s_mask` and
-`g_mask` (`src/pim_proto.c:1888`, `:1905`, `:1949`, `:2016`, `:2074`,
-`:2381`), and those two variables are never read again -- the entry is
-acted on as an exact (S,G) or (\*,G) whatever the message asked for.  The
-one place a wire mask length decides anything in a Join/Prune is the
-(\*,\*,RP) test at `:1895` and `:2197`.  `receive_pim_register_stop()` has
-the same gap written down as a TODO, "apply the group mask and do
-register_stop for all grp addresses".
-
-Where the converted mask is used is the RP set.  `receive_pim_bootstrap()`
-(`src/pim_proto.c:4412` and three more) and `receive_pim_cand_rp_adv()`
-(`:4653`) hand it to `add_rp_grp_entry()` as the group prefix, and that
-function validates the address and not the mask.  The conversion is
-`MASKLEN_TO_MASK()` (`src/pimd.h:367-370`), which shifts by
-`32 - masklen`: for the 33 to 255 a byte can hold, that is a shift by a
-negative amount, which is undefined behavior rather than a wrong answer
-(C11 6.5.7p3, SEI CERT INT34-C).  What it does in practice on the usual
-targets is shift by the count modulo 32, so a Bootstrap claiming masklen
-200 for 224.0.0.0 installs 224.0.0.0/8 and a domain's whole RP set can be
-displaced by a group range nobody advertised.  The parse stays inside the
-buffer throughout -- this is a bad value, not a bad pointer.
-*Check: sec. 4.9.1, `doc/rfc7761.txt:6003`, "A router SHOULD ignore any
-messages received with any other mask length"; sec. 4.9.5.1, `:6532`, for
-the group half.  Effort: small -- reject a mask length above 32 at the
-parse sites and drop a source entry that is not 32.  Test: none, per the
-head of this section.*
-
 **F4.  The B and Z bits of an encoded group address are never read.**  The
 third byte of an Encoded-Group carries the Bidirectional-PIM bit, six
 reserved bits and the admin-scope-zone bit; pimd's `GET_EGADDR()` calls the
@@ -995,8 +963,12 @@ IPsec, and sec. 6.4 names two denial-of-service attacks without asking for
 anything.  The normative content is sec. 6.2, five sentences, and they are
 what this section measures.  Two of them are kept and are described in the
 last section of this file; a third is kept as of the `register-accept-from`
-setting, and A3 below is what that setting cannot reach.  Of the two left,
-A2 is kept everywhere but one branch and A1 is not kept at all.  A4 is what
+setting, and A3 below is what that setting cannot reach; a fourth, "a PIM
+router SHOULD NOT accept protocol messages from a router from which it has
+not yet received a valid Hello message", is kept everywhere now that the
+unicast branch of `receive_pim_bootstrap()` asks the neighbor list the way
+the Join/Prune and Assert parsers already did.  That leaves A1, which is not
+kept at all.  A4 is what
 sec. 6.4 describes and nothing in pimd bounds.  The first section of this file is the
 neighbouring one: it holds the entries where a parser could be walked off the
 end, V1 through V6, and this one holds the entries where a well-formed
@@ -1033,28 +1005,6 @@ sample.  Test: none, and this one is cheap to assert once it exists:
 `shared-lan` in `test/freebsd-lab.sh` has three routers on a segment, so
 denying one of them is a one-line configuration change and a `pimctl show
 neighbor` that no longer lists it.*
-
-**A2.  A unicast Bootstrap is taken from a router that has never said
-hello.**  The next sentence of sec. 6.2 is the one V2 was about: "a PIM router
-SHOULD NOT accept protocol messages from a router from which it has not yet
-received a valid Hello message".  Join/Prune and Assert ask
-`find_pim_nbr_on_vif()` now, and a Bootstrap that arrives on ALL-PIM-ROUTERS
-has to come from the RPF neighbor toward the BSR, which is a lookup in the
-same neighbor list (`src/pim_proto.c:4308-4321`).  The unicast branch of
-`receive_pim_bootstrap()` asks neither: it requires only that the sender be on
-a directly connected subnet and that this router know no RP but its own static
-ones (`src/pim_proto.c:4323-4345`), and the TODO sitting in it -- "check the
-sender is directly connected and I am really the DR" -- says what is missing
-better than this entry can.  Any host on any LAN pimd has an interface on can
-therefore hand a booting router the RP set for the domain, once, and R3 of
-the RP discovery section is the other half of that window: nothing in such a
-message is RPF checked, and the router floods it onward.
-*Check: sec. 6.2, `doc/rfc7761.txt:7370`; the mechanism being abused is
-RFC 5059 sec. 3.5.2, `doc/rfc5059.txt:1248`.  Effort: small -- the same
-`find_pim_nbr_on_vif()` call the other two make.  Test: none, and this is one
-of the few entries in the file a lab could reach without crafting a packet:
-`arista-rp` in `test/freebsd-interop.sh` already has a foreign BSR whose
-Bootstraps pimd accepts.*
 
 **A3.  The Register filter cannot reach the packet it is about.**
 Sec. 6.2's mechanism "to allow an RP to restrict the range of source
@@ -1315,8 +1265,10 @@ Checked, no action
 - **A Register-Stop naming source 0.0.0.0 is honoured.**  Sec. 4.9.4 allows
   the wildcard, and `receive_pim_register_stop()` suppresses every (S,G) of
   the group it is currently registering, which is RFC 7761's reading of an
-  RFC 2362 message.  The group mask length in the same message is ignored;
-  that is F3.  *Check: sec. 4.9.4, `doc/rfc7761.txt:6348`.*
+  RFC 2362 message.  The group mask length in the same message is ignored
+  rather than applied, as the TODO sitting in that function says; nothing
+  converts it, so there is no mask to get wrong.  *Check: sec. 4.9.4,
+  `doc/rfc7761.txt:6348`.*
 - **The DR does not register a packet whose source does not belong to the
   interface it arrived on.**  That is a MUST in sec. 6.2, and it is met one
   layer below where it reads as though it should be:
