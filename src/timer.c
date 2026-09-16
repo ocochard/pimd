@@ -76,6 +76,18 @@ uint64_t timer_now(void)
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Whole seconds, rounded up, until a deadline on that clock; 0 once it has
+ * passed or when it is 0, not running.  For showing one to a person. */
+int timer_secs_left(uint64_t deadline)
+{
+    uint64_t now = timer_now();
+
+    if (deadline <= now)
+	return 0;
+
+    return (int)MIN((deadline - now + 999) / 1000, INT_MAX);
+}
+
 /*
  * elapsed_time milliseconds have passed; perform all the events that should
  * happen.

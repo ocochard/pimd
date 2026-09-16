@@ -278,7 +278,7 @@ PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
 EAPI="$WORKDIR/eapi.py"
 
-DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp"}
+DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp,asserts"}
 
 # The VM runner: a bhyve script that knows how to boot a vEOS image and
 # nothing about PIM.  It lives next to this one because this lab cannot run
@@ -481,6 +481,10 @@ AL_MIN_CONFIRM=${AL_MIN_CONFIRM:-12}
 # RFC 7761 Assert_Time, and what the "winner never resends" sub-case has
 # to outlive.  PIM_ASSERT_TIMEOUT in src/pimd.h is the same 180.
 AL_ASSERT_TIME=${AL_ASSERT_TIME:-180}
+# Assert_Time - Assert_Override_Interval, when a winner resends, and how far
+# either way of it the resend pimd logs may land
+AL_RESEND_MS=${AL_RESEND_MS:-177000}
+AL_RESEND_SLACK=${AL_RESEND_SLACK:-500}
 
 # How long to wait for someone to start forwarding onto the contested LAN,
 # and how long to let the election settle once someone has.  Polled rather
@@ -2248,6 +2252,25 @@ check_assert_cancel() {
 #
 # Slow by nature: it has to outlive Assert_Time.  AL_SKIP_RESEND=yes
 # leaves it out of a quick run.
+# Milliseconds between router $1's Assert for group $4 from address $3 and
+# the one before it, for the first pair more than 100 seconds apart in the
+# log lines after the first $2.  Nothing when there is none.
+assert_resend_gap() {
+	${SUDO} tail -n +$(($2 + 1)) "$WORKDIR/$1.log" 2>/dev/null | awk -v a="$3" -v g="$4" '
+		function msec(s, t) { split(s, t, "[:.]"); return ((t[1] * 60 + t[2]) * 60 + t[3]) * 1000 + t[4] }
+		$3 == "Send" && $5 == "ASSERT" && $7 == a && $10 == g {
+			t = msec($2)
+			if (last != "") {
+				d = t - last
+				if (d < 0)
+					d += 86400000
+				if (d > 100000) { print d; exit }
+			}
+			last = t
+		}
+	'
+}
+
 check_assert_no_resend() {
 	print "6. pimd as assert winner, past Assert_Time (RFC 7761 4.6.1)"
 
@@ -2299,6 +2322,23 @@ check_assert_no_resend() {
 		ok "the Arista never resumed in ${AL_ASSERT_TIME}s+, and still holds $GROUP"
 	else
 		xfail "the Arista resumed forwarding before Assert_Time was out, pimd never resent its Assert (M3 is back, src/pim_proto.c:2874)"
+	fi
+
+	# And when.  The resend is due at Assert_Time - Assert_Override_Interval,
+	# 177 seconds, which leaves the losers 3.  pimd aged the timer on its
+	# 5-second tick and armed 175 so as not to land on the same tick as the
+	# losers' 180; the deadline it keeps now is 177.  Read off R3's log, all
+	# of it, since switch_case() started a new one for this sub-case: the
+	# gap before the first Assert that follows a silence long enough to be
+	# a resend.
+	gap=$(assert_resend_gap r3 0 "$AL_R3_ADDR" "$GROUP")
+	if [ -z "$gap" ]; then
+		fail "r3 logged no resend of its Assert for $GROUP"
+	elif [ "$gap" -ge $((AL_RESEND_MS - AL_RESEND_SLACK)) ] && \
+	     [ "$gap" -le $((AL_RESEND_MS + AL_RESEND_SLACK)) ]; then
+		ok "r3 resent its Assert ${gap}ms after the last one, Assert_Time - Assert_Override_Interval is ${AL_RESEND_MS}ms"
+	else
+		fail "r3 resent its Assert ${gap}ms after the last one, Assert_Time - Assert_Override_Interval is ${AL_RESEND_MS}ms"
 	fi
 
 	kill "$sender" "$receiver" "$joiner" "$joiner6" 2>/dev/null

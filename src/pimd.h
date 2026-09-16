@@ -100,14 +100,12 @@
 #define PIM_ASSERT_OVERRIDE_INTERVAL      3
 /* RFC 7761 sec. 4.6.1 Actions A1 and A3 arm the winner at Assert_Time -
  * Assert_Override_Interval so that its resend reaches the losers before
- * their own Assert_Time is out.  age_routes() only ever ages a timer on a
- * TIMER_INTERVAL tick, and 177 and 180 both reach zero on the 36th one, so
- * round the winner's value down to a whole number of ticks or the resend
- * races the refresh it exists to deliver.
+ * their own Assert_Time is out.  The Assert Timer is a deadline with a pass
+ * of its own scheduled for it, see assert_won(), so the 3 seconds between
+ * the two are 3 seconds and not whatever a 5-second tick leaves of them.
  */
 #define PIM_ASSERT_WINNER_TIMEOUT					\
-	(((PIM_ASSERT_TIMEOUT - PIM_ASSERT_OVERRIDE_INTERVAL)		\
-	  / TIMER_INTERVAL) * TIMER_INTERVAL)
+	(PIM_ASSERT_TIMEOUT - PIM_ASSERT_OVERRIDE_INTERVAL)
 
 /* Misc definitions */
 #define PIM_DEFAULT_CAND_RP_PRIORITY      0 /* 0 is the highest. Don't know

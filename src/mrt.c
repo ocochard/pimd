@@ -782,13 +782,15 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
 #ifdef SAVE_MEMORY
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * numvifs);
     mrt->asserts	    = calloc(numvifs, sizeof(mrt->asserts[0]));
+    mrt->pp_expires	    = calloc(numvifs, sizeof(mrt->pp_expires[0]));
     vif_numbers = numvifs;
 #else
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * total_interfaces);
     mrt->asserts	    = calloc(total_interfaces, sizeof(mrt->asserts[0]));
+    mrt->pp_expires	    = calloc(total_interfaces, sizeof(mrt->pp_expires[0]));
     vif_numbers = total_interfaces;
 #endif /* SAVE_MEMORY */
-    if (!mrt->vif_timers || !mrt->asserts) {
+    if (!mrt->vif_timers || !mrt->asserts || !mrt->pp_expires) {
 	logit(LOG_WARNING, 0, "alloc_mrtentry(): out of memory");
 	FREE_MRTENTRY(mrt);
 	return NULL;

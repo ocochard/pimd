@@ -1067,39 +1067,19 @@ static uint16_t effective_override_interval(vifi_t vifi)
     return delay;
 }
 
-/*
- * J/P_Override_Interval(I), sec. 4.11: the two effective values added.  The
- * wire carries milliseconds and every timer here is whole seconds, so the
- * sum is rounded up -- a window rounded down is one a downstream router can
- * miss, and the section exists to give it one.
- */
-static uint16_t jp_override_interval(vifi_t vifi)
-{
-    uint32_t msec = effective_propagation_delay(vifi) + effective_override_interval(vifi);
-
-    return (msec + 999) / 1000;
-}
-
-/* The Prune-Pending Timer of sec. 4.5.1 and sec. 4.5.2.  The point-to-point
- * flag used to stand in for the single-neighbor test, which is not the same
- * question: a shared segment with one PIM router left on it has nobody to
- * override either.
- *
- * The timer is one of the per-interface ones age_routes() takes a whole
- * TIMER_INTERVAL off, and the first tick can come at any moment: a value of
- * three seconds runs out on it, possibly a moment after the Prune arrived and
- * long before a downstream router's override can.  One tick more than the
- * interval is never short of it, which is the direction that matters --
- * forwarding a little past the Prune costs nothing an override would not
- * have kept anyway. */
-static uint16_t prune_pending_delay(vifi_t vifi)
+/* The Prune-Pending Timer of sec. 4.5.1 and sec. 4.5.2, in milliseconds:
+ * J/P_Override_Interval(I) of sec. 4.11, the two effective values added.
+ * The point-to-point flag used to stand in for the single-neighbor test,
+ * which is not the same question: a shared segment with one PIM router left
+ * on it has nobody to override either. */
+static uint32_t prune_pending_delay(vifi_t vifi)
 {
     struct uvif *v = &uvifs[vifi];
 
     if (!v->uv_pim_neighbors || !v->uv_pim_neighbors->next)
 	return 0;
 
-    return jp_override_interval(vifi) + TIMER_INTERVAL;
+    return effective_propagation_delay(vifi) + effective_override_interval(vifi);
 }
 
 int send_pim_hello(struct uvif *v, uint16_t holdtime)
@@ -2051,20 +2031,22 @@ void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
  * Prune-Pending Timer, J/P_Override_Interval(I), or zero where the router has
  * no more than one neighbor on the interface and nobody is left to override.
  *
- * pimd keeps one timer per (entry, interface), the Expiry Timer, so
- * Prune-Pending is that timer lowered to the pending delay.  Nothing is lost
- * by folding the two: "for forwarding purposes, the Prune-Pending state
- * functions exactly like the Join state", and a Join arriving meanwhile
- * raises the timer again, which is the transition back to Join.  What the
- * bitmap adds is which of the two an expiry came from, so that the PruneEcho
- * goes out for a prune and not for a membership that simply ran out.
+ * The state is `prune_pending_oifs` (src/mrt.h) and the timer a deadline in
+ * `pp_expires`, which expire_prune_pending_timers() in src/route.c acts on:
+ * the interface leaves the outgoing list and the LAN gets its PruneEcho.
+ * "For forwarding purposes, the Prune-Pending state functions exactly like
+ * the Join state", and a Join arriving meanwhile clears the bit, which is the
+ * transition back to Join.  The timer used to be the Expiry Timer lowered to
+ * the pending delay, and that is aged five seconds at a time: a 3-second
+ * interval ran out on whichever tick came first, possibly a moment after the
+ * Prune and before any downstream router could override it.
  *
  * What this replaces was `holdtime/3`, 70 seconds for the usual holdtime and
  * six hours for a Join asking for 0xffff, compounding at every hop.
  */
 static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
 {
-    uint16_t delay = prune_pending_delay(vifi);
+    uint32_t delay = prune_pending_delay(vifi);
 
     if (delay == 0) {
 	/* Nobody to wait for, and nobody to echo to either: a zero delay is
@@ -2074,10 +2056,14 @@ static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
 	return;
     }
 
-    if (mrt->vif_timers[vifi] > delay)
-	SET_TIMER(mrt->vif_timers[vifi], delay);
+    /* A Prune in the Prune-Pending state changes nothing, sec. 4.5.1: the
+     * timer runs from the first one. */
+    if (PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
+	return;
 
+    mrt->pp_expires[vifi] = timer_now() + delay;
     PIMD_VIFM_SET(vifi, mrt->prune_pending_oifs);
+    route_timers_schedule(mrt->pp_expires[vifi]);
 }
 
 int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), char *msg, size_t len)
@@ -3803,7 +3789,8 @@ static void assert_won(mrtentry_t *mrt, vifi_t vifi, uint32_t source,
     as->preference = preference;
     as->metric     = metric;
     as->source     = source;
-    SET_TIMER(as->timer, PIM_ASSERT_WINNER_TIMEOUT);
+    as->expires    = timer_now() + PIM_ASSERT_WINNER_TIMEOUT * 1000;
+    route_timers_schedule(as->expires);
     mrt->flags |= MRTF_ASSERTED;
 }
 
@@ -3821,7 +3808,8 @@ static void assert_lost(mrtentry_t *mrt, vifi_t vifi, uint32_t winner,
     as->is_winner  = FALSE;
     as->preference = preference;
     as->metric     = metric;
-    SET_TIMER(as->timer, PIM_ASSERT_TIMEOUT);
+    as->expires    = timer_now() + PIM_ASSERT_TIMEOUT * 1000;
+    route_timers_schedule(as->expires);
     mrt->flags |= MRTF_ASSERTED;
 
     IF_DEBUG(DEBUG_PIM_ASSERT)
@@ -3844,7 +3832,7 @@ static void assert_noinfo(mrtentry_t *mrt, vifi_t vifi)
     as->preference = 0;
     as->metric     = 0;
     as->source     = INADDR_ANY_N;
-    RESET_TIMER(as->timer);
+    as->expires    = 0;
     assert_update_flag(mrt);
 }
 
@@ -3905,11 +3893,11 @@ void send_pim_assert_cancel(mrtentry_t *mrt, vifi_t vifi)
 }
 
 /*
- * The Assert Timer of sec. 4.6.1 and sec. 4.6.2, aged once per
- * age_routes() pass: a winner resends and rearms (Actions A3), a loser
- * returns to NoInfo and gives the interface back (Actions A5).  One timer
- * per interface, because two LANs that assert independently expire
- * independently.
+ * The Assert Timer of sec. 4.6.1 and sec. 4.6.2, asked on every age_routes()
+ * tick, and alone -- @timers_only -- on every pass route_timers_schedule()
+ * runs: a winner resends and rearms (Actions A3), a loser returns to NoInfo
+ * and gives the interface back (Actions A5).  One timer per interface,
+ * because two LANs that assert independently expire independently.
  *
  * The Loser state has a second way out that is aged here rather than
  * timed, "my metric becomes better than the assert winner's metric": the
@@ -3920,17 +3908,24 @@ void send_pim_assert_cancel(mrtentry_t *mrt, vifi_t vifi)
  * ever take a loser out of the state.  Both machines ask it of downstream
  * interfaces alone: on RPF_interface(S) the answer is CouldAssert(S,G,I)
  * == FALSE, i.e. an infinite metric, which is never better than anything.
+ * It stays on the tick.  Asked on every pass as well, which follows every
+ * change of an outgoing interface list within milliseconds, it undid an
+ * election the moment it was lost wherever the two answers disagree, and
+ * the LAN flapped between the routers faster than either could forward.
  *
  * Returns TRUE if any oif came back, i.e. if the caller owes a
  * change_interfaces().
  */
-int age_asserts(mrtentry_t *mrt)
+int age_asserts(mrtentry_t *mrt, int timers_only)
 {
     int change = FALSE;
+    uint64_t now;
     vifi_t vifi;
 
-    if (!mrt->asserts)
+    if (!mrt->asserts || !(mrt->flags & MRTF_ASSERTED))
 	return FALSE;
+
+    now = timer_now();
 
     for (vifi = 0; vifi < numvifs; vifi++) {
 	struct assert_state *as = &mrt->asserts[vifi];
@@ -3939,7 +3934,7 @@ int age_asserts(mrtentry_t *mrt)
 	if (as->winner == INADDR_ANY_N)
 	    continue;
 
-	if (!as->is_winner && vifi != mrt->incoming) {
+	if (!timers_only && !as->is_winner && vifi != mrt->incoming) {
 	    my_assert_metric(mrt, &preference, &metric);
 
 	    /* Actions A5, and sec. 4.6.1 lets the normal Join/Prune
@@ -3959,7 +3954,7 @@ int age_asserts(mrtentry_t *mrt)
 	    }
 	}
 
-	IF_TIMEOUT(as->timer) {
+	if (as->expires <= now) {
 	    if (!as->is_winner) {
 		if (assert_clear(mrt, vifi))
 		    change = TRUE;

@@ -265,18 +265,16 @@ interval 3 seconds between two pimds.  It was `TIMER_INTERVAL`, 5 seconds, for
 as long as an override Join waited for the next tick, which is the lower bound
 the same section asks implementers to enforce "to allow for scheduling and
 processing delays within their router"; the Join Timer schedules its own pass
-now, so the default covers pimd's own delay.  The other side of the interval is
-still on the tick: the Prune-Pending Timer is one of the per-interface timers
-`age_routes()` ages five seconds at a time, and the first tick can come a
-moment after the Prune, so it is armed one `TIMER_INTERVAL` longer than the
-interval, `prune_pending_delay()`, and runs out between 5 and 10 seconds after
-the Prune rather than at 3.  Late is the direction that costs nothing an
-override would not have kept.  pimd keeps one timer per (entry,
-interface), so Prune-Pending is the Expiry Timer lowered to that delay, which
-loses nothing -- "for forwarding purposes, the Prune-Pending state functions
-exactly like the Join state" -- with `prune_pending_oifs` (`src/mrt.h`) saying
-which of the two an expiry came from, so that the PruneEcho sec. 4.5.1 owes
-the LAN is sent for a prune and not for a membership that simply ran out.  The
+now, so the default covers pimd's own delay.  The Prune-Pending Timer is a
+deadline per (entry, interface) of its own, `pp_expires` beside
+`prune_pending_oifs` (`src/mrt.h`), and runs out at the interval to the
+millisecond; it used to be the Expiry Timer lowered to the interval and aged
+five seconds at a time, armed one tick longer so that a first tick coming a
+moment after the Prune could not end it short, which made it 5 to 10 seconds.
+"For forwarding purposes, the Prune-Pending state functions exactly like the
+Join state", a Join meanwhile clears the bit, and the PruneEcho sec. 4.5.1
+owes the LAN goes on expiry, for a prune and not for a membership that simply
+ran out.  The
 T bit is advertised clear: it offers to disable Join suppression, which pimd
 cannot do, so `Suppression_Enabled(I)` is true on every link it is on and the
 explicit tracking the bit exists for stays out of reach.  Propagation_Delay
@@ -562,9 +560,9 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | t\_override | rand(0, Eff. Override) | rand(0, Eff. Override), in ms | ok |
 | Propagation\_Delay | 0.5 s | 500 ms, advertised and negotiated | ok |
 | Override\_Interval | 2.5 s | 2500 ms, advertised and negotiated | ok |
-| J/P\_Override\_Interval (PPT) | 3 s | the negotiated sum plus a tick, 5–10 s | minor |
+| J/P\_Override\_Interval (PPT) | 3 s | the negotiated sum, 3 s between pimds | ok |
 | Assert\_Time | 180 s | `PIM_ASSERT_TIMEOUT` 180 s | ok |
-| Assert\_Override\_Interval | 3 s | 5 s, the TIMER\_INTERVAL floor | minor |
+| Assert\_Override\_Interval | 3 s | 3 s, the winner rearmed at 177 s | ok |
 | Register\_Suppression\_Time | 60 s | 60 s | ok |
 | Register\_Probe\_Time | 5 s | 5 s | ok |
 | RST(S,G) | 25–85 s | 30–90 s, the probe-time term omitted | minor |
@@ -572,16 +570,9 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | RP\_Keepalive\_Period | 185 s | 210 s, i.e. max(210, 185) | ok in effect |
 
 `TIMER_INTERVAL` is 5 seconds and `SET_TIMER`/`IF_TIMEOUT` count whole seconds,
-so no sub-5-second spec value is representable on those timers.  The Join
-Timer and the triggered Hello are the exceptions, below.  The tick is still
-behind the Prune-Pending row, described with the LAN Prune Delay above, and
-behind the one minor assert row: the winner's timer is
-`PIM_ASSERT_WINNER_TIMEOUT`, `Assert_Time - Assert_Override_Interval` rounded
-down to whole ticks, so 175 s rather than 177 s.  A timer only ever expires on
-a tick, and 177 and 180 reach zero on the same one, which would have the
-resend race the refresh it exists to deliver.  The effect is a 5-second
-override interval where the spec asks for 3, which is the direction that is
-safe.
+so no sub-5-second spec value is representable on those timers.  The Join,
+Prune-Pending and Assert Timers and the triggered Hello are the exceptions,
+below.
 
 `t_suppressed` is in force again, where it used to be computed and never set.
 T2 was the (\*,G) branch of the Join suppression in `receive_pim_join_prune()`,
@@ -602,7 +593,7 @@ while that router sends one every 20 seconds, and sends one again within a
 suppression period once those Joins carry a 10-second HoldTime.
 
 The callout queue of `src/timer.c` counts milliseconds on the monotonic clock,
-and two timers moved onto it.  The Join Timer of sec. 4.5.4 and 4.5.5 is a
+and four timers moved onto it.  The Join Timer of sec. 4.5.4 and 4.5.5 is a
 deadline, `jp_expires` in `src/mrt.h`, rather than a count `age_routes()` took
 five seconds off: the tick still sends what has come due, the periodic Joins
 among them, and a timer set to run out before the next tick schedules a pass
@@ -626,6 +617,18 @@ sends the Hello first, as sec. 4.3.1 requires.  `crafted` in
 Prune in R1's log to the Join in R2's, each under 3 seconds, and the Hello
 from the new neighbor to R1's answer, each within 5 seconds and not all of
 them prompt.  The Hello at startup is still whole seconds on a tick.
+
+The Prune-Pending Timer, above, and the Assert Timer of sec. 4.6 followed,
+onto the same pass, `route_timers_run()`.  The Assert Timer is a deadline in
+`struct assert_state`, and the winner rearms at `Assert_Time -
+Assert_Override_Interval`, 177 seconds.  On the tick it had been rounded down
+to 175, because 177 and 180 ran out on the same tick and the resend would have
+raced the refresh it is for, and a loser's 180 could end anywhere from 175
+seconds on -- short of a winner that resends at 177 as the spec has it.
+`crafted` times the Prune-Pending Timer from a Prune on R1's LAN to the
+PruneEcho, 3000 ms to within the log's rounding, and `assert-lan` in
+`test/freebsd-interop.sh` the gap before R3's resend, 177000 ms within half a
+second.
 
 
 Packet formats

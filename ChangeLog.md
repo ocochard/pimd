@@ -203,6 +203,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Run the Prune-Pending Timer of RFC 7761 section 4.5.1 and the Assert Timer
+  of section 4.6 to the millisecond.  An upstream router let an interface go
+  5 to 10 seconds after a Prune nobody overrode, where the section asks for
+  the J/P_Override_Interval, 3 seconds on defaults, and an assert winner
+  resent its Assert after 175 seconds, not Assert_Time less
+  Assert_Override_Interval, 177; a loser's Assert_Time could end 5 seconds
+  early, before a winner resending at 177 seconds had refreshed it
 - Send triggered Joins and Prunes when the state changes, not on the next
   5-second tick, and time the override Join of RFC 7761 section 4.5.4 to
   the millisecond.  The Join Timer was a count of seconds aged once per

@@ -31,6 +31,7 @@
  *  $Id: route.c,v 1.39 2003/02/12 21:56:55 pavlin Exp $
  */
 
+#include <limits.h>
 #include "defs.h"
 
 #define MRT_IS_LASTHOP(mrt) PIMD_VIFM_LASTHOP_ROUTER(mrt->leaves, mrt->oifs)
@@ -569,6 +570,48 @@ static void expire_prune_pending(mrtentry_t *mrt, vifi_t vifi)
 
     PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
     send_prune_echo(mrt, vifi);
+}
+
+/*
+ * The Prune-Pending Timers of an entry that have run out by @now, see
+ * prune_pending() in src/pim_proto.c.  The interface leaves the joined set
+ * the way an expired Expiry Timer takes it out in age_routes(), and @next is
+ * lowered to any timer still running.  Returns TRUE when the caller owes a
+ * change_interfaces().
+ */
+static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *next)
+{
+    int change = FALSE;
+    vifi_t vifi;
+
+    if (PIMD_VIFM_ISEMPTY(mrt->prune_pending_oifs))
+	return FALSE;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (!PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
+	    continue;
+
+	/* Pruned where nothing was joined, or taken out another way since */
+	if (!PIMD_VIFM_ISSET(vifi, mrt->joined_oifs)) {
+	    PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
+	    continue;
+	}
+
+	if (mrt->pp_expires[vifi] > now) {
+	    if (next && (!*next || mrt->pp_expires[vifi] < *next))
+		*next = mrt->pp_expires[vifi];
+	    continue;
+	}
+
+	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
+	if (!(mrt->flags & MRTF_WC))
+	    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
+	RESET_TIMER(mrt->vif_timers[vifi]);
+	expire_prune_pending(mrt, vifi);
+	change = TRUE;
+    }
+
+    return change;
 }
 
 
@@ -1693,42 +1736,46 @@ static void check_spt_threshold(mrtentry_t *mrt)
 
 
 /*
- * The Join Timer of RFC 7761 sec. 4.5.4 and sec. 4.5.5, one per (*,G) and
- * (S,G) entry.
+ * The routing entry timers that cannot wait for the tick: the Join Timer of
+ * RFC 7761 sec. 4.5.4 and sec. 4.5.5, the Prune-Pending Timer of sec. 4.5.1
+ * and sec. 4.5.2, and the Assert Timer of sec. 4.6.
  *
  * Every other timer on a routing entry is a count of seconds age_routes()
- * takes TIMER_INTERVAL off, and this one used to be too.  That held every
- * triggered Join and Prune back to the next tick, up to five seconds after
- * the transition the sections send it on, and made t_override, which is
- * drawn from rand(0, 2.5 s), a whole number of ticks.  The timer is a
- * deadline on the monotonic clock instead.  age_routes() still sends what
- * has come due by the tick, the periodic Joins among them, and a timer set
- * to expire before the next tick gets a pass of its own, jp_timer_run(), for
- * when it does.
+ * takes TIMER_INTERVAL off, and these used to be too.  That held every
+ * triggered Join and Prune back to the next tick, made t_override, drawn from
+ * rand(0, 2.5 s), a whole number of ticks, ran a 3-second Prune-Pending Timer
+ * out on whichever tick came first, and left the 3 seconds between a winner's
+ * Assert resend and its losers' Assert_Time to the tick phase.  Each is a
+ * deadline on the monotonic clock instead.  age_routes() still acts on what
+ * has come due by the tick, and a deadline the tick would be late for gets a
+ * pass of its own, route_timers_run(), for when it runs out.
  */
-static uint64_t jp_run_at;	/* When the pass scheduled last runs, 0 none */
+static uint64_t route_timers_at;	/* When the pass scheduled last runs, 0 none */
 
-static void jp_timer_run(void *arg);
+static void route_timers_run(void *arg);
 
-static void jp_timer_schedule(uint64_t when)
+void route_timers_schedule(uint64_t when)
 {
     uint64_t now = timer_now();
 
-    /* A pass already scheduled for no later will do.  One overdue is either
-     * about to run or went with the whole queue in restart(), and one more
-     * pass than needed costs a walk of the table and nothing else. */
-    if (jp_run_at && jp_run_at <= when && jp_run_at > now)
+    /* A pass already scheduled for no later will do: it schedules the next
+     * one itself.  One overdue is either about to run or went with the whole
+     * queue in restart(), and one more pass than needed costs a walk of the
+     * table and nothing else. */
+    if (route_timers_at && route_timers_at <= when && route_timers_at > now)
 	return;
 
-    if (timer_set_ms(when > now ? (int)(when - now) : 0, jp_timer_run, NULL))
-	jp_run_at = when;
+    if (timer_set_ms(when > now ? (int)MIN(when - now, INT_MAX) : 0, route_timers_run, NULL))
+	route_timers_at = when;
 }
 
+/* The Join Timer.  Only a timer due before the next tick gets a pass: the
+ * periodic Joins of every entry are what the tick is for. */
 void jp_timer_set(mrtentry_t *mrt, uint32_t msec)
 {
     mrt->jp_expires = timer_now() + msec;
     if (msec < TIMER_INTERVAL * 1000)
-	jp_timer_schedule(mrt->jp_expires);
+	route_timers_schedule(mrt->jp_expires);
 }
 
 /* "Send Join" and "Send Prune": due now, and due already for a pass that
@@ -1736,7 +1783,7 @@ void jp_timer_set(mrtentry_t *mrt, uint32_t msec)
 void jp_timer_fire(mrtentry_t *mrt)
 {
     mrt->jp_expires = 0;
-    jp_timer_schedule(timer_now());
+    route_timers_schedule(timer_now());
 }
 
 /* Milliseconds left, 0 when due */
@@ -1885,20 +1932,55 @@ static void jp_flush(void)
 }
 
 /*
- * The pass jp_timer_schedule() asks for: the Join Timers alone, over the
- * same walk age_routes() makes, and nothing else aged.  Scheduled again for
- * the earliest timer left that the next tick would be late for.
+ * The Prune-Pending and Assert Timers of one entry, for route_timers_run():
+ * what age_routes() does with them on the tick, and @next lowered to the
+ * earliest of them still running.
  */
-static void jp_timer_run(void *arg __attribute__((unused)))
+static void route_timers_expire_oifs(mrtentry_t *mrt, uint64_t now, uint64_t *next)
 {
-    uint64_t now = timer_now(), next = 0;
+    int change = FALSE;
+    vifi_t vifi;
+
+    if (expire_prune_pending_timers(mrt, now, next))
+	change = TRUE;
+    if (age_asserts(mrt, TRUE))
+	change = TRUE;
+
+    if (mrt->asserts && (mrt->flags & MRTF_ASSERTED)) {
+	for (vifi = 0; vifi < numvifs; vifi++) {
+	    uint64_t expires = mrt->asserts[vifi].expires;
+
+	    if (mrt->asserts[vifi].winner != INADDR_ANY_N && expires &&
+		(!*next || expires < *next))
+		*next = expires;
+	}
+    }
+
+    if (change)
+	change_interfaces(mrt,
+			  mrt->incoming,
+			  mrt->joined_oifs,
+			  mrt->pruned_oifs,
+			  mrt->leaves,
+			  mrt->asserted_oifs, 0);
+}
+
+/*
+ * The pass route_timers_schedule() asks for: the Join, Prune-Pending and
+ * Assert Timers alone, over the same walk age_routes() makes, and nothing
+ * else aged.  Scheduled again for the earliest Prune-Pending or Assert Timer
+ * left, and for the earliest Join Timer the next tick would be late for.
+ */
+static void route_timers_run(void *arg __attribute__((unused)))
+{
+    uint64_t now = timer_now(), next = 0, next_jp = 0;
     rp_grp_entry_t *rp_grp;
     cand_rp_t *cand_rp;
     grpentry_t *grp;
-    mrtentry_t *mrt;
+    mrtentry_t *mrt, *mrt_next;
     int grp_action;
 
-    jp_run_at = 0;
+    route_timers_at = 0;
 
     for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
 	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
@@ -1906,15 +1988,18 @@ static void jp_timer_run(void *arg __attribute__((unused)))
 		grp_action = PIM_ACTION_NOTHING;
 		mrt = grp->grp_route;
 		if (mrt) {
+		    route_timers_expire_oifs(mrt, now, &next);
 		    grp_action = jp_timer_expire_wc(mrt, cand_rp->rpentry, now);
-		    if (!next || mrt->jp_expires < next)
-			next = mrt->jp_expires;
+		    if (!next_jp || mrt->jp_expires < next_jp)
+			next_jp = mrt->jp_expires;
 		}
 
-		for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+		for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
+		    mrt_next = mrt->grpnext;
+		    route_timers_expire_oifs(mrt, now, &next);
 		    jp_timer_expire_sg(mrt, cand_rp->rpentry, grp_action, now);
-		    if (!next || mrt->jp_expires < next)
-			next = mrt->jp_expires;
+		    if (!next_jp || mrt->jp_expires < next_jp)
+			next_jp = mrt->jp_expires;
 		}
 	    }
 	}
@@ -1922,8 +2007,11 @@ static void jp_timer_run(void *arg __attribute__((unused)))
 
     jp_flush();
 
-    if (next && next < timer_now() + TIMER_INTERVAL * 1000)
-	jp_timer_schedule(next);
+    now = timer_now();
+    if (next_jp && next_jp < now + TIMER_INTERVAL * 1000 && (!next || next_jp < next))
+	next = next_jp;
+    if (next)
+	route_timers_schedule(next);
 }
 
 
@@ -2053,7 +2141,9 @@ void age_routes(void)
 		if (mrt_grp) {
 		    /* The (*,G) entry */
 		    /* outgoing interfaces timers */
-		    change_flag = age_asserts(mrt_grp);
+		    change_flag = age_asserts(mrt_grp, FALSE);
+		    if (expire_prune_pending_timers(mrt_grp, now, NULL))
+			change_flag = TRUE;
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_grp->joined_oifs)) {
@@ -2140,7 +2230,9 @@ void age_routes(void)
 		    mrt_srcs_next = mrt_srcs->grpnext;
 
 		    /* outgoing interfaces timers */
-		    change_flag = age_asserts(mrt_srcs);
+		    change_flag = age_asserts(mrt_srcs, FALSE);
+		    if (expire_prune_pending_timers(mrt_srcs, now, NULL))
+			change_flag = TRUE;
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {

@@ -75,6 +75,8 @@
 	    free((mrtentry_ptr)->vif_timers);			\
 	if ((mrtentry_ptr)->asserts)			\
 	    free((mrtentry_ptr)->asserts);			\
+	if ((mrtentry_ptr)->pp_expires)				\
+	    free((mrtentry_ptr)->pp_expires);			\
 	curr = (mrtentry_ptr)->kernel_cache;			\
 	while (curr) {						\
 	    next = curr->next;					\
@@ -238,7 +240,9 @@ struct assert_state {
     uint32_t		 preference;	/* AssertWinnerMetric(S,G,I), with  */
     uint32_t		 metric;	/*   the RPT bit in the preference  */
     uint32_t		 source;	/* Source our own Assert named	    */
-    uint16_t		 timer;		/* AT(S,G,I) / AT(*,G,I)	    */
+    uint64_t		 expires;	/* AT(S,G,I) / AT(*,G,I), when it
+					 * runs out on the clock of
+					 * timer_now(); 0 is not running    */
     uint8_t		 is_winner;	/* `winner` is this router	    */
 };
 
@@ -284,6 +288,9 @@ typedef struct mrtentry {
 					 * last checked at, see check_sptbit()
 					 */
     uint16_t		*vif_timers;	/* vifs timer list		    */
+    uint64_t		*pp_expires;	/* The Prune-Pending Timer of each
+					 * vif set in prune_pending_oifs,
+					 * on the clock of timer_now()	    */
     uint16_t		 flags;		/* The MRTF_* flags		    */
     uint16_t		 entry_timer;	/* entry timer			    */
     uint64_t		 jp_expires;	/* When the Join Timer expires, on

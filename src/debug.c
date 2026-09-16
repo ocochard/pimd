@@ -742,12 +742,12 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     for (vifi = 0; vifi < numvifs; vifi++)
 	fprintf(fp, "  %d", vifi);
     fprintf(fp, "\n         %5d  %4d  %4d       ",
-	    r->entry_timer, (int)((jp_timer_left(r) + 999) / 1000), r->rs_timer);
+	    r->entry_timer, timer_secs_left(r->jp_expires), r->rs_timer);
     for (vifi = 0; vifi < numvifs; vifi++)
 	fprintf(fp, " %2d", r->vif_timers[vifi]);
     fprintf(fp, "\nASSERT:                        ");
     for (vifi = 0; vifi < numvifs; vifi++)
-	fprintf(fp, " %2d", r->asserts[vifi].timer);
+	fprintf(fp, " %2d", timer_secs_left(r->asserts[vifi].expires));
     fprintf(fp, "\n");
 }
 

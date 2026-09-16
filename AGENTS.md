@@ -105,7 +105,8 @@ about what arrives (no shared tree for a group in the range, a Register for one 
 rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents for it
 alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
 played by pimsend from R2's jail), the override Join to that router's Prune and the
-triggered Hello to a new neighbor (both timed over several trials off the routers' logs),
+triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
+several trials off the routers' logs),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1),
 the Hello Address List of sec. 4.3.4 parsed from a list pimd did not write,
 a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
@@ -162,7 +163,8 @@ same way as its encoder passes one and fails the other:
   all four sub-cases of the election -- the three metric ones and `rpt-bit`, where the Arista must
   win on the bit despite pimd holding the better preference -- and the two halves of M3, an
   AssertCancel from the Arista and pimd holding the LAN past Assert_Time, both of which now report
-  `ok` and stay as tripwires. `AL_SKIP_RESEND=yes` skips the 180s case.
+  `ok` and stay as tripwires. `AL_SKIP_RESEND=yes` skips the 180s case, which also times pimd's
+  resend against the 177 seconds of RFC 7761 sec. 4.6.1.
 
 `run all` walks all three. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
 `-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path). `-s` and `-j` work as
@@ -195,9 +197,9 @@ several instances (one per `-t TABLE_ID` on Linux). `pimctl -u FILE` picks a non
 Single-threaded, single process. `main.c` runs a `select()` loop over file descriptors registered
 via `register_input_handler()` (IGMP socket, PIM socket, routing socket/netlink, pimctl IPC), with
 `timer.c` providing a delta-queue of callbacks in milliseconds on the monotonic clock; `timer()` in
-`main.c` re-arms itself every `TIMER_INTERVAL` to age most protocol state, while the Join Timer
-(`jp_timer_set()` in `route.c`) and the triggered Hello schedule callouts of their own. All
-protocol state is global (declared `extern` in `defs.h`), so ordering of the `init_*()` calls in `main()` matters:
+`main.c` re-arms itself every `TIMER_INTERVAL` to age most protocol state, while the Join,
+Prune-Pending and Assert Timers (deadlines acted on by `route_timers_run()` in `route.c`) and the
+triggered Hello schedule callouts of their own. All protocol state is global (declared `extern` in `defs.h`), so ordering of the `init_*()` calls in `main()` matters:
 `init_vifs()` before `init_rp_and_bsr()` / `add_static_rp()`. `restart()` (SIGHUP, `pimctl restart`)
 tears the same state down and rebuilds it in that order; state added anywhere must be reset there
 too, or it leaks or goes stale across a reload.
