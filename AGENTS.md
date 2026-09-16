@@ -102,7 +102,9 @@ address in the second -- `crafted` the only one whose messages pimd did not buil
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules
 about what arrives (no shared tree for a group in the range, a Register for one answered
 rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents for it
-alone, a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1),
+alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
+played by pimsend from R2's jail), a longer group range taking over the groups inside it
+(RFC 7761 sec. 4.7.1),
 a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole
 scenario with configured so that every other assertion is a soak test of it -- with a positive control beside each,

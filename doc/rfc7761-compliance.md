@@ -59,10 +59,10 @@ cannot be told from a slow lab.  The group that wanted a message pimd will
 not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
 `test/freebsd-lab.sh` closes and asserts the whole packet format section,
-S3 and S4 of the SSM one, R2's longer group range, R3's No-Forward bit and
-A1's neighbor list.
+S3 and S4 of the SSM one, T2's Join suppression, R2's longer group range,
+R3's No-Forward bit and A1's neighbor list.
 
-What is left divides in two.  M6, M7, M8, T1 through T3 and S1 are state
+What is left divides in two.  M6, M7, M8, T1, T3 and S1 are state
 pimd does not keep, each a structural change rather than a check: (S,G,rpt)
 entries, a secondary address list, a traffic-driven Keepalive Timer, a
 triggered-message timer finer than the five-second tick, and SSM groups that
@@ -589,6 +589,24 @@ resend race the refresh it exists to deliver.  The effect is a 5-second
 override interval where the spec asks for 3, which is the direction that is
 safe.
 
+`t_suppressed` is in force again, where it used to be computed and never set.
+T2 was the (\*,G) branch of the Join suppression in `receive_pim_join_prune()`,
+which had its timer assignment deleted in `892acbe` after a report of groups
+lost for minutes at a time; the (S,G) branch kept its assignment and both
+carried guards of their own, a comparison of the Join Timer against the
+overheard HoldTime and an address tiebreak, neither of which is in the spec.
+Both branches are sec. 4.5.4 and 4.5.5 now, `jp_suppress()`: the timer is
+raised to `t_joinsuppress`, the smaller of `t_suppressed` and the HoldTime of
+the Join overheard, and never lowered.  The HoldTime bound is the one that
+matters for what `892acbe` saw: an upstream keeps the interface only as long
+as the Join it heard asked, so a suppression that outlived it let the state
+expire there, and the bound is what rules that out.  The report named no
+topology, so the loss itself was not reproduced.  `crafted` in
+`test/freebsd-lab.sh` asserts both halves, with a second router on R1's
+upstream link played by `test/pimsend.c`: R1 sends no Join(\*,G) of its own
+while that router sends one every 20 seconds, and sends one again within a
+suppression period once those Joins carry a 10-second HoldTime.
+
 **T1.  `t_override` cannot be expressed on a 5-second tick.**
 The interval is the link's now, `effective_override_interval()`
 (`src/pim_proto.c`) rather than a constant, and no longer RFC 2362's
@@ -607,26 +625,6 @@ needs a shared LAN and an oif deleted after 3 seconds where the override
 arrives at 5, which any two pimds on one segment now have: `shared-lan` in
 `test/freebsd-lab.sh` and `assert-lan` in `test/freebsd-interop.sh` both
 build it.*
-
-**T2.  (\*,G) Join suppression is inert.**  The interval itself is the spec's
-now -- `jp_suppression_timeout()` (`src/pim_proto.c`) draws 66 to 84 seconds,
-where the old range started at `t_periodic` exactly and let a suppressed router
-send inside the very period it was suppressed for.  The (\*,G) branch still
-computes its guards and then falls through with no `SET_TIMER` at all, three
-tests followed by a bare `continue` (`src/pim_proto.c:2027-2040`).  The
-assignment was deleted in `892acbe`, "Fix random loss of multicast, lasts 5-10
-mins, by Ventus Networks", as a workaround, so every router on a LAN sends its
-own periodic Join(\*,G).  The effect is control-plane noise rather than lost
-traffic, which is why it was tolerable, but restoring it needs the original
-loss scenario reproduced first: the bug it papers over is most likely in
-`join_or_prune()` or the `jp_timer` accounting.  Note also the address tiebreak
-in those guards has no counterpart in RFC 7761.
-*Check: the `t_suppressed` row of sec. 4.11, `doc/rfc7761.txt:7070`; the "See
-Join(\*,G) to RPF'(\*,G)" transition that arms it is sec. 4.5.4, `:3543`, and
-its (S,G) twin sec. 4.5.5, `:3815`.  Effort: medium -- the change is one
-assignment, reproducing what it broke is the work.  Test: none.  Join
-suppression needs two routers wanting the same group on one segment, which
-`shared-lan` and `assert-lan` both have.*
 
 **T3.  The triggered Hello answering a new neighbor is not delayed.**  The
 startup half is done: `start_vif()` (`src/vif.c`) arms `uv_hello_timer` with

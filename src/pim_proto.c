@@ -118,6 +118,28 @@ static uint16_t jp_suppression_timeout(void)
 	+ RANDOM() % ((PIM_JOIN_PRUNE_PERIOD * 3) / 10 + 1);
 }
 
+/*
+ * RFC 7761 sec. 4.5.4 and 4.5.5, "See Join(*,G) to RPF'(*,G)" and its (S,G)
+ * twin: another router on the upstream interface has just sent the Join we
+ * were going to send, so ours can wait.  t_joinsuppress is the smaller of
+ * t_suppressed and the HoldTime of the Join overheard, and the Join Timer is
+ * only ever raised to it, never lowered.
+ *
+ * The HoldTime bound is what makes this safe.  The upstream router keeps the
+ * interface for as long as the Join it heard asked, and not for as long as
+ * we stay quiet: suppressed past that, which a short HoldTime from a router
+ * with a faster t_periodic is enough for, we would let the state we want
+ * expire upstream.  Silently losing a group for minutes is what this
+ * suppression was taken out for, in 892acbe, rather than bounded.
+ */
+static void jp_suppress(mrtentry_t *mrt, uint16_t holdtime)
+{
+    uint16_t jp_value = MIN(jp_suppression_timeout(), holdtime);
+
+    if (mrt->jp_timer < jp_value)
+	SET_TIMER(mrt->jp_timer, jp_value);
+}
+
 
 /*
  * A neighbor whose GenID changed has restarted, and with it lost the Join
@@ -2207,14 +2229,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    if (source != mrt->group->active_rp_grp->rp->rpentry->address)
 			continue;  /* The RP address doesn't match. Ignore. */
 
-		    /* Check the holdtime */
-		    /* TODO: XXX: TIMER implem. dependency! */
-		    if (mrt->jp_timer > holdtime)
-			continue;
-
-		    if ((mrt->jp_timer == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
-			continue;
-
+		    jp_suppress(mrt, holdtime);
 		    continue;
 		} /* End of (*,G) Join suppression */
 
@@ -2227,17 +2242,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (my_action != PIM_ACTION_JOIN)
 		    continue;
 
-		/* Check the holdtime */
-		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->jp_timer > holdtime)
-		    continue;
-
-		if ((mrt->jp_timer == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
-		    continue;
-
-		jp_value = jp_suppression_timeout();
-		if (mrt->jp_timer < jp_value)
-		    SET_TIMER(mrt->jp_timer, jp_value);
+		jp_suppress(mrt, holdtime);
 		continue;
 	    }
 

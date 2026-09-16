@@ -203,6 +203,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Suppress a periodic Join(\*,G) that another router on the upstream link
+  has just sent, RFC 7761 sec. 4.5.4, for the smaller of t_suppressed and
+  the HoldTime of the Join overheard.  The timer assignment had been
+  removed after a report of groups lost for minutes at a time, so every
+  router on a LAN sent its own Join(\*,G) every minute.  That loss is what
+  suppression outliving the upstream router's state looks like, and the
+  HoldTime bound, which was missing, is what prevents it.  The (S,G) branch
+  follows the same rule, and neither compares the Join Timer against the
+  HoldTime nor breaks ties on addresses any more, which the RFC does not do
 - Move the groups a newly learned group range covers onto its RP, RFC 7761
   sec. 4.7.1.  The mapping of a group was recomputed only when the range it
   sat on changed, so a longer range learned after its groups had state, say

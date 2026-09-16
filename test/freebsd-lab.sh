@@ -989,6 +989,21 @@ CRAFT_PRIO=${CRAFT_PRIO:-200}
 # ages has visibly moved.
 CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
 
+# crafted, the Join suppression steps.  $SUPP_ADDR is a second router on
+# R1's link to R2, $R1_UP_ADDR R1's own end of that link.  $SUPP_WINDOW has
+# to hold at least two of R1's periodic Joins, $SUPP_PERIOD apart, so an R1
+# that does not suppress is seen to send; $SUPP_EVERY is under the smallest
+# t_suppressed, 66s, so one that does never runs out.  $SUPP_SHORT_WAIT is
+# the longest t_suppressed, 84s, left over from step 5, plus a tick.
+SUPP_ADDR=${SUPP_ADDR:-10.0.12.9}
+R1_UP_ADDR=${R1_UP_ADDR:-10.0.12.1}
+SUPP_GROUP=${SUPP_GROUP:-225.1.4.4}
+SUPP_PERIOD=${SUPP_PERIOD:-60}
+SUPP_WINDOW=${SUPP_WINDOW:-140}
+SUPP_EVERY=${SUPP_EVERY:-20}
+SUPP_SHORT_HOLD=${SUPP_SHORT_HOLD:-10}
+SUPP_SHORT_WAIT=${SUPP_SHORT_WAIT:-100}
+
 # The longer group range of R2 in doc/rfc7761-compliance.md, covering $GROUP
 # and not $CRAFT_OUT_GROUP, which both sit in the 224.0.0.0/4 R2 advertises
 CRAFT_RANGE=${CRAFT_RANGE:-225.1.2.0}
@@ -3573,15 +3588,100 @@ check_crafted() {
 		fi
 	fi
 
+	# RFC 7761 sec. 4.5.4, T2 of doc/rfc7761-compliance.md: a router that
+	# sees another router on its upstream interface send the Join(*,G) it
+	# was about to send holds its own back, for t_suppressed or the HoldTime
+	# of the Join it saw, whichever is shorter.  pimd computed the guards
+	# and then set nothing, since 892acbe took the timer out after a loss
+	# of multicast its report blamed on suppression lasting too long.
+	#
+	# The other router is $SUPP_ADDR, an address added to R2's end of the
+	# R1-R2 link and driven by pimsend from R2's jail, so the Joins it sends
+	# reach R1 exactly as a second downstream router's would.  R2 counts
+	# what R1 sends it, off its own log, which is what makes the silence
+	# asserted below R1's and not a lost message.  The control comes first:
+	# R1 sends the periodic Join unprompted, or its not sending one says
+	# nothing.  Step 6 is the bound 892acbe was missing, and why removing
+	# suppression was not the fix: a Join with a short HoldTime keeps the
+	# upstream's state only that long, so it must not keep R1 quiet longer.
+	#
+	# Here, before step 7, because a group needs an RP that step 7's
+	# Bootstrap starts ageing out.
+	print "5. A Join overheard on the upstream link holds back our own"
+	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR/24" alias 2>/dev/null || \
+		die "failed adding $SUPP_ADDR to ${EPU}112b on r2"
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
+		fail "r1 never took $SUPP_ADDR as a neighbour on its link to r2"
+		return 1
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$SUPP_GROUP" -w -r "$RP_ADDR" -H 65535
+	if ! wait_for 30 has_mrt r1 "$SUPP_GROUP"; then
+		fail "r1 built no (*,$SUPP_GROUP) from the downstream Join"
+		return 1
+	fi
+	n=$(r1_wc_joins)
+	if wait_for $((SUPP_PERIOD + 15)) r1_wc_joins_above "$n"; then
+		ok "r1 sends r2 its Join(*,$SUPP_GROUP) unprompted"
+	else
+		fail "r2 heard no Join(*,$SUPP_GROUP) from r1 in $((SUPP_PERIOD + 15))s, there is nothing to suppress"
+		return 1
+	fi
+
+	n=$(r1_wc_joins)
+	elapsed=0
+	while [ "$elapsed" -lt "$SUPP_WINDOW" ]; do
+		craft_on r2 "$SUPP_ADDR" hello -H 105
+		craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$SUPP_GROUP" -w -r "$RP_ADDR"
+		sleep "$SUPP_EVERY"
+		elapsed=$((elapsed + SUPP_EVERY))
+	done
+	if [ "$(r1_wc_joins)" -eq "$n" ]; then
+		ok "r1 sent no Join(*,$SUPP_GROUP) in ${SUPP_WINDOW}s of hearing $SUPP_ADDR send one every ${SUPP_EVERY}s"
+	else
+		fail "r1 sent $(( $(r1_wc_joins) - n )) Join(*,$SUPP_GROUP) while $SUPP_ADDR was sending the same one"
+	fi
+	if joined_on r2 "${EPU}112b" "$SUPP_GROUP"; then
+		ok "r2 still has the link in (*,$SUPP_GROUP), kept by the Joins r1 held back for"
+	else
+		fail "r2 dropped (*,$SUPP_GROUP) on the link to r1"
+	fi
+
+	print "6. But no longer than the HoldTime of the Join it overheard"
+	n=$(r1_wc_joins)
+	elapsed=0
+	while [ "$elapsed" -lt "$SUPP_SHORT_WAIT" ] && ! r1_wc_joins_above "$n"; do
+		if [ $((elapsed % SUPP_EVERY)) -eq 0 ]; then
+			craft_on r2 "$SUPP_ADDR" hello -H 105
+			craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$SUPP_GROUP" -w -r "$RP_ADDR" \
+				-H "$SUPP_SHORT_HOLD"
+		fi
+		sleep 5
+		elapsed=$((elapsed + 5))
+	done
+	if r1_wc_joins_above "$n"; then
+		ok "r1 sent its own Join after ${elapsed}s of hearing Joins with a ${SUPP_SHORT_HOLD}s HoldTime"
+	else
+		fail "r1 stayed quiet ${SUPP_SHORT_WAIT}s behind Joins that hold r2's state ${SUPP_SHORT_HOLD}s"
+	fi
+	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR" -alias 2>/dev/null
+
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
 	# it is the longer match, rather than leaving it on the RP it had.  The
 	# (S,G) above is on 224.0.0.0/4 and R2's RP; a second one, outside the
 	# new range, is the control that the range and not the whole RP set
 	# moved.  It sits here because it needs a converged domain with groups
-	# on it, which step 6 takes away; the short holdtime is so the range is
+	# on it, which step 8 takes away; the short holdtime is so the range is
 	# gone again well inside that step's wait.
-	print "5. A longer group range takes over the groups inside it"
+	print "7. A longer group range takes over the groups inside it"
+	# Step 1's Hello has run out by now, and a Join from an address with
+	# no Hello is refused before it builds anything
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 did not take $SRC_ADDR back as a neighbour"
+		return 1
+	fi
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_OUT_GROUP" -s "$CRAFT_FAR_SRC" -H 65535
 	if ! wait_for 15 route_held r1 "$CRAFT_FAR_SRC" "$CRAFT_OUT_GROUP"; then
 		fail "r1 built no ($CRAFT_FAR_SRC,$CRAFT_OUT_GROUP), there is no control"
@@ -3611,7 +3711,7 @@ check_crafted() {
 	# the BSR and R1's RP set has to age out before any of it can be
 	# asked.  That is the state a booting router is in, which is the
 	# state the entry is about.
-	print "6. R1 is put back where a booting router starts, with no RP"
+	print "8. R1 is put back where a booting router starts, with no RP"
 	dprint "stopping the BSR and waiting for R1's dynamic RP to expire ..."
 	[ -f "$WORKDIR/r2.pid" ] && ${SUDO} pkill -9 -F "$WORKDIR/r2.pid" 2>/dev/null
 	if wait_for "$CRAFT_RP_WAIT" no_dynamic_rp r1; then
@@ -3621,7 +3721,7 @@ check_crafted() {
 		return 1
 	fi
 
-	print "7. A unicast Bootstrap from a stranger on the LAN is refused"
+	print "9. A unicast Bootstrap from a stranger on the LAN is refused"
 	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
 	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring unicast Bootstrap from $CRAFT_ADDR"; then
@@ -3638,7 +3738,7 @@ check_crafted() {
 	# The other half, and the reason the check is safe: the DR that
 	# unicasts an RP set has sent its Hello first, on the same path,
 	# immediately before.  Here that Hello is sent explicitly.
-	print "8. The same Bootstrap, once its sender has said Hello, is taken"
+	print "10. The same Bootstrap, once its sender has said Hello, is taken"
 	craft "$CRAFT_ADDR" hello -H 105
 	if wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
 		ok "r1 took $CRAFT_ADDR as a neighbour"
@@ -3661,7 +3761,7 @@ check_crafted() {
 	# list have been committed -- which is where the group ranges are
 	# read -- would hand any neighbour the domain's RP set for the price
 	# of one bad byte.
-	print "9. A malformed Bootstrap from that neighbour changes nothing"
+	print "11. A malformed Bootstrap from that neighbour changes nothing"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 \
 	      -m "$CRAFT_BADLEN" -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring Bootstrap from $CRAFT_ADDR, group mask length"; then
@@ -3705,7 +3805,7 @@ check_crafted() {
 	# every entry that wanted a message pimd will not build.  R1 is the
 	# RP here as well as the DR's router, so the Register assertions have
 	# somewhere to go.
-	print "10. A message whose version is not 2 is discarded"
+	print "12. A message whose version is not 2 is discarded"
 	craft "$SRC_ADDR" hello -V 3 -H 105
 	if wait_for 10 logged r1 "Ignoring PIM v3"; then
 		ok "r1 refused a PIM v3 Hello"
@@ -3713,7 +3813,7 @@ check_crafted() {
 		fail "r1 parsed a v3 message as though it were v2, sec. 4.9 says discard"
 	fi
 
-	print "11. And one sent to a destination its type may not use"
+	print "13. And one sent to a destination its type may not use"
 	craft "$SRC_ADDR" hello -d "$R1_LAN_ADDR" -H 105
 	if wait_for 10 logged r1 "not a destination that message may use"; then
 		ok "r1 refused a Hello unicast to it rather than to ALL-PIM-ROUTERS"
@@ -3727,7 +3827,7 @@ check_crafted() {
 	# group and source records alone and leave it IPv4.  A parser that
 	# checked the upstream address and nothing else would pass the first
 	# of these and fail the rest.
-	print "12. An encoded address of a family this router cannot read"
+	print "14. An encoded address of a family this router cannot read"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -f 2
 	if wait_for 10 logged r1 "upstream address family 2 type 0 is not IPv4"; then
 		ok "r1 refused a Join whose upstream address declares family 2"
@@ -3747,7 +3847,7 @@ check_crafted() {
 		fail "r1 ignored the encoding type, sec. 4.9.1"
 	fi
 
-	print "13. A group range this router does not implement"
+	print "15. A group range this router does not implement"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
 	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO" -B
 	if wait_for 10 logged r1 "a range this router does not implement"; then
@@ -3773,7 +3873,7 @@ check_crafted() {
 	# test/freebsd-interop.sh will either: rule 4, no (*,G) state for a
 	# group in the range, and the second half of sec. 4.8.1's Register
 	# rule, which is the only thing that quiets an SSM-unaware DR down.
-	print "14. No shared tree is built for a group in the SSM range"
+	print "16. No shared tree is built for a group in the SSM range"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$SSM_GROUP" -w -r "$SSM_VIRTUAL_RP"
 	if wait_for 10 logged r1 "shared tree Join for SSM group $SSM_GROUP"; then
 		ok "r1 refused a (*,$SSM_GROUP) Join naming $SSM_VIRTUAL_RP"
@@ -3786,7 +3886,7 @@ check_crafted() {
 		ok "r1 built no state for $SSM_GROUP at all"
 	fi
 
-	print "15. And a Register for one is answered, not merely dropped"
+	print "17. And a Register for one is answered, not merely dropped"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -g "$SSM_GROUP" -s "$CRAFT_FAR_SRC"
 	if wait_for 10 logged r1 "REGISTER STOP.*group = $SSM_GROUP"; then
 		ok "r1 answered an SSM Register with a Register-Stop"
@@ -3794,7 +3894,7 @@ check_crafted() {
 		fail "r1 dropped it silently, so an SSM-unaware DR keeps encapsulating at the data rate"
 	fi
 
-	print "16. A Null-Register is believed only where its checksum allows"
+	print "18. A Null-Register is believed only where its checksum allows"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -K -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "bad checksum in the dummy IP header"; then
 		ok "r1 discarded a Null-Register whose dummy header checksum is wrong"
@@ -3825,7 +3925,7 @@ check_crafted() {
 	# does not name.  Being on a subnet R1 has a VIF on is all that used
 	# to be asked of a router before it could become a neighbour, take
 	# the DR role, join the assert election and have its Joins believed.
-	print "17. A router the interface does not name is not a neighbour"
+	print "19. A router the interface does not name is not a neighbour"
 	jrun ed1 ifconfig "${EP}101a" inet "$DENIED_ADDR/24" alias 2>/dev/null || \
 		die "failed adding $DENIED_ADDR to ${EP}101a on ed1"
 	craft "$DENIED_ADDR" hello -H 105
@@ -3847,7 +3947,7 @@ check_crafted() {
 		fail "r1 lost a neighbour the list names, so the filter refuses more than it was told to"
 	fi
 
-	print "18. The No-Forward bit is what waives the RPF check"
+	print "20. The No-Forward bit is what waives the RPF check"
 	craft "$SRC_ADDR" bootstrap -u "$NOFWD_BSR" -g "$NOFWD_RANGE" -m 16 \
 	      -r "$SRC_ADDR" -p "$CRAFT_PRIO"
 	sleep 2
@@ -3868,8 +3968,8 @@ check_crafted() {
 	# one names a BSR both routers have a route to and whose RPF
 	# neighbour is the sender, so nothing but the bit stops R1 forwarding
 	# it and nothing but the bit stops R2 taking what R1 forwarded.
-	print "19. And it is not forwarded onward"
-	# Step 6 stopped the BSR, and a dead router learns nothing whatever
+	print "21. And it is not forwarded onward"
+	# Step 8 stopped the BSR, and a dead router learns nothing whatever
 	# R1 does, so this needs it back: without a live R2 the assertion
 	# below passes for the wrong reason, which is how the first version
 	# of it passed with the fix reverted.
@@ -3906,6 +4006,23 @@ check_crafted() {
 
 	result
 }
+
+# Send one crafted PIM message from jail $1, sourced at $2
+craft_on() {
+	jail=$1
+	addr=$2
+	shift 2
+	jrun "$jail" "$PIMSEND" -i "$addr" "$@" || \
+		die "failed sending a crafted $1 from $addr on $jail"
+}
+
+# Join(*,$SUPP_GROUP) messages R2 has had from R1 so far, and for
+# wait_for(), whether that is more than $1
+r1_wc_joins() {
+	${SUDO} grep -c "Received PIM JOIN from $R1_UP_ADDR to group $SUPP_GROUP for source $RP_ADDR" \
+		"$WORKDIR/r2.log" 2>/dev/null || true
+}
+r1_wc_joins_above() { [ "$(r1_wc_joins)" -gt "$1" ]; }
 
 # Send one crafted PIM message from ED1, sourced at $1
 craft() {
