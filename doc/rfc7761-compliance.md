@@ -18,10 +18,14 @@ not just on the section — the RFC's own section numbering is in the table of
 contents at `doc/rfc7761.txt:78`.
 
 Sections covered: 4.2 (data packet forwarding, SPTbit), 4.3 (DR and Hello),
-4.4 (Register), 4.5 (Join/Prune, both directions), 4.6 (Assert), 4.10 and 4.11
-(timers), plus the packet formats in 4.9 where a parser or builder depends on
-them.  Not yet read against the code: 4.7 (BSR and RP discovery, which has its
-own RFC 5059), 4.8 (SSM), 4.9 as a whole, and the security considerations.
+4.4 (Register), 4.5 (Join/Prune, both directions), 4.6 (Assert), 4.7 (RP
+discovery), 4.8 (SSM), 4.9 (packet formats), 4.10 and 4.11 (timers), and
+sec. 6 (security considerations).  Every normative section of the RFC has
+now been read against the code once.  What has not is RFC 5059, which owns
+the BSR mechanism 4.7 names without specifying -- the RP discovery, packet
+format and authentication sections say how far into that RFC their own
+entries reach and no further -- nor RFC 5796, which sec. 6.3 defers IPsec
+to and which asks nothing of this daemon.
 
 Each entry carries an effort estimate.  "Small" means a localized change,
 "medium" means new bookkeeping in existing structures, "large" means state
@@ -45,9 +49,14 @@ test covers.  The point of writing it down is that the gap is visible from
 this list rather than only from grepping the labs.  Where an entry names a
 scenario without asserting anything, it is because that scenario builds the
 topology the deviation needs and stops short of the assertion; those are the
-cheap ones to close.  Several are not
+cheap ones to close, and R1 and S5 are the two cheapest on the
+list: each is one configuration line and one `pimctl` call away from a
+scenario that already exists.  Several are not
 blackbox-testable at all, and say so: a five-second latency or a startup race
-cannot be told from a slow lab.
+cannot be told from a slow lab.  A larger group wants a message pimd will
+not send -- every entry of the packet format section and three of the SSM
+one -- and the way to reach all of them at once is a packet sender in
+`test/`, which is what the head of that section argues for.
 
 
 Input validation and trust
@@ -411,6 +420,277 @@ at `:3514` and `:3779` cancels the timer rather than re-arming it.  Effort:
 medium.  Test: none, and none is obvious: the symptom is up to five seconds of
 added latency, which no assertion here could tell from a slow lab.*
 
+
+RP discovery
+------------
+
+Sec. 4.7 leaves the choice of mechanism open and asks only that every router
+in the domain arrive at the same group-to-RP mapping.  What it does pin down
+is the algorithm of sec. 4.7.1, the hash of sec. 4.7.2 and that static
+configuration MUST be supported; all three are in place, and the last section
+says what was checked and why it needs no work.  The entries here are about
+what happens to a mapping after it has been learned, and two of them are the
+BSR's.  RFC 5059 owns that mechanism and is in the tree as `doc/rfc5059.txt`;
+it is cited where an entry needs it but has not otherwise been read against
+the code, so this section is not a statement about pimd's BSR conformance as
+a whole.
+
+Administratively scoped zones, the "notable exception" of sec. 4.7, are not
+implemented.  pimd has one RP set and one BSR election, and the `scoped`
+keyword of `pimd.conf` is an mrouted-style per-interface data plane filter
+(`scoped_addr()`, `src/route.c:144`), not a scope zone: it drops packets, it
+does not give a range of groups an RP set of its own.  A domain broken into
+scope regions therefore cannot use pimd as the BSR for them, and nobody has
+asked it to.
+*Check: sec. 4.7, `doc/rfc7761.txt:5461`; what it would take is RFC 5059
+sec. 3, which carries the scope zone through every BSR state machine it has.*
+
+**R1.  A Bootstrap message deletes the statically configured RP.**
+`add_static_rp()` (`src/main.c:726`) feeds every `rp-address` line into the
+same `cand_rp_list`/`grp_mask_list` a Bootstrap populates, with priority 1,
+holdtime 0xffff and whatever fragment tag was current at startup.  An
+`rp-address` with no group covers 224.0.0.0/4 (`src/config.c:1401-1402`),
+which is the prefix a `group-prefix 224.0.0.0 masklen 4` Candidate-RP is
+advertised under, so the two land on one `grp_mask_t`.  A Bootstrap for that
+prefix then stamps the mask with the message's own fragment tag
+(`src/rp.c:358`), and the garbage collector at the end of
+`receive_pim_bootstrap()` (`src/pim_proto.c:4537-4546`) deletes every RP on a
+mask carrying the current tag whose own tag differs -- which is exactly the
+static entry.  A group record with an RP count of zero, RFC 5059's way of
+withdrawing a prefix, takes it out through `delete_grp_mask()`
+(`src/pim_proto.c:4414`) without any tag being involved at all.
+
+The result is not that the BSR overrides the static RP, which is what several
+implementations do by default and would be a defensible reading of a section
+that gives no precedence rule.  It is that the static RP ceases to exist:
+`g_rp_hold` still holds the parsed line, but only `restart()` reads it again
+(`src/main.c:823`), so a router whose BSR then dies ages the learned RP set
+out and is left with no RP at all until somebody sends it a SIGHUP.  The
+unicast branch of the same function already knows the two sources interact --
+it refuses a unicast Bootstrap when any RP is known and tells the two apart by
+`adv_holdtime` being the static 0xffff (`src/pim_proto.c:4333-4345`) -- so
+the test a fix needs is already written, one screen up from the collector.
+*Check: sec. 4.7, `doc/rfc7761.txt:5477`, "A PIM router MUST support the
+static configuration of group-to-RP mappings"; the fragment tag and the
+zero-count withdrawal are RFC 5059 sec. 4.1, `doc/rfc5059.txt:1535`.  Effort:
+small -- a flag on the entry, honoured in the collector and in
+`delete_grp_mask()`.  Test: none, and this is the cheapest one on the list to
+close: `rpt` in `test/freebsd-lab.sh` already has a BSR and an RP, so an
+`rp-address` line in the `pimd.conf` of one of its other routers, and a
+`pimctl show rp` there after the first Bootstrap, is the whole assertion.*
+
+**R2.  A longer group prefix does not take over the groups it should.**
+Sec. 4.7.1 has the mapping recomputed whenever the set of mappings changes,
+and `rp_grp_match()` does perform the longest match every time it is asked.
+What does not happen is the asking.  Groups with state hang off the
+`rp_grp_entry_t` they were mapped to (`grplink`), and `add_rp_grp_entry()`
+remaps only the groups hanging off entries of the mask it just touched
+(`src/rp.c:450-463`).  A newly learned prefix has no groups on it yet, so
+learning 232.0.0.0/8 with RP B while 224.0.0.0/4 with RP A already has the
+groups keeps every one of them on A, indefinitely: nothing walks `grplist` to
+ask whether a group's current mapping is still the longest match.  The
+deletion path has the same shape and is right for the same reason,
+`delete_rp_grp_entry()` (`src/rp.c:504`) remapping the groups that were on the
+entry going away.
+
+Two routers that learn the same two prefixes in different orders therefore
+send Registers and Joins to different RPs for the same group, which is the
+one thing sec. 4.7's opening paragraph asks an implementation not to do, and
+it persists until the groups are torn down and recreated.
+*Check: sec. 4.7.1, `doc/rfc7761.txt:5571`, "if the set of possible
+group-range-to-RP mappings changes, each router will need to check whether
+any existing groups are affected"; step 1 of the algorithm is `:5534`.
+Effort: medium -- a walk of `grplist` calling `remap_grpentry()` where the
+match changed, cheap to write and easy to make quadratic.  Test: none.  It
+needs one BSR advertising two prefixes that both cover the group, added in
+that order, which no scenario builds today; `rpt` and `rp-offpath` in
+`test/freebsd-lab.sh` have the BSR to build it on.*
+
+**R3.  The No-Forward bit is neither set nor honoured.**  RFC 5059 sec. 3.5
+has the DR answer a new or rebooting neighbor with a stored Bootstrap, and
+sec. 3.5.1 says that copy SHOULD carry the No-Forward bit, whose whole point
+is that the receiver skips the RPF check on it and does not pass it on.  pimd
+sends that copy (`src/pim_proto.c:287-288`, from `receive_pim_hello()`) as
+a plain unicast Bootstrap, the backwards-compatible form of sec. 3.5.2, and
+writes
+`pim_reserved` as zero like every other message (`src/pim.c:287`, `:397`).  It
+never reads the bit either: `receive_pim_bootstrap()` parses from
+`msg + sizeof(pim_header_t)` onwards and the header byte that carries N is
+not looked at.
+
+Both halves of that go wrong the same way.  A No-Forward Bootstrap from a
+conformant neighbor is put through the RPF check the bit exists to waive, so
+the quick refresh it carries is dropped unless the sender happens to be the
+RPF neighbor toward the BSR; and if it is, the forwarding loop
+(`src/pim_proto.c:4376-4387`) copies the received bytes out of every other
+interface with the bit still set, which tells every router downstream to
+accept it without an RPF check of its own.  The same loop runs for a Bootstrap
+that was unicast to us, which sec. 3.4 says is not forwarded.  What limits the
+damage is the test above it: a unicast Bootstrap is only accepted while this
+router knows no RP but its own static ones, which is pimd's stand-in for
+sec. 3.5's "MUST only be accepted at startup".
+*Check: RFC 5059 sec. 3.5.1, `doc/rfc5059.txt:1239`, and sec. 3.4, `:1142`,
+for what may be forwarded; the bit's place in the header is sec. 4.1,
+`doc/rfc5059.txt:1466`.  Effort: small -- read one bit into the parse, set it
+on the triggered copy, skip the RPF check and the forwarding loop when it is
+set.  Test: none, and pimd cannot produce the message to test against itself,
+which makes `arista-rp` in `test/freebsd-interop.sh` the place for it: the
+Arista is the BSR there, so the Bootstraps on that wire are written by
+somebody else's implementation.*
+
+
+Source-specific multicast
+-------------------------
+
+Sec. 4.8.1 is six rules that override normal PIM-SM for a group in the SSM
+range, and the last three of them exist for one reason, which the section
+states: an SSM-unaware router may still send (\*,G) and (S,G,rpt)
+Join/Prunes, or Registers, for an SSM group, and a conformant router has to
+refuse to act on them.  pimd keeps both rules about what it sends itself.
+What follows is the two rules about what arrives that it does not keep, S3
+and S4; the IGMP side of the same problem, S5, which RFC 4604 owns rather
+than this spec; and what it costs that pimd has no SSM-specific state and
+invents an RP for every SSM group instead, S1 and S2.  Which of them
+bite depends on the RP set: an RP whose group range covers 232.0.0.0/8, which
+is what `group-prefix 224.0.0.0 masklen 4` does and what every scenario in
+`test/freebsd-lab.sh` configures, keeps S1 from ever arming and makes S4
+reachable, and a range that stops short of the SSM groups does the opposite.
+
+**S1.  The RP pimd invents for an SSM group times out after 90 seconds and
+takes the group's state with it.**  An SSM group has no RP, and `find_route()`
+wants one anyway, so when nothing in the RP set matches it adds a virtual
+entry for 169.254.0.1 on a /32 prefix of that group's own
+(`src/mrt.c:209-219`, with the TODO that says the real fix is SSM-specific
+state).  It is added with a holdtime of 90 seconds, and `age_misc()` ages
+every RP entry whose holdtime is under 60000 without caring where it came from
+(`src/rp.c:1046-1052`).  Nothing refreshes it: `find_route()` adds it only
+`if (rp_match(group) == NULL)`, and while it exists that test is false, so the
+one path that would update the holdtime of an existing entry is never reached.
+
+Ninety seconds after the first packet of a group, therefore,
+`delete_rp_grp_entry()` remaps the groups on the entry, `rp_grp_match()`
+returns NULL because there was never another mapping, and `remap_grpentry()`
+does the only thing it can with a group it cannot map: `delete_grpentry()`
+(`src/rp.c:745`), which frees every (S,G) of that group and every kernel cache
+entry with it (`src/mrt.c:378`).  On the first hop router the next packet is a
+cache miss and the DR branch recreates the state at once.  On a last hop
+router it is not: `process_cache_miss()` looks the entry up with
+`DONT_CREATE` (`src/route.c:1280`), so nothing comes back until the next IGMP
+membership report or a downstream Join arrives, and the receiver's membership
+is refreshed at the query interval, 125 seconds by default.  The signature to
+look for is a group that `pimctl show igmp` still lists a member for while
+`pimctl show mrt` has nothing.
+*Check: sec. 4.8.1, `doc/rfc7761.txt:5685`, is the rule pimd is on the far
+side of -- it MAY optimize the (\*,G) state out for SSM, and pimd instead
+gives SSM groups more RP state than an ASM group has.  Effort: small to stop
+it aging, medium to do what the TODO asks and keep SSM groups out of the RP
+machinery.  Test: none.  `ssm` in `test/freebsd-lab.sh` builds the topology
+but not the condition: its R2 advertises `group-prefix 224.0.0.0 masklen 4`,
+which covers 232.0.0.0/8, so `rp_match()` answers and the virtual RP is never
+created.  Narrowing that prefix, or dropping the RP altogether as an SSM-only
+domain would, is the whole setup.*
+
+**S2.  The DR puts the register vif in the oifs of an SSM source.**  Rule
+three of sec. 4.8.1 is kept where it is written: `send_pim_register()` returns
+without sending for a group in the SSM range (`src/pim_proto.c:1192`), so
+nothing goes on the wire.  What is not kept is the state that leads there.
+`process_cache_miss()` adds `PIMREG_VIF` to the outgoing interfaces of any
+(S,G) this router is the DR for, gated only on not being the RP for the group
+(`src/route.c:1270-1272`), and for an SSM group the RP it asks about is either
+the invented 169.254.0.1 of S1 or whichever RP covers 232.0.0.0/8 -- never
+this router.  `calc_oifs()` does not filter it out afterwards, so the kernel
+MFC is installed with the register vif among the oifs and the kernel sends an
+`IGMPMSG_WHOLEPKT` upcall for every packet of the stream, which
+`send_pim_register()` then drops.  Nothing ever takes the vif back out: the
+Register-Stop that prunes it for an ASM source (`src/pim_proto.c:1343`) cannot
+arrive for a group nobody is the RP of.  The cost is the whole SSM data rate
+of every directly connected source crossing into user space and back, on the
+one router in the domain that is guaranteed to see all of it.  On a
+kernel-encapsulation build (`--enable-kernel-encap`) it would be more than a
+cost: `k_chg_mfc()` hands that kernel `mrt->group->rpaddr` as the address to
+encapsulate to (`src/kern.c:536`), which for an SSM group is the invented RP
+or whichever real one covers the range, so the Register `send_pim_register()`
+refuses to build would be built below it instead.  That is reasoning about a
+patched kernel this tree cannot test, and is here as a caution for whoever
+fixes the oif, not as a claim about a build anybody runs.
+*Check: sec. 4.8.1, `doc/rfc7761.txt:5673`.  pimd meets the rule as written;
+this is the implementation note under it, sec. 4.8.1's "a router MAY optimize
+out" read the other way round.  Effort: small -- the same range test that
+`send_pim_register()` already makes, made at the point the oif is added
+instead.  Test: none.  `ssm` in `test/freebsd-lab.sh` has R1 as the first hop
+router for the reported sources, so the assertion is a `pimctl show mrt` on R1
+that does not name the register vif in the oifs of an SSM (S,G).*
+
+**S3.  A Register for an SSM group is never answered with a Register-Stop.**
+Sec. 4.8.1 has an RP refuse to forward such a Register and SHOULD have it
+answer with a Register-Stop, which is the only thing that will ever quiet an
+SSM-unaware DR down.  `receive_pim_register()` does the first half and calls
+`send_pim_register_stop()` for the second (`src/pim_proto.c:986-997`), in the
+same branch it uses for a Register whose inner addresses are malformed.  The
+call does nothing: `send_pim_register_stop()` returns TRUE before building
+anything when the inner group is in the SSM range (`src/pim_proto.c:1432`).
+So the legacy DR is told nothing, keeps encapsulating at the full data rate,
+and the RP keeps parsing and discarding one Register per packet for as long as
+the source sends.
+*Check: sec. 4.8.1, `doc/rfc7761.txt:5681`.  Effort: small, and it is a
+deletion: the early return dates from when pimd itself might have sent a
+Register for an SSM group, which `:1192` now prevents on the sending side.
+Test: none, and none is easy -- it needs a router that registers an SSM group,
+which neither pimd nor the EOS in `test/freebsd-interop.sh` will do.  A
+hand-built Register is the realistic way to assert it.*
+
+**S4.  A (\*,G) Join/Prune for an SSM group is acted on.**  Rule four says a
+router MUST NOT forward packets based on (\*,G) state for an SSM group and
+that the (\*,G) macros are NULL there.  pimd never builds such state on its
+own -- `add_leaf()` picks (S,G) for a group in the range (`src/route.c:368`)
+and `join_or_prune()` refuses to send for a (\*,G) in it
+(`src/pim_proto.c:1463`) -- but the receive path has no range test at all.
+The only thing standing between a legacy router's Join(\*,G) for 232.1.1.1
+and a (\*,G) entry is the
+RP match of sec. 4.5.1 (`src/pim_proto.c:2389`, against the `rp_match()` at
+`:2209`), so in a domain whose RP set covers 232.0.0.0/8 -- where the legacy
+router got the RP it names from the same BSR pimd did -- the addresses agree
+and the entry is created.  From there `calc_oifs()` merges the (\*,G)'s
+`joined_oifs` into every (S,G) of the group (`src/route.c:887-896`), which is
+the forwarding rule four forbids.
+*Check: sec. 4.8.1, `doc/rfc7761.txt:5676`, with the last paragraph of the
+section at `:5689` for whose messages these are.  Effort: small -- refuse the
+(\*,G) and (S,G,rpt) arms of `receive_pim_join_prune()` for a group in the
+range, which is where the two rules pimd already keeps are enforced on the
+sending side.  Test: none, and pimd cannot generate the message, so this one
+wants either a hand-built Join or an implementation that still sends them.*
+
+**S5.  An IGMPv2 report for an SSM group creates an (S,G) whose source is the
+group.**  `accept_group_report()` takes the source of an SSM membership as an
+argument, and for a v1 or v2 report `igmp.c` passes the IP destination
+address of the report (`src/igmp.c:263`), which for those versions is the
+group itself.  The range test then reads it as a source: the membership is
+recorded under it, `add_leaf()` asks for an (S,G) with it
+(`src/route.c:368-370`), and `find_route()` lets it through because the check
+that a source is a valid host is waived for groups in the SSM range
+(`src/mrt.c:158-164`).  The router ends up with a (232.1.1.1, 232.1.1.1)
+entry and an RPF lookup for a class D address behind it -- a default route
+answers that lookup like any other -- and if the next hop it lands on is a
+PIM neighbor, an upstream router to send a Join naming a multicast source to.
+Another pimd drops such a source on receipt (`src/pim_proto.c:2377`); what a
+foreign implementation makes of it is its own business.  A v2 Leave does not
+undo it either: that path matches the stored source against the message's
+destination as well (`src/igmp_proto.c:538-539`), which for a Leave is
+224.0.0.2, so the entry waits out the membership timer rather than going with
+the leave that asked for it.  The rule being
+broken is the service model's: a report with no source list for a group in
+the SSM range is not a membership this router can act on, and the answer is
+to ignore it, which is what the IGMPv3 EXCLUDE path a few lines away already
+does for the same reason (`src/igmp_proto.c:708-711`, citing RFC 4604).
+*Check: no RFC 7761 rule of its own -- sec. 4.8 leaves the host side to the
+SSM service model of RFC 4607 and its IGMPv3 profile in RFC 4604, and neither
+is in `doc/`, so there is no line to point at the way the other entries do.
+Effort: small.  Test: none, and this is the second cheap one: `ssm`
+in `test/freebsd-lab.sh` already drives one router's membership state with
+`test/igmpv3.c`, and the assertion is that a v2 report for the same group
+leaves `pimctl show mrt` empty.*
+
+
 Timers
 ------
 
@@ -512,6 +792,177 @@ one, and the RFC 5059 Bootstrap has to wait for it.  Test: none; it is startup
 timing, and every lab here starts its routers together.*
 
 
+Packet formats
+--------------
+
+Sec. 4.9 is the wire: the header every message starts with, the encoded
+address forms of sec. 4.9.1 that the rest are built out of, and one
+subsection per message type.  What pimd writes is in good shape, and the
+last section of this file lists what was checked; the two entries the next
+section holds were both about what pimd writes, and both are fixed.  So the
+entries here are the parsers, and one theme runs through them: pimd reads
+the fields it needs and parses the fields that say how to read them into
+structure members it then never looks at.  A parser cannot be steered into
+reading out of bounds that way -- every one of these messages is length
+checked first, and V1 through V6 were the entries about that -- but it can
+be steered into reading the right bytes as the wrong thing.
+
+None of these can be reproduced by a lab of pimds, because the message that
+reproduces them is one pimd will not build.  That is the same wall S3, S4
+and S5 of the SSM section ran into, and it is the argument for a small
+packet sender in `test/`, the way `test/igmpv3.c` is one for IGMP: one tool
+that emits a single crafted PIM message would make most of this section and
+half of the SSM one assertable, and nothing else will.
+
+**F1.  The PIM version is not checked, and neither is the destination
+address.**  Sec. 4.9 closes with one sentence asking for both: a message
+"with an unrecognized PIM Ver or Type field, or if a message's destination
+does not correspond to the table above" MUST be discarded.  `accept_pim()`
+(`src/pim.c:165`) does the Type half, logging and dropping an unknown one,
+and carries the other two as TODOs on consecutive lines
+(`src/pim.c:206-207`).  `pim_vers` is written into every message pimd sends
+(`src/pim.c:286` and `:396`) and read nowhere, so a Ver of 0, 1 or 15 is
+parsed as though it were 2.  The destination is passed to every handler and
+three of them mark it unused in the signature -- `receive_pim_hello()`,
+`receive_pim_join_prune()` and `receive_pim_assert()` -- so a Hello,
+Join/Prune or Assert unicast to a router's own address is acted on as though
+it had arrived on ALL-PIM-ROUTERS.  `receive_pim_cand_rp_adv()`
+(`src/pim_proto.c:4593`) ignores it as well, in the other direction: the
+table has that one unicast to the BSR, and one multicast to ALL-PIM-ROUTERS
+is taken just the same.
+
+What stands in the way today is the source rather than the destination.  The
+three link-local handlers all require the sender to be on a directly
+connected subnet, and since V2 a Join/Prune or an Assert also requires a
+Hello to have been seen from it, so a misdirected link-local message still
+has to come from a real neighbor on the link; the Cand-RP-Adv is gated on
+this router being the elected BSR instead, and not on its source at all.
+That makes this a conformance gap rather than a hole, which is why it is
+here and not in the first section.
+*Check: sec. 4.9, `doc/rfc7761.txt:5852` for the discard rule and `:5806`
+for the table of destinations it refers to.  Effort: small, and the two
+halves are independent: one comparison in `accept_pim()` for the version,
+and a per-type destination test beside it.  Test: none; both want a message
+built by hand, as the head of this section says.*
+
+**F2.  The address family and the encoding type are parsed and ignored.**
+Every encoded address on the wire starts with them, and pimd's three GET
+macros read both into the struct and no caller ever looks
+(`src/pimd.h:489`, `:509`, `:529`; there is no reference to `addr_family`
+or `encod_type` anywhere in `src/*.c`).  A pimd is IPv4 only, so the answer
+to a family it does not implement is to refuse the address, and refusing is
+not what happens: the six or eight bytes are read as IPv4 whatever they
+say.
+
+The cost is not the address, which is garbage either way, but the length.
+An Encoded-Unicast address is 6 bytes for IPv4 and 18 for IPv6, and the
+whole of `receive_pim_join_prune()` is written around the IPv4 numbers: the
+walk that validates the message before anything is acted on steps over
+`PIM_ENCODE_GRP_ADDR_LEN` and `PIM_ENCODE_SRC_ADDR_LEN` per record
+(`src/pim_proto.c:1834-1864`), and the second pass reads with the same
+stride.  A group set that declares IPv6 addresses is therefore read at
+offsets that have nothing to do with where its fields are, with source
+counts and flags taken out of the middle of addresses.  Sec. 4.9.5 has an
+answer for exactly this case -- process the addresses of the same family as
+the upstream neighbor address, ignore the rest -- and pimd cannot follow it
+without first reading the field that says which family an address is.
+*Check: sec. 4.9.1, `doc/rfc7761.txt:5889` for the encoding type, the
+family immediately above it at `:5869`, and sec. 4.9.5's mixed-family rule
+at `:6516`.  Effort: small -- one test per GET, in the four parsers that
+walk encoded addresses.  Test: none, per the head of this section.*
+
+**F3.  A mask length off the wire is neither checked nor safely
+converted.**  Two rules in sec. 4.9.1 bound it: a source address MUST carry
+the full address length, 32 for IPv4, and a router SHOULD ignore messages
+that carry any other; a group address in a group-specific set carries the
+full length too (sec. 4.9.5.1).  pimd checks neither.  In
+`receive_pim_join_prune()` the value is converted into `s_mask` and
+`g_mask` (`src/pim_proto.c:1888`, `:1905`, `:1949`, `:2016`, `:2074`,
+`:2381`), and those two variables are never read again -- the entry is
+acted on as an exact (S,G) or (\*,G) whatever the message asked for.  The
+one place a wire mask length decides anything in a Join/Prune is the
+(\*,\*,RP) test at `:1895` and `:2197`.  `receive_pim_register_stop()` has
+the same gap written down as a TODO, "apply the group mask and do
+register_stop for all grp addresses".
+
+Where the converted mask is used is the RP set.  `receive_pim_bootstrap()`
+(`src/pim_proto.c:4412` and three more) and `receive_pim_cand_rp_adv()`
+(`:4653`) hand it to `add_rp_grp_entry()` as the group prefix, and that
+function validates the address and not the mask.  The conversion is
+`MASKLEN_TO_MASK()` (`src/pimd.h:367-370`), which shifts by
+`32 - masklen`: for the 33 to 255 a byte can hold, that is a shift by a
+negative amount, which is undefined behavior rather than a wrong answer
+(C11 6.5.7p3, SEI CERT INT34-C).  What it does in practice on the usual
+targets is shift by the count modulo 32, so a Bootstrap claiming masklen
+200 for 224.0.0.0 installs 224.0.0.0/8 and a domain's whole RP set can be
+displaced by a group range nobody advertised.  The parse stays inside the
+buffer throughout -- this is a bad value, not a bad pointer.
+*Check: sec. 4.9.1, `doc/rfc7761.txt:6003`, "A router SHOULD ignore any
+messages received with any other mask length"; sec. 4.9.5.1, `:6532`, for
+the group half.  Effort: small -- reject a mask length above 32 at the
+parse sites and drop a source entry that is not 32.  Test: none, per the
+head of this section.*
+
+**F4.  The B and Z bits of an encoded group address are never read.**  The
+third byte of an Encoded-Group carries the Bidirectional-PIM bit, six
+reserved bits and the admin-scope-zone bit; pimd's `GET_EGADDR()` calls the
+whole byte `reserved` (`src/pimd.h:219`, read at `:513`) and nothing in
+`src/*.c` refers to it.  On transmission this is right, because pimd passes
+zero everywhere it builds one.  On reception it means a group range
+advertised as Bidir-PIM is installed as an ordinary PIM-SM range: the
+router picks an RP for it, sends Joins toward that RP and register-
+encapsulates to it, none of which is what a Bidir range means.  RFC 5059
+says this explicitly of the RP set, in the same paragraph that says an
+implementation of one protocol must not ignore the other's ranges.  The Z
+bit needs nothing beyond what the RP discovery section already says about
+admin scope: pimd has no scope zones, so the honest handling of a range
+that declares itself one is to refuse it rather than to treat it as
+global.
+*Check: sec. 4.9.1, `doc/rfc7761.txt:5915` for the B bit and `:5923` for
+the Z bit; the rule that makes ignoring B wrong is RFC 5059 sec. 3.6,
+`doc/rfc5059.txt:1270`.  Effort: small.  Test: none, and here the Arista of
+`test/freebsd-interop.sh` is a possibility rather than a certainty: whether
+an EOS can be made to advertise a Bidir range in a Bootstrap decides it.*
+
+**F5.  A Holdtime of 0xffff is read as a number.**  Both places the value
+appears say what it means.  In a Hello, sec. 4.9.2, the receiver "never
+times out the neighbor", which is what the option exists for on
+dial-on-demand links where Hellos stop arriving; in a Join/Prune,
+sec. 4.9.5, the receiver "SHOULD hold the state until canceled by the
+appropriate canceling Join/Prune message".  pimd stores both in a
+`uint16_t` and ages them like any other: `cache_nbr_settings()` puts the
+Hello's value straight into `nbr->timer` (`src/mrt.h:131`), and the
+Join/Prune's into `vif_timers[]` and `entry_timer` (`src/mrt.h:272`,
+`:274`) wherever `receive_pim_join_prune()` raises a timer to the message's
+holdtime.  Both then count down five seconds at a time
+and reach zero 18 hours and 12 minutes later, which is not "never" and not
+"until canceled", but is long enough that only the link this is meant for
+would ever notice.
+*Check: sec. 4.9.2, `doc/rfc7761.txt:6068`, and sec. 4.9.5, `:6460`.
+Effort: small -- a sentinel the ageing skips, in two places.  Test: none,
+and this is the entry a lab comes closest to reaching: `hello-interval`
+accepts up to 18724 seconds (`src/config.c:1456`), and 3.5 times that is
+65534, one short of the sentinel, so not even a configured pimd can
+advertise the value that would exercise it.*
+
+**F6.  The dummy header of a Null-Register is not checked.**  Sec. 4.9.3
+puts one rule on the receiver and pimd follows the more surprising half of
+it: the fields of the dummy IPv4 header are not inspected, which is what
+the section asks, and `receive_pim_register()` even exempts a Null-Register
+from the IP version test the other Registers get (`src/pim_proto.c:967`).
+What it does not do is the half that replaces them.  A non-zero Header
+Checksum SHOULD be verified and the Null-Register discarded if it is wrong,
+and a zero one MUST NOT be; pimd reads neither, so the source and group it
+takes out of that header, and the Register-Stop and Keepalive Timer refresh
+they drive, rest on nothing.  pimd fills the field in on the sending side
+(`src/pim_proto.c:1303`), so between two pimds the checksum is there and
+correct and simply never read.
+*Check: sec. 4.9.3, `doc/rfc7761.txt:6279`.  Effort: small.  Test: none,
+and unusually this one could be asserted without crafting a packet at all,
+by corrupting the dummy header pimd sends -- which still means a tool that
+sends a Register.*
+
+
 Interop details
 ---------------
 
@@ -526,6 +977,140 @@ what we send.
 *Check: sec. 4.9.3, `doc/rfc7761.txt:6253` for the dummy header, the `IP
 Protocol` row at `:6269`; sec. 4.4.1, `:2291` (ECN) and `:2303` (DSCP), with
 the RP's side of the same copy at sec. 4.4.2, `:2443` and `:2446`.*
+
+
+Authentication and denial of service
+------------------------------------
+
+Sec. 6 is short and almost all of it is description: sec. 6.1 says what a
+forged message of each kind buys an attacker, sec. 6.3 points at RFC 5796 for
+IPsec, and sec. 6.4 names two denial-of-service attacks without asking for
+anything.  The normative content is sec. 6.2, five sentences, and they are
+what this section measures.  Two of them are kept and are described in the
+last section of this file; of the other three, A2 below is kept everywhere
+but one branch and A1 and A3 are not kept at all.  A4 is what sec. 6.4
+describes and nothing in pimd bounds.  The first section of this file is the
+neighbouring one: it holds the entries where a parser could be walked off the
+end, V1 through V6, and this one holds the entries where a well-formed
+message from the wrong sender is acted on, or an unbounded number of them
+is.
+
+Two things sec. 6 asks for that are not pimd's to do.  The preamble
+RECOMMENDS securing the sources of change to the MRIB, which is the unicast
+routing daemon's configuration and not this daemon's; and sec. 6.3's IPsec is
+a security association the operator installs in the kernel for 224.0.0.13 and
+for the RP's address, with no code in pimd either way.  Nothing here prevents
+it, and nothing here has been tested with it -- neither lab configures an SA,
+so "pimd works under IPsec" is an untested claim rather than a false one.
+
+**A1.  There is no way to say which neighbors are acceptable.**  Sec. 6.2
+opens by asking for one: "A PIM router SHOULD provide an option to limit the
+set of neighbors from which it will accept Join/Prune, Assert, and Hello
+messages", by static configuration of addresses or by an IPsec SA.  `pimd.conf`
+has no such keyword -- `parse_option()` (`src/config.c:558`) is the whole
+vocabulary, and the only address-scoped things in it are `altnet`, which
+widens what an interface owns, and `scoped`, which filters group ranges out of
+the data plane.  Every router that sends a syntactically valid Hello on a
+subnet pimd has a vif on becomes a neighbor of it, and from there can take the
+DR role, take part in the assert election, and have its Joins believed.
+
+Such an option would have to default to accepting everything: the last
+sentence of sec. 6.2 makes that a MUST for every option of this kind, which is
+also what keeps a half-configured filter from black-holing a domain.
+*Check: sec. 6.2, `doc/rfc7761.txt:7367` for the option and `:7384` for the
+default.  Effort: medium -- a per-interface address list, checked in the four
+`receive_pim_*()` entry points that already ask `find_pim_nbr_on_vif()` or
+`find_vif_direct()`, plus the `pimd.conf` keyword, its man page and the
+sample.  Test: none, and this one is cheap to assert once it exists:
+`shared-lan` in `test/freebsd-lab.sh` has three routers on a segment, so
+denying one of them is a one-line configuration change and a `pimctl show
+neighbor` that no longer lists it.*
+
+**A2.  A unicast Bootstrap is taken from a router that has never said
+hello.**  The next sentence of sec. 6.2 is the one V2 was about: "a PIM router
+SHOULD NOT accept protocol messages from a router from which it has not yet
+received a valid Hello message".  Join/Prune and Assert ask
+`find_pim_nbr_on_vif()` now, and a Bootstrap that arrives on ALL-PIM-ROUTERS
+has to come from the RPF neighbor toward the BSR, which is a lookup in the
+same neighbor list (`src/pim_proto.c:4308-4321`).  The unicast branch of
+`receive_pim_bootstrap()` asks neither: it requires only that the sender be on
+a directly connected subnet and that this router know no RP but its own static
+ones (`src/pim_proto.c:4323-4345`), and the TODO sitting in it -- "check the
+sender is directly connected and I am really the DR" -- says what is missing
+better than this entry can.  Any host on any LAN pimd has an interface on can
+therefore hand a booting router the RP set for the domain, once, and R3 of
+the RP discovery section is the other half of that window: nothing in such a
+message is RPF checked, and the router floods it onward.
+*Check: sec. 6.2, `doc/rfc7761.txt:7370`; the mechanism being abused is
+RFC 5059 sec. 3.5.2, `doc/rfc5059.txt:1248`.  Effort: small -- the same
+`find_pim_nbr_on_vif()` call the other two make.  Test: none, and this is one
+of the few entries in the file a lab could reach without crafting a packet:
+`arista-rp` in `test/freebsd-interop.sh` already has a foreign BSR whose
+Bootstraps pimd accepts.*
+
+**A3.  An RP accepts a Register from anybody.**  Sec. 6.2 asks for a
+mechanism "to allow an RP to restrict the range of source addresses from which
+it accepts Register-encapsulated packets", and pimd has none.  What it does
+have is the rest of the Register path in good order: V3 stopped a Register
+from creating state before the I\_am\_RP test, and the entry that survives it
+is only created when this router really is the RP for the group and the
+Register was addressed to that RP (`src/pim_proto.c:1017-1030`).  So the
+attack this leaves is the one sec. 6.1.2 names first: a group with a live
+shared tree, and anyone in the world who can unicast to the RP encapsulating
+whatever they like to it, which the kernel decapsulates onto that tree.  There
+is no filter to configure and no address the code will refuse.
+
+Being unicast, this is the one attack in sec. 6 that does not need the
+attacker anywhere near the network -- every other message here is link-local
+and arrives only from a directly connected host.  An address range in
+`pimd.conf` is the answer sec. 6.2 gives; it defaults to allowing everything,
+per the same last sentence A1 quotes.
+*Check: sec. 6.2, `doc/rfc7761.txt:7380`, with the attack at sec. 6.1.2,
+`:7352`.  Effort: small -- one list, tested in `receive_pim_register()` beside
+the checks already there.  Test: none, and asserting it wants a host that
+registers without being a DR, which is the same hand-built packet the packet
+format section asks for.*
+
+**A4.  Nothing bounds the state a stranger can make pimd hold.**  Sec. 6.4
+names two attacks, packets to many group addresses and a flood of forged
+Joins, and says authentication prevents some but not all of them.  pimd counts
+nothing and caps nothing: there is no limit on group entries, source entries,
+routing entries, kernel cache entries or neighbors, and the only cap in the
+tree of this kind is `IGMP_MAX_SOURCES`, 256 sources per group, which the
+IGMPv3 parser enforces (`src/igmp_proto.c:695-699`) and which is the model for
+what the rest would look like.
+
+Three ways in, in order of how close the attacker has to be:
+
+- A packet to a group nothing knows about is a cache miss, and on the DR for
+  its source that creates a source entry, a group entry, a routing entry and a
+  kernel cache entry (`process_cache_miss()`, `src/route.c:1264-1272`), plus
+  for an SSM group the invented RP of S1.  This is sec. 6.4's first bullet,
+  and the sender needs only to be on a subnet this router is the DR for.
+- A Join from a neighbor creates whatever it names, up to 255 group sets in
+  one message and as many sources as the message will hold, and each source
+  that is new costs an RPF lookup through netlink or the routing socket
+  (`set_incoming()`, `src/route.c`) as well as the allocations.  That is
+  sec. 6.4's second bullet.  Since V2 the sender has to have sent a Hello
+  first, which on a LAN is not an obstacle.
+- A Hello from an address never seen before allocates a neighbor entry that
+  lives for the holdtime, and makes pimd answer with a Hello to the whole LAN,
+  a DR election, and -- if it is the DR -- a unicast copy of the entire RP set
+  (`src/pim_proto.c:244-289`).  One small forged packet in, two larger ones
+  out, and an entry held either way.
+
+None of this leaks: every entry has a timer, so the growth is bounded by rate
+rather than unbounded in time.  What makes it worth an entry anyway is the
+default build's answer when the allocation finally fails, which is
+`logit(LOG_ERR, ...)` and an `exit(-1)` from `logit()` itself
+(`src/debug.c:641-643`, absent `--disable-exit-on-error`): memory pressure an
+attacker can create does not degrade this daemon, it stops it.
+*Check: sec. 6.4, `doc/rfc7761.txt:7410`.  Effort: medium, and it is a design
+question before it is work -- a cap that refuses new state is a black hole for
+whoever was legitimately using it, which is why sec. 6.4 describes rather than
+prescribes.  Test: none.  A lab could drive the first of the three easily
+enough with `mping` and a loop over group addresses, and the assertion would
+be on `pimctl show mrt` growing without bound rather than on a failure.*
 
 
 Checked, no action
@@ -582,3 +1167,139 @@ Checked, no action
   `#ifdef TOBE_DELETED` (`src/vif.c:946-958`).  All Join/Prune generation happens
   in `age_routes()` and `send_pim_join()`.  Worth knowing before reading it as
   the periodic sender it is named after.
+- **The group-to-RP mapping algorithm is the one sec. 4.7.1 writes.**
+  `rp_grp_match()` (`src/rp.c:862`) takes the longest match first, then the
+  highest priority, then the hash, then the higher address, which is steps 1
+  to 4 with sec. 4.7.2's tiebreak.  The longest match falls out of the list
+  order rather than a sort: `grp_mask_list` is ordered by masked prefix and,
+  within one prefix, by mask length, and of two entries that both match a
+  group the shorter one's prefix is the longer one's with its low bits
+  zeroed, so the longest always comes first.  The guards that carry the
+  longest match across the outer loop compare two masks in network byte
+  order, which looks wrong and is not: byte-swapping permutes bits, masks of
+  different lengths are nested as bit sets, and a permutation leaves a subset
+  a subset, so the order survives it.  It is also invoked where the
+  section says it must be, on every Join/Prune received
+  (`src/pim_proto.c:2209`), and a Join(\*,G) naming a different RP than the
+  mapping gives is dropped there (`:2389`).  *Check: sec. 4.7.1,
+  `doc/rfc7761.txt:5534` and `:5568`.*
+- **The hash function is the spec's, and so is the mask it defaults to.**
+  `RP_HASH_VALUE` (`src/rp.c:40`) is the formula of sec. 4.7.2 with
+  `% 0x80000000` for the mod 2^31; the multiply wrapping at 32 bits does not
+  change the answer, because 2^31 divides 2^32.  Where no Bootstrap supplies
+  a hash mask pimd uses `RP_DEFAULT_IPV4_HASHMASKLEN`, 30 bits
+  (`src/pimd.h:128`, applied at `src/rp.c:101` and `:112`), which is the
+  default the section names.  *Check: sec. 4.7.2, `doc/rfc7761.txt:5621` for
+  the mask and `:5639` for the highest-value-wins rule.*
+- **A static RP is advertised as if it were a candidate.**
+  `create_pim_bootstrap_message()` walks `grp_mask_list`, which holds the
+  `rp-address` entries alongside anything learned, so a pimd that wins the
+  BSR election floods its own static RPs to the domain at priority 1 with a
+  holdtime of 0xffff.  RFC 5059 has a BSR advertise the set it learned from
+  Candidate-RP-Advertisements, so this is an extension rather than the
+  mechanism; it is also how a static RP reaches the rest of the domain at
+  all, and worth knowing before touching R1.
+- **SSM group prefixes are kept out of the RP set pimd originates**, on both
+  paths that could put them there: the Bootstrap builder skips a prefix in
+  the range (`src/rp.c:977`), so the RP invented in S1 never leaves the
+  router, and a BSR refuses a Candidate-RP-Advertisement for one
+  (`src/pim_proto.c:4655`).  The receive path has no such test, and that is
+  what decides S1 and S4: a Bootstrap advertising 224.0.0.0/4 maps every SSM
+  group onto a real RP.
+- **Rules one and two of sec. 4.8.1 are kept.**  `join_or_prune()` returns no
+  action for a (\*,G) in the SSM range (`src/pim_proto.c:1463` and `:1522`)
+  and the periodic builder skips any entry of such a group that is not (S,G)
+  (`:2614`), so no (\*,G) Join/Prune is sent for one; no (S,G,rpt) message is
+  sent for any group whatsoever, which is M1, and this is the one place M1
+  costs nothing.  *Check: sec. 4.8.1, `doc/rfc7761.txt:5668` and `:5670`.*
+- **Sec. 4.8.2 does not apply, and the two notes under it hold anyway.**
+  pimd implements the full protocol rather than the subset, the (S,G,rpt)
+  machines of M1 excepted -- which that section happens to list among what an
+  SSM-only router may leave out.  Of its two "treat it as" notes, the
+  Keepalive Timer is M7's subject, and the SPTbit ends up set on the first
+  packet of an SSM
+  (S,G) rather than by construction: `update_sptbit()` (`src/route.c:653`),
+  reached from the cache miss at `:1311`, finds `no_rpt_olist` true whenever
+  the group has no (\*,G), which for an SSM group is the normal case.
+  *Check: sec. 4.8.2, `doc/rfc7761.txt:5742`.*
+- **The Register checksum is right on both sides.**  Sec. 4.9.3 has the
+  sender cover only the first 8 bytes, which `send_pim_unicast()` does for
+  `PIM_REGISTER` and only for it (`src/pim.c:403-405`), and asks a receiver
+  to also accept one computed over the whole message, which
+  `receive_pim_register()` does by trying the short form first and the long
+  one after (`src/pim_proto.c:952-953`).  The `send_pim()` path carries a
+  TODO about excluding the encapsulated packet; it is stale, no Register
+  goes through that function.  *Check: sec. 4.9.3, `doc/rfc7761.txt:6225`.*
+- **The dummy header of a Null-Register matches sec. 4.9.3's table field for
+  field.**  Version 4, header length 5, fragment offset and More Fragments
+  zero, total length 20, protocol 103, header checksum computed
+  (`send_pim_null_register()`, `src/pim_proto.c:1292-1303`).  I1 was the one
+  field that did not, and it is fixed.  What the receiver does with the
+  table is F6.  *Check: sec. 4.9.3, `doc/rfc7761.txt:6253`.*
+- **Multicast PIM leaves with TTL 1 on both platforms, although `send_pim()`
+  writes 255.**  The header it builds sets `ip->ip_ttl = MAXTTL` and only a
+  `RAW_OUTPUT_IS_RAW` build, which is the Linux one, replaces it with
+  `curttl` (`src/pim.c:276` and `:303-304`).  Everywhere else the value in
+  the header is overwritten by the kernel: `init_pim()` sets IP_MULTICAST_TTL
+  to `MINTTL` (`src/pim.c:85`) and FreeBSD's `ip_output()` assigns
+  `imo->imo_multicast_ttl` to every multicast datagram, IP_HDRINCL included.
+  Worth knowing before "fixing" the 255, which is the value the unicast
+  messages want.  *Check: sec. 4.9, `doc/rfc7761.txt:5783`.*
+- **Everything pimd builds gets the encoded-address fields right.**  Family
+  and type are IPv4 native, the group and source mask lengths are 32
+  (`SINGLE_GRP_MSKLEN`, `SINGLE_SRC_MSKLEN`), the reserved byte carrying B
+  and Z is zero, the S bit is set on every source entry ("Mandatory for
+  PIMv2", `src/pim_proto.c:2907`), and a (\*,G) entry carries WC and RPT
+  together with the RP as its source address, which is sec. 4.9.5.1's
+  definition of one.  The entries above are about reading these fields, not
+  writing them.  *Check: sec. 4.9.1, `doc/rfc7761.txt:5978` for the S bit,
+  and sec. 4.9.5.1, `:6547`, for the (\*,G) entry.*
+- **Sec. 4.9.5.2's fragmentation rules are implemented, including the tie-
+  break.**  A group set carrying a (\*,G) Join is not split across messages,
+  and where more (S,G,rpt) Prunes are pending than one message can hold, the
+  numerically smallest are the ones sent (`jp_prune_keep_smallest()`, reached
+  from `add_jp_entry()`, `src/pim_proto.c:2842-2864`).  That was M9.
+  *Check: sec. 4.9.5.2, `doc/rfc7761.txt:6703`.*
+- **A Hello with an option pimd does not know is still a Hello.**
+  `parse_pim_hello()` (`src/pim_proto.c:662`) steps over an unknown option by
+  its own length and forms the neighbor relationship anyway, which sec. 4.9.2
+  requires; a known option of the wrong length is refused, which it does not
+  forbid.  A Hello with no Holdtime option at all gets
+  `Default_Hello_Holdtime` rather than being read as a goodbye.  *Check:
+  sec. 4.9.2, `doc/rfc7761.txt:6189`.*
+- **A Register-Stop naming source 0.0.0.0 is honoured.**  Sec. 4.9.4 allows
+  the wildcard, and `receive_pim_register_stop()` suppresses every (S,G) of
+  the group it is currently registering, which is RFC 7761's reading of an
+  RFC 2362 message.  The group mask length in the same message is ignored;
+  that is F3.  *Check: sec. 4.9.4, `doc/rfc7761.txt:6348`.*
+- **The DR does not register a packet whose source does not belong to the
+  interface it arrived on.**  That is a MUST in sec. 6.2, and it is met one
+  layer below where it reads as though it should be:
+  `send_pim_register()` only asks whether the source belongs to some
+  directly connected subnet (`src/pim_proto.c:1195`), but the only thing that
+  ever reaches it is a `IGMPMSG_WHOLEPKT` upcall, and the only thing that
+  makes the kernel send one is a forwarding entry whose oifs hold the
+  register vif, which `process_cache_miss()` creates only when the arrival
+  interface is both the DR's and the one the source's subnet is on
+  (`src/route.c:1264`).  A packet with a spoofed source from another subnet
+  never gets that entry, so it is never encapsulated.  Worth knowing before
+  moving either test: the guarantee is the conjunction, not either half.
+  *Check: sec. 6.2, `doc/rfc7761.txt:7374`.*
+- **A Register-Stop is only believed from the RP of the group**, which is
+  sec. 6.2's next sentence and is what `check_mrtentry_rp()` enforces for a
+  source-specific one and the `grp->rpaddr != reg_src` test for the RFC 2362
+  wildcard.  The comment above it calls this "not in the spec"; it is, at
+  sec. 6.2, and the comment is worth correcting the next time the file is
+  open.  *Check: sec. 6.2, `doc/rfc7761.txt:7377`.*
+- **Log output is rate limited, in the mode where it matters.**  Sec. 4.9
+  asks for errors to be logged "in a rate-limited manner", and a malformed
+  packet reaches `logit()` at LOG_NOTICE or LOG_WARNING on most of the
+  refusal paths, so an attacker gets one line per packet unless something
+  stops it.  Something does: `logit()` counts messages at the configured
+  level or worse and stops passing them to syslog past `LOG_MAX_MSGS`
+  (`src/debug.c:630-632`), a counter `resetlogging()` clears once a minute,
+  and if the minute's budget was spent it stops syslog output altogether for
+  `LOG_SHUT_UP` and says so (`src/main.c:851-873`).  In the foreground the
+  limiter is bypassed and every message goes to stderr, which is what
+  `-n -l debug` is for.
+  *Check: sec. 4.9, `doc/rfc7761.txt:5852`.*
