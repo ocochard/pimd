@@ -1312,9 +1312,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	IF_DEBUG(DEBUG_PIM_REGISTER)
 	    logit(LOG_DEBUG, 0, "Not interested in group %s yet", inet_fmt(inner_grp, s2, sizeof(s2)));
 
-	/* TODO: XXX: shouldn't it be inner_src=INADDR_ANY? Not in the spec. */
-	send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
-
 	/*
 	 * Creating the (S,G) here, ahead of the next Register, is what
 	 * saves the DR a retry.  RFC 7761 sec. 4.4.2 allows it only where
@@ -1331,21 +1328,45 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 		      inet_fmt(reg_dst, s1, sizeof(s1)), inet_fmt(inner_grp, s2, sizeof(s2)),
 		      inet_fmt(inner_src, s3, sizeof(s3)));
 
+	    /* TODO: XXX: shouldn't it be inner_src=INADDR_ANY? Not in the spec. */
+	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
+
 	    return TRUE;
 	}
 
-        mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
-        if (!mrtentry || !(mrtentry->flags & MRTF_NEW))
-           return TRUE;
+	/*
+	 * The RP, with nobody downstream yet.  Sec. 4.4.2 sends the
+	 * Register-Stop for an empty inherited_olist(S,G) only where
+	 * SwitchToSptDesired(S,G) holds, and starts KeepaliveTimer(S,G)
+	 * with it, so that JoinDesired(S,G) becomes true the moment a
+	 * receiver joins and the RP pulls the source down the shortest path
+	 * tree itself.  pimd sent the Register-Stop whatever the policy and
+	 * kept no Keepalive Timer, so a receiver that joined a second after
+	 * the source's first packet got nothing until the DR's
+	 * Register_Suppression_Time, a random 30 to 90 seconds, ran out and
+	 * it registered again.  Where the policy would not switch, there is no
+	 * Register-Stop, and the next Register is decapsulated to whoever has
+	 * joined by then.
+	 */
+	mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
+	if (!mrtentry)
+	    return TRUE;
 
-        SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT);
-        mrtentry->flags &= ~MRTF_NEW;
-        change_interfaces(mrtentry,
-                          mrtentry->incoming,
-                          mrtentry->joined_oifs,
-                          mrtentry->pruned_oifs,
-                          mrtentry->leaves,
-                          mrtentry->asserted_oifs, 0);
+	if (mrtentry->flags & MRTF_NEW) {
+	    mrtentry->flags &= ~MRTF_NEW;
+	    change_interfaces(mrtentry,
+			      mrtentry->incoming,
+			      mrtentry->joined_oifs,
+			      mrtentry->pruned_oifs,
+			      mrtentry->leaves,
+			      mrtentry->asserted_oifs, 0);
+	}
+	SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT);
+
+	if (spt_switch_on_first_packet()) {
+	    mrtentry->flags |= MRTF_KAT;
+	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
+	}
 
 	return TRUE;
     }

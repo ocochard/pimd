@@ -613,6 +613,7 @@ extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
+extern int	spt_switch_on_first_packet (void);
 extern void	route_timers_schedule	(uint64_t when);
 extern void	jp_timer_set		(mrtentry_t *mrt, uint32_t msec);
 extern void	jp_timer_fire		(mrtentry_t *mrt);

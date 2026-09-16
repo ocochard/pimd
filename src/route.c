@@ -1672,6 +1672,23 @@ static void try_switch_to_spt(mrtentry_t *mrt, kernel_cache_t *kc)
  * a check of the datarate for the whole routing table, then delete its
  * kernel cache entry.
  */
+/*
+ * SwitchToSptDesired(S,G) of RFC 7761 sec. 4.2.1 for a source this router
+ * has seen one packet of and holds no counters for yet: the policy asks for
+ * the shortest path tree at once only where its threshold is zero.
+ */
+int spt_switch_on_first_packet(void)
+{
+    switch (spt_threshold.mode) {
+    case SPT_PACKETS:
+	return spt_threshold.packets == 0;
+    case SPT_RATE:
+	return spt_threshold.bytes == 0;
+    default:
+	return FALSE;
+    }
+}
+
 static void check_spt_threshold(mrtentry_t *mrt)
 {
     kernel_cache_t *kc, *kc_next;

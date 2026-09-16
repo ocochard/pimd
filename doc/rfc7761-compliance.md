@@ -186,7 +186,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Eleven entries this section held are fixed.  M3, the assert winner state,
+Twelve entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -304,9 +304,10 @@ secondary address; `crafted` asserts the parser on a list pimd did not
 write, kept, primary address excluded, unreadable and absent.  The Linux
 suite in `test/` asserts none of it.
 
-M15 and M16 are the last two, and neither was ever written down as an
-entry: both turned up as `assert-recover` in `test/freebsd-lab.sh` failing
-one run in ten or so once enough labs ran beside it to move the timing.  M15
+M15, M16 and M17 are the last three, and none was ever written down as an
+entry: all three turned up as `assert-recover` in `test/freebsd-lab.sh`
+failing one run in ten or so once enough labs ran beside it to move the
+timing.  M15
 was sec. 4.6.2 on a router's RPF interface.  CouldAssert is FALSE there, so
 the router never wins and its own metric is not a question: it loses to any
 acceptable Assert, keeps the winner, which sec. 4.1.6 makes `RPF'(*,G)`, and
@@ -331,8 +332,18 @@ that has just started is exactly there -- its startup query draws the report
 within seconds and the RP set can take a Bootstrap period longer -- and that
 was the other way `assert-recover` failed.  `add_rp_grp_entry()`
 (`src/rp.c`) offers every membership to `add_leaf()` again when a range gains
-its first RP, `igmp_resync_leaves()`.  Step 4 of `assert-recover` asserts M15
-directly: the downstream router reads L on its RPF interface.
+its first RP, `igmp_resync_leaves()`.  M17 was the RP answering the first
+Register of a source nobody had joined yet.  Sec. 4.4.2 sends that
+Register-Stop only where `SwitchToSptDesired(S,G)` holds, and starts
+`KeepaliveTimer(S,G)` with it, so that `JoinDesired(S,G)` turns true as soon as
+a receiver joins and the RP pulls the source itself.  `receive_pim_register()`
+sent the Register-Stop whatever the policy and kept no Keepalive Timer, so a
+receiver joining a second after the first packet got nothing until the DR's
+Register_Suppression_Time ran out, 30 to 90 seconds, which is what "no assert
+settled the LAN in 90s" was.  The RP sets `MRTF_KAT` with the Register-Stop
+now, where the SPT threshold is zero (`spt_switch_on_first_packet()`), and
+sends none otherwise.  Step 4 of `assert-recover` asserts M15 directly: the
+downstream router reads L on its RPF interface.
 
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a

@@ -215,6 +215,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   membership report for a group without an RP was recorded and nothing
   more until the host reported again, up to a query interval later, which
   is where a router that has just started usually is
+- An RP that receives a Register for a source nobody has joined yet starts
+  the Keepalive Timer with its Register-Stop, as RFC 7761 section 4.4.2
+  asks, and joins the source as soon as a receiver appears.  It used to
+  keep nothing, so that receiver waited for the first hop router to
+  register again, 30 to 90 seconds.  Where the SPT threshold is not zero it
+  sends no Register-Stop at all
 - Run the Prune-Pending Timer of RFC 7761 section 4.5.1 and the Assert Timer
   of section 4.6 to the millisecond.  An upstream router let an interface go
   5 to 10 seconds after a Prune nobody overrode, where the section asks for
