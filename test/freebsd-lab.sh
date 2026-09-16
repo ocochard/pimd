@@ -538,18 +538,23 @@
 #               tells a check that refuses a stranger from one that
 #               refuses everybody.
 #
-#               Two things are guarded, both fixed and both otherwise
-#               unreachable.  The mask length bound of sec. 4.9.1, in the
-#               Join/Prune and Bootstrap parsers: MASKLEN_TO_MASK()
-#               (src/pimd.h) shifts by 32 - masklen, so a byte above 32
-#               shifted by a negative amount, which is undefined behavior
-#               and was in practice a group range nobody advertised over
-#               the domain's RP set.  And sec. 6.2's "SHOULD NOT accept
-#               protocol messages from a router from which it has not yet
-#               received a valid Hello message", in the unicast branch of
-#               receive_pim_bootstrap() -- reachable only while a router
+#               What is guarded is the whole packet format section of
+#               doc/rfc7761-compliance.md -- the PIM version and the
+#               destination of sec. 4.9, the address family and encoding
+#               type and the mask length of sec. 4.9.1, the B and Z bits of
+#               an encoded group, the 0xffff Holdtime of sec. 4.9.5 and the
+#               Null-Register dummy header checksum of sec. 4.9.3 -- plus
+#               sec. 6.2's "SHOULD NOT accept protocol messages from a
+#               router from which it has not yet received a valid Hello
+#               message", in the unicast branch of
+#               receive_pim_bootstrap().
+#
+#               The order the steps run in is not cosmetic.  The holdtime
+#               one needs the RPF neighbour toward the source to be a PIM
+#               neighbour, so it runs before the BSR is stopped; and the
+#               unicast Bootstrap branch is reachable only while a router
 #               knows no dynamic RP, which is where RFC 5059 sec. 3.5.2
-#               puts it and why step 4 kills the BSR and waits.
+#               puts it and why the step after it kills the BSR and waits.
 #
 #               Every refusal has its positive control beside it: the same
 #               Join correctly formed, the same Bootstrap once its sender
@@ -558,7 +563,8 @@
 #               nothing else in this file sends one that R1 acts on.  This
 #               is also the only scenario that asks for pim_jp debugging,
 #               see set_scenario(): the lines it reads are behind it.
-#               Takes about 3 minutes, most of it step 4.
+#               Takes about 4 minutes, most of it the wait for the RP to
+#               age out.
 #
 # Scenarios run in parallel, several labs at a time on one host: -s picks
 # a slot, 0 to 31, and every name the lab puts on the host carries it, so
@@ -966,6 +972,13 @@ CRAFT_SRC=${CRAFT_SRC:-10.0.1.10}
 R1_LAN_ADDR=${R1_LAN_ADDR:-10.0.1.1}
 CRAFT_BADLEN=${CRAFT_BADLEN:-200}
 CRAFT_PRIO=${CRAFT_PRIO:-200}
+
+# A source R1 has a route to but no interface on, so an (S,G) Join names
+# something it can build state for; and how long the holdtime assertion
+# watches, three TIMER_INTERVALs, which is long enough that a timer that
+# ages has visibly moved.
+CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
+CRAFT_HOLD=${CRAFT_HOLD:-15}
 
 # How long R1's dynamic RP may take to age out once the BSR is killed.  The
 # cand-RP holdtime is twice r2.conf's advertisement interval of 10s, and the
@@ -3218,6 +3231,33 @@ check_register_filter() {
 	result
 }
 
+# One of the three timers "show mrt detail" prints per entry, by position:
+# 1 is the entry timer, 2 the Join/Prune timer, 3 the Register-Suppression
+# one.  They sit on the line after the TIMERS header.
+route_timer() {
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" -v n="$4" '
+		$1 == s && $2 == g { want = 1; next }
+		want && /^TIMERS/  { hdr = 1; next }
+		hdr		   { print $n; exit }
+	'
+}
+
+# The largest per-vif timer of ($2,$3) on $1, off the same line: which vif
+# holds it does not matter here, only that the Join raised one and that it
+# is still where the message put it.
+route_vif_timer() {
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" '
+		$1 == s && $2 == g { want = 1; next }
+		want && /^TIMERS/  { hdr = 1; next }
+		hdr { max = 0; for (i = 4; i <= NF; i++) if ($i + 0 > max) max = $i + 0; print max; exit }
+	'
+}
+
+# Both timers the Join/Prune holdtime raises, still at the sentinel
+route_held() {
+	[ "$(route_timer "$1" "$2" "$3" 1)" = "65535" ] && 		[ "$(route_vif_timer "$1" "$2" "$3")" = "65535" ]
+}
+
 # For wait_for(): has the register vif left the oif list of ($2,$3) on $1?
 # Position 0 of the "Outgoing oifs" map is PIMREG_VIF, see route_oifs().
 register_oif_gone() {
@@ -3413,13 +3453,49 @@ check_crafted() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	# sec. 4.9.5: a Join/Prune Holdtime of 0xffff has the receiver "hold
+	# the state until canceled by the appropriate canceling Join/Prune
+	# message".  Both timers the holdtime raises are asked, because
+	# holding one and ageing the other is the state gone all the same --
+	# which is what the first draft of this did, the entry timer counting
+	# down under an outgoing interface that was held.
+	#
+	# No lab could reach this before pimsend: hello-interval accepts at
+	# most 18724 seconds and 3.5 times that is 65534, one short of the
+	# sentinel, so not even a configured pimd can advertise the value.
+	#
+	# It runs here, before the BSR is stopped, because an (S,G) Join is
+	# acted on only where the RPF neighbour toward the source is a PIM
+	# neighbour -- and the step below kills the one router upstream of
+	# R1, which is that neighbour.
+	print "4. A Join/Prune Holdtime of 0xffff is held, not aged"
+	# An (S,G) needs a group entry, and a group entry needs an RP, so the
+	# domain has to have converged before the Join can build anything.
+	if ! wait_for 90 has_rp r1 "$RP_ADDR"; then
+		fail "r1 never learned RP $RP_ADDR, nothing below can be asked"
+		return 1
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_FAR_SRC" -H 65535
+	if ! wait_for 15 route_held r1 "$CRAFT_FAR_SRC" "$GROUP"; then
+		fail "r1 built no ($CRAFT_FAR_SRC,$GROUP) with both timers at 65535, the Join was not acted on"
+	else
+		# Three timer intervals, so an unheld timer has moved
+		dprint "waiting ${CRAFT_HOLD}s, a timer that ages loses ${CRAFT_HOLD}s in that time ..."
+		sleep "$CRAFT_HOLD"
+		if route_held r1 "$CRAFT_FAR_SRC" "$GROUP"; then
+			ok "both timers still read 65535 after ${CRAFT_HOLD}s"
+		else
+			fail "r1 aged a holdtime of 0xffff: entry $(route_timer r1 "$CRAFT_FAR_SRC" "$GROUP" 1), oif $(route_vif_timer r1 "$CRAFT_FAR_SRC" "$GROUP")"
+		fi
+	fi
+
 	# The unicast branch is reachable only while this router knows no
 	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the
 	# RP set to a router that has just come up -- so R2 has to stop being
 	# the BSR and R1's RP set has to age out before any of it can be
 	# asked.  That is the state a booting router is in, which is the
 	# state the entry is about.
-	print "4. R1 is put back where a booting router starts, with no RP"
+	print "5. R1 is put back where a booting router starts, with no RP"
 	dprint "stopping the BSR and waiting for R1's dynamic RP to expire ..."
 	[ -f "$WORKDIR/r2.pid" ] && ${SUDO} pkill -9 -F "$WORKDIR/r2.pid" 2>/dev/null
 	if wait_for "$CRAFT_RP_WAIT" no_dynamic_rp r1; then
@@ -3429,7 +3505,7 @@ check_crafted() {
 		return 1
 	fi
 
-	print "5. A unicast Bootstrap from a stranger on the LAN is refused"
+	print "6. A unicast Bootstrap from a stranger on the LAN is refused"
 	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
 	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring unicast Bootstrap from $CRAFT_ADDR"; then
@@ -3446,7 +3522,7 @@ check_crafted() {
 	# The other half, and the reason the check is safe: the DR that
 	# unicasts an RP set has sent its Hello first, on the same path,
 	# immediately before.  Here that Hello is sent explicitly.
-	print "6. The same Bootstrap, once its sender has said Hello, is taken"
+	print "7. The same Bootstrap, once its sender has said Hello, is taken"
 	craft "$CRAFT_ADDR" hello -H 105
 	if wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
 		ok "r1 took $CRAFT_ADDR as a neighbour"
@@ -3469,7 +3545,7 @@ check_crafted() {
 	# list have been committed -- which is where the group ranges are
 	# read -- would hand any neighbour the domain's RP set for the price
 	# of one bad byte.
-	print "7. A malformed Bootstrap from that neighbour changes nothing"
+	print "8. A malformed Bootstrap from that neighbour changes nothing"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 \
 	      -m "$CRAFT_BADLEN" -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring Bootstrap from $CRAFT_ADDR, group mask length"; then
@@ -3488,6 +3564,90 @@ check_crafted() {
 		ok "r1 still holds the RP it had, both were refused before anything moved"
 	else
 		fail "r1 lost its RP set to a malformed Bootstrap"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The packet format section of doc/rfc7761-compliance.md, which is
+	# every entry that wanted a message pimd will not build.  R1 is the
+	# RP here as well as the DR's router, so the Register assertions have
+	# somewhere to go.
+	print "9. A message whose version is not 2 is discarded"
+	craft "$SRC_ADDR" hello -V 3 -H 105
+	if wait_for 10 logged r1 "Ignoring PIM v3"; then
+		ok "r1 refused a PIM v3 Hello"
+	else
+		fail "r1 parsed a v3 message as though it were v2, sec. 4.9 says discard"
+	fi
+
+	print "10. And one sent to a destination its type may not use"
+	craft "$SRC_ADDR" hello -d "$R1_LAN_ADDR" -H 105
+	if wait_for 10 logged r1 "not a destination that message may use"; then
+		ok "r1 refused a Hello unicast to it rather than to ALL-PIM-ROUTERS"
+	else
+		fail "r1 acted on a unicast Hello, sec. 4.9's table has that one multicast"
+	fi
+
+	# Three encoded addresses in one Join/Prune and three separate checks,
+	# so the family is moved on each in turn: -f moves every one of them,
+	# which the upstream address is read first of, and -F and -E move the
+	# group and source records alone and leave it IPv4.  A parser that
+	# checked the upstream address and nothing else would pass the first
+	# of these and fail the rest.
+	print "11. An encoded address of a family this router cannot read"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -f 2
+	if wait_for 10 logged r1 "upstream address family 2 type 0 is not IPv4"; then
+		ok "r1 refused a Join whose upstream address declares family 2"
+	else
+		fail "r1 read an address of another family at IPv4 offsets, sec. 4.9.1"
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -F 2
+	if wait_for 10 logged r1 "group address family 2 type 0 is not IPv4"; then
+		ok "r1 refused a Join whose group record declares family 2"
+	else
+		fail "r1 checked the upstream address and read the group record regardless"
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -E 1
+	if wait_for 10 logged r1 "group address family 1 type 1 is not IPv4"; then
+		ok "r1 refused a Join whose group record declares encoding type 1"
+	else
+		fail "r1 ignored the encoding type, sec. 4.9.1"
+	fi
+
+	print "12. A group range this router does not implement"
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
+	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO" -B
+	if wait_for 10 logged r1 "a range this router does not implement"; then
+		ok "r1 refused a range advertised as Bidirectional-PIM"
+	else
+		fail "r1 installed a Bidir range as an ordinary PIM-SM one, RFC 5059 sec. 3.6"
+	fi
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
+	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO" -Z
+	if wait_for 10 logged r1 "a range this router does not implement"; then
+		ok "r1 refused a range declaring an administrative scope zone"
+	else
+		fail "r1 treated a scoped range as global, and it has no scope zones"
+	fi
+
+	# sec. 4.9.3 gives the receiver of a Null-Register one rule and all
+	# three of its cases are here: a wrong checksum is discarded, a zero
+	# one MUST NOT be checked, and a correct one is the control that says
+	# the first two were refused for their checksum and not for being
+	# Null-Registers.
+	print "13. A Null-Register is believed only where its checksum allows"
+	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -K -g "$GROUP" -s "$CRAFT_SRC"
+	if wait_for 10 logged r1 "bad checksum in the dummy IP header"; then
+		ok "r1 discarded a Null-Register whose dummy header checksum is wrong"
+	else
+		fail "r1 took the source and group out of a dummy header it never checked"
+	fi
+	${SUDO} : > "$WORKDIR/r1.log.mark" 2>/dev/null || true
+	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -0 -g "$GROUP" -s "$CRAFT_SRC"
+	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -g "$GROUP" -s "$CRAFT_SRC"
+	if [ "$(${SUDO} grep -c 'bad checksum in the dummy IP header' "$WORKDIR/r1.log")" -eq 1 ]; then
+		ok "a zero checksum and a correct one were both let through"
+	else
+		fail "r1 refused a Null-Register whose checksum it must not check, or one that was correct"
 	fi
 
 	result

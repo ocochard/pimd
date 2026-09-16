@@ -1761,6 +1761,19 @@ void age_routes(void)
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_grp->joined_oifs)) {
+			    /* RFC 7761 sec. 4.9.5: a Join/Prune Holdtime of
+			     * 0xffff has the receiver "hold the state until
+			     * canceled by the appropriate canceling
+			     * Join/Prune message".  Held rather than aged,
+			     * the way vif.c holds a neighbour whose Hello
+			     * said the same; counted down five seconds at a
+			     * time it reached zero 18 hours later, which is
+			     * neither "until canceled" nor long enough for
+			     * the dial-on-demand links the value is for.
+			     */
+			    if (mrt_grp->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
+				continue;
+
 			    IF_TIMEOUT(mrt_grp->vif_timers[vifi]) {
 				PIMD_VIFM_CLR(vifi, mrt_grp->joined_oifs);
 				expire_prune_pending(mrt_grp, vifi);
@@ -1828,8 +1841,14 @@ void age_routes(void)
 		     */
 		    IF_TIMEOUT(mrt_grp->rs_timer) {}
 
-		    /* routing entry */
-		    if ((TIMEOUT(mrt_grp->entry_timer)) && (PIMD_VIFM_ISEMPTY(mrt_grp->leaves)))
+		    /* routing entry.  Held where the Join/Prune that raised it
+		     * asked for that, the same sentinel as the outgoing
+		     * interface timers above: an entry aged out from under a
+		     * held oif is the state gone all the same, which is not
+		     * what "until canceled" means.
+		     */
+		    if (mrt_grp->entry_timer != PIM_HELLO_HOLDTIME_FOREVER &&
+			(TIMEOUT(mrt_grp->entry_timer)) && (PIMD_VIFM_ISEMPTY(mrt_grp->leaves)))
 			delete_mrtentry(mrt_grp);
 		} /* if (mrt_grp) */
 
@@ -1847,6 +1866,10 @@ void age_routes(void)
 			if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {
 			    /* TODO: checking for reg_num_vif is slow! */
 			    if (vifi != PIMREG_VIF) {
+				/* Held until canceled, as above */
+				if (mrt_srcs->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
+				    continue;
+
 				IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
 				    PIMD_VIFM_CLR(vifi, mrt_srcs->joined_oifs);
 				    PIMD_VIFM_CLR(vifi, mrt_srcs->sg_joined_oifs);
@@ -2011,8 +2034,9 @@ void age_routes(void)
 			}
 		    }
 
-		    /* routing entry */
-		    if (TIMEOUT(mrt_srcs->entry_timer)) {
+		    /* routing entry, held as the (*,G) one above is */
+		    if (mrt_srcs->entry_timer != PIM_HELLO_HOLDTIME_FOREVER &&
+			TIMEOUT(mrt_srcs->entry_timer)) {
 			if (PIMD_VIFM_ISEMPTY(mrt_srcs->leaves)) {
 			    delete_mrtentry(mrt_srcs);
 			    continue;

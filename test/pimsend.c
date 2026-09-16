@@ -135,6 +135,8 @@ struct opts {
 	unsigned smasklen;
 	unsigned family;
 	unsigned encoding;
+	unsigned rec_family;		/* group and source records only */
+	unsigned rec_encoding;
 	int	 bidir;
 	int	 scope;
 	long	 holdtime;		/* -1 until -H overrides it */
@@ -146,6 +148,7 @@ struct opts {
 	int	 nsources;
 	int	 wildcard;		/* a (*,G) entry rather than (S,G) */
 	int	 null_register;
+	int	 zerosum;		/* leave the dummy header's checksum 0 */
 	int	 rpt;			/* Assert RPT bit */
 	unsigned pref;
 	unsigned metric;
@@ -224,8 +227,8 @@ static uint8_t *put_egaddr(uint8_t *p, const struct opts *o, struct in_addr addr
 	if (o->scope)
 		bz |= EGADDR_Z_BIT;
 
-	p = put_byte(p, o->family);
-	p = put_byte(p, o->encoding);
+	p = put_byte(p, o->rec_family);
+	p = put_byte(p, o->rec_encoding);
 	p = put_byte(p, bz);
 	p = put_byte(p, o->gmasklen);
 
@@ -236,8 +239,8 @@ static uint8_t *put_egaddr(uint8_t *p, const struct opts *o, struct in_addr addr
 static uint8_t *put_esaddr(uint8_t *p, const struct opts *o, struct in_addr addr,
 			   unsigned flags)
 {
-	p = put_byte(p, o->family);
-	p = put_byte(p, o->encoding);
+	p = put_byte(p, o->rec_family);
+	p = put_byte(p, o->rec_encoding);
 	p = put_byte(p, flags);
 	p = put_byte(p, o->smasklen);
 
@@ -358,8 +361,15 @@ static uint8_t *build_register(uint8_t *p, const struct opts *o)
 	p = put_addr(p, inner_src);
 	p = put_addr(p, o->group);
 
-	if (!o->corrupt) {
+	/* Three cases the RFC distinguishes, sec. 4.9.3: a correct checksum,
+	 * a wrong one that a Null-Register must be discarded for, and a zero
+	 * one that MUST NOT be checked at all.
+	 */
+	if (!o->zerosum) {
 		uint16_t sum = cksum(ip, 20);
+
+		if (o->corrupt)
+			sum = ~sum;
 
 		ip[10] = (sum) & 0xff;
 		ip[11] = (sum >> 8) & 0xff;
@@ -450,6 +460,8 @@ static int usage(int rc)
 		"  -r ADDR    The RP: of a Bootstrap, a candrp, or a (*,G) Join\n"
 		"  -w         Make the Join/Prune a (*,G) rather than an (S,G)\n"
 		"  -N         Make the Register a Null-Register\n"
+		"  -0         Leave the Register's inner header checksum zero, which\n"
+		"             sec. 4.9.3 says the RP MUST NOT check\n"
 		"  -p PRIO    Priority: DR, BSR or candidate RP, default 1\n"
 		"  -P PREF    Assert metric preference, default 101\n"
 		"  -C METRIC  Assert metric, default 1024\n"
@@ -461,8 +473,13 @@ static int usage(int rc)
 		"  -K         Corrupt the checksum\n"
 		"  -m LEN     Group mask length, default 32\n"
 		"  -M LEN     Source mask length, and a Bootstrap's hash mask length\n"
-		"  -f FAMILY  Address family byte, default 1 (IPv4)\n"
-		"  -e ENC     Encoding type byte, default 0 (native)\n"
+		"  -f FAMILY  Address family byte, default 1 (IPv4).  Applies to every\n"
+		"             encoded address in the message\n"
+		"  -e ENC     Encoding type byte, default 0 (native), likewise\n"
+		"  -F FAMILY  Address family of the encoded group and source records\n"
+		"             only, leaving the unicast addresses alone -- which is how\n"
+		"             a parser that checks one and not the other is caught\n"
+		"  -E ENC     Encoding type of those records only\n"
 		"  -B         Set the Bidir bit of the encoded group\n"
 		"  -Z         Set the admin-scope bit of the encoded group\n"
 		"  -H TIME    Holdtime, default per message type\n");
@@ -481,7 +498,7 @@ int main(int argc, char *argv[])
 	unsigned char ttl = 1;
 	uint16_t sum;
 	size_t len;
-	int sd, c, on = 1;
+	int sd, c, on = 1, rec_set = 0;
 
 	memset(&o, 0, sizeof(o));
 	memset(&ifaddr, 0, sizeof(ifaddr));
@@ -520,8 +537,11 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "BC:d:e:f:g:H:h?i:KM:m:Np:P:Rr:s:T:u:V:wZ")) != -1) {
+	while ((c = getopt(argc, argv, "0BC:d:E:e:F:f:g:H:h?i:KM:m:Np:P:Rr:s:T:u:V:wZ")) != -1) {
 		switch (c) {
+		case '0': o.zerosum = 1;				break;
+		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
+		case 'F': o.rec_family = num(optarg, "address family"); rec_set |= 2; break;
 		case 'B': o.bidir = 1;					break;
 		case 'C': o.metric = num(optarg, "metric");		break;
 		case 'd': dest = optarg;				break;
@@ -558,6 +578,14 @@ int main(int argc, char *argv[])
 	if (!ifaddr.s_addr)
 		return usage(1);
 
+	/* The record fields follow the message-wide ones unless -F or -E
+	 * said otherwise, so -f alone still changes every address.
+	 */
+	if (!(rec_set & 2))
+		o.rec_family = o.family;
+	if (!(rec_set & 1))
+		o.rec_encoding = o.encoding;
+
 	/* PIM header: version and type in one byte, then reserved and the
 	 * checksum, which is filled in once the body is built.
 	 */
@@ -583,7 +611,12 @@ int main(int argc, char *argv[])
 	 * is also how pimd verifies one (src/pim_proto.c).
 	 */
 	sum = cksum(buf, type == PIM_REGISTER ? 8 : len);
-	if (o.corrupt)
+
+	/* For a Register, -K is the inner header's checksum, applied above:
+	 * corrupting the outer one too would have pim.c drop the message
+	 * before receive_pim_register() ever looked at the dummy header.
+	 */
+	if (o.corrupt && type != PIM_REGISTER)
 		sum = ~sum;
 	buf[2] = sum & 0xff;
 	buf[3] = (sum >> 8) & 0xff;

@@ -128,6 +128,11 @@ pimd on all routers in the same domain.  See issue #93 for details.
 - `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
+- `test/pimsend.c` grew `-F`/`-E`, the address family and encoding type of
+  the encoded group and source records alone, leaving the message's unicast
+  addresses IPv4 -- which is how a parser that checks one and not the other
+  is caught -- and `-0`, the zero dummy-header checksum a Null-Register may
+  carry and the RP must not check
 - `test/igmpv3.c` takes `-v 2` to send an IGMPv2 membership report instead
   of an IGMPv3 one.  A v2 report names a group and nothing else, which is
   the whole question where the group is in the SSM range, and a kernel join
@@ -149,7 +154,8 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the wire, so a field pimd encodes wrongly it also decodes wrongly and the
   lab stays green
 - New `crafted` scenario in `test/freebsd-lab.sh`, the first user of it and
-  a regression test for the two fixes below: a Join/Prune and a Bootstrap
+  a regression test for the whole packet format section of
+  `doc/rfc7761-compliance.md` as well as for: a Join/Prune and a Bootstrap
   carrying a mask length no address has are refused, a unicast Bootstrap
   from a host that has sent no Hello is refused, and the RP set survives
   both.  Each has its positive control beside it -- the same Join correctly
@@ -184,6 +190,50 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Discard a PIM message whose version is not 2, or whose destination is not
+  one the table of RFC 7761 sec. 4.9 gives its type: the section closes by
+  requiring both, `accept_pim()` carried them as TODOs, and every message
+  pimd sends writes a version that nothing read back.  A Hello, Join/Prune
+  or Assert unicast to a router was acted on as though it had arrived on
+  ALL-PIM-ROUTERS -- three handlers mark the destination unused in their
+  signatures -- and a Candidate-RP-Advertisement multicast to
+  ALL-PIM-ROUTERS was taken just the same.  A Bootstrap is the one type
+  with two answers, RFC 5059 sec. 3.5.2 having the DR unicast the RP set to
+  a router that has just come up
+- Refuse an encoded address whose address family or encoding type is not
+  IPv4 native, RFC 7761 sec. 4.9.1.  Both bytes were parsed into structure
+  members nothing ever read.  The cost is not the address, which is garbage
+  either way, but the length: an Encoded-Unicast is 6 bytes for IPv4 and 18
+  for IPv6, and every walk over these messages is written around the IPv4
+  strides, so a record declaring another family was read at offsets its
+  fields are not at -- source counts and flags taken out of the middle of
+  addresses.  Checked now in the Join/Prune, Bootstrap,
+  Candidate-RP-Advertisement, Register-Stop and Assert parsers
+- Refuse a group range whose B or Z bit is set.  The third byte of an
+  Encoded-Group carries the Bidirectional-PIM bit and the admin-scope-zone
+  bit, and pimd called the whole byte reserved: a Bidir range was installed
+  as an ordinary PIM-SM one, so an RP was picked for it, Joins were sent
+  toward that RP and traffic register-encapsulated to it, none of which a
+  Bidir range means.  RFC 5059 sec. 3.6 says an implementation of one
+  protocol must not treat the other's ranges as its own.  pimd has no scope
+  zones either, so a range declaring itself one is refused rather than
+  treated as global.  Only the range is refused, not the message
+- Hold the state a Join/Prune with a Holdtime of 0xffff asks for instead of
+  ageing it, RFC 7761 sec. 4.9.5: the receiver "SHOULD hold the state until
+  canceled by the appropriate canceling Join/Prune message".  Both timers
+  the holdtime raises are held, the outgoing interface timer and the entry
+  timer -- holding one while the other ages is the state gone all the same.
+  Counted down five seconds at a time they reached zero 18 hours later,
+  which is neither "until canceled" nor long enough for the
+  dial-on-demand links the value exists for.  The Hello side of the same
+  sentinel was already kept
+- Verify the dummy IP header checksum of a Null-Register, RFC 7761
+  sec. 4.9.3: a non-zero Header Checksum SHOULD be checked and the
+  Null-Register discarded if it is wrong, and a zero one MUST NOT be
+  checked.  pimd read neither, so the source and group it took out of that
+  header, and the Register-Stop and Keepalive Timer refresh they drive,
+  rested on nothing.  The header length is bounded against what arrived
+  before it decides how much to checksum
 - Keep a statically configured RP when a Bootstrap arrives for the same
   group prefix, RFC 7761 sec. 4.7, "A PIM router MUST support the static
   configuration of group-to-RP mappings".  An `rp-address` with no group

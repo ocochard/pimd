@@ -46,7 +46,8 @@ run is therefore a regression, not an expected result.
 Every entry below ends with a `Test:` note saying what reproduces it, and
 all but two of them say `none`: M4's fixed half is covered, and so is the
 half of A3 that pimd can be held to, by the `register-filter` scenario of
-`test/freebsd-lab.sh`.  The point of writing it down is that the gap is
+`test/freebsd-lab.sh`.  What the fixed entries are asserted by is named
+where each section says it is fixed, not here.  The point of writing it down is that the gap is
 visible from this list rather than only from grepping the labs.  Where an entry names a
 scenario without asserting anything, it is because that scenario builds the
 topology the deviation needs and stops short of the assertion; those are the
@@ -54,14 +55,11 @@ cheap ones to close, and the two that were cheapest are gone -- R1, the
 Bootstrap that deleted a configured RP, and S5, the any-source report for an
 SSM group -- each closed with the scenario its own note named.  Several are not
 blackbox-testable at all, and say so: a five-second latency or a startup race
-cannot be told from a slow lab.  A larger group wants a message pimd will
-not send -- every entry of the packet format section and three of the SSM
-one.  The way to reach all of them is `test/pimsend.c`, which exists now:
-it builds one PIM message with any field set to anything and sends it once.
-The `crafted` scenario of `test/freebsd-lab.sh` is its first user, and what
-it guards is what a lab of pimds could not reach.  The entries below are
-still untested, but they are no longer untestable, and each is now an
-assertion rather than a tool away.
+cannot be told from a slow lab.  The group that wanted a message pimd will
+not send is gone too: `test/pimsend.c` builds one PIM message with any field
+set to anything and sends it once, the whole packet format section is closed
+and asserted by the `crafted` scenario of `test/freebsd-lab.sh`, and S3 and
+S4 of the SSM section are now an assertion rather than a tool away.
 
 
 Input validation and trust
@@ -742,145 +740,30 @@ timing, and every lab here starts its routers together.*
 Packet formats
 --------------
 
-Sec. 4.9 is the wire: the header every message starts with, the encoded
-address forms of sec. 4.9.1 that the rest are built out of, and one
-subsection per message type.  What pimd writes is in good shape, and the
-last section of this file lists what was checked; the two entries the next
-section holds were both about what pimd writes, and both are fixed.  So the
-entries here are the parsers, and one theme runs through them: pimd reads
-the fields it needs and parses the fields that say how to read them into
-structure members it then never looks at.  A parser cannot be steered into
-reading out of bounds that way -- every one of these messages is length
-checked first, and V1 through V6 were the entries about that -- but it can
-be steered into reading the right bytes as the wrong thing.
+Every entry this section held is fixed: F1, the PIM version and the
+destination address, neither of which was checked; F2, the address family
+and encoding type of an encoded address, parsed into a structure member
+nobody read, so a record declaring another family was read at the IPv4
+offsets its fields are not at; F3, a mask length wider than an address, a
+negative shift and a group range nobody advertised over the domain's RP
+set; F4, the B and Z bits, a Bidirectional-PIM or admin-scoped range
+installed as an ordinary PIM-SM one; F5, a Holdtime of 0xffff aged like a
+number rather than held; and F6, the dummy header of a Null-Register whose
+checksum was never verified.  The section stays, and keeps its numbering,
+for the reason the input validation one does: these are where a parser
+reads the right bytes as the wrong thing, and the next reader should know
+they were looked for.
 
-None of these can be reproduced by a lab of pimds, because the message that
-reproduces them is one pimd will not build.  That is the same wall S3, S4
-and S5 of the SSM section ran into, and `test/pimsend.c` is the way through
-it, the way `test/igmpv3.c` is for IGMP: it emits a single crafted PIM
-message -- any type, and every field that can be got wrong exposed as an
-option -- and then stops existing, so what the router does next is the
-router's own behaviour.  The `crafted` scenario of `test/freebsd-lab.sh`
-shows the shape an assertion here takes, including the positive control
-each one needs: a parser that refuses everything passes every "was it
-refused?" test ever written.
-
-**F1.  The PIM version is not checked, and neither is the destination
-address.**  Sec. 4.9 closes with one sentence asking for both: a message
-"with an unrecognized PIM Ver or Type field, or if a message's destination
-does not correspond to the table above" MUST be discarded.  `accept_pim()`
-(`src/pim.c:165`) does the Type half, logging and dropping an unknown one,
-and carries the other two as TODOs on consecutive lines
-(`src/pim.c:206-207`).  `pim_vers` is written into every message pimd sends
-(`src/pim.c:286` and `:396`) and read nowhere, so a Ver of 0, 1 or 15 is
-parsed as though it were 2.  The destination is passed to every handler and
-three of them mark it unused in the signature -- `receive_pim_hello()`,
-`receive_pim_join_prune()` and `receive_pim_assert()` -- so a Hello,
-Join/Prune or Assert unicast to a router's own address is acted on as though
-it had arrived on ALL-PIM-ROUTERS.  `receive_pim_cand_rp_adv()`
-(`src/pim_proto.c:4593`) ignores it as well, in the other direction: the
-table has that one unicast to the BSR, and one multicast to ALL-PIM-ROUTERS
-is taken just the same.
-
-What stands in the way today is the source rather than the destination.  The
-three link-local handlers all require the sender to be on a directly
-connected subnet, and since V2 a Join/Prune or an Assert also requires a
-Hello to have been seen from it, so a misdirected link-local message still
-has to come from a real neighbor on the link; the Cand-RP-Adv is gated on
-this router being the elected BSR instead, and not on its source at all.
-That makes this a conformance gap rather than a hole, which is why it is
-here and not in the first section.
-*Check: sec. 4.9, `doc/rfc7761.txt:5852` for the discard rule and `:5806`
-for the table of destinations it refers to.  Effort: small, and the two
-halves are independent: one comparison in `accept_pim()` for the version,
-and a per-type destination test beside it.  Test: none; both want a message
-built by hand, as the head of this section says.*
-
-**F2.  The address family and the encoding type are parsed and ignored.**
-Every encoded address on the wire starts with them, and pimd's three GET
-macros read both into the struct and no caller ever looks
-(`src/pimd.h:489`, `:509`, `:529`; there is no reference to `addr_family`
-or `encod_type` anywhere in `src/*.c`).  A pimd is IPv4 only, so the answer
-to a family it does not implement is to refuse the address, and refusing is
-not what happens: the six or eight bytes are read as IPv4 whatever they
-say.
-
-The cost is not the address, which is garbage either way, but the length.
-An Encoded-Unicast address is 6 bytes for IPv4 and 18 for IPv6, and the
-whole of `receive_pim_join_prune()` is written around the IPv4 numbers: the
-walk that validates the message before anything is acted on steps over
-`PIM_ENCODE_GRP_ADDR_LEN` and `PIM_ENCODE_SRC_ADDR_LEN` per record
-(`src/pim_proto.c:1834-1864`), and the second pass reads with the same
-stride.  A group set that declares IPv6 addresses is therefore read at
-offsets that have nothing to do with where its fields are, with source
-counts and flags taken out of the middle of addresses.  Sec. 4.9.5 has an
-answer for exactly this case -- process the addresses of the same family as
-the upstream neighbor address, ignore the rest -- and pimd cannot follow it
-without first reading the field that says which family an address is.
-*Check: sec. 4.9.1, `doc/rfc7761.txt:5889` for the encoding type, the
-family immediately above it at `:5869`, and sec. 4.9.5's mixed-family rule
-at `:6516`.  Effort: small -- one test per GET, in the four parsers that
-walk encoded addresses.  Test: none, per the head of this section.*
-
-**F4.  The B and Z bits of an encoded group address are never read.**  The
-third byte of an Encoded-Group carries the Bidirectional-PIM bit, six
-reserved bits and the admin-scope-zone bit; pimd's `GET_EGADDR()` calls the
-whole byte `reserved` (`src/pimd.h:219`, read at `:513`) and nothing in
-`src/*.c` refers to it.  On transmission this is right, because pimd passes
-zero everywhere it builds one.  On reception it means a group range
-advertised as Bidir-PIM is installed as an ordinary PIM-SM range: the
-router picks an RP for it, sends Joins toward that RP and register-
-encapsulates to it, none of which is what a Bidir range means.  RFC 5059
-says this explicitly of the RP set, in the same paragraph that says an
-implementation of one protocol must not ignore the other's ranges.  The Z
-bit needs nothing beyond what the RP discovery section already says about
-admin scope: pimd has no scope zones, so the honest handling of a range
-that declares itself one is to refuse it rather than to treat it as
-global.
-*Check: sec. 4.9.1, `doc/rfc7761.txt:5915` for the B bit and `:5923` for
-the Z bit; the rule that makes ignoring B wrong is RFC 5059 sec. 3.6,
-`doc/rfc5059.txt:1270`.  Effort: small.  Test: none, and here the Arista of
-`test/freebsd-interop.sh` is a possibility rather than a certainty: whether
-an EOS can be made to advertise a Bidir range in a Bootstrap decides it.*
-
-**F5.  A Holdtime of 0xffff is read as a number.**  Both places the value
-appears say what it means.  In a Hello, sec. 4.9.2, the receiver "never
-times out the neighbor", which is what the option exists for on
-dial-on-demand links where Hellos stop arriving; in a Join/Prune,
-sec. 4.9.5, the receiver "SHOULD hold the state until canceled by the
-appropriate canceling Join/Prune message".  pimd stores both in a
-`uint16_t` and ages them like any other: `cache_nbr_settings()` puts the
-Hello's value straight into `nbr->timer` (`src/mrt.h:131`), and the
-Join/Prune's into `vif_timers[]` and `entry_timer` (`src/mrt.h:272`,
-`:274`) wherever `receive_pim_join_prune()` raises a timer to the message's
-holdtime.  Both then count down five seconds at a time
-and reach zero 18 hours and 12 minutes later, which is not "never" and not
-"until canceled", but is long enough that only the link this is meant for
-would ever notice.
-*Check: sec. 4.9.2, `doc/rfc7761.txt:6068`, and sec. 4.9.5, `:6460`.
-Effort: small -- a sentinel the ageing skips, in two places.  Test: none,
-and this is the entry a lab comes closest to reaching: `hello-interval`
-accepts up to 18724 seconds (`src/config.c:1456`), and 3.5 times that is
-65534, one short of the sentinel, so not even a configured pimd can
-advertise the value that would exercise it.*
-
-**F6.  The dummy header of a Null-Register is not checked.**  Sec. 4.9.3
-puts one rule on the receiver and pimd follows the more surprising half of
-it: the fields of the dummy IPv4 header are not inspected, which is what
-the section asks, and `receive_pim_register()` even exempts a Null-Register
-from the IP version test the other Registers get (`src/pim_proto.c:967`).
-What it does not do is the half that replaces them.  A non-zero Header
-Checksum SHOULD be verified and the Null-Register discarded if it is wrong,
-and a zero one MUST NOT be; pimd reads neither, so the source and group it
-takes out of that header, and the Register-Stop and Keepalive Timer refresh
-they drive, rest on nothing.  pimd fills the field in on the sending side
-(`src/pim_proto.c:1303`), so between two pimds the checksum is there and
-correct and simply never read.
-*Check: sec. 4.9.3, `doc/rfc7761.txt:6279`.  Effort: small.  Test: none,
-and unusually this one could be asserted without crafting a packet at all,
-by corrupting the dummy header pimd sends -- which still means a tool that
-sends a Register.*
-
+One note is worth keeping.  None of them could be reproduced by a lab of
+pimds, because the message that reproduces them is one pimd will not build
+-- two pimds share a reading of the wire, so a field pimd encodes wrongly
+it decodes wrongly to match.  `test/pimsend.c` is what got past that, the
+way `test/igmpv3.c` did for IGMP: one crafted PIM message, every field that
+can be got wrong exposed as an option, sent once.  The `crafted` scenario
+of `test/freebsd-lab.sh` guards all six, with the positive control each
+needs beside it -- a parser that refuses everything passes every "was it
+refused?" test ever written.  S3 and S4 of the SSM section are the same
+wall, and now the same way through.
 
 Interop details
 ---------------

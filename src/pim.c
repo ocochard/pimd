@@ -162,6 +162,47 @@ static void pim_read(int sd)
     sigprocmask(SIG_SETMASK, &oblock, (sigset_t *)NULL);
 }
 
+/*
+ * May a message of this type have arrived addressed to this?
+ *
+ * The table of RFC 7761 sec. 4.9 gives one destination per type: the three
+ * link-local messages go to ALL-PIM-ROUTERS and the rest are unicast to a
+ * particular router, which from here is any address this one holds.  A
+ * Hello, Join/Prune or Assert unicast to a router used to be acted on as
+ * though it had arrived on ALL-PIM-ROUTERS -- the three handlers mark the
+ * destination unused in their signatures -- and a Cand-RP-Advertisement
+ * multicast to ALL-PIM-ROUTERS was taken just the same, in the other
+ * direction.
+ *
+ * The Bootstrap is the one type with two answers, and RFC 5059 is why: sec.
+ * 3.5.2 has the DR unicast the RP set to a router that has just come up, so
+ * this router both sends and accepts one that way.  Nothing else does.
+ */
+static int pim_dst_ok(int type, uint32_t dst)
+{
+    switch (type) {
+	case PIM_HELLO:
+	case PIM_JOIN_PRUNE:
+	case PIM_ASSERT:
+	    return dst == allpimrouters_group;
+
+	case PIM_BOOTSTRAP:
+	    return dst == allpimrouters_group || local_address(dst) != NO_VIF;
+
+	case PIM_REGISTER:
+	case PIM_REGISTER_STOP:
+	case PIM_CAND_RP_ADV:
+	    return local_address(dst) != NO_VIF;
+
+	default:
+	    /* Graft and Graft-Ack are PIM-DM's and ignored below; an
+	     * unrecognized type is the switch's default arm.  Neither is
+	     * this function's to judge.
+	     */
+	    return TRUE;
+    }
+}
+
 static void accept_pim(ssize_t recvlen)
 {
     uint32_t src, dst;
@@ -203,8 +244,31 @@ static void accept_pim(ssize_t recvlen)
 	}
     }
 
-    /* TODO: Check PIM version */
-    /* TODO: check the dest. is ALL_PIM_ROUTERS (if multicast address) */
+    /* RFC 7761 sec. 4.9: "If a message is received with an unrecognized PIM
+     * Ver or Type field, or if a message's destination does not correspond
+     * to the table above, the message MUST be discarded".  The Type half is
+     * the default arm of the switch below; these are the other two.
+     *
+     * Every message pimd sends carries pim_vers, and nothing read it back,
+     * so a Ver of 0, 1 or 15 was parsed as though it were 2.
+     */
+    if (pim->pim_vers != PIM_VERSION) {
+	IF_DEBUG(DEBUG_PIM)
+	    logit(LOG_INFO, 0, "Ignoring PIM v%u %s from %s to %s, this is a PIM v%u router",
+		  pim->pim_vers, packet_kind(IPPROTO_PIM, pim->pim_type, 0),
+		  inet_fmt(src, source, sizeof(source)), inet_fmt(dst, dest, sizeof(dest)),
+		  PIM_VERSION);
+	return;
+    }
+
+    if (!pim_dst_ok(pim->pim_type, dst)) {
+	IF_DEBUG(DEBUG_PIM)
+	    logit(LOG_INFO, 0, "Ignoring %s from %s to %s, not a destination that message may use",
+		  packet_kind(IPPROTO_PIM, pim->pim_type, 0),
+		  inet_fmt(src, source, sizeof(source)), inet_fmt(dst, dest, sizeof(dest)));
+	return;
+    }
+
     /* TODO: Checksum verification is done in each of the processing functions.
      * No need for checksum, if already done in the kernel?
      */

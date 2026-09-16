@@ -49,6 +49,8 @@ typedef struct {
 /*
  * Local functions definitions.
  */
+static int encoded_addr_ok         (uint8_t family, uint8_t etype);
+static int group_range_ok          (const pim_encod_grp_addr_t *grp);
 static int dr_election             (struct uvif *v);
 static int restart_dr_election     (struct uvif *v);
 static int parse_pim_hello         (char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts);
@@ -998,6 +1000,42 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
 	return FALSE;
     }
 
+    /* RFC 7761 sec. 4.9.3, the one rule the receiver of a Null-Register is
+     * given: "if the Header Checksum field is non-zero, the recipient
+     * SHOULD check the checksum and discard Null-Registers that have a bad
+     * checksum ... If the Header Checksum field is zero, the recipient MUST
+     * NOT check the checksum."  pimd already follows the surprising half of
+     * the same paragraph -- the individual fields are not inspected, and
+     * the IP version test above is waived for a Null-Register -- but read
+     * neither checksum, so the source and group taken out of that header,
+     * and the Register-Stop and Keepalive Timer refresh they drive, rested
+     * on nothing at all.
+     */
+    if (is_null && ip->ip_sum != 0) {
+	size_t hlen = (size_t)ip->ip_hl << 2;
+	size_t avail = len - sizeof(pim_header_t) - sizeof(pim_register_t);
+
+	/* ip_hl is the sender's to choose and says how much to checksum, so
+	 * it is bounded before it is used rather than trusted: the length
+	 * test above guarantees one header's worth arrived and no more.
+	 */
+	if (hlen < sizeof(struct ip) || hlen > avail) {
+	    IF_DEBUG(DEBUG_PIM_REGISTER)
+		logit(LOG_INFO, 0, "PIM Null-Register from %s: dummy header claims %zu bytes, %zu arrived",
+		      inet_fmt(reg_src, s1, sizeof(s1)), hlen, avail);
+
+	    return FALSE;
+	}
+
+	if (inet_cksum((uint16_t *)ip, hlen)) {
+	    IF_DEBUG(DEBUG_PIM_REGISTER)
+		logit(LOG_INFO, 0, "PIM Null-Register from %s: bad checksum in the dummy IP header",
+		      inet_fmt(reg_src, s1, sizeof(s1)));
+
+	    return FALSE;
+	}
+    }
+
     /* We are keeping all addresses in network order, so no need for ntohl()*/
     inner_src = ip->ip_src.s_addr;
     inner_grp = ip->ip_dst.s_addr;
@@ -1396,6 +1434,15 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
     data = (uint8_t *)(msg + sizeof(pim_header_t));
     GET_EGADDR(&egaddr,  data);
     GET_EUADDR(&eusaddr, data);
+
+    if (!encoded_addr_ok(egaddr.addr_family, egaddr.encod_type) ||
+	!encoded_addr_ok(eusaddr.addr_family, eusaddr.encod_type)) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_NOTICE, 0, "Ignoring Register-Stop from %s, an encoded address is not IPv4",
+		  inet_fmt(reg_src, s1, sizeof(s1)));
+
+	return FALSE;
+    }
 
     IF_DEBUG(DEBUG_PIM_REGISTER)
 	logit(LOG_INFO, 0, "Received PIM_REGISTER_STOP from RP %s to %s for src = %s and group = %s",
@@ -1842,6 +1889,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     GET_BYTE(num_groups, data);
     GET_HOSTSHORT(holdtime, data);
 
+    /* sec. 4.9.5 processes the addresses of the upstream neighbor's family
+     * and ignores the rest; where that address is not one we can read, the
+     * whole message is a message for somebody else.
+     */
+    if (!encoded_addr_ok(eutaddr.addr_family, eutaddr.encod_type)) {
+	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, upstream address family %u type %u is not IPv4",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		  eutaddr.addr_family, eutaddr.encod_type);
+	return FALSE;
+    }
+
     if (num_groups == 0) {
 	/* No indication for groups in the message */
 	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
@@ -1886,6 +1945,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    return FALSE;
 	}
 
+	/* And its family and encoding type.  This walk and the two passes
+	 * below step over PIM_ENCODE_GRP_ADDR_LEN and
+	 * PIM_ENCODE_SRC_ADDR_LEN per record, the IPv4 sizes, so a record
+	 * that says it is something else is not merely an address we cannot
+	 * use -- it is a record whose fields are not where we will look.
+	 */
+	if (!encoded_addr_ok(data[PIM_ENCODE_FAMILY_OFF], data[PIM_ENCODE_ETYPE_OFF])) {
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group address family %u type %u is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		      data[PIM_ENCODE_FAMILY_OFF], data[PIM_ENCODE_ETYPE_OFF]);
+	    return FALSE;
+	}
+
         len -= (PIM_ENCODE_GRP_ADDR_LEN + sizeof(uint32_t));
         data += PIM_ENCODE_GRP_ADDR_LEN;
 
@@ -1908,15 +1981,24 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	 * ignore any messages received with any other mask length."  The
 	 * srclen bytes are inside the message by the check just above.
 	 */
-	for (srcoff = PIM_ENCODE_MSKLEN_OFF; srcoff < srclen;
-	     srcoff += PIM_ENCODE_SRC_ADDR_LEN) {
-	    if (data[srcoff] == SINGLE_SRC_MSKLEN)
+	for (srcoff = 0; srcoff < srclen; srcoff += PIM_ENCODE_SRC_ADDR_LEN) {
+	    if (!encoded_addr_ok(data[srcoff + PIM_ENCODE_FAMILY_OFF],
+				 data[srcoff + PIM_ENCODE_ETYPE_OFF])) {
+		IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source address family %u type %u is not IPv4",
+			  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+			  data[srcoff + PIM_ENCODE_FAMILY_OFF],
+			  data[srcoff + PIM_ENCODE_ETYPE_OFF]);
+		return FALSE;
+	    }
+
+	    if (data[srcoff + PIM_ENCODE_MSKLEN_OFF] == SINGLE_SRC_MSKLEN)
 		continue;
 
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
 		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source mask length %u is not %u",
 		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-		      data[srcoff], SINGLE_SRC_MSKLEN);
+		      data[srcoff + PIM_ENCODE_MSKLEN_OFF], SINGLE_SRC_MSKLEN);
 	    return FALSE;
 	}
 
@@ -4002,6 +4084,15 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     GET_EGADDR(&egaddr, data);
     GET_EUADDR(&eusaddr, data);
 
+    if (!encoded_addr_ok(egaddr.addr_family, egaddr.encod_type) ||
+	!encoded_addr_ok(eusaddr.addr_family, eusaddr.encod_type)) {
+	IF_DEBUG(DEBUG_PIM_ASSERT)
+	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, an encoded address is not IPv4",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
+
     /* Get the metric related info */
     GET_HOSTLONG(assert_preference, data);
     GET_HOSTLONG(assert_metric, data);
@@ -4264,6 +4355,46 @@ static int compare_metrics(uint32_t local_preference, uint32_t local_metric, uin
  * them is driven by a count taken off the wire, so each one has to check
  * this much is still there before reading.
  */
+/*
+ * Is this an encoded address a PIM-SM router for IPv4 can read?
+ *
+ * RFC 7761 sec. 4.9.1 opens every encoded address with an address family
+ * and an encoding type, and pimd read both into a struct that nothing ever
+ * looked at.  The cost is not the address, which is garbage either way, but
+ * the length: an Encoded-Unicast is 6 bytes for IPv4 and 18 for IPv6, and
+ * every walk over these messages is written around the IPv4 strides, so a
+ * record that declares another family is read at offsets that have nothing
+ * to do with where its fields are -- source counts and flags taken out of
+ * the middle of addresses.  Sec. 4.9.5 asks for the addresses of the
+ * upstream neighbor's family to be processed and the rest ignored, and that
+ * cannot be done without reading the field that says which family it is.
+ */
+static int encoded_addr_ok(uint8_t family, uint8_t etype)
+{
+    return family == ADDRF_IPv4 && etype == ADDRT_IPv4;
+}
+
+/*
+ * And is this Encoded-Group a range this router may install?
+ *
+ * The B bit says the range is Bidirectional-PIM's, which pimd does not
+ * implement; RFC 5059 sec. 3.6 says in so many words that an implementation
+ * of one protocol must not treat the other's ranges as its own, and
+ * installing a Bidir range as an ordinary PIM-SM one is exactly that -- an
+ * RP is picked for it, Joins are sent toward that RP and traffic is
+ * register-encapsulated to it, none of which a Bidir range means.  The Z
+ * bit says the range belongs to an administrative scope zone, and pimd has
+ * no scope zones, so the honest answer to one is the same: refuse it rather
+ * than treat it as global.
+ */
+static int group_range_ok(const pim_encod_grp_addr_t *grp)
+{
+    if (!encoded_addr_ok(grp->addr_family, grp->encod_type))
+	return FALSE;
+
+    return !(grp->reserved & (EGADDR_B_BIT | EGADDR_Z_BIT));
+}
+
 #define PIM_BOOTSTRAP_RP_RECORD_LEN (PIM_ENCODE_UNI_ADDR_LEN + sizeof(uint16_t) \
 				     + sizeof(uint8_t) + sizeof(uint8_t))
 int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
@@ -4330,6 +4461,15 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
     GET_BYTE(new_bsr_priority, data);
     GET_EUADDR(&new_bsr_uni_addr, data);
     new_bsr_address = new_bsr_uni_addr.unicast_addr;
+
+    if (!encoded_addr_ok(new_bsr_uni_addr.addr_family, new_bsr_uni_addr.encod_type)) {
+	IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+	    logit(LOG_NOTICE, 0, "Ignoring Bootstrap from %s, BSR address family %u type %u is not IPv4",
+		  inet_fmt(src, s1, sizeof(s1)),
+		  new_bsr_uni_addr.addr_family, new_bsr_uni_addr.encod_type);
+
+	return FALSE;
+    }
 
     /* The Hash Mask Len decides the group-to-RP mapping for the whole
      * domain, and it is a byte off the wire.  Refused here, before
@@ -4497,7 +4637,22 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    return FALSE;
 	}
 
-	/* RP count, fragment RP count, reserved, then that many records */
+	if (!encoded_addr_ok(scan[PIM_ENCODE_FAMILY_OFF], scan[PIM_ENCODE_ETYPE_OFF])) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Ignoring Bootstrap from %s, group address family %u type %u is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)),
+		      scan[PIM_ENCODE_FAMILY_OFF], scan[PIM_ENCODE_ETYPE_OFF]);
+
+	    return FALSE;
+	}
+
+	/* The B and Z bits of this range are not checked here.  They cost
+	 * the range and not the message -- unlike the three above, nothing
+	 * about where the next set begins is in doubt -- so the loop that
+	 * installs the ranges is where they are answered, with a continue.
+	 *
+	 * RP count, fragment RP count, reserved, then that many records
+	 */
 	scan += PIM_ENCODE_GRP_ADDR_LEN;
 	frag_rp_count = scan[1];
 	scan += sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
@@ -4551,11 +4706,26 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	GET_BYTE(curr_frag_rp_count, data);
 	GET_HOSTSHORT(reserved_short, data);
 
-	/* The mask length is the pre-pass's, checked before any of this was
-	 * committed; left unchecked it shifted by the count modulo 32, so a
-	 * masklen of 200 for 224.0.0.0 installed 224.0.0.0/8 and a range
-	 * nobody advertised displaced the domain's RP set.
+	/* The mask length, family and encoding type are the pre-pass's,
+	 * checked before any of this was committed; left unchecked the mask
+	 * length shifted by the count modulo 32, so a masklen of 200 for
+	 * 224.0.0.0 installed 224.0.0.0/8 and a range nobody advertised
+	 * displaced the domain's RP set.  What is left to do here is the
+	 * B and Z bits, which cost this range and not the message.
 	 */
+	if (!group_range_ok(&curr_group_addr)) {
+	    IF_DEBUG(DEBUG_PIM_BOOTSTRAP)
+		logit(LOG_NOTICE, 0, "Skipping %s from %s, a range this router does not implement",
+		      inet_fmt(curr_group_addr.mcast_addr, s2, sizeof(s2)),
+		      inet_fmt(src, s1, sizeof(s1)));
+
+	    /* Past its RP records, which is where the next set begins */
+	    while (curr_frag_rp_count-- && data + PIM_BOOTSTRAP_RP_RECORD_LEN <= max_data)
+		data += PIM_BOOTSTRAP_RP_RECORD_LEN;
+
+	    continue;
+	}
+
 	MASKLEN_TO_MASK(curr_group_addr.masklen, curr_group_mask);
 	if (curr_rp_count == 0) {
 	    delete_grp_mask(&cand_rp_list, &grp_mask_list,
@@ -4786,6 +4956,15 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
     GET_BYTE(priority, data_ptr);
     GET_HOSTSHORT(holdtime, data_ptr);
     GET_EUADDR(&euaddr, data_ptr);
+
+    if (!encoded_addr_ok(euaddr.addr_family, euaddr.encod_type)) {
+	IF_DEBUG(DEBUG_PIM_CAND_RP)
+	    logit(LOG_NOTICE, 0, "Ignoring cand-RP from %s, RP address family %u type %u is not IPv4",
+		  inet_fmt(src, s1, sizeof(s1)), euaddr.addr_family, euaddr.encod_type);
+
+	return FALSE;
+    }
+
     /* Is holdtime in MUST BE interval? (RFC5059 section 3.3) */
     if (holdtime != 0 && holdtime <= my_bsr_adv_period)
 	holdtime = recommended_rp_holdtime;
@@ -4823,6 +5002,15 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 	    IF_DEBUG(DEBUG_PIM_CAND_RP)
 		logit(LOG_NOTICE, 0, "Skipping group prefix from %s, mask length %u is wider than an address",
 		      inet_fmt(src, s1, sizeof(s1)), egaddr.masklen);
+	    continue;
+	}
+
+	/* And a family we cannot read, or a range we do not implement */
+	if (!group_range_ok(&egaddr)) {
+	    IF_DEBUG(DEBUG_PIM_CAND_RP)
+		logit(LOG_NOTICE, 0, "Skipping %s from %s, a range this router does not implement",
+		      inet_fmt(egaddr.mcast_addr, s2, sizeof(s2)),
+		      inet_fmt(src, s1, sizeof(s1)));
 	    continue;
 	}
 

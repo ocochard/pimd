@@ -242,6 +242,20 @@ typedef struct pim_encod_src_addr_ {
  */
 #define PIM_ENCODE_MSKLEN_OFF   3
 
+/* And of the address family and encoding type, which every encoded address
+ * carries first and second whatever its kind.
+ */
+#define PIM_ENCODE_FAMILY_OFF   0
+#define PIM_ENCODE_ETYPE_OFF    1
+
+/* The third byte of an Encoded-Group: the Bidirectional-PIM bit, six
+ * reserved bits and the admin-scope-zone bit, RFC 7761 sec. 4.9.1.  pimd
+ * sends zero in all of it and implements neither, so a range that declares
+ * itself either is a range this router cannot carry.
+ */
+#define EGADDR_B_BIT            0x80
+#define EGADDR_Z_BIT            0x01
+
 #define USADDR_RP_BIT 0x1
 #define USADDR_WC_BIT 0x2
 #define USADDR_S_BIT  0x4

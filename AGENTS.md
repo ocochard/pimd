@@ -97,8 +97,10 @@ one that reaches the alias branch of `config_vifs_from_kernel()` and the only on
 on a subnet the VIF does not own, `ifgone` and `renumber` the only ones about what pimd does
 when an interface it has a VIF on changes underneath it -- destroyed in the first, given a new
 address in the second -- `crafted` the only one whose messages pimd did not build, driving
-`test/pimsend.c` to assert what the parsers refuse (mask lengths wider than an address, a
-unicast Bootstrap from a host that has sent no Hello) with a positive control beside each,
+`test/pimsend.c` to assert what the parsers refuse -- the whole packet format section of
+`doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
+lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum) plus a unicast
+Bootstrap from a host that has sent no Hello -- with a positive control beside each,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
