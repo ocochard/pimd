@@ -453,10 +453,10 @@ void add_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 	mrt->flags &= ~MRTF_NEW;
 	if (mrt->upstream) {
 	    send_pim_join(mrt->upstream, mrt, flags, PIM_JOIN_PRUNE_HOLDTIME);
-	    SET_TIMER(mrt->jp_timer, PIM_JOIN_PRUNE_PERIOD);
+	    jp_timer_set(mrt, PIM_JOIN_PRUNE_PERIOD * 1000);
 	}
 	else  {
-	    FIRE_TIMER(mrt->jp_timer); /* Timeout the Join/Prune timer */
+	    jp_timer_fire(mrt); /* Timeout the Join/Prune timer */
 	    logit(LOG_DEBUG, 0, "Upstream router not available.");
 	}
     }
@@ -528,7 +528,7 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 
     if ((!PIMD_VIFM_ISEMPTY(old_oifs)) && PIMD_VIFM_ISEMPTY(new_oifs)) {
 	/* The result oifs have changed from non-NULL to NULL */
-	FIRE_TIMER(mrt->jp_timer); /* Timeout the Join/Prune timer */
+	jp_timer_fire(mrt); /* Timeout the Join/Prune timer */
 
 	/* TODO: explicitly call the function below?
 	send_pim_join_prune(mrt->upstream->vifi,
@@ -806,7 +806,7 @@ static void check_sptbit(mrtentry_t *mrt)
 	 * join_or_prune() prunes the source off the shared tree once it is on
 	 * the shortest path one.  No reason to sit on that until the periodic
 	 * timer comes round. */
-	FIRE_TIMER(mrt->jp_timer);
+	jp_timer_fire(mrt);
     }
 }
 
@@ -1047,7 +1047,7 @@ int change_interfaces(mrtentry_t *mrt,
 	return 0;		/* Nothing to change */
 
     if ((result != 0) || (new_iif != old_iif) || (flags & MFC_UPDATE_FORCE)) {
-	FIRE_TIMER(mrt->jp_timer);
+	jp_timer_fire(mrt);
     }
     PIMD_VIFM_COPY(new_real_oifs, mrt->oifs);
 
@@ -1108,7 +1108,7 @@ int change_interfaces(mrtentry_t *mrt,
 	}
 
 	if (fire_timer_flag == TRUE)
-	    FIRE_TIMER(mrt->jp_timer);
+	    jp_timer_fire(mrt);
 
 	if (delete_mrt_flag == TRUE) {
 	    /* TODO: XXX: the oifs are NULL. Send a Prune message? */
@@ -1518,7 +1518,7 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
 		mrt->upstream = mrt->source->upstream;
 	    }
 
-	    FIRE_TIMER(mrt->jp_timer);
+	    jp_timer_fire(mrt);
 
 	    return;
 	}
@@ -1583,7 +1583,7 @@ mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)
 	 */
 	SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
 	mrt->flags |= MRTF_KAT;
-	FIRE_TIMER(mrt->jp_timer);
+	jp_timer_fire(mrt);
     }
 
     return mrt;
@@ -1693,6 +1693,241 @@ static void check_spt_threshold(mrtentry_t *mrt)
 
 
 /*
+ * The Join Timer of RFC 7761 sec. 4.5.4 and sec. 4.5.5, one per (*,G) and
+ * (S,G) entry.
+ *
+ * Every other timer on a routing entry is a count of seconds age_routes()
+ * takes TIMER_INTERVAL off, and this one used to be too.  That held every
+ * triggered Join and Prune back to the next tick, up to five seconds after
+ * the transition the sections send it on, and made t_override, which is
+ * drawn from rand(0, 2.5 s), a whole number of ticks.  The timer is a
+ * deadline on the monotonic clock instead.  age_routes() still sends what
+ * has come due by the tick, the periodic Joins among them, and a timer set
+ * to expire before the next tick gets a pass of its own, jp_timer_run(), for
+ * when it does.
+ */
+static uint64_t jp_run_at;	/* When the pass scheduled last runs, 0 none */
+
+static void jp_timer_run(void *arg);
+
+static void jp_timer_schedule(uint64_t when)
+{
+    uint64_t now = timer_now();
+
+    /* A pass already scheduled for no later will do.  One overdue is either
+     * about to run or went with the whole queue in restart(), and one more
+     * pass than needed costs a walk of the table and nothing else. */
+    if (jp_run_at && jp_run_at <= when && jp_run_at > now)
+	return;
+
+    if (timer_set_ms(when > now ? (int)(when - now) : 0, jp_timer_run, NULL))
+	jp_run_at = when;
+}
+
+void jp_timer_set(mrtentry_t *mrt, uint32_t msec)
+{
+    mrt->jp_expires = timer_now() + msec;
+    if (msec < TIMER_INTERVAL * 1000)
+	jp_timer_schedule(mrt->jp_expires);
+}
+
+/* "Send Join" and "Send Prune": due now, and due already for a pass that
+ * has taken the time before this call. */
+void jp_timer_fire(mrtentry_t *mrt)
+{
+    mrt->jp_expires = 0;
+    jp_timer_schedule(timer_now());
+}
+
+/* Milliseconds left, 0 when due */
+uint32_t jp_timer_left(mrtentry_t *mrt)
+{
+    uint64_t now = timer_now();
+
+    if (mrt->jp_expires <= now)
+	return 0;
+
+    return MIN(mrt->jp_expires - now, UINT32_MAX);
+}
+
+/*
+ * What an expired Join Timer sends upstream, given the action join_or_prune()
+ * worked out.  A Join goes on every expiry, that is the periodic refresh.  A
+ * Prune goes on the first only: sec. 4.5.4 and sec. 4.5.5 send it on the
+ * transition to NotJoined and stop the timer there, where pimd went on
+ * sending it every period.  The timer keeps running here all the same, so
+ * that a transition back to Joined which nothing fires the timer for is still
+ * picked up within a period.  An (S,G)RPbit entry is left out: its Prune is
+ * the (S,G,rpt) one, which sec. 4.5.8 repeats with every Join(*,G), and the
+ * upstream router forgets it once the HoldTime is out.
+ */
+static int jp_timer_action(mrtentry_t *mrt, int action)
+{
+    if ((mrt->flags & (MRTF_RP | MRTF_WC)) == MRTF_RP)
+	return action;
+
+    if (action == PIM_ACTION_JOIN) {
+	mrt->flags &= ~MRTF_PRUNE_SENT;
+    } else if (action == PIM_ACTION_PRUNE) {
+	if (mrt->flags & MRTF_PRUNE_SENT)
+	    return PIM_ACTION_NOTHING;
+	mrt->flags |= MRTF_PRUNE_SENT;
+    }
+
+    return action;
+}
+
+/*
+ * The (*,G) Join Timer, if it is due by @now.  Returns what the entry asked
+ * for, which the group's (S,G) entries read, or PIM_ACTION_NOTHING when the
+ * timer was not due.
+ */
+static int jp_timer_expire_wc(mrtentry_t *mrt_grp, rpentry_t *rp, uint64_t now)
+{
+    int grp_action, action;
+
+    if (mrt_grp->jp_expires > now)
+	return PIM_ACTION_NOTHING;
+
+    grp_action = join_or_prune(mrt_grp, mrt_grp->upstream);
+    action = jp_timer_action(mrt_grp, grp_action);
+    if (action != PIM_ACTION_NOTHING)
+	add_jp_entry(mrt_grp->upstream,
+		     PIM_JOIN_PRUNE_HOLDTIME,
+		     mrt_grp->group->group,
+		     SINGLE_GRP_MSKLEN,
+		     rp->address,
+		     SINGLE_SRC_MSKLEN,
+		     MRTF_RP | MRTF_WC,
+		     action);
+    jp_timer_set(mrt_grp, PIM_JOIN_PRUNE_PERIOD * 1000);
+
+    return grp_action;
+}
+
+/* The (S,G) and (S,G)RPbit Join Timer, if it is due by @now, @grp_action
+ * being what the group's (*,G) timer asked for in the same pass. */
+static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_action, uint64_t now)
+{
+    int src_action = PIM_ACTION_NOTHING, src_action_rp = PIM_ACTION_NOTHING;
+    int dont_calc_action = FALSE;
+    mrtentry_t *mrt_wide;
+    int action;
+
+    mrt_wide = mrt_srcs->group->grp_route;
+
+    if (grp_action != PIM_ACTION_NOTHING) {
+	src_action_rp    = join_or_prune(mrt_srcs, rp->upstream);
+	src_action       = src_action_rp;
+	dont_calc_action = TRUE;
+
+	if (src_action_rp == PIM_ACTION_JOIN) {
+	    if (grp_action == PIM_ACTION_PRUNE)
+		jp_timer_fire(mrt_srcs);
+	} else if (src_action_rp == PIM_ACTION_PRUNE) {
+	    if (grp_action == PIM_ACTION_JOIN)
+		jp_timer_fire(mrt_srcs);
+	}
+    }
+
+    if (mrt_srcs->jp_expires > now)
+	return;
+
+    if ((dont_calc_action != TRUE) || (rp->upstream != mrt_srcs->upstream))
+	src_action = join_or_prune(mrt_srcs, mrt_srcs->upstream);
+
+    action = jp_timer_action(mrt_srcs, src_action);
+    if (action != PIM_ACTION_NOTHING)
+	add_jp_entry(mrt_srcs->upstream,
+		     PIM_JOIN_PRUNE_HOLDTIME,
+		     mrt_srcs->group->group,
+		     SINGLE_GRP_MSKLEN,
+		     mrt_srcs->source->address,
+		     SINGLE_SRC_MSKLEN,
+		     mrt_srcs->flags & MRTF_RP,
+		     action);
+
+    if (mrt_wide) {
+	/* Have both (S,G) and (*,G) (or (*,*,RP)).
+	 * Check if need to send (S,G) PRUNE toward RP */
+	if (mrt_srcs->upstream != mrt_wide->upstream) {
+	    if (dont_calc_action != TRUE)
+		src_action_rp = join_or_prune(mrt_srcs, mrt_wide->upstream);
+
+	    /* XXX: TODO: do error check if
+	     * src_action == PIM_ACTION_JOIN, which
+	     * should be an error. */
+	    if (src_action_rp == PIM_ACTION_PRUNE)
+		add_jp_entry(mrt_wide->upstream,
+			     PIM_JOIN_PRUNE_HOLDTIME,
+			     mrt_srcs->group->group,
+			     SINGLE_GRP_MSKLEN,
+			     mrt_srcs->source->address,
+			     SINGLE_SRC_MSKLEN,
+			     MRTF_RP,
+			     src_action_rp);
+	}
+    }
+    jp_timer_set(mrt_srcs, PIM_JOIN_PRUNE_PERIOD * 1000);
+}
+
+/* Send all pending Join/Prune messages */
+static void jp_flush(void)
+{
+    pim_nbr_entry_t *nbr;
+    struct uvif *v;
+    vifi_t vifi;
+
+    for (vifi = 0, v = &uvifs[0]; vifi < numvifs; vifi++, v++) {
+	for (nbr = v->uv_pim_neighbors; nbr; nbr = nbr->next)
+	    pack_and_send_jp_message(nbr);
+    }
+}
+
+/*
+ * The pass jp_timer_schedule() asks for: the Join Timers alone, over the
+ * same walk age_routes() makes, and nothing else aged.  Scheduled again for
+ * the earliest timer left that the next tick would be late for.
+ */
+static void jp_timer_run(void *arg __attribute__((unused)))
+{
+    uint64_t now = timer_now(), next = 0;
+    rp_grp_entry_t *rp_grp;
+    cand_rp_t *cand_rp;
+    grpentry_t *grp;
+    mrtentry_t *mrt;
+    int grp_action;
+
+    jp_run_at = 0;
+
+    for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
+	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
+	    for (grp = rp_grp->grplink; grp; grp = grp->rpnext) {
+		grp_action = PIM_ACTION_NOTHING;
+		mrt = grp->grp_route;
+		if (mrt) {
+		    grp_action = jp_timer_expire_wc(mrt, cand_rp->rpentry, now);
+		    if (!next || mrt->jp_expires < next)
+			next = mrt->jp_expires;
+		}
+
+		for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+		    jp_timer_expire_sg(mrt, cand_rp->rpentry, grp_action, now);
+		    if (!next || mrt->jp_expires < next)
+			next = mrt->jp_expires;
+		}
+	    }
+	}
+    }
+
+    jp_flush();
+
+    if (next && next < timer_now() + TIMER_INTERVAL * 1000)
+	jp_timer_schedule(next);
+}
+
+
+/*
  * Scan the whole routing table and timeout a bunch of timers:
  *  - oifs timers
  *  - Join/Prune timer
@@ -1745,16 +1980,13 @@ void age_routes(void)
     grpentry_t *grp;
     grpentry_t *grp_next;
     mrtentry_t *mrt_grp;
-    mrtentry_t *mrt_wide;
     mrtentry_t *mrt_srcs;
     mrtentry_t *mrt_srcs_next;
     rp_grp_entry_t *rp_grp;
-    struct uvif *v;
     vifi_t  vifi;
-    pim_nbr_entry_t *nbr;
     int change_flag;
-    int grp_action, src_action = PIM_ACTION_NOTHING, src_action_rp = PIM_ACTION_NOTHING;
-    int dont_calc_action;
+    int grp_action;
+    uint64_t now = timer_now();
     rpentry_t *rp;
     int update_src_iif;
     uint8_t new_pruned_oifs[MAXVIFS];
@@ -1868,7 +2100,7 @@ void age_routes(void)
 			 */
 			if (mrt_grp->upstream != old_upstream) {
 			    prune_old_upstream(mrt_grp, old_upstream, MRTF_RP | MRTF_WC);
-			    FIRE_TIMER(mrt_grp->jp_timer);
+			    jp_timer_fire(mrt_grp);
 			}
 		    }
 
@@ -1876,24 +2108,8 @@ void age_routes(void)
 		    if (rate_flag == TRUE)
 			check_spt_threshold(mrt_grp);
 
-		    dont_calc_action = FALSE;
-
 		    /* Join/Prune timer */
-		    IF_TIMEOUT(mrt_grp->jp_timer) {
-			if (dont_calc_action != TRUE)
-			    grp_action = join_or_prune(mrt_grp, mrt_grp->upstream);
-
-			if (grp_action != PIM_ACTION_NOTHING)
-			    add_jp_entry(mrt_grp->upstream,
-					 PIM_JOIN_PRUNE_HOLDTIME,
-					 mrt_grp->group->group,
-					 SINGLE_GRP_MSKLEN,
-					 cand_rp->rpentry->address,
-					 SINGLE_SRC_MSKLEN,
-					 MRTF_RP | MRTF_WC,
-					 grp_action);
-			SET_TIMER(mrt_grp->jp_timer, PIM_JOIN_PRUNE_PERIOD);
-		    }
+		    grp_action = jp_timer_expire_wc(mrt_grp, rp, now);
 
 		    /* Register-Suppression timer */
 		    /* TODO: to reduce the kernel calls, if the timer
@@ -2007,61 +2223,8 @@ void age_routes(void)
 		     * kernel instead. */
 		    check_sptbit(mrt_srcs);
 
-		    mrt_wide = mrt_srcs->group->grp_route;
-
-		    dont_calc_action = FALSE;
-		    if (grp_action != PIM_ACTION_NOTHING) {
-			src_action_rp    = join_or_prune(mrt_srcs, rp->upstream);
-			src_action       = src_action_rp;
-			dont_calc_action = TRUE;
-
-			if (src_action_rp == PIM_ACTION_JOIN) {
-			    if (grp_action == PIM_ACTION_PRUNE)
-				FIRE_TIMER(mrt_srcs->jp_timer);
-			} else if (src_action_rp == PIM_ACTION_PRUNE) {
-			    if (grp_action == PIM_ACTION_JOIN)
-				FIRE_TIMER(mrt_srcs->jp_timer);
-			}
-		    }
-
 		    /* Join/Prune timer */
-		    IF_TIMEOUT(mrt_srcs->jp_timer) {
-			if ((dont_calc_action != TRUE) || (rp->upstream != mrt_srcs->upstream))
-			    src_action = join_or_prune(mrt_srcs, mrt_srcs->upstream);
-
-			if (src_action != PIM_ACTION_NOTHING)
-			    add_jp_entry(mrt_srcs->upstream,
-					 PIM_JOIN_PRUNE_HOLDTIME,
-					 mrt_srcs->group->group,
-					 SINGLE_GRP_MSKLEN,
-					 mrt_srcs->source->address,
-					 SINGLE_SRC_MSKLEN,
-					 mrt_srcs->flags & MRTF_RP,
-					 src_action);
-
-			if (mrt_wide) {
-			    /* Have both (S,G) and (*,G) (or (*,*,RP)).
-			     * Check if need to send (S,G) PRUNE toward RP */
-			    if (mrt_srcs->upstream != mrt_wide->upstream) {
-				if (dont_calc_action != TRUE)
-				    src_action_rp = join_or_prune(mrt_srcs, mrt_wide->upstream);
-
-				/* XXX: TODO: do error check if
-				 * src_action == PIM_ACTION_JOIN, which
-				 * should be an error. */
-				if (src_action_rp == PIM_ACTION_PRUNE)
-				    add_jp_entry(mrt_wide->upstream,
-						 PIM_JOIN_PRUNE_HOLDTIME,
-						 mrt_srcs->group->group,
-						 SINGLE_GRP_MSKLEN,
-						 mrt_srcs->source->address,
-						 SINGLE_SRC_MSKLEN,
-						 MRTF_RP,
-						 src_action_rp);
-			    }
-			}
-			SET_TIMER(mrt_srcs->jp_timer, PIM_JOIN_PRUNE_PERIOD);
-		    }
+		    jp_timer_expire_sg(mrt_srcs, rp, grp_action, now);
 
 		    /* Register-Suppression timer */
 		    /* TODO: to reduce the kernel calls, if the timer
@@ -2124,12 +2287,7 @@ void age_routes(void)
 	}
     } /* For all cand RPs */
 
-    /* TODO: check again! */
-    for (vifi = 0, v = &uvifs[0]; vifi < numvifs; vifi++, v++) {
-	/* Send all pending Join/Prune messages */
-	for (nbr = v->uv_pim_neighbors; nbr; nbr = nbr->next)
-	    pack_and_send_jp_message(nbr);
-    }
+    jp_flush();
 }
 
 /**

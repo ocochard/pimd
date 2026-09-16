@@ -40,6 +40,7 @@
  *
  */
 
+#include <limits.h>
 #include "defs.h"
 #include <err.h>
 #include <getopt.h>
@@ -75,7 +76,7 @@ static int nhandlers = 0;
 static void            handle_signals(int);
 static int             check_signals (void);
 static void            timer         (void *);
-static struct timeval *timeout       (int);
+static struct timeval *timeout       (void);
 static void            cleanup       (void);
 static void            restart       (int);
 static void            resetlogging  (void *);
@@ -452,7 +453,7 @@ int main(int argc, char *argv[])
 		nfds = ihandlers[i].fd + 1;
 	}
 
-	n = select(nfds, &fds, NULL, NULL, timeout(n));
+	n = select(nfds, &fds, NULL, NULL, timeout());
 	if (n < 0) {
 	    if (errno != EINTR) /* SIGALRM is expected */
 		logit(LOG_WARNING, errno, "select failed");
@@ -507,70 +508,37 @@ static void timer(void *i __attribute__((unused)))
 /*
  * Handle timeout queue.
  *
- * If select() + packet processing took more than 1 second,
- * or if there is a timeout pending, age the timeout queue.
- *
- * If not, collect usec in difftime to make sure that the
- * time doesn't drift too badly.
- *
- * If the timeout handlers took more than 1 second,
- * age the timeout queue again.  XXX This introduces the
- * potential for infinite loops!
+ * Age the queue by the milliseconds the monotonic clock says have gone by
+ * since the last call, whatever select() and the packet handlers spent of
+ * them, and ask select() to wake us for the next callout.  A callout that
+ * comes due while its predecessors run, or that one of them arms with no
+ * delay, gets a zero timeout and runs on the next pass round the loop, after
+ * whatever input is already waiting.
  */
-static struct timeval *timeout(int n)
+static struct timeval *timeout(void)
 {
-    static struct timeval tv, difftime, curtime, lasttime;
-    static int init = 1, secs = 0;
-    struct timeval *result = NULL;
+    static struct timeval tv;
+    static uint64_t lasttime;
+    uint64_t curtime, elapsed;
+    int msecs;
 
-    /* Age queue */
-    do {
-	/*
-	 * If select() timed out, then there's no other
-	 * activity to account for and we don't need to
-	 * call gettimeofday.
-	 */
-	if (n == 0) {
-	    curtime.tv_sec = lasttime.tv_sec + secs;
-	    curtime.tv_usec = lasttime.tv_usec;
-	    n = -1; /* don't do this next time through the loop */
-	} else {
-	    gettimeofday(&curtime, NULL);
-	    if (init) {
-		init = 0;	/* First time only */
-		lasttime = curtime;
-		difftime.tv_usec = 0;
-	    }
-	}
-
-	difftime.tv_sec = curtime.tv_sec - lasttime.tv_sec;
-	difftime.tv_usec += curtime.tv_usec - lasttime.tv_usec;
-	while (difftime.tv_usec >= 1000000) {
-	    difftime.tv_sec++;
-	    difftime.tv_usec -= 1000000;
-	}
-
-	if (difftime.tv_usec < 0) {
-	    difftime.tv_sec--;
-	    difftime.tv_usec += 1000000;
-	}
+    curtime = timer_now();
+    if (!lasttime)
 	lasttime = curtime;
 
-	if (secs == 0 || difftime.tv_sec > 0)
-	    timer_age_queue(difftime.tv_sec);
-
-	secs = -1;
-    } while (difftime.tv_sec > 0);
+    elapsed = curtime - lasttime;
+    lasttime = curtime;
+    timer_age_queue(elapsed > INT_MAX ? INT_MAX : (int)elapsed);
 
     /* Next timer to wait for */
-    secs = timer_next_delay();
-    if (secs != -1) {
-	result = &tv;
-	tv.tv_sec  = secs;
-	tv.tv_usec = 0;
-    }
+    msecs = timer_next_delay();
+    if (msecs == -1)
+	return NULL;
 
-    return result;
+    tv.tv_sec  = msecs / 1000;
+    tv.tv_usec = (msecs % 1000) * 1000;
+
+    return &tv;
 }
 
 /*

@@ -220,6 +220,8 @@ struct uvif {
 				     * them, which that section requires  */
     struct vif_filter *uv_filter;   /* Route filters on this vif	    */
     uint16_t	    uv_hello_timer; /* Timer for sending PIM hello msgs     */
+    uint32_t	    uv_hello_trigger;/* The triggered Hello pending, 0 none,
+				     * see trigger_hello() in pim_proto.c   */
     uint32_t        uv_dr_prio;     /* PIM Hello DR Priority                */
     uint32_t        uv_genid;       /* Random PIM Hello Generation ID       */
     uint16_t	    uv_gq_timer;    /* Group Query timer        	    */

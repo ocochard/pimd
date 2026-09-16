@@ -195,6 +195,7 @@ void zero_vif(struct uvif *v, int t)
     v->uv_filter	= (struct vif_filter *)NULL;
 
     RESET_TIMER(v->uv_hello_timer);
+    v->uv_hello_trigger = 0;
     v->uv_dr_prio       = PIM_HELLO_DR_PRIO_DEFAULT;
     v->uv_genid         = 0;
 
@@ -456,6 +457,7 @@ static void stop_vif(vifi_t vifi)
     v->uv_flags = (v->uv_flags & ~VIFF_DR & ~VIFF_QUERIER & ~VIFF_NONBRS) | VIFF_DOWN;
     if (!(v->uv_flags & VIFF_REGISTER)) {
 	RESET_TIMER(v->uv_hello_timer);
+	v->uv_hello_trigger = 0;
 	RESET_TIMER(v->uv_jp_timer);
 	RESET_TIMER(v->uv_gq_timer);
 

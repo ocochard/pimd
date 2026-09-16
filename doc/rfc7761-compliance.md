@@ -59,16 +59,16 @@ cannot be told from a slow lab.  The group that wanted a message pimd will
 not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
 `test/freebsd-lab.sh` closes and asserts the whole packet format section,
-S3 and S4 of the SSM one, T2's Join suppression, R2's longer group range,
-R3's No-Forward bit and A1's neighbor list.
+S3 and S4 of the SSM one, T2's Join suppression, T1's override Join and
+T3's triggered Hello, R2's longer group range, R3's No-Forward bit and A1's
+neighbor list.
 
-What is left divides in two.  M1, M7, M8, T1, T3 and S1 are state
-pimd does not keep, each a structural change rather than a check: (S,G,rpt)
-entries, a traffic-driven Keepalive Timer, a
-triggered-message timer finer than the five-second tick, and SSM groups that
-carry no RP.  A3 and A4 are the two that stay open on purpose, one because
-the kernel decapsulates before the daemon is handed anything and the other
-because sec. 6.4 describes rather than prescribes.  No parser entry is left.
+What is left divides in two.  M1, M7 and S1 are state pimd does not keep,
+each a structural change rather than a check: (S,G,rpt) entries, a
+traffic-driven Keepalive Timer, and SSM groups that carry no RP.  A3 and
+A4 are the two that stay open on purpose, one because the kernel decapsulates
+before the daemon is handed anything and the other because sec. 6.4
+describes rather than prescribes.  No parser entry is left.
 
 
 Input validation and trust
@@ -260,17 +260,18 @@ pimd has at most one neighbor on the interface, which is the question
 came from a local member no longer goes the other way and disappears with no
 override window at all.
 
-The Propagation_Delay pimd advertises is `TIMER_INTERVAL`, 5 seconds, and not
-the 0.5 s default, which makes the interval 8 seconds between two pimds rather
-than the 3 the table below gives.  That is the lower bound the same section
-asks implementers to enforce "to allow for scheduling and processing delays
-within their router": pimd builds a triggered Join in `age_routes()` and no
-timer here expires off a tick, so its own override can be a whole
-`TIMER_INTERVAL` later than `t_override` asked for, and an upstream told to
-wait 3 seconds would stop forwarding first -- the "temporary forwarding
-outages" the section warns about, and what the old 70-second window used to
-hide.  It goes back to 0.5 when T1 below is fixed and the override can be
-scheduled inside a tick.  pimd keeps one timer per (entry,
+The Propagation_Delay pimd advertises is the 0.5 s default, which makes the
+interval 3 seconds between two pimds.  It was `TIMER_INTERVAL`, 5 seconds, for
+as long as an override Join waited for the next tick, which is the lower bound
+the same section asks implementers to enforce "to allow for scheduling and
+processing delays within their router"; the Join Timer schedules its own pass
+now, so the default covers pimd's own delay.  The other side of the interval is
+still on the tick: the Prune-Pending Timer is one of the per-interface timers
+`age_routes()` ages five seconds at a time, and the first tick can come a
+moment after the Prune, so it is armed one `TIMER_INTERVAL` longer than the
+interval, `prune_pending_delay()`, and runs out between 5 and 10 seconds after
+the Prune rather than at 3.  Late is the direction that costs nothing an
+override would not have kept.  pimd keeps one timer per (entry,
 interface), so Prune-Pending is the Expiry Timer lowered to that delay, which
 loses nothing -- "for forwarding purposes, the Prune-Pending state functions
 exactly like the Join state" -- with `prune_pending_oifs` (`src/mrt.h`) saying
@@ -423,23 +424,6 @@ the timer; `Keepalive_Period` is sec. 4.11, `:7136`.  Effort: medium.  Test:
 none, and the run above says a lab here would be asserting that the three
 masks work rather than that the timer does.*
 
-**M8.  Triggered Joins and Prunes wait for the next tick.**  The transitions in
-sec. 4.5.4 and 4.5.5 send immediately.  `change_interfaces()` and its callers
-turn every such transition into `FIRE_TIMER(mrt->jp_timer)`
-(`src/route.c:979` and `:1040` in `change_interfaces()` itself, `:483`, `:738`,
-`:1434` and `:1499` in its callers), and the message is only built when
-`age_routes()` next runs, every `TIMER_INTERVAL` = 5 seconds.  `add_leaf()`
-and the `MRTF_NEW` arms of `receive_pim_join_prune()` are the exceptions that do
-send at once.  Up to 5 seconds of added join latency on every other transition,
-including the SPT switchover.  The same code re-arms the Join Timer on the
-transition to NotJoined instead of cancelling it, so a pruned entry re-sends its
-Prune every 60 seconds instead of once.
-*Check: sec. 4.5.4, `doc/rfc7761.txt:3367`, and sec. 4.5.5, `:3618`; every
-transition there says "Send" with no delay, and the JoinDesired-goes-FALSE row
-at `:3514` and `:3779` cancels the timer rather than re-arming it.  Effort:
-medium.  Test: none, and none is obvious: the symptom is up to five seconds of
-added latency, which no assertion here could tell from a slow lab.*
-
 
 RP discovery
 ------------
@@ -568,17 +552,17 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | Spec name | Spec default | pimd | Verdict |
 |---|---|---|---|
 | Hello\_Period | 30 s | `PIM_TIMER_HELLO_INTERVAL`, settable | ok |
-| Triggered\_Hello\_Delay | rand(0, 5 s) | rand(0, 5 s) at boot, immediate on trigger | T3 |
+| Triggered\_Hello\_Delay | rand(0, 5 s) | rand(0, 5 s) on trigger; at boot, whole seconds on a 5 s tick | ok |
 | Default\_Hello\_Holdtime | 105 s | 105 s, sent and used as the NLT fallback | ok |
 | J/P\_HoldTime | from message | as received | ok |
 | J/P Holdtime sent | 210 s | `PIM_JOIN_PRUNE_HOLDTIME` 210 s | ok |
 | t\_periodic | 60 s | `PIM_JOIN_PRUNE_PERIOD` 60 s | ok |
 | t\_suppressed | rand(1.1, 1.4) × t\_periodic | 66–84 s | ok |
 | Suppression\_Enabled | from the T bit | always on, T advertised clear | ok in effect |
-| t\_override | rand(0, Eff. Override) | 0–2 s integer, on a 5 s tick | T1 |
-| Propagation\_Delay | 0.5 s | 5000 ms, advertised and negotiated | deliberate, T1 |
+| t\_override | rand(0, Eff. Override) | rand(0, Eff. Override), in ms | ok |
+| Propagation\_Delay | 0.5 s | 500 ms, advertised and negotiated | ok |
 | Override\_Interval | 2.5 s | 2500 ms, advertised and negotiated | ok |
-| J/P\_Override\_Interval (PPT) | 3 s | the negotiated sum, 8 s between pimds | ok |
+| J/P\_Override\_Interval (PPT) | 3 s | the negotiated sum plus a tick, 5–10 s | minor |
 | Assert\_Time | 180 s | `PIM_ASSERT_TIMEOUT` 180 s | ok |
 | Assert\_Override\_Interval | 3 s | 5 s, the TIMER\_INTERVAL floor | minor |
 | Register\_Suppression\_Time | 60 s | 60 s | ok |
@@ -588,8 +572,10 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | RP\_Keepalive\_Period | 185 s | 210 s, i.e. max(210, 185) | ok in effect |
 
 `TIMER_INTERVAL` is 5 seconds and `SET_TIMER`/`IF_TIMEOUT` count whole seconds,
-so no sub-5-second spec value is representable today.  That is the real cost
-behind T1 and M8, and behind the one minor assert row: the winner's timer is
+so no sub-5-second spec value is representable on those timers.  The Join
+Timer and the triggered Hello are the exceptions, below.  The tick is still
+behind the Prune-Pending row, described with the LAN Prune Delay above, and
+behind the one minor assert row: the winner's timer is
 `PIM_ASSERT_WINNER_TIMEOUT`, `Assert_Time - Assert_Override_Interval` rounded
 down to whole ticks, so 175 s rather than 177 s.  A timer only ever expires on
 a tick, and 177 and 180 reach zero on the same one, which would have the
@@ -615,45 +601,31 @@ upstream link played by `test/pimsend.c`: R1 sends no Join(\*,G) of its own
 while that router sends one every 20 seconds, and sends one again within a
 suppression period once those Joins carry a 10-second HoldTime.
 
-**T1.  `t_override` cannot be expressed on a 5-second tick.**
-The interval is the link's now, `effective_override_interval()`
-(`src/pim_proto.c`) rather than a constant, and no longer RFC 2362's
-`[Random-Delay-Join-Timeout]` of 4.5, which is a different quantity.  What is
-left is the quantization: `jp_override_timeout()` divides milliseconds into
-whole seconds and yields 0, 1 or 2 of them at the default 2500, and the timer
-only fires on the next 5-second tick, so the delay is effectively the tick
-phase and the randomization does nothing.  An override Join can therefore
-arrive about 5 seconds after the Prune it must cancel, against an upstream --
-pimd included, now that the Prune-Pending Timer is the interval sec. 4.11
-asks for -- that deleted the oif after 3.
-*Check: the `t_override` row of sec. 4.11, `doc/rfc7761.txt:7077`, and
-`Effective_Override_Interval(I)` in sec. 4.3.3, `:1925`.  Effort: medium; it
-is sub-tick scheduling, which nothing in `timer.c` has today.  Test: none.  It
-needs a shared LAN and an oif deleted after 3 seconds where the override
-arrives at 5, which any two pimds on one segment now have: `shared-lan` in
-`test/freebsd-lab.sh` and `assert-lan` in `test/freebsd-interop.sh` both
-build it.*
-
-**T3.  The triggered Hello answering a new neighbor is not delayed.**  The
-startup half is done: `start_vif()` (`src/vif.c`) arms `uv_hello_timer` with
-rand(0, `PIM_TRIGGERED_HELLO_DELAY`) and no longer sends a Hello itself, so
-the randomized value survives instead of being overwritten by
-`send_pim_hello()` before the first tick.  The Hello that answers a new or
-rebooted neighbor (`src/pim_proto.c:280`) is still sent at once rather than
-after rand(0, 5 s), so a whole LAN answers a rebooting router in the same
-instant and then converges onto its clock.
-
-That one is deliberate for now, and moving it needs a second timer rather than
-a delay: sec. 3.5 of RFC 5059 has the DR unicast a Bootstrap to the new
-neighbor immediately afterwards (`src/pim_proto.c:287`), and
-`receive_pim_bootstrap()` drops a Bootstrap from a router it has had no Hello
-from.  Delaying the Hello on the existing `uv_hello_timer` would have us send
-that Bootstrap into a peer that discards it.
-*Check: sec. 4.3.1, `doc/rfc7761.txt:1670` (the triggered Hello answering a new
-neighbor); the value is the `Triggered_Hello_Delay` row of sec. 4.11, `:6958`.
-Effort: medium; a per-vif triggered-Hello timer, separate from the periodic
-one, and the RFC 5059 Bootstrap has to wait for it.  Test: none; it is startup
-timing, and every lab here starts its routers together.*
+The callout queue of `src/timer.c` counts milliseconds on the monotonic clock,
+and two timers moved onto it.  The Join Timer of sec. 4.5.4 and 4.5.5 is a
+deadline, `jp_expires` in `src/mrt.h`, rather than a count `age_routes()` took
+five seconds off: the tick still sends what has come due, the periodic Joins
+among them, and a timer set to run out before the next tick schedules a pass
+of its own, `jp_timer_run()`.  That was M8, every triggered Join and Prune
+built on the next tick, up to five seconds after the transition the sections
+send it on, the SPT switchover included; and T1, `t_override` drawn in whole
+seconds and then made the tick phase, so that an override Join could reach an
+upstream after the 3 seconds it waits.  A Prune goes out once on the transition
+to NotJoined, where it used to be repeated every period, though the timer is
+left running so that a transition back that nothing fires the timer for is
+still found within a period; an (S,G)RPbit entry keeps repeating its Prune,
+which is the (S,G,rpt) one sec. 4.5.8 sends with every Join(\*,G).  T3 was
+the Hello answering a new or rebooted neighbor, sent at once rather than after
+rand(0, `Triggered_Hello_Delay`), because the Bootstrap RFC 5059 sec. 3.5 has
+the DR unicast to that neighbor followed it, and a router drops a Bootstrap
+from one it has had no Hello from.  `trigger_hello()` (`src/pim_proto.c`)
+schedules the Hello per interface, the Bootstraps it owes wait on the
+neighbor for it, and a Join/Prune or Assert sent on the interface meanwhile
+sends the Hello first, as sec. 4.3.1 requires.  `crafted` in
+`test/freebsd-lab.sh` times both over several trials, the override from the
+Prune in R1's log to the Join in R2's, each under 3 seconds, and the Hello
+from the new neighbor to R1's answer, each within 5 seconds and not all of
+them prompt.  The Hello at startup is still whole seconds on a tick.
 
 
 Packet formats

@@ -97,15 +97,17 @@ static uint16_t effective_override_interval(vifi_t vifi);
 /*
  * t_override: the randomized delay before a triggered Join, so that routers
  * on a LAN do not all answer in the same instant.  RFC 7761 sec. 4.11 wants
- * rand(0, Effective_Override_Interval(I)), which is now a value the link
- * negotiates rather than the Override_Interval default.  The division still
- * quantizes the result to whole seconds, and SET_TIMER cannot express
- * anything finer; that half is T1 in doc/rfc7761-compliance.md.
+ * rand(0, Effective_Override_Interval(I)), a value the link negotiates, in
+ * milliseconds as the link does: the Join Timer keeps them.
  */
-static uint16_t jp_override_timeout(vifi_t vifi)
+static uint32_t jp_override_timeout(vifi_t vifi)
 {
-    return (RANDOM() % effective_override_interval(vifi)) / 1000;
+    return RANDOM() % effective_override_interval(vifi);
 }
+
+/* The Join Timer in whole seconds, rounded up, for the comparisons against
+ * a HoldTime that are older than RFC 7761 sec. 4.5.4 and sec. 4.5.5. */
+#define JP_TIMER_SECS(mrt)	((jp_timer_left(mrt) + 999) / 1000)
 
 
 /*
@@ -115,7 +117,7 @@ static uint16_t jp_override_timeout(vifi_t vifi)
  * period.  The old range started at t_periodic itself, so a suppressed
  * router could still send inside the very period it was suppressed for.
  */
-static uint16_t jp_suppression_timeout(void)
+static uint32_t jp_suppression_timeout(void)
 {
     return (PIM_JOIN_PRUNE_PERIOD * 11) / 10
 	+ RANDOM() % ((PIM_JOIN_PRUNE_PERIOD * 3) / 10 + 1);
@@ -137,10 +139,10 @@ static uint16_t jp_suppression_timeout(void)
  */
 static void jp_suppress(mrtentry_t *mrt, uint16_t holdtime)
 {
-    uint16_t jp_value = MIN(jp_suppression_timeout(), holdtime);
+    uint32_t jp_value = MIN(jp_suppression_timeout(), holdtime) * 1000;
 
-    if (mrt->jp_timer < jp_value)
-	SET_TIMER(mrt->jp_timer, jp_value);
+    if (jp_timer_left(mrt) < jp_value)
+	jp_timer_set(mrt, jp_value);
 }
 
 
@@ -154,18 +156,18 @@ static void jp_suppress(mrtentry_t *mrt, uint16_t holdtime)
  */
 static void refresh_upstream_joins(pim_nbr_entry_t *nbr)
 {
-    uint16_t jp_value = jp_override_timeout(nbr->vifi);
+    uint32_t jp_value = jp_override_timeout(nbr->vifi);
     grpentry_t *grp;
     mrtentry_t *mrt;
 
     for (grp = grplist; grp; grp = grp->next) {
 	mrt = grp->grp_route;
-	if (mrt && mrt->upstream == nbr && mrt->jp_timer > jp_value)
-	    SET_TIMER(mrt->jp_timer, jp_value);
+	if (mrt && mrt->upstream == nbr && jp_timer_left(mrt) > jp_value)
+	    jp_timer_set(mrt, jp_value);
 
 	for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
-	    if (mrt->upstream == nbr && mrt->jp_timer > jp_value)
-		SET_TIMER(mrt->jp_timer, jp_value);
+	    if (mrt->upstream == nbr && jp_timer_left(mrt) > jp_value)
+		jp_timer_set(mrt, jp_value);
 	}
     }
 }
@@ -175,11 +177,110 @@ static void refresh_upstream_joins(pim_nbr_entry_t *nbr)
 /************************************************************************
  *                        PIM_HELLO
  ************************************************************************/
+/*
+ * The triggered Hello of RFC 7761 sec. 4.3.1, answering a new neighbor or one
+ * whose GenID changed "after a randomized delay between 0 and
+ * Triggered_Hello_Delay", so that a whole LAN does not answer a rebooting
+ * router in the same instant and converge onto its clock.
+ *
+ * The Bootstrap RFC 5059 sec. 3.5 has the DR unicast to that neighbor waits
+ * for the Hello rather than going ahead of it, because a router drops a
+ * Bootstrap from one it has had no Hello from, receive_pim_bootstrap()
+ * included.  Whether we are the DR is asked when it goes, since the election
+ * the new neighbor starts may have moved it by then.
+ */
+struct hello_cbk {
+    vifi_t   vifi;
+    uint32_t token;
+};
+
+static void triggered_hello_send(struct uvif *v)
+{
+    pim_nbr_entry_t *nbr;
+    size_t bsr_length;
+
+    v->uv_hello_trigger = 0;
+
+    IF_DEBUG(DEBUG_PIM_HELLO)
+	logit(LOG_INFO, 0, "Sending PIM HELLO on %s to new neighbors", v->uv_name);
+    send_pim_hello(v, pim_timer_hello_holdtime);
+
+    for (nbr = v->uv_pim_neighbors; nbr; nbr = nbr->next) {
+	if (!nbr->bootstrap_owed)
+	    continue;
+
+	nbr->bootstrap_owed = FALSE;
+	if (!(v->uv_flags & VIFF_DR))
+	    continue;
+
+	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf)))
+	    send_pim_unicast(pim_send_buf, 0, v->uv_mtu, v->uv_lcl_addr, nbr->address,
+			     PIM_BOOTSTRAP, bsr_length);
+    }
+}
+
+static void triggered_hello_timeout(void *arg)
+{
+    struct hello_cbk *cbk = (struct hello_cbk *)arg;
+
+    /* A token that no longer matches is a Hello already sent, ahead of a
+     * Join/Prune or an Assert, or a vif stopped since. */
+    if (cbk->vifi < numvifs && uvifs[cbk->vifi].uv_hello_trigger == cbk->token)
+	triggered_hello_send(&uvifs[cbk->vifi]);
+
+    free(cbk);
+}
+
+static void trigger_hello(vifi_t vifi, pim_nbr_entry_t *nbr)
+{
+    static uint32_t token;
+    struct uvif *v = &uvifs[vifi];
+    struct hello_cbk *cbk;
+
+    nbr->bootstrap_owed = TRUE;
+    if (v->uv_hello_trigger)
+	return;		/* The one pending answers this neighbor too */
+
+    cbk = calloc(1, sizeof(*cbk));
+    if (!cbk) {
+	logit(LOG_ERR, 0, "Ran out of memory in %s()", __func__);
+	triggered_hello_send(v);
+	return;
+    }
+
+    if (!++token)
+	token = 1;
+    cbk->vifi  = vifi;
+    cbk->token = token;
+
+    /* timer_set_ms() frees cbk if it fails */
+    if (!timer_set_ms(RANDOM() % (PIM_TRIGGERED_HELLO_DELAY * 1000 + 1),
+		      triggered_hello_timeout, cbk)) {
+	triggered_hello_send(v);
+	return;
+    }
+
+    v->uv_hello_trigger = token;
+}
+
+/*
+ * "If a router needs to send a Join/Prune to the new neighbor or send an
+ * Assert message in response to an Assert message from the new neighbor
+ * before this randomized delay has expired, then it MUST immediately send
+ * the relevant Hello message without waiting for the Hello Timer to expire,
+ * followed by the Join/Prune or Assert message", sec. 4.3.1.  Called before
+ * either is written into pim_send_buf, which the Hello uses too.
+ */
+static void hello_before_send(vifi_t vifi)
+{
+    if (vifi < numvifs && uvifs[vifi].uv_hello_trigger)
+	triggered_hello_send(&uvifs[vifi]);
+}
+
 int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *msg, size_t len)
 {
     vifi_t vifi;
     struct uvif *v;
-    size_t bsr_length;
     pim_nbr_entry_t *nbr, *prev_nbr, *new_nbr;
     pim_hello_opts_t opts;
     srcentry_t *srcentry;
@@ -258,6 +359,7 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
 		/* It no longer knows it won any Assert, RFC 7761 sec. 4.6.1
 		 * and sec. 4.6.2, "Current Winner's GenID Changes". */
 		assert_neighbor_gone(vifi, src, "restarted");
+		new_nbr = nbr;
 		goto rebooted;
 	    }
 
@@ -311,23 +413,8 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
     v->uv_flags |= VIFF_PIM_NBR;
 
   rebooted:
-    /*
-     * A new neighbour has come up, let it know we exist too.  First
-     * we must send a proper greeting, then we can send bootstrap.
-     * See RFC 5059, section 3.5
-     */
-    IF_DEBUG(DEBUG_PIM_HELLO)
-	logit(LOG_INFO, 0, "Sending PIM HELLO to new neighbor %s", inet_fmt(src, s1, sizeof(s1)));
-    send_pim_hello(v, pim_timer_hello_holdtime);
-
-    if (v->uv_flags & VIFF_DR) {
-	/*
-	 * If I am the current DR on that interface, so
-	 * send an RP-Set message to the new neighbor.
-	 */
-	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf)))
-	    send_pim_unicast(pim_send_buf, 0, v->uv_mtu, v->uv_lcl_addr, src, PIM_BOOTSTRAP, bsr_length);
-    }
+    /* A new neighbour has come up, let it know we exist too */
+    trigger_hello(vifi, new_nbr);
 
   election:
     if (restart_dr_election(v)) {
@@ -996,7 +1083,15 @@ static uint16_t jp_override_interval(vifi_t vifi)
 /* The Prune-Pending Timer of sec. 4.5.1 and sec. 4.5.2.  The point-to-point
  * flag used to stand in for the single-neighbor test, which is not the same
  * question: a shared segment with one PIM router left on it has nobody to
- * override either. */
+ * override either.
+ *
+ * The timer is one of the per-interface ones age_routes() takes a whole
+ * TIMER_INTERVAL off, and the first tick can come at any moment: a value of
+ * three seconds runs out on it, possibly a moment after the Prune arrived and
+ * long before a downstream router's override can.  One tick more than the
+ * interval is never short of it, which is the direction that matters --
+ * forwarding a little past the Prune costs nothing an override would not
+ * have kept anyway. */
 static uint16_t prune_pending_delay(vifi_t vifi)
 {
     struct uvif *v = &uvifs[vifi];
@@ -1004,7 +1099,7 @@ static uint16_t prune_pending_delay(vifi_t vifi)
     if (!v->uv_pim_neighbors || !v->uv_pim_neighbors->next)
 	return 0;
 
-    return jp_override_interval(vifi);
+    return jp_override_interval(vifi) + TIMER_INTERVAL;
 }
 
 int send_pim_hello(struct uvif *v, uint16_t holdtime)
@@ -1462,7 +1557,7 @@ int send_pim_register(char *packet, size_t len)
 	if (!mrtentry2)
 	    mrtentry2 = mrtentry->group->active_rp_grp->rp->rpentry->mrtlink;
 	if (mrtentry2) {
-	    FIRE_TIMER(mrtentry2->jp_timer); /* Timeout the Join/Prune timer */
+	    jp_timer_fire(mrtentry2); /* Timeout the Join/Prune timer */
 	    /* TODO: explicitly call this function?
 	       send_pim_join_prune(mrtentry2->upstream->vifi,
 	       mrtentry2->upstream,
@@ -2012,7 +2107,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     mrtentry_t *mrt_srcs;
     mrtentry_t *mrt_rp;
     grpentry_t *grp;
-    uint16_t jp_value;
+    uint32_t jp_value;
     pim_nbr_entry_t *upstream_router;
     int my_action;
     rp_grp_entry_t *rp_grp;
@@ -2253,10 +2348,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 			/* Check the holdtime */
 			/* TODO: XXX: TIMER implem. dependency! */
-			if (mrt_rp->jp_timer > holdtime)
+			if (JP_TIMER_SECS(mrt_rp) > holdtime)
 			    continue;
 
-			if ((mrt_rp->jp_timer == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
+			if ((JP_TIMER_SECS(mrt_rp) == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
 			    continue;
 
 			/* Set the Join/Prune suppression timer for this
@@ -2265,8 +2360,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			 */
 			jp_value = jp_suppression_timeout();
 			/* TODO: XXX: TIMER implem. dependency! */
-			if (mrt_rp->jp_timer < jp_value)
-			    SET_TIMER(mrt_rp->jp_timer, jp_value);
+			if (jp_timer_left(mrt_rp) < jp_value * 1000)
+			    jp_timer_set(mrt_rp, jp_value * 1000);
 		    }
 		} /* num_j_srcs */
 
@@ -2294,20 +2389,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			my_action = join_or_prune(mrt_rp, upstream_router);
 			if (my_action == PIM_ACTION_PRUNE) {
 			    /* TODO: XXX: TIMER implem. dependency! */
-			    if ((mrt_rp->jp_timer < holdtime)
-				|| ((mrt_rp->jp_timer == holdtime) &&
+			    if ((JP_TIMER_SECS(mrt_rp) < holdtime)
+				|| ((JP_TIMER_SECS(mrt_rp) == holdtime) &&
 				    (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
 				/* Suppress the Prune */
 				jp_value = jp_suppression_timeout();
-				if (mrt_rp->jp_timer < jp_value)
-				    SET_TIMER(mrt_rp->jp_timer, jp_value);
+				if (jp_timer_left(mrt_rp) < jp_value * 1000)
+				    jp_timer_set(mrt_rp, jp_value * 1000);
 			    }
 			} else if (my_action == PIM_ACTION_JOIN) {
 			    /* Override the Prune by scheduling a Join */
 			    jp_value = jp_override_timeout(vifi);
 			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (mrt_rp->jp_timer > jp_value)
-				SET_TIMER(mrt_rp->jp_timer, jp_value);
+			    if (jp_timer_left(mrt_rp) > jp_value)
+				jp_timer_set(mrt_rp, jp_value);
 			}
 
 			/* Check all (*,G) and (S,G) matching to this RP.
@@ -2319,16 +2414,16 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    if (my_action == PIM_ACTION_JOIN) {
 				jp_value = jp_override_timeout(vifi);
 				/* TODO: XXX: TIMER implem. dependency! */
-				if (grp->grp_route->jp_timer > jp_value)
-				    SET_TIMER(grp->grp_route->jp_timer, jp_value);
+				if (jp_timer_left(grp->grp_route) > jp_value)
+				    jp_timer_set(grp->grp_route, jp_value);
 			    }
 			    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
 				my_action = join_or_prune(mrt_srcs, upstream_router);
 				if (my_action == PIM_ACTION_JOIN) {
 				    jp_value = jp_override_timeout(vifi);
 				    /* TODO: XXX: TIMER implem. dependency! */
-				    if (mrt_srcs->jp_timer > jp_value)
-					SET_TIMER(mrt_srcs->jp_timer, jp_value);
+				    if (jp_timer_left(mrt_srcs) > jp_value)
+					jp_timer_set(mrt_srcs, jp_value);
 				}
 			    } /* For all (S,G) */
 			} /* For all (*,G) */
@@ -2405,21 +2500,21 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    my_action = join_or_prune(mrt, upstream_router);
 		    if (my_action == PIM_ACTION_PRUNE) {
 			/* TODO: XXX: TIMER implem. dependency! */
-			if ((mrt->jp_timer < holdtime)
-			    || ((mrt->jp_timer == holdtime)
+			if ((JP_TIMER_SECS(mrt) < holdtime)
+			    || ((JP_TIMER_SECS(mrt) == holdtime)
 				&& (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
 			    /* Suppress the Prune */
 			    jp_value = jp_suppression_timeout();
-			    if (mrt->jp_timer < jp_value)
-				SET_TIMER(mrt->jp_timer, jp_value);
+			    if (jp_timer_left(mrt) < jp_value * 1000)
+				jp_timer_set(mrt, jp_value * 1000);
 			}
 		    }
 		    else if (my_action == PIM_ACTION_JOIN) {
 			/* Override the Prune by scheduling a Join */
 			jp_value = jp_override_timeout(vifi);
 			/* TODO: XXX: TIMER implem. dependency! */
-			if (mrt->jp_timer > jp_value)
-			    SET_TIMER(mrt->jp_timer, jp_value);
+			if (jp_timer_left(mrt) > jp_value)
+			    jp_timer_set(mrt, jp_value);
 		    }
 
 		    /* Check all (S,G) entries for this group.
@@ -2431,8 +2526,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			if (my_action == PIM_ACTION_JOIN) {
 			    jp_value = jp_override_timeout(vifi);
 			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (mrt_srcs->jp_timer > jp_value)
-				SET_TIMER(mrt_srcs->jp_timer, jp_value);
+			    if (jp_timer_left(mrt_srcs) > jp_value)
+				jp_timer_set(mrt_srcs, jp_value);
 			}
 		    } /* For all (S,G) */
 		    continue;  /* End of (*,G) prune suppression */
@@ -2447,20 +2542,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (my_action == PIM_ACTION_PRUNE) {
 		    /* Suppress the (S,G) Prune */
 		    /* TODO: XXX: TIMER implem. dependency! */
-		    if ((mrt->jp_timer < holdtime)
-			|| ((mrt->jp_timer == holdtime)
+		    if ((JP_TIMER_SECS(mrt) < holdtime)
+			|| ((JP_TIMER_SECS(mrt) == holdtime)
 			    && (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
 			jp_value = jp_suppression_timeout();
-			if (mrt->jp_timer < jp_value)
-			    SET_TIMER(mrt->jp_timer, jp_value);
+			if (jp_timer_left(mrt) < jp_value * 1000)
+			    jp_timer_set(mrt, jp_value * 1000);
 		    }
 		}
 		else if (my_action == PIM_ACTION_JOIN) {
 		    /* Override the Prune by scheduling a Join */
 		    jp_value = jp_override_timeout(vifi);
 		    /* TODO: XXX: TIMER implem. dependency! */
-		    if (mrt->jp_timer > jp_value)
-			SET_TIMER(mrt->jp_timer, jp_value);
+		    if (jp_timer_left(mrt) > jp_value)
+			jp_timer_set(mrt, jp_value);
 		}
 	    }  /* while (num_p_srcs--) */
 	}  /* while (num_groups--) */
@@ -2886,6 +2981,9 @@ void send_pim_join(pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, ui
     if (!pim_nbr)
         return;
 
+    /* Joined again, so the next Prune is a transition, see jp_timer_action() */
+    mrt->flags &= ~MRTF_PRUNE_SENT;
+
     if (flags & MRTF_SG)
         add_jp_entry(pim_nbr, holdtime, mrt->group->group,
                      SINGLE_GRP_MSKLEN, mrt->source->address,
@@ -2970,7 +3068,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
     for (grp = grplist; grp; grp = grp->next) {
 	mrt = grp->grp_route;
 	/* TODO: XXX: TIMER implem. dependency! */
-	if (mrt && (mrt->incoming == vifi) && (mrt->jp_timer <= TIMER_INTERVAL)) {
+	if (mrt && (mrt->incoming == vifi) && (jp_timer_left(mrt) <= TIMER_INTERVAL * 1000)) {
 
 	    /* If join/prune to a particular neighbor only was specified */
 	    if (pim_nbr && mrt->upstream != pim_nbr)
@@ -2994,7 +3092,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 	    /* TODO: XXX: TIMER implem. dependency! */
 	    if (PIMD_VIFM_ISEMPTY(mrt->joined_oifs)
 		&& (!(v->uv_flags & VIFF_DR))
-		&& (mrt->jp_timer <= TIMER_INTERVAL)) {
+		&& (jp_timer_left(mrt) <= TIMER_INTERVAL * 1000)) {
 		add_jp_entry(mrt->upstream, holdtime,
 			     grp->group, SINGLE_GRP_MSKLEN,
 			     grp->rpaddr,
@@ -3015,7 +3113,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 		    /* TODO: XXX: TIMER implem. dependency! */
 		    if (grp->grp_route &&
 			grp->grp_route->incoming == vifi &&
-			grp->grp_route->jp_timer <= TIMER_INTERVAL)
+			jp_timer_left(grp->grp_route) <= TIMER_INTERVAL * 1000)
 			/* S is directly connected. Send toward RP */
 			add_jp_entry(grp->grp_route->upstream,
 				     holdtime,
@@ -3028,7 +3126,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 		/* RPbit cleared */
 		if (PIMD_VIFM_ISEMPTY(mrt->joined_oifs)) {
 		    /* TODO: XXX: TIMER implem. dependency! */
-		    if (mrt->incoming == vifi && mrt->jp_timer <= TIMER_INTERVAL)
+		    if (mrt->incoming == vifi && jp_timer_left(mrt) <= TIMER_INTERVAL * 1000)
 			add_jp_entry(mrt->upstream, holdtime,
 				     grp->group, SINGLE_GRP_MSKLEN,
 				     mrt->source->address,
@@ -3037,7 +3135,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 		    logit(LOG_DEBUG, 0 , "Joined not empty, group %s",
 			  inet_ntoa(*(struct in_addr *)&grp->group));
 		    /* TODO: XXX: TIMER implem. dependency! */
-		    if (mrt->incoming == vifi && mrt->jp_timer <= TIMER_INTERVAL)
+		    if (mrt->incoming == vifi && jp_timer_left(mrt) <= TIMER_INTERVAL * 1000)
 			add_jp_entry(mrt->upstream, holdtime,
 				     grp->group, SINGLE_GRP_MSKLEN,
 				     mrt->source->address,
@@ -3048,7 +3146,7 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 		    grp->grp_route &&
 		    mrt->incoming != grp->grp_route->incoming &&
 		    grp->grp_route->incoming == vifi &&
-		    grp->grp_route->jp_timer <= TIMER_INTERVAL)
+		    jp_timer_left(grp->grp_route) <= TIMER_INTERVAL * 1000)
 		    add_jp_entry(grp->grp_route->upstream, holdtime,
 				 grp->group, SINGLE_GRP_MSKLEN,
 				 mrt->source->address,
@@ -3497,6 +3595,7 @@ static void jp_message_send(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
 {
     vifi_t vifi = pim_nbr->vifi;
 
+    hello_before_send(vifi);
     memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t),
 	   bjpm->jp_message, bjpm->jp_message_size);
     IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
@@ -3987,7 +4086,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
     struct assert_state *as;
     struct uvif *v;
     uint8_t local_wins;
-    uint16_t jp_value;
+    uint32_t jp_value;
 
     if (!mrt)
 	return ASSERT_NOTHING;
@@ -4214,8 +4313,8 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	 * them without the group for up to a whole period.
 	 */
 	jp_value = jp_override_timeout(vifi);
-	if (own->jp_timer > jp_value)
-	    SET_TIMER(own->jp_timer, jp_value);
+	if (jp_timer_left(own) > jp_value)
+	    jp_timer_set(own, jp_value);
 
 	/* Check if the upstream router is different from the original one.
 	 * Read the entry the routing table names it on the way
@@ -4437,6 +4536,7 @@ static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
     if (vifi >= numvifs || (uvifs[vifi].uv_flags & (VIFF_REGISTER | VIFF_TUNNEL)))
 	return FALSE;
 
+    hello_before_send(vifi);
     data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
     data_start = data;
     PUT_EGADDR(group, SINGLE_GRP_MSKLEN, 0, data);

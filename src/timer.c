@@ -8,6 +8,7 @@
  * Leland Stanford Junior University.
  */
 
+#include <limits.h>
 #include "defs.h"
 
 static struct tmr *Q = NULL;
@@ -18,7 +19,7 @@ struct tmr {
     int        	     id;  
     cfunc_t          func;    	        /* function to call */
     void	    *data;		/* func's data */
-    int              time;		/* time offset to next event*/
+    int              time;		/* msec offset to next event*/
 };
 
 static void print_Q(void);
@@ -62,7 +63,21 @@ void timer_exit(void)
 }
 
 /*
- * elapsed_time seconds have passed; perform all the events that should
+ * Milliseconds on a clock that neither steps nor slews with the time of day,
+ * which is what every callout and every deadline set against it is measured
+ * on.
+ */
+uint64_t timer_now(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/*
+ * elapsed_time milliseconds have passed; perform all the events that should
  * happen.
  */
 void timer_age_queue(int elapsed_time)
@@ -90,7 +105,7 @@ void timer_age_queue(int elapsed_time)
 }
 
 /*
- * Return in how many seconds timer_age_queue() would like to be called.
+ * Return in how many milliseconds timer_age_queue() would like to be called.
  * Return -1 if there are no events pending.
  */
 int timer_next_delay(void)
@@ -106,9 +121,9 @@ int timer_next_delay(void)
     return Q->time;
 }
 
-/* 
+/*
  * Create a timer
- * @delay: Number of seconds for timeout
+ * @delay: Number of milliseconds for timeout
  * @action: Timer callback
  * @data: Optional callback data, must be a dynically allocated ptr
  *
@@ -119,7 +134,7 @@ int timer_next_delay(void)
  * Returns:
  * The timer ID, always greater than zero, or zero on failure.
  */
-int timer_set(int delay, cfunc_t action, void *data)
+int timer_set_ms(int delay, cfunc_t action, void *data)
 {
     struct tmr *ptr, *node, *prev;
     
@@ -177,7 +192,17 @@ int timer_set(int delay, cfunc_t action, void *data)
     return node->id;
 }
 
-/* returns the time until the timer is scheduled */
+/* The same, @delay in seconds, and no longer than an int of milliseconds
+ * holds, some 24 days */
+int timer_set(int delay, cfunc_t action, void *data)
+{
+    if (delay > INT_MAX / 1000)
+	delay = INT_MAX / 1000;
+
+    return timer_set_ms(delay * 1000, action, data);
+}
+
+/* returns the time until the timer is scheduled, in seconds */
 int timer_get(int timer_id)
 {
     struct tmr *ptr;
@@ -189,7 +214,7 @@ int timer_get(int timer_id)
     for (ptr = Q; ptr; ptr = ptr->next) {
 	left += ptr->time;
 	if (ptr->id == timer_id)
-	    return left;
+	    return (left + 999) / 1000;
     }
 
     return -1;

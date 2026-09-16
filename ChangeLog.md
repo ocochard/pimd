@@ -203,6 +203,24 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Send triggered Joins and Prunes when the state changes, not on the next
+  5-second tick, and time the override Join of RFC 7761 section 4.5.4 to
+  the millisecond.  The Join Timer was a count of seconds aged once per
+  tick, so a join or prune, the switch to the shortest path tree included,
+  went out up to 5 seconds late, and t_override came down to the tick
+  phase: an override could reach an upstream router after the 3 seconds it
+  waits before acting on a Prune.  The callout queue counts milliseconds
+  on the monotonic clock now, and a Join Timer due before the next tick
+  gets a pass of its own.  pimd advertises the 0.5 second Propagation_Delay
+  default again, where it advertised 5 to make up for the tick, and a
+  Prune is sent once on the transition to NotJoined instead of every
+  minute
+- Delay the Hello answering a new or restarted PIM neighbor by a random 0
+  to 5 seconds, the Triggered_Hello_Delay of RFC 7761 section 4.3.1, so a
+  LAN does not answer a rebooting router all at once.  The Bootstrap a DR
+  unicasts to the neighbor, RFC 5059 section 3.5, now follows that Hello
+  rather than an immediate one, and a Join/Prune or Assert sent on the
+  interface in the meantime sends the Hello first
 - Send and use the Hello Address List option, RFC 7761 sec. 4.3.4.  An
   interface with more than one address now lists the others in its Hello,
   and the lists neighbors send are kept, so a route whose next hop is a
@@ -524,9 +542,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   startup, from the wrong range, and then thrown away: `start_vif()` went
   on to send a Hello itself and `send_pim_hello()` re-arms the timer, so no
   randomized value survived a single tick and every router's first Hello
-  went out at t=0.  The triggered Hello answering a new neighbor is still
-  sent at once, deliberately -- the Bootstrap of RFC 5059 section 3.5 that
-  follows it is dropped by a router that has not yet had our Hello
+  went out at t=0
 - Draw the Join/Prune suppression interval from 1.1 to 1.4 times the
   periodic interval, 66 to 84 seconds, as the t_suppressed row of RFC 7761
   section 4.11 asks.  It was RFC 2362's range, 60 to 89, whose low end
@@ -534,9 +550,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   send its own Join inside the very period it was suppressed for
 - Draw t_override from the Override_Interval of RFC 7761 section 4.11, 2.5
   seconds, instead of RFC 2362's [Random-Delay-Join-Timeout] of 4.5, which
-  is a different quantity.  The result is still quantized to whole seconds
-  by the timer implementation, which is recorded in
-  doc/rfc7761-compliance.md as what is left of T1
+  is a different quantity
 - Log the assert transition of RFC 7761 section 4.6.1 and 4.6.2 that had
   no log line, a loser returning to NoInfo because the winner restarted
   or stopped answering, and say which of the two it was.  Every other way

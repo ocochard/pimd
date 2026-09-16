@@ -800,7 +800,7 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
 
     mrt->flags = MRTF_NEW;
     RESET_TIMER(mrt->entry_timer);
-    RESET_TIMER(mrt->jp_timer);
+    mrt->jp_expires = 0;
     RESET_TIMER(mrt->rs_timer);
     mrt->kernel_cache = NULL;
 

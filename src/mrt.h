@@ -42,6 +42,10 @@
 					 * tree ourselves.  See join_desired()
 					 * in src/route.c		    */
 #define MRTF_IIF_REGISTER	0x0020	/* ???				    */
+#define MRTF_PRUNE_SENT		0x0040	/* The Join Timer last sent a Prune,
+					 * which RFC 7761 sec. 4.5.4 and
+					 * sec. 4.5.5 send once, see
+					 * jp_timer_action() in src/route.c */
 #define MRTF_REGISTER		0x0080	/* ???				    */
 #define MRTF_KERNEL_CACHE	0x0200	/* a mirror for the kernel cache    */
 #define MRTF_NULL_OIF		0x0400	/* null oif cache..	???	    */
@@ -132,6 +136,8 @@ typedef struct pim_nbr_entry {
      * neighbor a Join has to be sent to. */
     uint32_t             *secaddrs;
     uint16_t              nsecaddrs;
+    int8_t		  bootstrap_owed; /* RFC 5059 sec. 3.5, sent after
+					   * our triggered Hello	    */
     vifi_t		  vifi;		  /* which interface		    */
     uint16_t		  timer;	  /* for timing out neighbor	    */
     time_t		  uptime;	  /* time since first hello	    */
@@ -280,7 +286,10 @@ typedef struct mrtentry {
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint16_t		 flags;		/* The MRTF_* flags		    */
     uint16_t		 entry_timer;	/* entry timer			    */
-    uint16_t		 jp_timer;	/* The Join/Prune timer		    */
+    uint64_t		 jp_expires;	/* When the Join Timer expires, on
+					 * the clock of timer_now(); 0 is
+					 * already due.  See jp_timer_set()
+					 */
     uint16_t		 rs_timer;	/* Register-Suppression Timer	    */
     struct kernel_cache *kernel_cache;	/* List of the kernel cache entries */
 } mrtentry_t;

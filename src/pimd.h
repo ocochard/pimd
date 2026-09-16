@@ -74,19 +74,14 @@
  * J/P_Override_Interval(I).  Both are seconds here and milliseconds on the
  * wire, which is the only unit the LAN Prune Delay option has.
  *
- * Not the 0.5 s default: the same section asks implementers to "enforce a
- * lower bound on the permitted values for this delay to allow for scheduling
- * and processing delays within their router", because "setting this
- * Propagation Delay to too low a value may result in temporary forwarding
- * outages because a downstream router will not be able to override a
- * neighbor's Prune message before the upstream neighbor stops forwarding".
- * pimd's scheduling delay is the whole of TIMER_INTERVAL -- an override Join
- * is built by age_routes() and no timer here expires off a tick -- so that is
- * what it advertises, and what an upstream is asked to wait for it.  T1 in
- * doc/rfc7761-compliance.md is the deviation this covers for; when sub-tick
- * scheduling arrives this goes back to 0.5.
+ * The same section asks implementers to "enforce a lower bound on the
+ * permitted values for this delay to allow for scheduling and processing
+ * delays within their router".  This used to be the whole of TIMER_INTERVAL,
+ * because an override Join waited for age_routes() to build it; the Join
+ * Timer schedules its own pass now (jp_timer_set() in src/route.c), so the
+ * default is enough.
  */
-#define PIM_PROPAGATION_DELAY           TIMER_INTERVAL
+#define PIM_PROPAGATION_DELAY           0.5
 #define PIM_MSEC(secs)                  ((uint16_t)((secs) * 1000))
 
 /* TODO: XXX: cannot be shorter than 10 seconds (not in the spec)
