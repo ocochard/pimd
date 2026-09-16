@@ -203,6 +203,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- A router downstream of an assert election now sends its Joins to the
+  winner.  On its RPF interface pimd measured each Assert against its own
+  route to the RP instead of simply losing to it, as RFC 7761 section 4.6.2
+  has a router there do, so a downstream router nearer the RP than the
+  contenders kept joining the loser, and each Join took the loser out of
+  its Loser state: the LAN flapped between the two routers once a
+  Join/Prune period.  When that Loser state ends, the Joins go back to the
+  router the routing table names
 - Run the Prune-Pending Timer of RFC 7761 section 4.5.1 and the Assert Timer
   of section 4.6 to the millisecond.  An upstream router let an interface go
   5 to 10 seconds after a Prune nobody overrode, where the section asks for

@@ -186,7 +186,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Nine entries this section held are fixed.  M3, the assert winner state,
+Ten entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -303,6 +303,28 @@ between two pimds, the RP joining toward the first hop router through its
 secondary address; `crafted` asserts the parser on a list pimd did not
 write, kept, primary address excluded, unreadable and absent.  The Linux
 suite in `test/` asserts none of it.
+
+M15 is the last one, and it was never written down as an entry: it turned
+up as `assert-recover` in `test/freebsd-lab.sh` failing one run in ten or so
+once enough labs ran beside it to move the timing.  It was sec. 4.6.2 on a
+router's RPF interface.  CouldAssert is FALSE there, so
+the router never wins and its own metric is not a question: it loses to any
+acceptable Assert, keeps the winner, which sec. 4.1.6 makes `RPF'(*,G)`, and
+replaces it only with a preferred one.  `assert_machine()` measured each
+Assert against the router's own route to the RP instead, as though the
+neighbor the routing table named were asserting with it, so a downstream
+router nearer the RP than the routers contending above it found every Assert
+inferior and went on sending its Joins to the loser -- and each one took the
+loser out of its Loser state again, "Receive Join(\*,G)" in the same section.
+The LAN flapped once a Join/Prune period, and `assert-recover` failed
+whenever the flap fell between the winner's restart and its first Hello.  The
+Loser state on the RPF interface is kept now, including where the winner is
+the router the routing table names, and when it ends -- the winner's inferior
+Assert or AssertCancel, the timer, the winner's GenID or its Neighbor
+Liveness Timer -- the Joins go back to the routing table's neighbor after
+`t_override` (`assert_rpf_restore()`).  Step 4 of `assert-recover` asserts M15
+directly: the downstream router reads L on its RPF interface.
+
 
 **M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
 downstream and an upstream (S,G,rpt) machine with their own Expiry,

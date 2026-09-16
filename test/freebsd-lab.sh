@@ -865,6 +865,7 @@ RPLH_ADDR=10.0.3.1
 # would have one forwarder instead of two.
 SL_R3_IF=${EP}303b
 SL_R4_IF=${EP}403b
+SL_R5_IF=${EP}503b
 SL_R3_ADDR=10.0.3.2
 SL_DR_ADDR=10.0.3.3
 SL_QUERIER_ADDR=10.0.3.1
@@ -2838,6 +2839,19 @@ ar_restore_addr() {
 	jrun r4 ifconfig "$SL_R4_IF" inet "$SL_DR_ADDR/24" alias 2>/dev/null || true
 }
 
+# The Assert state router $1 holds for (*,$3) on interface $2, which for a
+# downstream router is its RPF interface: L there is Loser state, whose
+# winner is RPF'(*,G).  Read off the (*,G) entry alone, the one whose
+# upstream the Joins of the whole group follow.
+ar_iif_assert_state() {
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
+
+	map=$(route_assert_map "$1" ANY "$3")
+	[ -n "$map" ] || return 1
+	printf '%s' "$map" | cut -c "$((idx + 1))"
+}
+
 ar_cleanup() {
 	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
 	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
@@ -2948,6 +2962,21 @@ check_assert_recover() {
 		ok "r4 reads W on $SL_R4_IF, r3 reads L on $SL_R3_IF"
 	else
 		fail "assert state is wrong: r4 '${st4:-none}' (want W), r3 '${st3:-none}' (want L)"
+	fi
+	# And the router downstream of the election follows it.  R5's RPF
+	# neighbour for the RP is R3, and RFC 7761 sec. 4.1.6 makes RPF'(*,G)
+	# the Assert winner instead, which sec. 4.6.2 records as Loser state on
+	# R5's RPF interface.  pimd measured each Assert there against R5's own
+	# route to the RP, found R4's inferior, and went on sending its Joins
+	# to R3 -- and every one of them took R3 out of its Loser state again,
+	# "Receive Join(*,G)" in the same section, so the LAN flapped once a
+	# Join/Prune period and step 5 failed whenever the flap and R4's
+	# restart coincided.
+	st5=$(ar_iif_assert_state r5 "$SL_R5_IF" "$GROUP" || true)
+	if [ "$st5" = L ]; then
+		ok "r5 reads L on $SL_R5_IF, its RPF interface, so its Joins go to r4"
+	else
+		fail "r5 reads '${st5:-none}' on $SL_R5_IF (want L): it ignores the Assert winner on its RPF interface"
 	fi
 	[ "$FAILED" -eq 0 ] || { ar_cleanup; ar_dump; return 1; }
 

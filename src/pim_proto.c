@@ -3845,6 +3845,45 @@ static void assert_noinfo(mrtentry_t *mrt, vifi_t vifi)
  *
  * Returns TRUE if the oif list has to be recomputed.
  */
+/*
+ * The routing table's answer for where an entry's traffic comes from: the
+ * source, or for a (*,G) and an (S,G)RPbit the RP.  A group left holding its
+ * entries but no active_rp_grp, once the RP set it matched has gone, has no
+ * answer.
+ */
+static srcentry_t *assert_mrib_src(mrtentry_t *mrt)
+{
+    if (mrt->flags & MRTF_RP)
+	return mrt->group && mrt->group->active_rp_grp
+	    ? mrt->group->active_rp_grp->rp->rpentry
+	    : NULL;
+
+    return mrt->source;
+}
+
+/*
+ * RPF'(S,G) and RPF'(*,G) of RFC 7761 sec. 4.1.6 are the Assert winner on
+ * RPF_interface while there is one, and the MRIB's neighbor otherwise.  So
+ * when the Loser state there ends the Joins go back to the MRIB's neighbor,
+ * which "RPF'(*,G) changes due to an Assert" in sec. 4.5.4, and its (S,G)
+ * twin in sec. 4.5.5, send after t_override.  Returns TRUE if it moved.
+ */
+static int assert_rpf_restore(mrtentry_t *mrt)
+{
+    srcentry_t *mrib = assert_mrib_src(mrt);
+    uint32_t jp_value;
+
+    if (!mrib || mrt->upstream == mrib->upstream)
+	return FALSE;
+
+    mrt->upstream = mrib->upstream;
+    jp_value = jp_override_timeout(mrt->incoming);
+    if (jp_timer_left(mrt) > jp_value)
+	jp_timer_set(mrt, jp_value);
+
+    return TRUE;
+}
+
 static int assert_clear(mrtentry_t *mrt, vifi_t vifi)
 {
     int restore;
@@ -3866,6 +3905,11 @@ static int assert_clear(mrtentry_t *mrt, vifi_t vifi)
 	PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
 
     assert_noinfo(mrt, vifi);
+
+    /* A Loser state on RPF_interface held the upstream router, not an
+     * outgoing interface. */
+    if (vifi == mrt->incoming && assert_rpf_restore(mrt))
+	restore = TRUE;
 
     return restore;
 }
@@ -4076,7 +4120,6 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  uint32_t rptbit, uint32_t assert_preference,
 			  uint32_t assert_metric)
 {
-    srcentry_t *orig_src;
     uint32_t local_preference, local_metric;
     struct assert_state *as;
     struct uvif *v;
@@ -4258,7 +4301,23 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 
 
     if (own && own->incoming == vifi) {
-	/* Assert received on iif */
+	/*
+	 * Assert received on RPF_interface.  CouldAssert is FALSE there, so
+	 * this router never wins and its own metric is not a question:
+	 * sec. 4.6.1 and sec. 4.6.2 have it lose to any acceptable Assert,
+	 * replace the winner only with a preferred one, and go back to NoInfo
+	 * on an inferior Assert from the winner, the AssertCancel of
+	 * sec. 4.6.4 included.  RPF' follows the winner, sec. 4.1.6.
+	 *
+	 * pimd used to compare the Assert against its own metric instead,
+	 * as if the router it had chosen from the routing table were the
+	 * one asserting with it.  A downstream router nearer to the RP than
+	 * the routers on its upstream LAN then found every Assert inferior,
+	 * kept sending its Joins to the router that had lost, and every one
+	 * of them took that router out of its Loser state again, "Receive
+	 * Join(*,G)" in sec. 4.6.2: the LAN flapped between the two once a
+	 * Join/Prune period.
+	 */
 	if (rptbit) {
 	    if (!(own->flags & MRTF_RP))
 		return ASSERT_NOTHING; /* The locally used upstream router
@@ -4272,33 +4331,47 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	    return ASSERT_NOTHING;
 
 	as = assert_state(own, vifi);
-	if (as && as->winner == own->upstream->address) {
-	    /* Already lost this interface, so the assert to beat is the
-	     * winner's, per the Loser state of RFC 7761 sec. 4.6.1, not a
-	     * metric of our own.
-	     */
-	    local_preference = as->preference;
-	    local_metric     = as->metric;
-	} else {
-	    my_assert_metric(own, &local_preference, &local_metric);
-	}
-
-	local_wins = compare_metrics(local_preference, local_metric,
-				     own->upstream->address,
-				     assert_preference, assert_metric, src);
-
-	if (local_wins == TRUE)
+	if (!as)
 	    return ASSERT_NOTHING;
 
-	/* The upstream must be changed to the winner.  Keep what it won
-	 * with as the winner's, not as this entry's own metric: sec. 4.6.3
-	 * has us assert with the metric the unicast routing table gives,
-	 * and copying the winner's into `metric` had us advertise it as
-	 * ours on every other interface, where it beat routers that really
-	 * are closer to the source.
+	if (as->winner != INADDR_ANY_N) {
+	    if (compare_metrics(as->preference, as->metric, as->winner,
+				assert_preference, assert_metric, src) == TRUE) {
+		if (src != as->winner)
+		    return ASSERT_NOTHING;
+
+		/* Inferior Assert from the current winner: Actions A5 */
+		IF_DEBUG(DEBUG_PIM_ASSERT)
+		    logit(LOG_INFO, 0, "Assert winner %s on %s gave up %s, back to the RPF neighbor",
+			  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+			  inet_fmt(group, s2, sizeof(s2)));
+		assert_clear(own, vifi);
+
+		return ASSERT_CANCELLED;
+	    }
+
+	    if (src == as->winner) {
+		/* Its Assert again, Actions A2: refresh the timer */
+		assert_lost(own, vifi, src, assert_preference, assert_metric);
+
+		return ASSERT_MOVED;
+	    }
+	} else if (assert_preference == PIM_ASSERT_INFINITE_PREFERENCE &&
+		   assert_metric == PIM_ASSERT_INFINITE_METRIC) {
+	    /* An AssertCancel from a router that won nothing here */
+	    return ASSERT_NOTHING;
+	}
+
+	/* Actions A6, or A2 for a preferred Assert: a new winner, and the
+	 * Joins go to it.  Held even where it is the router the routing table
+	 * names, so that a later, inferior Assert from another router is
+	 * measured against it rather than against nothing.
 	 */
 	assert_lost(own, vifi, src, assert_preference, assert_metric);
-	own->upstream = find_pim_nbr(src);
+	if (own->upstream == find_pim_nbr_on_vif(vifi, src))
+	    return ASSERT_MOVED;
+
+	own->upstream = find_pim_nbr_on_vif(vifi, src);
 
 	/* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If the
 	 * Join Timer is set to expire in more than t_override seconds, reset
@@ -4310,26 +4383,6 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	jp_value = jp_override_timeout(vifi);
 	if (jp_timer_left(own) > jp_value)
 	    jp_timer_set(own, jp_value);
-
-	/* Check if the upstream router is different from the original one.
-	 * Read the entry the routing table names it on the way
-	 * reset_upstream_router() above does: a group is left holding its
-	 * routing entries but no active_rp_grp when the RP set it matched
-	 * goes away, and an entry that cannot name its original upstream
-	 * cannot be back on it either, so leave the assert state alone.
-	 */
-	if (own->flags & MRTF_RP)
-	    orig_src = own->group->active_rp_grp
-		? own->group->active_rp_grp->rp->rpentry
-		: NULL;
-	else
-	    orig_src = own->source;
-
-	if (orig_src && own->upstream == orig_src->upstream) {
-	    /* Back on the upstream the routing table names, so there is no
-	     * winner to keep a metric for. */
-	    assert_noinfo(own, vifi);
-	}
 
 	return ASSERT_MOVED;
     }
