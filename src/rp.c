@@ -82,6 +82,7 @@ static void       delete_grp_mask_entry (cand_rp_t **used_cand_rp_list,
 static void       delete_rp_entry       (cand_rp_t **used_cand_rp_list,
 					 grp_mask_t **used_grp_mask_list,
 					 cand_rp_t *cand_rp_ptr);
+static void       remap_covered_groups  (grp_mask_t *mask_ptr);
 
 
 void init_rp_and_bsr(void)
@@ -454,6 +455,14 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 
     mask_ptr->group_rp_number++;
 
+    /* A prefix that has just gained its first RP is now the longest match
+     * for every group inside it, and those groups are still hanging off
+     * the shorter prefixes that matched them before it existed.  The
+     * segmented list holds no groups, and rp_grp_match() never reads it.
+     */
+    if (mask_ptr->group_rp_number == 1 && used_grp_mask_list == &grp_mask_list)
+	remap_covered_groups(mask_ptr);
+
     if (mask_ptr->grp_rp_next->priority == rp_priority) {
 	/* The first entries are with the best priority. */
 	/* Adding this rp_grp_entry may result in group_to_rp remapping */
@@ -474,6 +483,37 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
     return entry_new;
 }
 
+
+/*
+ * RFC 7761 sec. 4.7.1: "if the set of possible group-range-to-RP mappings
+ * changes, each router will need to check whether any existing groups are
+ * affected".  The groups a new prefix can take over are the ones inside it
+ * that a shorter prefix covering it holds, so only their grplink chains are
+ * walked, not every group this router has state for.
+ */
+static void remap_covered_groups(grp_mask_t *mask_ptr)
+{
+    uint32_t prefix = mask_ptr->group_addr & mask_ptr->group_mask;
+    rp_grp_entry_t *entry_ptr;
+    grpentry_t *grp_ptr, *grp_ptr_next;
+    grp_mask_t *ptr;
+
+    for (ptr = grp_mask_list; ptr; ptr = ptr->next) {
+	if (ntohl(ptr->group_mask) >= ntohl(mask_ptr->group_mask))
+	    continue;
+	if ((prefix & ptr->group_mask) != (ptr->group_addr & ptr->group_mask))
+	    continue;
+
+	for (entry_ptr = ptr->grp_rp_next; entry_ptr; entry_ptr = entry_ptr->grp_rp_next) {
+	    for (grp_ptr = entry_ptr->grplink; grp_ptr; grp_ptr = grp_ptr_next) {
+		grp_ptr_next = grp_ptr->rpnext;
+
+		if ((grp_ptr->group & mask_ptr->group_mask) == prefix)
+		    remap_grpentry(grp_ptr);
+	    }
+	}
+    }
+}
 
 void delete_rp_grp_entry(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_list, rp_grp_entry_t *entry)
 {

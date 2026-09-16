@@ -203,6 +203,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Move the groups a newly learned group range covers onto its RP, RFC 7761
+  sec. 4.7.1.  The mapping of a group was recomputed only when the range it
+  sat on changed, so a longer range learned after its groups had state, say
+  225.1.2.0/24 beside an existing 224.0.0.0/4, left every one of them on
+  the shorter range's RP until the group was torn down.  Two routers that
+  learned the same ranges in a different order sent Joins and Registers for
+  the same group to different RPs
 - Set the No-Forward bit on the Bootstrap pimd unicasts to a new neighbour,
   and honour it on one received, RFC 5059 sec. 3.5.1.  That copy is the
   quick refresh a DR hands a router that has just come up, and the bit is

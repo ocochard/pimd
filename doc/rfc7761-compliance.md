@@ -59,9 +59,10 @@ cannot be told from a slow lab.  The group that wanted a message pimd will
 not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
 `test/freebsd-lab.sh` closes and asserts the whole packet format section,
-S3 and S4 of the SSM one, R3's No-Forward bit and A1's neighbor list.
+S3 and S4 of the SSM one, R2's longer group range, R3's No-Forward bit and
+A1's neighbor list.
 
-What is left divides in two.  R2, M6, M7, M8, T1 through T3 and S1 are state
+What is left divides in two.  M6, M7, M8, T1 through T3 and S1 are state
 pimd does not keep, each a structural change rather than a check: (S,G,rpt)
 entries, a secondary address list, a traffic-driven Keepalive Timer, a
 triggered-message timer finer than the five-second tick, and SSM groups that
@@ -439,10 +440,14 @@ Sec. 4.7 leaves the choice of mechanism open and asks only that every router
 in the domain arrive at the same group-to-RP mapping.  What it does pin down
 is the algorithm of sec. 4.7.1, the hash of sec. 4.7.2 and that static
 configuration MUST be supported; all three are in place, and the last section
-says what was checked and why it needs no work.  The entries here are about
-what happens to a mapping after it has been learned, and two of them are the
-BSR's.  RFC 5059 owns that mechanism and is in the tree as `doc/rfc5059.txt`;
-it is cited where an entry needs it but has not otherwise been read against
+says what was checked and why it needs no work.  What is left here is about
+what happens to a mapping after it has been learned, and none of it is open:
+R1, a Bootstrap deleting a configured RP, R2, a longer group range learned
+after its groups had state and leaving them on the RP they had, and R3, the
+No-Forward bit, are all fixed, and `static-rp` and `crafted` in
+`test/freebsd-lab.sh` assert them.  RFC 5059 owns the BSR mechanism and is in
+the tree as `doc/rfc5059.txt`; it is cited where an entry needs it but has
+not otherwise been read against
 the code, so this section is not a statement about pimd's BSR conformance as
 a whole.
 
@@ -455,33 +460,6 @@ scope regions therefore cannot use pimd as the BSR for them, and nobody has
 asked it to.
 *Check: sec. 4.7, `doc/rfc7761.txt:5461`; what it would take is RFC 5059
 sec. 3, which carries the scope zone through every BSR state machine it has.*
-
-**R2.  A longer group prefix does not take over the groups it should.**
-Sec. 4.7.1 has the mapping recomputed whenever the set of mappings changes,
-and `rp_grp_match()` does perform the longest match every time it is asked.
-What does not happen is the asking.  Groups with state hang off the
-`rp_grp_entry_t` they were mapped to (`grplink`), and `add_rp_grp_entry()`
-remaps only the groups hanging off entries of the mask it just touched
-(`src/rp.c:450-463`).  A newly learned prefix has no groups on it yet, so
-learning 232.0.0.0/8 with RP B while 224.0.0.0/4 with RP A already has the
-groups keeps every one of them on A, indefinitely: nothing walks `grplist` to
-ask whether a group's current mapping is still the longest match.  The
-deletion path has the same shape and is right for the same reason,
-`delete_rp_grp_entry()` (`src/rp.c:504`) remapping the groups that were on the
-entry going away.
-
-Two routers that learn the same two prefixes in different orders therefore
-send Registers and Joins to different RPs for the same group, which is the
-one thing sec. 4.7's opening paragraph asks an implementation not to do, and
-it persists until the groups are torn down and recreated.
-*Check: sec. 4.7.1, `doc/rfc7761.txt:5571`, "if the set of possible
-group-range-to-RP mappings changes, each router will need to check whether
-any existing groups are affected"; step 1 of the algorithm is `:5534`.
-Effort: medium -- a walk of `grplist` calling `remap_grpentry()` where the
-match changed, cheap to write and easy to make quadratic.  Test: none.  It
-needs one BSR advertising two prefixes that both cover the group, added in
-that order, which no scenario builds today; `rpt` and `rp-offpath` in
-`test/freebsd-lab.sh` have the BSR to build it on.*
 
 Source-specific multicast
 -------------------------
