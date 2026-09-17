@@ -34,6 +34,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   itself: decapsulating is the kernel's work and happens before pimd is
   handed the message, so an RP that must keep forged traffic off a shared
   tree needs a packet filter for IP protocol 103 as well
+- New `rpt-prune-limit` setting in `pimd.conf`, default 1024: how many
+  (S,G) entries the Prune(S,G,rpt) messages of PIM neighbors may make pimd
+  hold.  Each one names a source of the sender's choosing and lasts as long
+  as its HoldTime asks, up to 18 hours, so one neighbor could otherwise
+  grow the routing table, and the lists every Join/Prune is looked up in,
+  without bound.  Past the limit a Prune addressed to pimd is not applied,
+  and one overheard upstream is overridden with an early Join(*,G) instead
+  of a Join(S,G,rpt).  `pimctl show status` reports the count
 - Remove RSRR, Routing Support for Resource Reservation, the RSVP
   interface built with `--enable-rsrr`.  It implemented
   draft-ietf-rsvp-routing-02, an Internet-Draft that expired without

@@ -2106,6 +2106,60 @@ static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
 }
 
 /*
+ * The (S,G) entries made for neighbors' Prune(S,G,rpt), received or
+ * overheard, which rpt-prune-limit caps.  FREE_MRTENTRY() (src/mrt.h) gives
+ * one back whichever path frees the entry.
+ */
+uint32_t rpt_prune_entries = 0;
+
+/*
+ * An (S,G)RPbit entry for a Prune(S,G,rpt) from @src, where there is no
+ * (S,G) entry to hold the machine yet, or NULL where there is none to be had.
+ *
+ * Any source a neighbor names gets one, and it lives as long as the HoldTime
+ * the neighbor chose, up to 18 hours.  Unbounded, one neighbor could make
+ * this router hold as many as it could send, and every Join/Prune that names
+ * a source walks lists that long.  So the entries are counted, and past
+ * rpt_prune_limit no new one is made.  Nothing here is lost that the caller
+ * cannot do without: a Prune addressed to us goes unapplied and the source
+ * keeps being forwarded, and an overheard one is overridden by other means,
+ * see rpt_see_prune().  The limit is global rather than per neighbor
+ * because the entries outlive the neighbor, and a count kept per neighbor
+ * starts over when it says Hello again.
+ */
+static mrtentry_t *rpt_prune_entry(uint32_t src, uint32_t source, uint32_t group)
+{
+    static int warned = FALSE;
+    mrtentry_t *mrt;
+
+    if (rpt_prune_entries >= rpt_prune_limit) {
+	if (!warned) {
+	    logit(LOG_WARNING, 0, "rpt-prune-limit %u reached, no more (S,G,rpt) state for neighbors' Prunes",
+		  rpt_prune_limit);
+	    warned = TRUE;
+	}
+	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+	    logit(LOG_NOTICE, 0, "Not holding (%s,%s,rpt) for %s, rpt-prune-limit %u reached",
+		  inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
+		  inet_fmt(src, s3, sizeof(s3)), rpt_prune_limit);
+	return NULL;
+    }
+    warned = FALSE;
+
+    mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
+    if (!mrt)
+	return NULL;
+
+    if (mrt->flags & MRTF_NEW) {
+	mrt->flags &= ~MRTF_NEW;
+	mrt->flags |= MRTF_RPT_LIMITED;
+	rpt_prune_entries++;
+    }
+
+    return mrt;
+}
+
+/*
  * "Receive Prune(S,G,rpt)" in the downstream (S,G,rpt) state machine of
  * RFC 7761 sec. 4.5.3, which is a machine of its own and not the (S,G) one:
  * it takes the source off what interface I inherits from joins(*,G) and
@@ -2198,10 +2252,11 @@ static int jp_prunes_rpt(uint8_t *data, uint16_t num_p_srcs, uint32_t source)
  * routers written to RFC 2362, and every router on the link seeing one
  * building state for a source it may never receive is too much for that.
  */
-static void rpt_see_prune(uint32_t source, uint32_t group, pim_nbr_entry_t *upstream,
+static void rpt_see_prune(uint32_t src, uint32_t source, uint32_t group, pim_nbr_entry_t *upstream,
 			  vifi_t vifi, uint16_t holdtime, int rpt)
 {
     mrtentry_t *mwc, *mrt;
+    uint32_t jp_value;
     uint64_t when;
 
     if (IN_PIM_SSM_RANGE(group))
@@ -2220,11 +2275,18 @@ static void rpt_see_prune(uint32_t source, uint32_t group, pim_nbr_entry_t *upst
 	if (!rpt)
 	    return;
 
-	mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
-	if (!mrt)
+	mrt = rpt_prune_entry(src, source, group);
+	if (!mrt) {
+	    /* No state to override with.  A Join(*,G) that does not carry
+	     * the Prune overrides it too, "End of Message" in the upstream
+	     * router's sec. 4.5.3 machine, so the (*,G) Join Timer is
+	     * brought forward to t_override instead. */
+	    jp_value = jp_override_timeout(vifi);
+	    if (jp_timer_left(mwc) > jp_value)
+		jp_timer_set(mwc, jp_value);
 	    return;
+	}
 
-	mrt->flags &= ~MRTF_NEW;
 	if (mrt->entry_timer < holdtime)
 	    SET_TIMER(mrt->entry_timer, holdtime);
     }
@@ -2709,7 +2771,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 		/* The upstream (S,G,rpt) machine, whether or not there is an
 		 * (S,G) machine below to answer as well */
-		rpt_see_prune(source, group, upstream_router, vifi, holdtime,
+		rpt_see_prune(src, source, group, upstream_router, vifi, holdtime,
 			      s_flags & USADDR_RP_BIT);
 
 		/* (S,G) prune suppression */
@@ -2911,11 +2973,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    if (!find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE))
 			continue;
 
-		    mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
+		    mrt = rpt_prune_entry(src, source, group);
 		    if (!mrt)
 			continue;
-
-		    mrt->flags &= ~MRTF_NEW;
 		}
 
 		/* The spec gives the entry no timer of its own, so it lives as

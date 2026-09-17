@@ -135,6 +135,26 @@ is considered an "aggressive" setting and is unsupported: a value outside
 the range above is refused, with a warning, and the default used instead.
 .Pp
 Default value: 30 sec.
+.It Cm rpt-prune-limit Ar <0-1000000>
+The most (S,G) routing entries that PIM neighbors' Prune(S,G,rpt)
+messages may make
+.Nm pimd
+hold, counting both those addressed to it and those it overhears on its
+upstream interface.  Every such Prune names a source of the neighbor's
+choosing and keeps an entry for as long as the neighbor's HoldTime asks,
+so without a limit one neighbor decides how much state the router
+holds, and how long the lists every Join/Prune is looked up in grow.
+.Pp
+Once the limit is reached a Prune(S,G,rpt) addressed to
+.Nm pimd
+for a source it holds no entry for is not applied, so that source keeps
+being forwarded on the interface, and one overheard upstream is
+overridden with an early Join(*,G) rather than a Join(S,G,rpt).  A
+warning is logged the first time, and
+.Cm pimctl show status
+reports the entries held.  0 makes no such entries at all.
+.Pp
+Default value: 1024
 .It Cm no phyint
 This setting controls if
 .Nm pimd

@@ -564,7 +564,8 @@
 #               a list pimd reads the way it writes one; the (S,G,rpt)
 #               machines of sec. 4.5.3 and 4.5.7, which between two pimds
 #               the override Join hides, so pimsend plays both the router
-#               that prunes and the one that overrides; and the two rules of sec. 4.8.1
+#               that prunes and the one that overrides, and the
+#               rpt-prune-limit that caps the state those Prunes make; and the two rules of sec. 4.8.1
 #               about what an SSM-unaware router may still send: no shared
 #               tree for a group in the SSM range, and a Register for one
 #               answered with a Register-Stop rather than dropped in
@@ -1062,6 +1063,15 @@ RPT_GROUP=${RPT_GROUP:-225.1.7.7}
 RPT_SETTLE=${RPT_SETTLE:-6}
 RPT_PROMPT=${RPT_PROMPT:-2}
 RPT_OVR_TRIALS=${RPT_OVR_TRIALS:-3}
+
+# crafted, step 13b: the rpt-prune-limit R1 runs with, low enough for one
+# Prune to fill, and the sources it is filled with.  They sit beside
+# $CRAFT_FAR_SRC so that R1 has a route to them, which an entry needs, and
+# $RPT_LIMIT_HOLD is short enough that they are gone before anything later
+# could meet them.
+RPT_LIMIT=${RPT_LIMIT:-8}
+RPT_LIMIT_NET=${RPT_LIMIT_NET:-10.0.3}
+RPT_LIMIT_HOLD=${RPT_LIMIT_HOLD:-90}
 
 # The longer group range of R2 in doc/rfc7761-compliance.md, covering $GROUP
 # and not $CRAFT_OUT_GROUP, which both sit in the 224.0.0.0/4 R2 advertises
@@ -1796,6 +1806,7 @@ write_configs() {
 		# and from nobody else on either link
 		phyint ${EP}101b accept-nbr-from $SRC_ADDR accept-nbr-from $CRAFT_ADDR
 		phyint ${EP}112a accept-nbr-from 10.0.12.0/24
+		rpt-prune-limit $RPT_LIMIT
 		EOF
 
 		cat <<-EOF > "$WORKDIR/r2.conf"
@@ -4128,6 +4139,95 @@ check_crafted() {
 			sleep 1
 		done
 	fi
+
+	# rpt-prune-limit: every Prune(S,G,rpt) naming a source R1 holds no
+	# entry for makes one, lasting the HoldTime the neighbour chose, so the
+	# number is capped.  Past the cap a Prune addressed to R1 is not applied,
+	# and one overheard upstream is still overridden, by bringing the (*,G)
+	# Join forward: a Join(*,G) that does not carry the Prune is an override
+	# too, "End of Message" in R2's sec. 4.5.3 machine.  The control is the
+	# sources that did fit, held and pruned off the LAN.
+	print "13b. rpt-prune-limit caps the state neighbours' Prune(S,G,rpt) make"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -w -r "$RP_ADDR"
+	used=$(rpt_entries r1)
+	if ! wait_for 15 joined_on r1 "${EP}101b" "$RPT_GROUP"; then
+		fail "r1 lost the (*,$RPT_GROUP) Join on the LAN, nothing below can be asked"
+	elif [ -z "$used" ] || [ "$used" -ge "$RPT_LIMIT" ]; then
+		fail "r1 reports '${used}' RPT Prune entries before the step, of a limit of $RPT_LIMIT"
+	else
+		m1=$(log_lines r1)
+		# Topped up rather than filled once: an entry an earlier step
+		# left can age out while this one fills, and leave room for the
+		# source that is meant to be refused
+		i=0
+		tries=0
+		while [ "$used" -lt "$RPT_LIMIT" ] && [ "$tries" -lt 3 ]; do
+			tries=$((tries + 1))
+			fill=""
+			n=$((RPT_LIMIT - used))
+			while [ "$n" -gt 0 ]; do
+				fill="$fill -s $RPT_LIMIT_NET.$((100 + i))"
+				i=$((i + 1))
+				n=$((n - 1))
+			done
+			# shellcheck disable=SC2086
+			craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -R -H "$RPT_LIMIT_HOLD" $fill
+			wait_for 10 has_sg r1 "$RPT_LIMIT_NET.$((99 + i))" "$RPT_GROUP"
+			used=$(rpt_entries r1)
+		done
+		over="$RPT_LIMIT_NET.$((100 + i))"
+		if [ "$used" = "$RPT_LIMIT" ] && \
+		   wait_for "$RPT_SETTLE" sg_pruned_off r1 "${EP}101b" "$RPT_LIMIT_NET.$((99 + i))" "$RPT_GROUP"; then
+			ok "r1 holds and applies Prune(S,G,rpt) state up to rpt-prune-limit $RPT_LIMIT"
+		else
+			fail "r1 holds ${used} RPT Prune entries after $i sources were pruned, of a limit of $RPT_LIMIT"
+		fi
+		craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -R -H "$RPT_LIMIT_HOLD" -s "$over"
+		if wait_for 10 log_since r1 "$m1" "Not holding ($over,$RPT_GROUP,rpt) for $CRAFT_ADDR"; then
+			if has_sg r1 "$over" "$RPT_GROUP"; then
+				fail "r1 logged refusing ($over,$RPT_GROUP,rpt) and holds an entry for it anyway"
+			else
+				ok "r1 refused a Prune(S,G,rpt) past rpt-prune-limit $RPT_LIMIT and made no entry"
+			fi
+		else
+			fail "r1 did not refuse ($over,$RPT_GROUP,rpt) with $RPT_LIMIT entries held"
+		fi
+		if logged r1 "rpt-prune-limit $RPT_LIMIT reached"; then
+			ok "r1 warned that rpt-prune-limit was reached"
+		else
+			fail "r1 reached rpt-prune-limit without the warning"
+		fi
+
+		if ! has_neighbor r1 "$SUPP_ADDR"; then
+			fail "r1 lost $SUPP_ADDR as a neighbour, the overheard half cannot be asked"
+		else
+			i=0
+			while [ "$i" -lt "$RPT_OVR_TRIALS" ]; do
+				i=$((i + 1))
+				m1=$(log_lines r1)
+				m2=$(log_lines r2)
+				craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$RPT_GROUP" -s "$over" -R
+				if ! wait_for 10 log_since r1 "$m1" "Not holding ($over,$RPT_GROUP,rpt) for $SUPP_ADDR"; then
+					fail "trial $i: r1 did not refuse the overheard ($over,$RPT_GROUP,rpt) at the limit"
+					continue
+				fi
+				if ! wait_for 10 has_wc_join r2 "$m2" "$R1_UP_ADDR" "$RPT_GROUP" "$RP_ADDR"; then
+					fail "trial $i: r1 sent no Join(*,$RPT_GROUP) in 10s of hearing $SUPP_ADDR prune $over"
+					continue
+				fi
+				t0=$(rpt_msg r1 "$m1" PRUNE "$SUPP_ADDR" "$RPT_GROUP" "$over" | log_msec | tail -1)
+				t1=$(wc_join r2 "$m2" "$R1_UP_ADDR" "$RPT_GROUP" "$RP_ADDR" | log_msec | head -1)
+				if [ -z "$t0" ]; then
+					fail "trial $i: r1 logged no Prune(S,G,rpt) from $SUPP_ADDR, nothing to time the Join from"
+				elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
+					ok "trial $i: at the limit r1 overrode with a Join(*,G) $((t1 - t0))ms after the Prune, inside ${OVR_WINDOW}ms"
+				else
+					fail "trial $i: at the limit r1's Join(*,G) came $((t1 - t0))ms after the Prune, r2 waits ${OVR_WINDOW}ms"
+				fi
+				sleep 1
+			done
+		fi
+	fi
 	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR" -alias 2>/dev/null
 
 	# Step 16 needs $CRAFT_ADDR to be nobody's neighbour again
@@ -4570,6 +4670,21 @@ rpt_msg() {
 		grep '(S,G,rpt)$'
 }
 has_rpt_msg() { rpt_msg "$@" >/dev/null; }
+
+# The (S,G) entries router $1 holds for neighbours' Prune(S,G,rpt), from the
+# "RPT Prune entries: N of LIMIT" line of pimctl show status
+rpt_entries() {
+	pimctl "$1" show status 2>/dev/null | \
+		awk -F: '/^RPT Prune entries/ { split($2, n, " "); print n[1] }'
+}
+
+# The Join(*,G) from $3 for group $4 naming RP $5 in router $1's log after
+# its first $2 lines
+wc_join() {
+	log_since "$1" "$2" "Received PIM JOIN from $3 to group $4 for source $5 on " | \
+		grep '(\*,G)$'
+}
+has_wc_join() { wc_join "$@" >/dev/null; }
 
 # The time of day of each log line read, "r1: HH:MM:SS.mmm ...", in
 # milliseconds

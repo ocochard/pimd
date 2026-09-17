@@ -66,6 +66,11 @@
 #define PIM_TRIGGERED_HELLO_DELAY         5
 #define PIM_JOIN_PRUNE_PERIOD	         60
 #define PIM_JOIN_PRUNE_HOLDTIME        (3.5 * PIM_JOIN_PRUNE_PERIOD)
+/* How many (S,G) entries the Prune(S,G,rpt) messages of neighbors may make
+ * this router hold, rpt-prune-limit in pimd.conf.  A cap on state other
+ * routers create, not a protocol constant: see rpt_prune_entry().
+ */
+#define PIM_RPT_PRUNE_LIMIT            1024
 /* RFC 7761 sec. 4.11 Override_Interval, the range t_override is drawn from.
  * This was RFC 2362's [Random-Delay-Join-Timeout], 4.5, a different quantity.
  */

@@ -110,7 +110,8 @@ several trials off the routers' logs),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
-that does not carry it, and R1's own override Join(S,G,rpt) upstream),
+that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those
+Prunes make, step 13b),
 the Hello Address List of sec. 4.3.4 parsed from a list pimd did not write,
 a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole

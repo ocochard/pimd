@@ -69,6 +69,7 @@
 #define CONF_DISABLE_VIFS                       17
 #define CONF_SSM_RANGE                          18
 #define CONF_REGISTER_ACCEPT_FROM               19
+#define CONF_RPT_PRUNE_LIMIT                    20
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -128,6 +129,7 @@ struct reg_acl {
  */
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
 uint16_t pim_timer_hello_holdtime = PIM_TIMER_HELLO_HOLDTIME;
+uint32_t rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
 
 /*
  * Forward declarations.
@@ -135,6 +137,7 @@ uint16_t pim_timer_hello_holdtime = PIM_TIMER_HELLO_HOLDTIME;
 static char	*next_word	(char **);
 static int       parse_option   (char *s);
 static int	 parse_phyint	(char *s);
+static int	 parse_rpt_prune_limit (char *s);
 static uint32_t	 ifname2addr	(char *s);
 
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
@@ -630,6 +633,8 @@ static int parse_option(char *word)
 	return CONF_SCOPED;
     if (EQUAL(word, "hello-interval"))
 	return CONF_HELLO_INTERVAL;
+    if (EQUAL(word, "rpt-prune-limit"))
+	return CONF_RPT_PRUNE_LIMIT;
 
     return CONF_UNKNOWN;
 }
@@ -1979,6 +1984,41 @@ static int parse_igmp_query_interval(char *s)
 }
 
 /**
+ * parse_rpt_prune_limit - Parse rpt-prune-limit option
+ * @s: String token
+ *
+ * How many (S,G) entries neighbors' Prune(S,G,rpt) messages may make this
+ * router hold, see rpt_prune_entry() in pim_proto.c.  Zero makes none.
+ *
+ * Syntax:
+ * rpt-prune-limit <0-1000000>
+ *
+ * Returns:
+ * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
+ */
+static int parse_rpt_prune_limit(char *s)
+{
+    uint32_t value = PIM_RPT_PRUNE_LIMIT;
+    const char *errstr;
+    long long num;
+    char *w;
+
+    if (EQUAL((w = next_word(&s)), "")) {
+	WARN("Missing argument to rpt-prune-limit; defaulting to %u", PIM_RPT_PRUNE_LIMIT);
+    } else {
+	num = strtonum(w, 0, 1000000, &errstr);
+	if (errstr)
+	    WARN("Invalid rpt-prune-limit %s, %s; defaulting to %u", w, errstr, PIM_RPT_PRUNE_LIMIT);
+	else
+	    value = (uint32_t)num;
+    }
+
+    rpt_prune_limit = value;
+
+    return TRUE;
+}
+
+/**
  * parse_igmp_querier_timeout - Parse igmp-querier-timeout option
  * @s: String token
  *
@@ -2090,6 +2130,7 @@ void config_vifs_from_file(void)
     my_cand_rp_adv_period = PIM_DEFAULT_CAND_RP_ADV_PERIOD;
     igmp_query_interval = IGMP_QUERY_INTERVAL;
     igmp_querier_timeout = 0;	/* Derived from the query interval below */
+    rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -2173,6 +2214,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_HELLO_INTERVAL:
 		parse_hello_interval(s);
+		break;
+
+	    case CONF_RPT_PRUNE_LIMIT:
+		parse_rpt_prune_limit(s);
 		break;
 
 	    default:
