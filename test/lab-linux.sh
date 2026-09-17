@@ -57,13 +57,17 @@ box_daemon() {
 	bd_log=$3
 	shift 3
 
+	# $4 is $PIMD_ENV, which env(1) is given unquoted so that each
+	# assignment in it is a word of its own, and which may be empty
 	${SUDO} sh -c '
 		echo $$ > "$1"
 		log=$2
 		ns=$3
-		shift 3
-		exec ip netns exec "$ns" "$@" >> "$log" 2>&1
-	' box_daemon "$bd_pid" "$bd_log" "$(nsname "$bd_box")" "$@" \
+		env=$4
+		shift 4
+		# shellcheck disable=SC2086
+		exec ip netns exec "$ns" env $env "$@" >> "$log" 2>&1
+	' box_daemon "$bd_pid" "$bd_log" "$(nsname "$bd_box")" "$PIMD_ENV" "$@" \
 		</dev/null >/dev/null 2>&1 &
 }
 

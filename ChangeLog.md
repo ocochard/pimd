@@ -188,6 +188,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   Linux bridges instead of vnet jails, epairs and `if_bridge`.  What it
   needs of the host is in `test/lab-freebsd.sh` and `test/lab-linux.sh`,
   one set of functions per system, picked by `uname -s`
+- `test/lab.sh` takes `SANITIZE=yes` to run its scenarios against a pimd
+  built `-fsanitize=address,undefined`, failing any scenario whose daemons
+  reported anything -- which is not the same question as whether its
+  assertions passed, and is how the two fixes above were found.  It asks
+  the binary whether it holds a sanitizer runtime rather than trust the
+  tree, and gives each daemon a report log of its own, since UBSan prints
+  and carries on where ASan stops the daemon outright
 - `test/lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way

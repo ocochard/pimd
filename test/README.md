@@ -116,6 +116,28 @@ both answer the same lookups, so before asserting anything the lab asks
 not what was asked for.  `netlink.ko` has to be loadable, for the same
 reason as `ip_mroute.ko`.
 
+`SANITIZE=yes` runs the same scenarios against a pimd built with
+AddressSanitizer and UndefinedBehaviorSanitizer, and fails a scenario
+whose daemons reported anything, whatever its assertions found.  Build
+that tree separately and point `PIMD_SRC` at it:
+
+    ./configure --prefix= CFLAGS="-g -O1 -fsanitize=address,undefined \
+        -fno-omit-frame-pointer" LDFLAGS="-fsanitize=address,undefined"
+    SANITIZE=yes PIMD_SRC=/path/to/that/tree ./test/lab.sh -j 10 run all
+
+The lab does not build it, and does not take the tree on trust either: it
+asks the binary for a sanitizer runtime and stops if there is none.  Each
+daemon writes its reports to files of its own under the work directory,
+because the two sanitizers behave differently — ASan stops the daemon at
+its first error, which the assertions notice by themselves, while UBSan
+prints and carries on, so its findings would leave with the work
+directory of a scenario that passed.  Leak checking is off, ASan turning
+it on at exit on Linux: what leaks in a daemon being torn down is a hunt
+of its own.  `SAN_ASAN_OPTIONS=detect_leaks=1` asks for it anyway.
+
+Both sanitizers slow a router down, so a scenario measuring a timer can
+want a smaller `-j` than the same run without them.
+
 What makes it possible: `sys/netinet/ip_mroute.c` is fully VNET-ized, so
 each vnet jail owns a private forwarding cache and vif table, and
 `prison_priv_check()` grants `PRIV_NETINET_MROUTE`, `PRIV_NETINET_RAW`

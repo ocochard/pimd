@@ -81,7 +81,11 @@ same functions over named netns, veth and Linux bridges, picked by `uname -s`, s
 the same scenarios as root on Linux (not under `make check`); a fact the scenarios assert that differs
 by kernel (`LOOPBACK_IF`, `REGISTER_UPCALL`) is a variable there too. `NETLINK=yes` points
 it at a `--enable-netlink` build instead, so the same scenarios run over `netlink.c` on FreeBSD;
-it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
+it asks `pimctl show status` which backend the daemon has rather than trust the tree. `SANITIZE=yes`
+does the same for a tree built `-fsanitize=address,undefined` (asking the binary for the runtime) and
+fails any scenario whose daemons wrote a sanitizer report, which is how the reload use-after-free of
+`c721f76` and the undefined shifts of `8b0c103` were found; leak checking is off unless
+`SAN_ASAN_OPTIONS` asks for it. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `static-rp`, `anycast`, `anycast-dr`); see the script

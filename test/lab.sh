@@ -703,6 +703,10 @@
 # CONFIG_IP_MROUTE and CONFIG_IP_PIMSM_V2, and NETLINK is always yes there.
 # Everything that touches the host is in lab-freebsd.sh or lab-linux.sh,
 # picked by uname(1).
+#
+# SANITIZE=yes runs the scenarios against a pimd built with
+# -fsanitize=address,undefined and fails any scenario whose daemons
+# reported anything, on either system; see the knob below.
 
 set -eu
 
@@ -831,6 +835,39 @@ if [ "$NETLINK" = yes ]; then
 	RPF_BACKEND="netlink"
 else
 	RPF_BACKEND="routing socket"
+fi
+
+# SANITIZE=yes runs the scenarios against a pimd built with
+# -fsanitize=address,undefined and fails a scenario that made either
+# sanitizer say anything, whatever its assertions found.  It does not build
+# that pimd: point PIMD_SRC at a tree configured for it, and check_req()
+# asks the binary whether it really is one rather than take the tree on
+# trust, the way the NETLINK knob above does.
+#
+# Each daemon is given a log of its own to write reports to, because the
+# two sanitizers behave differently and neither is any use inside the pimd
+# log alone: ASan stops the daemon at its first error, which the assertions
+# notice by themselves, while UBSan prints and carries on -- so its
+# findings would leave with the work directory of a scenario that passed.
+#
+# Leak checking is off by default, ASan turning it on at exit on Linux:
+# what leaks in a daemon that is being torn down is a hunt of its own, and
+# it would fail every scenario here before it started.  SAN_ASAN_OPTIONS
+# and SAN_UBSAN_OPTIONS are the whole option strings, log_path included, so
+# a run that wants leaks asks for them: SAN_ASAN_OPTIONS="detect_leaks=1".
+SANITIZE=${SANITIZE:-no}
+SAN_DIR=$WORKDIR/sanitizer
+SAN_ASAN_OPTIONS=${SAN_ASAN_OPTIONS:-detect_leaks=0}
+SAN_UBSAN_OPTIONS=${SAN_UBSAN_OPTIONS:-print_stacktrace=1}
+
+# What the daemons are run with, empty unless a knob above asks for
+# something.  The lab wraps every privileged command in sudo(8), which
+# strips the environment, so this is passed to each daemon through env(1)
+# rather than exported here; see box_daemon() in the backends.
+PIMD_ENV=
+if [ "$SANITIZE" = yes ]; then
+	PIMD_ENV="ASAN_OPTIONS=$SAN_ASAN_OPTIONS:log_path=$SAN_DIR/asan"
+	PIMD_ENV="$PIMD_ENV UBSAN_OPTIONS=$SAN_UBSAN_OPTIONS:log_path=$SAN_DIR/ubsan"
 fi
 
 # pimd debug flags, e.g. DEBUG="-l debug -d mrt,rpf" or "-l debug -d all"
@@ -1762,6 +1799,15 @@ check_req() {
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
 	[ -f "$PIMD_SRC/test/igmpv3.c" ] || die "$PIMD_SRC/test/igmpv3.c not found"
 	[ -f "$PIMD_SRC/test/pimsend.c" ] || die "$PIMD_SRC/test/pimsend.c not found"
+	if [ "$SANITIZE" = yes ]; then
+		# Every sanitizer leaves its runtime's symbols behind, undefined
+		# where it is a library and defined where it is linked in, and
+		# nm(1) lists both
+		nm "$PIMD" 2>/dev/null | grep -q '__asan_\|__ubsan_' || \
+			die "SANITIZE=yes, but $PIMD holds no sanitizer runtime;" \
+			    "configure that tree CFLAGS=\"-fsanitize=address,undefined\"" \
+			    "LDFLAGS=\"-fsanitize=address,undefined\""
+	fi
 	backend_check_req
 }
 
@@ -2401,6 +2447,7 @@ start() {
 	# Owned by the invoking user: pimd runs as root and can still drop its
 	# PID file and control socket in here, but mping is built unprivileged.
 	mkdir -p "$WORKDIR"
+	[ "$SANITIZE" = no ] || mkdir -p "$SAN_DIR"
 
 	print "Building mping (multicast ping) from the pimd tree ..."
 	cc -O2 -o "$MPING" "$PIMD_SRC/test/mping.c" || \
@@ -6800,6 +6847,33 @@ stop() {
 	${SUDO} rm -rf "$WORKDIR"
 }
 
+# What the sanitizers wrote while the scenario ran, if this is a SANITIZE
+# run.  A scenario whose pimd hit undefined behaviour did not pass, whatever
+# its assertions made of what came out on the wire, so this is asked after
+# every one of them and has a verdict of its own -- the RESULT above is the
+# assertions' answer and knows nothing about it.
+check_sanitizer() {
+	[ "$SANITIZE" = yes ] || return 0
+
+	echo
+	print "Sanitizer reports"
+
+	# shellcheck disable=SC2046
+	set -- $(${SUDO} find "$SAN_DIR" -type f 2>/dev/null | sort)
+	if [ $# -eq 0 ]; then
+		ok "no sanitizer report from any pimd in this scenario"
+		return 0
+	fi
+
+	for f in "$@"; do
+		dprint "--- ${f##*/} ---"
+		${SUDO} sed -n 1,40p "$f" 2>/dev/null || true
+	done
+
+	print "RESULT: FAIL ($# sanitizer report(s), whatever the result above says)"
+	return 1
+}
+
 # Its status has a name of its own: sh has no locals, and "run all" keeps
 # the verdict of the whole walk in rc, which a passing scenario after a
 # failed one would otherwise put back to 0.
@@ -6807,6 +6881,7 @@ run_one() {
 	one_rc=0
 	start
 	check || one_rc=$?
+	check_sanitizer || one_rc=$?
 	if [ "$one_rc" -ne 0 ]; then
 		# stop() wipes the work directory, keep what failed
 		saved="$WORKDIR.$SCENARIO.failed"
@@ -7011,7 +7086,12 @@ fi
 cmd=$1
 shift
 case $cmd in
-start|check) set_scenario "${1:-}"; $cmd ;;
+start)       set_scenario "${1:-}"; start ;;
+check)       set_scenario "${1:-}"
+	     rc=0
+	     check || rc=$?
+	     check_sanitizer || rc=$?
+	     exit $rc ;;
 run)         run "$@" ;;
 stop)        stop ;;
 *)           usage; exit 2 ;;

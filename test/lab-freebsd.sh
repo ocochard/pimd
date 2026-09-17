@@ -19,7 +19,8 @@
 #   destroy_links                       what destroy_box leaves on the host
 #   box_exists BOX                      is the box up
 #   box_run BOX CMD...                  run CMD inside the box
-#   box_daemon BOX PIDFILE LOG CMD...   run CMD inside the box, detached
+#   box_daemon BOX PIDFILE LOG CMD...   run CMD inside the box, detached,
+#                                       with $PIMD_ENV in its environment
 #   box_hint BOX                        what a human types to reach the box
 #   box_addr_add BOX IF ADDR/LEN        add an address beside the others
 #   box_addr_del BOX IF ADDR            remove one address
@@ -147,8 +148,9 @@ box_daemon() {
 	bd_log=$3
 	shift 3
 
+	# shellcheck disable=SC2086
 	${SUDO} daemon -f -p "$bd_pid" -o "$bd_log" \
-		jexec "$(jname "$bd_box")" "$@"
+		jexec "$(jname "$bd_box")" ${PIMD_ENV:+env $PIMD_ENV} "$@"
 }
 
 box_hint() { echo "${SUDO} jexec $(jname "$1")"; }
