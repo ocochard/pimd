@@ -57,7 +57,7 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Nineteen scenarios are built on that topology.  Most differ only in which
+# Twenty scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
@@ -808,13 +808,13 @@ SCENARIO=${SCENARIO:-rpt}
 # started in the written order a pool of four spends its last five minutes
 # running keepalive alone with three slots idle, because the longest
 # scenario in the list was picked up last.
-SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
+SCENARIOS="rpt solo keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
 	   ifgone renumber register-filter crafted static-rp anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
 		     rpt register-filter alias crafted static-rp ssm ifgone
-		     renumber ssm-range"
+		     renumber ssm-range solo"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -927,6 +927,18 @@ SHARED_EPAIRS="$BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS ${EP}510"
 # from the first hop router to the last hop one, so the RP no longer sits
 # on the path the traffic takes once the shortest path tree is up.
 OFFPATH_EPAIRS="$DEFAULT_EPAIRS ${EP}113"
+
+# solo: one router, an end device on each of its two LANs and nothing else.
+# The link to the receiver is numbered 104 rather than 102 or 103, which
+# would read as a link to a second or third router; there is none here.
+SOLO_BOXES="ed1 r1 ed2"
+SOLO_ROUTERS="r1"
+SOLO_EPAIRS="${EP}101 ${EP}104"
+SOLO_ED2_IF=${EP}104b
+SOLO_RCV_ADDR=${SOLO_RCV_ADDR:-10.0.4.10}
+# The address r1.conf names its candidacies by, so the RP is this and not
+# "whatever address is highest"
+SOLO_RP_ADDR=${SOLO_RP_ADDR:-10.0.1.1}
 OFFPATH_R1_IF=${EP}113a
 OFFPATH_R3_IF=${EP}113b
 OFFPATH_R1_ADDR=10.0.13.1
@@ -938,7 +950,7 @@ OFFPATH_RP_ADDR=10.0.23.2
 # Everything any scenario can create, so stop() cleans up without having to
 # be told which one was running.
 ALL_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
-ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS ${EP}113"
+ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS ${EP}113 ${EP}104"
 
 # Source and RP addresses the assertions expect.  set_scenario() puts
 # SRC_ADDR back from the default, the alias scenario moves it.
@@ -1172,6 +1184,18 @@ CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
 # the longest t_suppressed, 84s, left over from step 5, plus a tick.
 SUPP_ADDR=${SUPP_ADDR:-10.0.12.9}
 R1_UP_ADDR=${R1_UP_ADDR:-10.0.12.1}
+
+# rpt: the contested elections.  R1 takes the BSR with the higher priority
+# of the two and loses the RP with the higher number of the two, so the BSR
+# is $R1_UP_ADDR and the RP stays $RP_ADDR.
+BSR_PRIO=${BSR_PRIO:-12}
+CRP_LOSER_PRIO=${CRP_LOSER_PRIO:-30}
+
+# rpt: the group nobody has joined when its stream starts, and how long
+# after the first packet the receiver joins it -- the ordering of
+# https://github.com/troglobit/pimd/issues/192
+LATE_GROUP=${LATE_GROUP:-225.1.2.9}
+LATE_DELAY=${LATE_DELAY:-2}
 SUPP_GROUP=${SUPP_GROUP:-225.1.4.4}
 SUPP_PERIOD=${SUPP_PERIOD:-60}
 SUPP_WINDOW=${SUPP_WINDOW:-140}
@@ -1419,7 +1443,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
+	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1441,6 +1465,11 @@ set_scenario() {
 		else
 			SL_DR_ADDR=$SL_DR_ADDR_DEFAULT
 		fi
+	elif [ "$SCENARIO" = solo ]; then
+		BOXES=$SOLO_BOXES
+		ROUTERS=$SOLO_ROUTERS
+		EPAIRS=$SOLO_EPAIRS
+		ED2_IF=$SOLO_ED2_IF
 	elif [ "$SCENARIO" = rp-offpath ]; then
 		BOXES=$DEFAULT_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -1516,6 +1545,15 @@ ifaces() {
 		return
 	fi
 
+	if [ "$SCENARIO" = solo ]; then
+		case $1 in
+		ed1) echo "${EP}101a" ;;
+		r1)  echo "${EP}101b ${EP}104a" ;;
+		ed2) echo "${EP}104b" ;;
+		esac
+		return
+	fi
+
 	if [ "$SCENARIO" = rp-offpath ]; then
 		case $1 in
 		ed1) echo "${EP}101a" ;;
@@ -1577,6 +1615,15 @@ addrs() {
 		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
 		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 $OFFPATH_R3_IF $OFFPATH_R3_ADDR/24" ;;
 		ed2) echo "${EP}203b 10.0.3.10/24" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = solo ]; then
+		case $1 in
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}104a 10.0.4.1/24" ;;
+		ed2) echo "${EP}104b $SOLO_RCV_ADDR/24" ;;
 		esac
 		return
 	fi
@@ -1683,6 +1730,14 @@ routes() {
 		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
 		r3)  echo "10.0.12.0/24 10.0.23.2 10.0.1.0/24 $GIF_R1" ;;
 		ed2) echo "default 10.0.3.1" ;;
+		esac
+		return ;;
+	solo)
+		# Both LANs are R1's own, so the end devices need nothing but
+		# a way off theirs and R1 needs no route at all
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		ed2) echo "default 10.0.4.1" ;;
 		esac
 		return ;;
 	rp-offpath)
@@ -2302,6 +2357,52 @@ write_configs() {
 		return
 	fi
 
+	if [ "$SCENARIO" = solo ]; then
+		# Every role on one router: the DR for the source, the BSR,
+		# the RP the shared tree ends at, and the last hop router for
+		# the receiver.  Both candidacies name the interface rather
+		# than letting pimd fall back to the highest active address,
+		# so $SOLO_RP_ADDR is the RP whichever LAN comes up first.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: BSR, RP, DR and last hop router at once
+		bsr-candidate ${EP}101b priority 1 interval 10
+		rp-candidate ${EP}101b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = rpt ]; then
+		# Both elections are contested here, and they are decided in
+		# opposite directions: RFC 5059 sec. 3.1 gives the BSR to the
+		# *higher* priority and RFC 7761 sec. 4.7.1 gives the RP to the
+		# *lower* one, so R1 wins the first, R2 the second, and the
+		# domain ends up with a bootstrap router that is not its RP --
+		# the one shape where a Cand-RP-Adv has to travel to a BSR
+		# somewhere else and come back in that BSR's Bootstrap.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for $SRC_ADDR, the bootstrap router,
+		# and the candidate RP that has to lose
+		bsr-candidate ${EP}112a priority $BSR_PRIO interval 10
+		rp-candidate ${EP}112a priority $CRP_LOSER_PRIO interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: the candidate RP that has to win, and a candidate BSR
+		# that has to lose.  Epair112b is spelled with an uppercase
+		# letter on purpose, see renames()
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router for the receiver LAN
+		EOF
+		return
+	fi
+
 	cat <<-EOF > "$WORKDIR/r1.conf"
 	# R1: first hop router for $SRC_ADDR, no BSR/RP role
 	EOF
@@ -2532,6 +2633,29 @@ took_p2p_branch() {
 	${SUDO} grep -q "Installing $GIF_IF ($2 -> $3)" "$WORKDIR/$1.log" 2>/dev/null
 }
 has_rp()       { pimctl "$1" show rp 2>/dev/null | grep -q "$2"; }
+
+# The BSR router $1 has elected, out of the "Elected BSR" block of
+# "show status"; empty while it has none
+elected_bsr() {
+	pimctl "$1" show status 2>/dev/null | awk '
+		/^Elected BSR/      { want = 1; next }
+		want && $1 == "Address" { print $3; exit }
+	'
+}
+elected_bsr_is() { [ "$(elected_bsr "$1")" = "$2" ]; }
+
+# Does router $1 hold $2 in the candidate RP set it was given, "show crp",
+# which is the set the BSR distributes rather than the one RP it elects
+has_crp() {
+	pimctl "$1" show crp 2>/dev/null | \
+		awk -v a="$2" '$2 == a { found = 1 } END { exit !found }'
+}
+
+# ... and both of them, for wait_for(): a candidate reaches a router in the
+# BSR's next Bootstrap, and the two candidacies here are not advertised in
+# the same one, so the set is complete an advertisement interval after it
+# first has anything in it at all
+has_both_crps() { has_crp "$1" "$2" && has_crp "$1" "$3"; }
 has_mrt()      { pimctl "$1" show mrt 2>/dev/null | grep -q "$2"; }
 
 # Every (S,G) the source is sending to, one per line, as pimctl shows them
@@ -2692,6 +2816,8 @@ iface_dr() {
 # group table, both keyed on the interface name and both stripped of their
 # headings by -t, so the rows are told apart by the interface state in the
 # second column.
+iface_querier_is() { [ "$(iface_querier "$1" "$2")" = "$3" ]; }
+
 iface_querier() {
 	pimctl "$1" -t show igmp 2>/dev/null | \
 		awk -v ifn="$2" '$1 == ifn && $2 ~ /^(Up|Down|Disabled)$/ { print $3; exit }'
@@ -3164,6 +3290,7 @@ check() {
 	XFAILED=0
 
 	case $SCENARIO in
+	solo)       check_solo; return $? ;;
 	keepalive)  check_keepalive; return $? ;;
 	rp-lasthop) check_rp_lasthop; return $? ;;
 	rp-offpath) check_rp_offpath; return $? ;;
@@ -3225,7 +3352,33 @@ check() {
 	# network can do while it is still converging - the first packets are
 	# what builds the tree.  Count the replies instead and require the
 	# stream to be flowing rather than perfect.
-	print "4. Multicast is forwarded from ED1 to ED2 through the RP"
+	# The elections themselves, which every other scenario leaves
+	# uncontested: one candidate of each kind, both on R2.  Here R1 is a
+	# candidate for both and has to win exactly one of them, so a
+	# Cand-RP-Adv reaches a BSR that is not the sender, and the RP set
+	# that comes back carries a candidate the BSR did not elect.
+	print "4. The bootstrap router is elected, and it is not the RP"
+	for r in $ROUTERS; do
+		if wait_for 90 elected_bsr_is "$r" "$R1_UP_ADDR"; then
+			ok "$r elected $R1_UP_ADDR as BSR, priority $BSR_PRIO beating R2's 1"
+		else
+			fail "$r has BSR '$(elected_bsr "$r")', expected $R1_UP_ADDR"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	if [ "$R1_UP_ADDR" != "$RP_ADDR" ]; then
+		ok "the BSR ($R1_UP_ADDR) and the RP ($RP_ADDR) are different routers"
+	else
+		fail "the BSR and the RP are the same address, the scenario tests nothing"
+	fi
+	if wait_for 90 has_both_crps r3 "$R1_UP_ADDR" "$RP_ADDR"; then
+		ok "r3 was given both candidate RPs and elected the better one, $RP_ADDR"
+	else
+		fail "r3's candidate RP set is missing one of $R1_UP_ADDR and $RP_ADDR: $(pimctl r3 -t show crp 2>/dev/null | tr '\n' ' ')"
+	fi
+
+	print "5. Multicast is forwarded from ED1 to ED2 through the RP"
 	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
@@ -3243,7 +3396,7 @@ check() {
 		fail "only $replies replies, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
 	fi
 
-	print "5. pimd installed the route it claims to have"
+	print "6. pimd installed the route it claims to have"
 	if has_mrt r3 "$GROUP"; then
 		ok "r3 has $GROUP in its multicast routing table"
 	else
@@ -3255,7 +3408,7 @@ check() {
 		fail "r1 has no (S,G) for $SRC_ADDR"
 	fi
 
-	print "6. The kernel MFC in each vnet agrees with pimd"
+	print "7. The kernel MFC in each vnet agrees with pimd"
 	if has_mfc r3 "$GROUP"; then
 		ok "r3 kernel has an MFC entry for $GROUP"
 	else
@@ -3265,6 +3418,34 @@ check() {
 		ok "r1 kernel has an MFC entry for $GROUP"
 	else
 		fail "r1 kernel MFC is empty"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# Every stream above is joined before it starts, which is the easy
+	# order: the tree is up when the first packet is sent.  The other way
+	# round is https://github.com/troglobit/pimd/issues/192 -- the DR
+	# registers to an RP nobody is joined at, the RP stops it, and when
+	# the receiver does join, the shared tree has to be built towards a
+	# source whose Register-Stop already came.  A group of its own, so
+	# none of the state above is what answers this.
+	print "8. A receiver joining after the stream started is caught up"
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$LATE_GROUP" \
+		>"$WORKDIR/late-sender.log" 2>&1 &
+	late_sender=$!
+	sleep "$LATE_DELAY"
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$LATE_GROUP" \
+		>"$WORKDIR/late-receiver.log" 2>&1 &
+	late_receiver=$!
+	wait "$late_sender" 2>/dev/null || true
+	kill "$late_receiver" 2>/dev/null || true
+	wait "$late_receiver" 2>/dev/null || true
+
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/late-sender.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED2 joined $LATE_GROUP ${LATE_DELAY}s late and still got $replies of $STREAM_PKTS"
+	else
+		fail "only $replies replies for $LATE_GROUP, want >= $MIN_REPLIES, see $WORKDIR/late-sender.log"
 	fi
 
 	echo
@@ -3696,15 +3877,18 @@ check_anycast() {
 
 	# ... and the same fact read at the receiving end, off the wire rather
 	# than off what r2 said it sent
-	len=$(anycast_reglen r3 "$ANY_R2")
-	if [ -z "$len" ]; then
+	if ! wait_for 60 anycast_reglen_seen r3 "$ANY_R2"; then
 		fail "r3 logged no Register from $ANY_R2 to measure"
-	elif [ "$REGISTER_UPCALL" = headers ] && [ "$len" -eq "$REG_NULL_LEN" ]; then
-		ok "r3 was handed $len bytes, a Register carrying only the header it encapsulates"
-	elif [ "$REGISTER_UPCALL" = whole ] && [ "$len" -gt "$REG_NULL_LEN" ]; then
-		ok "r3 was handed $len bytes, more than the $REG_NULL_LEN of a Null-Register"
 	else
-		fail "r3 was handed $len bytes for a $want copy, expected ${REGISTER_UPCALL} of the Register"
+		len=$(anycast_reglen r3 "$ANY_R2")
+		if [ "$REGISTER_UPCALL" = headers ] && [ "$len" -eq "$REG_NULL_LEN" ]; then
+			ok "no copy r3 was handed was longer than $len bytes, the header alone"
+		elif [ "$REGISTER_UPCALL" = whole ] && \
+		     wait_for 60 anycast_reglen_above r3 "$ANY_R2" "$REG_NULL_LEN"; then
+			ok "r3 was handed $(anycast_reglen r3 "$ANY_R2") bytes, more than the $REG_NULL_LEN of a Null-Register"
+		else
+			fail "the longest copy r3 was handed is $len bytes, expected the $REGISTER_UPCALL of a data Register"
+		fi
 	fi
 
 	print "6. The copy carries one less TTL than the Register it copies"
@@ -3831,6 +4015,23 @@ check_anycast() {
 		ok "r2 counts $count Register (S,G) entries of $ANY_SG_LIMIT"
 	else
 		fail "r2 counts '$count' Register (S,G) entries against a limit of $ANY_SG_LIMIT"
+	fi
+
+	# Step 5 asked what kind of copy had crossed as soon as one had, which
+	# on the headers side is only ever "nothing longer than a header has
+	# arrived *yet*": a data copy appearing later, once the kernel started
+	# handing pimd whole Registers, would have come after the question.
+	# Every copy of the whole scenario has been sent by now, so ask again.
+	print "12. No copy contradicted the kernel's upcall for the whole run"
+	len=$(anycast_reglen r3 "$ANY_R2")
+	if [ -z "$len" ]; then
+		fail "r3 logged no Register from $ANY_R2 at all"
+	elif [ "$REGISTER_UPCALL" = headers ] && [ "$len" -eq "$REG_NULL_LEN" ]; then
+		ok "the longest of them is still $len bytes, the header alone"
+	elif [ "$REGISTER_UPCALL" = whole ] && [ "$len" -gt "$REG_NULL_LEN" ]; then
+		ok "the longest of them is $len bytes, a Register that crossed whole"
+	else
+		fail "the longest copy r3 was handed is $len bytes, which is not the $REGISTER_UPCALL of a data Register"
 	fi
 
 	result
@@ -4036,15 +4237,23 @@ anycast_copies() {
 		sed -n "s/^Anycast-RP set.* $ANY_R3 (\([0-9]*\) copies).*/\1/p"
 }
 
-# anycast: the length of the first Register $1 logged receiving from $2.
-# A Register holding nothing but the inner IP header is 28 bytes, the PIM
-# header and the header it encapsulates, so this is how the receiving end
-# tells a copy of a data Register from a Null-Register -- what r2 logged
-# copying says only what r2 believed it was sending.
+# anycast: the longest Register $1 logged receiving from $2.  A Register
+# holding nothing but the inner IP header is 28 bytes, the PIM header and
+# the header it encapsulates, so this is how the receiving end tells a copy
+# of a data Register from a Null-Register -- what r2 logged copying says
+# only what r2 believed it was sending.
+#
+# The longest rather than the first: the DR probes with a Null-Register
+# while it is suppressed and those are copied too, so which kind arrives
+# first is a race, and what the question is about is whether a data
+# Register ever crosses whole.
 anycast_reglen() {
 	${SUDO} grep "Received PIM register: len = [0-9]* .* from $2" "$WORKDIR/$1.log" 2>/dev/null | \
-		sed -n '1s/.*len = \([0-9]*\) .*/\1/p'
+		sed -n 's/.*len = \([0-9]*\) .*/\1/p' | sort -n | tail -1
 }
+
+anycast_reglen_seen()  { [ -n "$(anycast_reglen "$1" "$2")" ]; }
+anycast_reglen_above() { [ "$(anycast_reglen "$1" "$2")" -gt "$3" ] 2>/dev/null; }
 
 # anycast: the TTL of the first Register $1 logged receiving from $2
 anycast_ttl() {
@@ -6912,6 +7121,100 @@ check_sanitizer() {
 	return 1
 }
 
+# solo: every role on one router.  It is the one shape the rest of this
+# file cannot build -- every other scenario has at least two PIM routers --
+# and what it reaches is the router that is the DR of a source, the RP of
+# the group that source sends to, the BSR that elected it, and the last hop
+# router of a receiver on its other LAN, all at once.  A DR that is its own
+# RP has nothing to register to and must forward the source down the shared
+# tree itself, which process_cache_miss() (src/route.c) decides by comparing
+# the group's RP with its own candidacy.
+check_solo() {
+	print "1. pimd is alive on the only router"
+	if wait_for "$PIMD_START_WAIT" pimd_is_up r1; then
+		ok "r1: pimd answers on its pimctl socket"
+	else
+		fail "r1: pimd not answering, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	print "2. It elected itself, both as bootstrap router and as RP"
+	if wait_for 60 elected_bsr_is r1 "$SOLO_RP_ADDR"; then
+		ok "r1 is the BSR at $SOLO_RP_ADDR, having nobody to lose to"
+	else
+		fail "r1 reads its BSR as '$(elected_bsr r1)', expected $SOLO_RP_ADDR"
+	fi
+	if wait_for 60 has_rp r1 "$SOLO_RP_ADDR"; then
+		ok "r1 learned the RP it advertises itself, $SOLO_RP_ADDR"
+	else
+		fail "r1 has no RP for $GROUP, see $WORKDIR/r1.log"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. It is the IGMP querier on both of its LANs"
+	for i in ${EP}101b ${EP}104a; do
+		if wait_for 60 iface_querier_is r1 "$i" Local; then
+			ok "r1 queries $i itself, nobody else being there to"
+		else
+			fail "r1 reads the querier on $i as '$(iface_querier r1 "$i")', expected Local"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. A report on one LAN becomes a leaf, and the stream crosses"
+	box_run ed2 "$MPING" -r -i "$SOLO_ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	if wait_for 60 has_mrt r1 "$GROUP"; then
+		ok "r1 built ($GROUP) state from ED2's report"
+	else
+		fail "r1 never saw ED2's IGMP report, see $WORKDIR/r1.log"
+		kill "$receiver" 2>/dev/null || true
+		return 1
+	fi
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 || true
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED1 -> $GROUP -> ED2 across one router, $replies replies"
+	else
+		fail "only $replies replies, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. Being the RP itself, it registered the source to nobody"
+	if register_oif_gone r1 "$SRC_ADDR" "$GROUP"; then
+		ok "r1 kept the register vif out of the oifs for $SRC_ADDR"
+	else
+		fail "r1 is the RP for $GROUP and encapsulated $SRC_ADDR towards itself"
+	fi
+	rcvd=$(registers_rcvd r1)
+	if [ "${rcvd:-0}" -eq 0 ]; then
+		ok "and its kernel decapsulated no Register at all"
+	else
+		fail "r1's kernel took in $rcvd Register(s) on a router that is its own RP"
+	fi
+
+	print "6. The kernel MFC agrees with pimd"
+	if has_mfc r1 "$GROUP"; then
+		ok "r1 kernel has an MFC entry for $GROUP"
+	else
+		fail "r1 kernel MFC is empty, pimd never pushed the route down"
+	fi
+
+	result || {
+		dprint "--- r1: pimctl show pim detail ---"
+		pimctl r1 show pim detail 2>&1 | tail -40 || true
+		dprint "--- r1: $MFC_SHOW_CMD ---"
+		mfc_show r1 2>&1 || true
+		return 1
+	}
+}
+
 # Its status has a name of its own: sh has no locals, and "run all" keeps
 # the verdict of the whole walk in rc, which a passing scenario after a
 # failed one would otherwise put back to 0.
@@ -7074,7 +7377,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same nineteen either way, ordered by how long they
+		# The same twenty either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH
