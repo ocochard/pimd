@@ -194,6 +194,42 @@
 #                   window.
 #               Takes about 6 minutes.
 #
+#   anycast     Anycast-RP using PIM, RFC 4610, with the Arista one of the
+#               two members of the set: EOS implements it as "anycast-rp"
+#               under "router pim sparse-mode".  pimd-rp's topology, ED4
+#               included, with 10.0.99.1 held by the Arista on Loopback1
+#               and by R3 on lo0, and R1's route to 10.0.99.1 going to the
+#               Arista.  The Arista's unique address is 10.0.99.2 on
+#               Loopback2, R3's is its end of the link between them.
+#               EOS needs it that way: its member address has to be a /32
+#               on a loopback, and with an interface address instead EOS
+#               takes the set without complaint and never acts on it --
+#               "show ip pim anycast-rp" lists nothing, and it neither
+#               copies a Register nor keeps state for one it is copied.
+#
+#                 ED1 --- R1 --- vEOS --- R3 --- ED2
+#                 .10     DR   (member)  (member)  .10
+#                                  |     RP + DR
+#                                 ED4
+#
+#               Four exchanges, each run first without the set as its
+#               control, then with it:
+#
+#                 - a copy written by EOS, parsed by pimd: R1 registers
+#                   ED1 to the Arista, which copies to R3, and ED2 behind
+#                   R3 is reached.
+#                 - a Register EOS writes as RP and DR of its own source,
+#                   parsed by pimd: ED4 sends, and ED2 is reached.
+#                 - a Register pimd writes as RP and DR of its own source,
+#                   parsed by EOS: ED2 sends, ED4 is reached, and R3 acts
+#                   on the Register-Stop EOS answers with.
+#                 - copies written by pimd, parsed by EOS: a data Register
+#                   and a Null-Register test/pimsend sends from ED2 to
+#                   10.0.99.1 are copied by R3 to the Arista, which has to
+#                   hold the sources they name.
+#               Takes about 5 minutes, the controls waiting out streams
+#               that must not arrive.
+#
 # Which is also why this is not another scenario in freebsd-lab.sh: that
 # script needs nothing but jails, and this one needs a 4G VM image, bhyve
 # and a vendor OS.
@@ -331,7 +367,7 @@ VEOS_SH=${VEOS_SH:-$(cd "$(dirname "$0")" && pwd)/veos-bhyve.sh}
 VEOS_VM=${VEOS_VM:-veos$TAG}
 
 SCENARIO=${SCENARIO:-arista-rp}
-SCENARIOS="arista-rp pimd-rp assert-lan rpt-override"
+SCENARIOS="arista-rp pimd-rp assert-lan rpt-override anycast"
 
 # Jails.  A prefix of their own so this lab and freebsd-lab.sh can be built
 # in the same tree without either one destroying the other's boxes.  ED4
@@ -578,6 +614,27 @@ AL_STREAM_LIFE=$((AL_FWD_WAIT + AL_ASSERT_TIME + 2 * AL_ELECTION_WAIT + 150))
 # is also its duration in seconds.
 AL_STREAM_PKTS=${AL_STREAM_PKTS:-$AL_STREAM_LIFE}
 
+# anycast ---------------------------------------------------------------
+#
+# The anycast RP address, held by the Arista on Loopback1 and by R3 on lo0,
+# and each member's unique address, the one its copies and member Registers
+# are sourced from: the Arista's on Loopback2, which EOS requires, and R3's
+# end of the link between them.  A group per exchange and per control, so
+# that one cannot leave state behind for the next.  AN_SRC and AN_SRC_NULL
+# are the sources test/pimsend names in the Registers it sends, addresses on
+# ED2's LAN that nothing answers from, so that only a Register can have put
+# them in anybody's table.
+AN_ADDR=${AN_ADDR:-10.0.99.1}
+AN_EOS=${AN_EOS:-10.0.99.2}
+AN_R3=${AN_R3:-10.0.23.3}
+AN_G_EOSCOPY=${AN_G_EOSCOPY:-225.1.3.1}
+AN_G_EOSDR=${AN_G_EOSDR:-225.1.3.2}
+AN_G_PIMDDR=${AN_G_PIMDDR:-225.1.3.3}
+AN_G_COPY=${AN_G_COPY:-225.1.3.4}
+AN_G_NULL=${AN_G_NULL:-225.1.3.5}
+AN_SRC=${AN_SRC:-10.0.3.77}
+AN_SRC_NULL=${AN_SRC_NULL:-10.0.3.78}
+
 # rpt-override ----------------------------------------------------------
 #
 # X3's address on the link between the Arista and R3, and the Arista's own
@@ -670,13 +727,18 @@ usage() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	arista-rp|pimd-rp|assert-lan|rpt-override) SCENARIO=${1:-$SCENARIO} ;;
+	arista-rp|pimd-rp|assert-lan|rpt-override|anycast) SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
 
 	# Read by everything that walks the topology, so a scenario left
 	# behind by a previous "run all" cannot leak into the next one.
 	case $SCENARIO in
+	anycast)
+		BOXES=$REVERSED_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
+		EPAIRS=$REVERSED_EPAIRS
+		RP_ADDR=$AN_ADDR ;;
 	pimd-rp)
 		BOXES=$REVERSED_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -749,7 +811,11 @@ addrs() {
 	case $1 in
 	ed1) echo "${EP}801a 10.0.1.10/24" ;;
 	r1)  echo "${EP}801b 10.0.1.1/24 ${EP}812b 10.0.12.1/24" ;;
-	r3)  echo "${EP}823b 10.0.23.3/24 ${EP}803a 10.0.3.1/24" ;;
+	r3)  if [ "$SCENARIO" = anycast ]; then
+		echo "${EP}823b 10.0.23.3/24 ${EP}803a 10.0.3.1/24 lo0 $AN_ADDR/32"
+	     else
+		echo "${EP}823b 10.0.23.3/24 ${EP}803a 10.0.3.1/24"
+	     fi ;;
 	ed2) echo "${EP}803b 10.0.3.10/24" ;;
 	ed4) echo "${EP}804b $ED4_ADDR/24" ;;
 	x3)  echo "$RO_X3_IF $RO_X3_ADDR/24" ;;
@@ -775,6 +841,19 @@ routes() {
 		ed2) echo "default 10.0.5.1" ;;
 		ed3) echo "default $AL_EOS_ADDR" ;;
 		ed6) echo "default 10.0.6.1" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = anycast ]; then
+		# pimd-rp's routes, and R1's to the anycast address, which is
+		# what makes the Arista the member R1 registers to
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2 10.0.4.0/24 10.0.12.2 $AN_ADDR/32 10.0.12.2" ;;
+		r3)  echo "10.0.1.0/24 10.0.23.2 10.0.12.0/24 10.0.23.2 10.0.4.0/24 10.0.23.2 $AN_EOS/32 10.0.23.2" ;;
+		ed2) echo "default 10.0.3.1" ;;
+		ed4) echo "default 10.0.4.1" ;;
 		esac
 		return
 	fi
@@ -976,6 +1055,82 @@ write_case_confs() {
 }
 
 write_configs() {
+	if [ "$SCENARIO" = anycast ]; then
+		# No BSR, the RP address is configured on every router: the
+		# set is what is under test, and every router has to agree on
+		# one RP address that two of them hold.  The anycast-rp lines
+		# are not here, on either member: check_anycast() adds them
+		# once the control half has run without.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for ED1, registering to $AN_ADDR,
+		# which its route takes to the Arista
+		hello-interval 10
+		rp-address $AN_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: holds $AN_ADDR on lo0, the RP and the DR for ED2
+		hello-interval 10
+		rp-address $AN_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/veos.cfg"
+		! Generated by freebsd-interop.sh, do not edit in place
+		no aaa root
+		username $EAPI_USER privilege 15 role network-admin secret 0 $EAPI_PASS
+		!
+		hostname veos-interop
+		no logging console
+		spanning-tree mode none
+		!
+		interface Management1
+		   ip address $MGMT_VEOS/24
+		!
+		management api http-commands
+		   no shutdown
+		   protocol http
+		!
+		interface Ethernet1
+		   no switchport
+		   ip address 10.0.12.2/24
+		   pim ipv4 sparse-mode
+		!
+		interface Ethernet2
+		   no switchport
+		   ip address 10.0.23.2/24
+		   pim ipv4 sparse-mode
+		!
+		interface Ethernet3
+		   no switchport
+		   ip address 10.0.4.1/24
+		   pim ipv4 sparse-mode
+		!
+		interface Loopback1
+		   ip address $AN_ADDR/32
+		!
+		interface Loopback2
+		   ip address $AN_EOS/32
+		!
+		ip routing
+		!
+		ip route 10.0.1.0/24 10.0.12.1
+		ip route 10.0.3.0/24 10.0.23.3
+		!
+		router multicast
+		   ipv4
+			  routing
+		!
+		router pim sparse-mode
+		   ipv4
+			  rp address $AN_ADDR
+		!
+		end
+		EOF
+
+		write_eapi_helper
+		return
+	fi
+
 	if [ "$SCENARIO" = assert-lan ]; then
 		# R1 is the BSR and the RP as well as the first hop router.
 		# One router fewer to boot, and it keeps every address the
@@ -1250,7 +1405,7 @@ create_lans() {
 
 	bridges="$BR12 $BR23 $BR_MGMT"
 	bridged_epairs="${EP}812 ${EP}823"
-	if [ "$SCENARIO" = pimd-rp ]; then
+	if [ "$SCENARIO" = pimd-rp ] || [ "$SCENARIO" = anycast ]; then
 		bridges="$bridges $BR4"
 		bridged_epairs="$bridged_epairs ${EP}804"
 	fi
@@ -1275,7 +1430,7 @@ create_lans() {
 	done
 	${SUDO} ifconfig "$BR12" addm ${EP}812a
 	${SUDO} ifconfig "$BR23" addm ${EP}823a
-	[ "$SCENARIO" = pimd-rp ] && ${SUDO} ifconfig "$BR4" addm ${EP}804a
+	case $SCENARIO in pimd-rp|anycast) ${SUDO} ifconfig "$BR4" addm ${EP}804a ;; esac
 	[ "$SCENARIO" = rpt-override ] && ${SUDO} ifconfig "$BR23" addm ${EP}824a
 
 	return 0
@@ -1343,7 +1498,7 @@ veos() {
 	et2="$TAP_ET2:$BR23"
 	et3=$TAP_ET3
 	case $SCENARIO in
-	pimd-rp)    et3="$TAP_ET3:$BR4" ;;
+	pimd-rp|anycast) et3="$TAP_ET3:$BR4" ;;
 	assert-lan) et2="$TAP_ET2:$BR3" ;;
 	esac
 
@@ -1373,7 +1528,7 @@ start() {
 	print "Building mping (multicast ping) from the pimd tree ..."
 	cc -O2 -o "$MPING" "$PIMD_SRC/test/mping.c" || \
 		die "failed building $PIMD_SRC/test/mping.c"
-	if [ "$SCENARIO" = rpt-override ]; then
+	if [ "$SCENARIO" = rpt-override ] || [ "$SCENARIO" = anycast ]; then
 		print "Building pimsend (crafted PIM message generator) ..."
 		cc -O2 -o "$PIMSEND" "$PIMD_SRC/test/pimsend.c" || \
 			die "failed building $PIMD_SRC/test/pimsend.c"
@@ -2435,6 +2590,7 @@ check() {
 	pimd-rp)    check_pimd_rp;    return $? ;;
 	assert-lan) check_assert_lan; return $? ;;
 	rpt-override) check_rpt_override; return $? ;;
+	anycast)    check_anycast;    return $? ;;
 	esac
 
 	print "1. pimd and EOS become PIM neighbours on both links"
@@ -2571,6 +2727,238 @@ check() {
 	fi
 
 	return $((FAILED > 0))
+}
+
+# --- anycast ----------------------------------------------------------
+
+# anycast: does the Arista hold an (S,G) for source $1 in group $2?
+eos_has_sg() {
+	eos "show ip mroute $2" 2>/dev/null | grep -q "^ *$1"
+}
+
+# anycast: run one stream from box $1 on interface $2 to group $3, with a
+# receiver on box $4, interface $5, and succeed if the receiver got 5
+# packets within $6 seconds.  Counted by the receiver, which exits 0 once it has answered 5,
+# rather than from the sender's replies: a reply needs the way back as well,
+# and that is a second exchange with a set of its own to go wrong.
+an_stream() {
+	jrun "$4" timeout "$6" "$MPING" -r -i "$5" -t 5 -c 5 "$3" \
+		>"$WORKDIR/an-receiver-$3.log" 2>&1 &
+	an_rcv=$!
+	sleep 3
+	jrun "$1" "$MPING" -s -i "$2" -t 5 -c "$STREAM_PKTS" -w 120 "$3" \
+		>"$WORKDIR/an-sender-$3.log" 2>&1 &
+	an_snd=$!
+	an_rc=0
+	wait "$an_rcv" || an_rc=$?
+	kill "$an_snd" 2>/dev/null
+	wait "$an_snd" 2>/dev/null
+	return "$an_rc"
+}
+
+# anycast: RFC 4610 with the Arista a member of the set, see the header.
+# Every exchange runs twice, before the set exists and after, and the first
+# run is the control: a receiver reached anyway, or an Arista holding a
+# pimsend source anyway, would make the second prove nothing.
+#
+# The data copy pimd sends is made from a Register test/pimsend sends whose
+# inner packet is an IP header and nothing more: the one data Register the
+# FreeBSD kernel hands pimd whole.  Every other copy a FreeBSD pimd makes of
+# a data Register is a Null-Register, the other half of step 7.
+check_anycast() {
+	print "1. pimd and EOS become PIM neighbours, and all agree on the RP"
+	if wait_for 60 eos_has_neighbor 10.0.12.1 && wait_for 60 eos_has_neighbor 10.0.23.3; then
+		ok "the Arista sees R1 and R3"
+	else
+		fail "the Arista never saw R1 and R3 as PIM neighbours"
+	fi
+	if wait_for 60 has_neighbor r3 10.0.23.2 && wait_for 60 has_neighbor r1 10.0.12.2; then
+		ok "R1 and R3 see the Arista"
+	else
+		fail "R1 or R3 never saw the Arista"
+	fi
+	if eos "show ip pim rp" 2>/dev/null | grep -q "$AN_ADDR" && has_rp r1 "$AN_ADDR" && has_rp r3 "$AN_ADDR"; then
+		ok "the Arista, R1 and R3 all have $AN_ADDR for their RP"
+	else
+		fail "not every router has $AN_ADDR for its RP"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. Without a set, no exchange gets across between the two RPs"
+	if an_stream ed1 "$ED1_IF" "$AN_G_EOSCOPY" ed2 "$ED2_IF" 45; then
+		fail "ED2 was reached from ED1, which registers to the Arista, with no set"
+	else
+		ok "ED2 heard nothing from ED1, which registers to the Arista"
+	fi
+	if an_stream ed4 "$ED4_IF" "$AN_G_EOSDR" ed2 "$ED2_IF" 45; then
+		fail "ED2 was reached from ED4, whose RP is the Arista itself, with no set"
+	else
+		ok "ED2 heard nothing from ED4, whose RP is the Arista itself"
+	fi
+	if an_stream ed2 "$ED2_IF" "$AN_G_PIMDDR" ed4 "$ED4_IF" 45; then
+		fail "ED4 was reached from ED2, whose RP is R3 itself, with no set"
+	else
+		ok "ED4 heard nothing from ED2, whose RP is R3 itself"
+	fi
+	an_pimsend "$AN_G_COPY" "$AN_SRC" ""
+	if eos_has_sg "$AN_SRC" "$AN_G_COPY"; then
+		fail "the Arista holds ($AN_SRC, $AN_G_COPY) with no set, from a Register sent to R3"
+	else
+		ok "the Arista does not hold ($AN_SRC, $AN_G_COPY), registered to R3 alone"
+	fi
+	if ${SUDO} grep -q "Received PIM register: .* from $AN_EOS" "$WORKDIR/r3.log" || \
+		${SUDO} grep -q "Copy PIM Register\|Send PIM Register for" "$WORKDIR/r3.log"; then
+		fail "a member Register or a copy crossed between R3 and the Arista with no set"
+	else
+		ok "no Register crossed between R3 and the Arista"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. The Arista and R3 are made one Anycast-RP set"
+	printf 'anycast-rp %s %s\nanycast-rp %s %s\n' "$AN_ADDR" "$AN_EOS" "$AN_ADDR" "$AN_R3" \
+		>> "$WORKDIR/r3.conf"
+	pimctl r3 restart >/dev/null 2>&1 || die "failed reloading pimd on r3"
+	eos "configure" "router pim sparse-mode" "ipv4" \
+		"anycast-rp $AN_ADDR $AN_EOS" "anycast-rp $AN_ADDR $AN_R3" "end" >/dev/null || \
+		die "the Arista refused the anycast-rp configuration"
+	# What says EOS took the set, and not only its running-config: with
+	# a member address that is not a loopback /32 this lists nothing
+	if wait_for 30 eos_anycast_peers; then
+		ok "the Arista lists $AN_EOS and $AN_R3 as the peers of anycast RP $AN_ADDR"
+	else
+		fail "'show ip pim anycast-rp' on the Arista does not list the set"
+		dprint "$(eos 'show ip pim anycast-rp')"
+		return 1
+	fi
+	if wait_for 30 pimd_anycast_member r3 "$AN_R3"; then
+		ok "R3 is member $AN_R3 of the set for $AN_ADDR"
+	else
+		fail "R3's show status names no Anycast-RP set with itself a member"
+		return 1
+	fi
+	if wait_for 60 has_neighbor r3 10.0.23.2 && wait_for 60 eos_has_neighbor 10.0.23.3; then
+		ok "R3 and the Arista are neighbours again after the reload"
+	else
+		fail "R3 and the Arista did not find each other again after the reload"
+		return 1
+	fi
+
+	print "4. A copy written by EOS is believed by pimd"
+	if an_stream ed1 "$ED1_IF" "$AN_G_EOSCOPY" ed2 "$ED2_IF" 150; then
+		ok "ED2 received 5 packets from ED1, whose Registers reach the Arista only"
+	else
+		fail "ED2 was not reached from ED1"
+	fi
+	if ${SUDO} grep -q "Received PIM register: .* from $AN_EOS" "$WORKDIR/r3.log"; then
+		ok "R3 was sent Registers by the Arista, from its member address $AN_EOS"
+	else
+		fail "R3 logged no Register from $AN_EOS"
+	fi
+	if ${SUDO} grep -q "not to Anycast-RP" "$WORKDIR/r3.log"; then
+		fail "R3 took a Register from the Arista for a misaddressed one"
+	else
+		ok "R3 took them for Registers from inside the set"
+	fi
+	if has_mrt r3 "$SRC_ADDR"; then
+		ok "R3 holds ($SRC_ADDR, $AN_G_EOSCOPY)"
+	else
+		fail "R3 holds no ($SRC_ADDR, $AN_G_EOSCOPY)"
+	fi
+
+	print "5. A Register EOS sends as RP and DR is believed by pimd"
+	if an_stream ed4 "$ED4_IF" "$AN_G_EOSDR" ed2 "$ED2_IF" 150; then
+		ok "ED2 received 5 packets from ED4, whose RP is the Arista itself"
+	else
+		fail "ED2 was not reached from ED4"
+	fi
+	if has_mrt r3 "$ED4_ADDR"; then
+		ok "R3 holds ($ED4_ADDR, $AN_G_EOSDR)"
+	else
+		fail "R3 holds no ($ED4_ADDR, $AN_G_EOSDR)"
+	fi
+
+	print "6. A Register pimd sends as RP and DR is believed by EOS"
+	if an_stream ed2 "$ED2_IF" "$AN_G_PIMDDR" ed4 "$ED4_IF" 150; then
+		ok "ED4 received 5 packets from ED2, whose RP is R3 itself"
+	else
+		fail "ED4 was not reached from ED2"
+		dprint "$(eos "show ip mroute $AN_G_PIMDDR")"
+	fi
+	if ${SUDO} grep -q "Send PIM Register for ($RCV_ADDR, $AN_G_PIMDDR) to Anycast-RP member $AN_EOS, data" "$WORKDIR/r3.log"; then
+		ok "R3 registered ($RCV_ADDR, $AN_G_PIMDDR) to the Arista from its member address"
+	else
+		fail "R3 logged no data Register for ($RCV_ADDR, $AN_G_PIMDDR) to $AN_EOS"
+	fi
+	if ${SUDO} grep -q "Received PIM_REGISTER_STOP from RP $AN_EOS to $AN_R3 for src = $RCV_ADDR and group = $AN_G_PIMDDR" "$WORKDIR/r3.log"; then
+		ok "the Arista answered with a Register-Stop, and R3 took it from a member"
+	else
+		fail "R3 logged no Register-Stop from $AN_EOS for ($RCV_ADDR, $AN_G_PIMDDR)"
+	fi
+
+	print "7. Copies written by pimd are believed by EOS"
+	an_pimsend "$AN_G_COPY" "$AN_SRC" ""
+	if ${SUDO} grep -q "Copy PIM Register from $RCV_ADDR for ($AN_SRC, $AN_G_COPY) to Anycast-RP member $AN_EOS, TTL [0-9]*, data" "$WORKDIR/r3.log"; then
+		ok "R3 copied the Register for ($AN_SRC, $AN_G_COPY) to the Arista, as a data Register"
+	else
+		fail "R3 did not copy the Register for ($AN_SRC, $AN_G_COPY) as a data Register"
+	fi
+	if wait_for 20 eos_has_sg "$AN_SRC" "$AN_G_COPY"; then
+		ok "the Arista holds ($AN_SRC, $AN_G_COPY), a source only pimd's data copy names"
+	else
+		fail "the Arista holds no ($AN_SRC, $AN_G_COPY) after pimd's data copy"
+		dprint "$(eos "show ip mroute $AN_G_COPY")"
+	fi
+	an_pimsend "$AN_G_NULL" "$AN_SRC_NULL" -N
+	if ${SUDO} grep -q "Copy PIM Register from $RCV_ADDR for ($AN_SRC_NULL, $AN_G_NULL) to Anycast-RP member $AN_EOS, TTL [0-9]*, null" "$WORKDIR/r3.log"; then
+		ok "R3 copied the Null-Register for ($AN_SRC_NULL, $AN_G_NULL) to the Arista"
+	else
+		fail "R3 did not copy the Null-Register for ($AN_SRC_NULL, $AN_G_NULL)"
+	fi
+	# The A flag is EOS's "Learned via Anycast RP Router": the source came
+	# from the copy and from nowhere else
+	if wait_for 20 eos_sg_anycast "$AN_SRC_NULL" "$AN_G_NULL"; then
+		ok "the Arista holds ($AN_SRC_NULL, $AN_G_NULL), flagged learned via an anycast RP"
+	else
+		fail "the Arista holds no ($AN_SRC_NULL, $AN_G_NULL) learned from pimd's Null-Register copy"
+		dprint "$(eos "show ip mroute $AN_G_NULL")"
+	fi
+
+	return $((FAILED > 0))
+}
+
+# anycast: does the Arista list both members as peers of the anycast RP?
+eos_anycast_peers() {
+	out=$(eos "show ip pim anycast-rp" 2>/dev/null)
+	echo "$out" | grep -q "Anycast Peers address is $AN_EOS" && \
+		echo "$out" | grep -q "Anycast Peers address is $AN_R3"
+}
+
+# anycast: does the Arista hold ($1, $2) with its "learned via Anycast RP
+# Router" flag?
+eos_sg_anycast() {
+	eos "show ip mroute $2" 2>/dev/null | grep -q "^ *$1, .*flags: [A-Z]*A"
+}
+
+# anycast: send one Register from ED2 to the anycast address with
+# test/pimsend, for (source $2, group $1), with ED4 joined to the group so
+# that the Arista has a reason to keep what it learns.  $3 is "-N" for a
+# Null-Register, empty for a data Register whose inner packet is the IP
+# header alone.
+an_pimsend() {
+	jrun ed4 timeout 30 "$MPING" -r -i "$ED4_IF" -t 5 -W 30 "$1" >/dev/null 2>&1 &
+	an_join=$!
+	sleep 5
+	# shellcheck disable=SC2086
+	jrun ed2 "$PIMSEND" -i "$RCV_ADDR" register -d "$AN_ADDR" -g "$1" -s "$2" $3
+	sleep 5
+	kill "$an_join" 2>/dev/null
+	wait "$an_join" 2>/dev/null
+}
+
+# anycast: is $2 router $1's own member in the set its "show status" lists?
+pimd_anycast_member() {
+	pimctl "$1" show status 2>/dev/null | \
+		grep -q "^Anycast-RP set *: $AN_ADDR, members .*$2 (this router)"
 }
 
 # --- rpt-override -----------------------------------------------------

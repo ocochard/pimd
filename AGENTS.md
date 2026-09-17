@@ -12,6 +12,11 @@ memory: `rfc7761.txt` is the current PIM-SM standard (STD 83) and the one to cit
 is the version it obsoletes, `rfc2362.txt` the experimental one much of this code was originally
 written to and which several comments still reference by section number, plus `rfc4602.txt` and
 `rfc5059.txt` (BSR). Section numbering differs between them, so name the RFC with the section.
+For anycast RP: `rfc4610.txt` is anycast RP inside PIM itself, by Registers copied between the RPs,
+which is what `anycast-rp` in `pimd.conf` implements; `rfc3618.txt` is MSDP, which pimd does not
+implement (its own cross-references to "section 13" and "section 15" mean sec. 10 and sec. 11),
+`rfc3446.txt` anycast RP over MSDP, and `rfc4611.txt` the MSDP deployment BCP, where the peer-RPF
+relaxations for a network without BGP are.
 
 ## Build
 
@@ -47,7 +52,8 @@ Each script builds a router topology (ASCII diagram in its header) from `test/li
 (`topo()`, `ifsetup()`, `emitter()`/`collect()` around the `mping` tool built from `test/mping.c`),
 starts one `pimd` per namespace and asserts on forwarded traffic. Topologies: `single.sh` (one
 router), `two.sh`/`three.sh` (chains), `rp.sh` (RP + SPT switchover), `shared.sh`, `pod.sh`
-(redundant paths). Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
+(redundant paths), `anycast.sh` (an RFC 4610 Anycast-RP set, twice: Register copies between members,
+then a member that is the source's DR; static routes, so no bird). Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
 runtime `pimctl` dumps.
 
 `test/pimsend.c` is the PIM-socket counterpart of `test/igmpv3.c`: it builds one PIM
@@ -72,7 +78,7 @@ it at a `--enable-netlink` build instead, so the same scenarios run over `netlin
 it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
-`renumber`, `register-filter`, `crafted`, `static-rp`); see the script
+`renumber`, `register-filter`, `crafted`, `static-rp`, `anycast`, `anycast-dr`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -119,6 +125,10 @@ a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bi
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole
 scenario with configured so that every other assertion is a soak test of it -- with a positive control beside each,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
+`anycast` the only one where two routers are the RP for the same address, an RFC 4610
+Anycast-RP set on `lo0` of R2 and R3 that copy each other Registers (Null-Registers on FreeBSD,
+whose kernel hands pimd only the headers of a data Register), and `anycast-dr` the same set moved
+so that R1 is the RP and the DR of the source at once and has to register it to R3 itself,
 and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the
@@ -181,7 +191,14 @@ same way as its encoder passes one and fails the other:
   goes unanswered and the source has to stop, then continued, so its override has to bring the
   source back.
 
-`run all` walks all four. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
+- `anycast`, an RFC 4610 Anycast-RP set of the Arista and R3 on `pimd-rp`'s topology, asserted in both
+  directions and each exchange beside its control: EOS's copy and its own-source Register believed by
+  pimd, pimd's own-source Register (and its Register-Stop) and its data and Null-Register copies
+  believed by EOS. EOS's member address has to be a /32 on a loopback (`Loopback2` here): with an
+  interface address EOS takes the set and never acts on it, which a first version of this scenario
+  mistook for EOS not implementing half of RFC 4610.
+
+`run all` walks all five. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
 `-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path). `-s` and `-j` work as
 in `freebsd-lab.sh` and additionally name the taps, the bhyve VM and the management subnet apart;
 what bounds `-j` here is a vEOS per scenario, 4G of RAM and a converted 4G disk each. A lab in the

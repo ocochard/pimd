@@ -59,6 +59,7 @@ static int parse_pim_hello         (char *msg, size_t len, uint32_t src, pim_hel
 static void cache_nbr_settings     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
 static void cache_nbr_secaddrs     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
 static int send_pim_register_stop  (uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, uint32_t inner_source);
+static int build_null_register     (uint32_t source, uint32_t group);
 static build_jp_message_t *get_jp_working_buff (void);
 static void return_jp_working_buff (pim_nbr_entry_t *pim_nbr);
 static void pack_jp_message_grp    (pim_nbr_entry_t *pim_nbr);
@@ -1138,6 +1139,157 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
 /************************************************************************
  *                        PIM_REGISTER
  ************************************************************************/
+/*
+ * The RP address a Register sent to @reg_dst stands for.  That is @reg_dst
+ * itself, except for a copy from another member of an Anycast-RP set: RFC
+ * 4610 sec. 3 has the member that took a Register from a DR send a copy to
+ * each other member's unique address, where it stands for the anycast
+ * address of the set.  @copy says which it was.  Whether this router is the
+ * RP for the address returned is still the caller's to check, the same way
+ * it was before there were copies.
+ */
+static uint32_t register_rp_address(uint32_t reg_src, uint32_t reg_dst, uint32_t group, int *copy)
+{
+    static time_t last_misaddressed;
+    rpentry_t *rp;
+    time_t now;
+
+    *copy = FALSE;
+
+    rp = rp_match(group);
+    if (!rp || rp->address == reg_dst || !anycast_rp_configured(rp->address))
+	return reg_dst;
+
+    if (anycast_rp_member(rp->address, reg_src) && anycast_rp_member(rp->address, reg_dst) &&
+	i_am_rp(rp->address)) {
+	*copy = TRUE;
+	return rp->address;
+    }
+
+    /* RFC 4610 sec. 3: "If the Register is not addressed to the Anycast-RP
+     * address, an error has occurred and it should be rate-limited logged."
+     * It is answered below as any Register for somebody else's group is. */
+    now = time(NULL);
+    if (now - last_misaddressed >= PIM_REGISTER_SUPPRESSION_TIMEOUT) {
+	last_misaddressed = now;
+	logit(LOG_NOTICE, 0, "PIM Register from %s for group %s sent to %s, not to Anycast-RP %s",
+	      inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
+	      inet_fmt(reg_dst, s3, sizeof(s3)), inet_fmt(rp->address, s4, sizeof(s4)));
+    }
+
+    return reg_dst;
+}
+
+/*
+ * The (S,G) an RP holds for a source it has been sent a Register for, with
+ * its Keepalive Timer started when the switch policy would switch, as RFC
+ * 7761 sec. 4.4.2 has it.  The caller sends the Register-Stop, if any.
+ */
+static mrtentry_t *register_sg_state(uint32_t inner_src, uint32_t inner_grp)
+{
+    mrtentry_t *mrtentry;
+
+    mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
+    if (!mrtentry)
+	return NULL;
+
+    if (mrtentry->flags & MRTF_NEW) {
+	mrtentry->flags &= ~MRTF_NEW;
+	change_interfaces(mrtentry,
+			  mrtentry->incoming,
+			  mrtentry->joined_oifs,
+			  mrtentry->pruned_oifs,
+			  mrtentry->leaves,
+			  mrtentry->asserted_oifs, 0);
+    }
+    SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT);
+
+    if (spt_switch_on_first_packet())
+	mrtentry->flags |= MRTF_KAT;
+
+    return mrtentry;
+}
+
+/*
+ * RFC 4610 sec. 3: a Register an Anycast-RP member takes from outside its
+ * set is copied to every other member, from this router's own unique
+ * address, so that each of them learns the source.  The caller has checked
+ * that @anycast is the RP address the Register was sent to, that this
+ * router is that RP, and that the sender is not a member.
+ *
+ * What is copied is what arrived.  A data Register is sent on whole when
+ * the whole inner packet is in @msg, which on Linux it is.  On FreeBSD it
+ * never is: pim_input() (sys/netinet/ip_mroute.c) passes the daemon only
+ * the headers, up to the inner IP header, and the copy is then a
+ * Null-Register for the same (S,G) -- the state without the data.  A
+ * Null-Register is copied as one, which sec. 4 requires, so that the source
+ * stays active on every member for as long as the DR probes for it.
+ *
+ * Sec. 4 has the copy carry the TTL of the Register, against members that
+ * disagree about who is in the set.  Copied unchanged the TTL is never
+ * decremented between two such members on one link, where nobody routes,
+ * so the copy takes one less, and none is sent once it would reach zero.
+ *
+ * pim_send_buf is rebuilt for every member rather than filled once:
+ * send_frame() (src/pim.c) rewrites the IP header in it when it fragments.
+ */
+static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl, char *msg, size_t len,
+				 uint32_t inner_src, uint32_t inner_grp, int is_null)
+{
+    pim_register_t *reg;
+    struct ip *ip;
+    uint32_t local, member;
+    size_t avail, iplen = 0, i;
+    int pktlen, whole;
+    uint8_t tos = 0;
+
+    local = anycast_rp_local(anycast);
+    if (local == INADDR_ANY_N)
+	return;
+
+    if (ttl <= 1) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_DEBUG, 0, "Not copying PIM Register from %s to Anycast-RP %s set, TTL %u",
+		  inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(anycast, s2, sizeof(s2)), ttl);
+	return;
+    }
+
+    /* receive_pim_register() has checked that one inner IP header arrived,
+     * nothing more.  The inner ip_len is the sender's, so it is held to
+     * what is in the buffer and to what the send buffer has room for. */
+    reg   = (pim_register_t *)(msg + sizeof(pim_header_t));
+    ip    = (struct ip *)(reg + 1);
+    avail = len - sizeof(pim_header_t) - sizeof(pim_register_t);
+    if (!is_null)
+	iplen = ntohs(ip->ip_len);
+    whole = !is_null && iplen >= sizeof(struct ip) && iplen <= avail &&
+	iplen <= SEND_BUF_SIZE - sizeof(struct ip) - sizeof(pim_header_t) - sizeof(pim_register_t);
+    if (whole)
+	tos = ip->ip_tos;
+
+    for (i = 0; (member = anycast_rp_member_at(anycast, i)) != INADDR_ANY_N; i++) {
+	if (member == local)
+	    continue;
+
+	if (whole) {
+	    memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t), reg,
+		   sizeof(pim_register_t) + iplen);
+	    pktlen = sizeof(pim_register_t) + iplen;
+	} else {
+	    pktlen = build_null_register(inner_src, inner_grp);
+	}
+
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_DEBUG, 0, "Copy PIM Register from %s for (%s, %s) to Anycast-RP member %s, "
+		  "TTL %u, %s", inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)),
+		  inet_fmt(inner_grp, s3, sizeof(s3)), inet_fmt(member, s4, sizeof(s4)), ttl - 1,
+		  whole ? "data" : "null");
+
+	send_pim_unicast(pim_send_buf, tos, ttl - 1, 0, local, member, PIM_REGISTER, pktlen);
+	anycast_rp_copied(anycast, member);
+    }
+}
+
 /* TODO: XXX: IF THE BORDER BIT IS SET, THEN
  * FORWARD THE WHOLE PACKET FROM USER SPACE
  * AND AT THE SAME TIME IGNORE ANY CACHE_MISS
@@ -1145,10 +1297,11 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
  */
 int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *msg, size_t len)
 {
-    uint32_t inner_src, inner_grp;
+    uint32_t inner_src, inner_grp, rpaddr;
     pim_register_t *reg;
     struct ip *ip;
     uint32_t is_null;
+    int is_copy;
     mrtentry_t *mrtentry;
     mrtentry_t *mrtentry2;
     rpentry_t *rp;
@@ -1307,6 +1460,15 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	return FALSE;
     }
 
+    rpaddr = register_rp_address(reg_src, reg_dst, inner_grp, &is_copy);
+
+    /* Before anything below can return: the other members of an
+     * Anycast-RP set are owed a copy however this router answers. */
+    rp = rp_match(inner_grp);
+    if (!is_copy && rp && rp->address == reg_dst && i_am_rp(reg_dst) &&
+	anycast_rp_configured(reg_dst) && !anycast_rp_member(reg_dst, reg_src))
+	copy_register_to_set(reg_dst, reg_src, ttl, msg, len, inner_src, inner_grp, is_null);
+
     mrtentry = find_route(inner_src, inner_grp, MRTF_WC, DONT_CREATE);
     if (!mrtentry) {
 	IF_DEBUG(DEBUG_PIM_REGISTER)
@@ -1322,7 +1484,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	 * to name, each for PIM_DATA_TIMEOUT seconds.
 	 */
 	rp = rp_match(inner_grp);
-	if (!i_am_rp(reg_dst) || !rp || rp->address != reg_dst) {
+	if (!i_am_rp(reg_dst) || !rp || rp->address != rpaddr) {
 	    IF_DEBUG(DEBUG_PIM_REGISTER)
 		logit(LOG_DEBUG, 0, "Not RP in address %s, no state for group %s source %s",
 		      inet_fmt(reg_dst, s1, sizeof(s1)), inet_fmt(inner_grp, s2, sizeof(s2)),
@@ -1348,25 +1510,11 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	 * Register-Stop, and the next Register is decapsulated to whoever has
 	 * joined by then.
 	 */
-	mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
-	if (!mrtentry)
+	if (!register_sg_state(inner_src, inner_grp))
 	    return TRUE;
 
-	if (mrtentry->flags & MRTF_NEW) {
-	    mrtentry->flags &= ~MRTF_NEW;
-	    change_interfaces(mrtentry,
-			      mrtentry->incoming,
-			      mrtentry->joined_oifs,
-			      mrtentry->pruned_oifs,
-			      mrtentry->leaves,
-			      mrtentry->asserted_oifs, 0);
-	}
-	SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT);
-
-	if (spt_switch_on_first_packet()) {
-	    mrtentry->flags |= MRTF_KAT;
+	if (spt_switch_on_first_packet())
 	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
-	}
 
 	return TRUE;
     }
@@ -1374,7 +1522,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
     mrtentry = find_route(inner_src, inner_grp, MRTF_SG | MRTF_WC, DONT_CREATE);
 
     /* Check if I am the RP for that group */
-    if ((local_address(reg_dst) == NO_VIF) || !check_mrtentry_rp(mrtentry, reg_dst)) {
+    if ((local_address(reg_dst) == NO_VIF) || !check_mrtentry_rp(mrtentry, rpaddr)) {
 	IF_DEBUG(DEBUG_PIM_REGISTER)
 	    logit(LOG_DEBUG, 0, "Not RP in address %s", inet_fmt(reg_dst, s1, sizeof(s1)));
 
@@ -1390,6 +1538,23 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	/* TODO: check the timer again */
 	SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT); /* restart timer */
 	if (!(mrtentry->flags & MRTF_SPT)) { /* The SPT bit is not set */
+	    /* A copy from another Anycast-RP member is no data path to wait
+	     * on, whatever it carries.  The member that copied it answers the
+	     * DR by its own state, and with nobody joined there it sends the
+	     * Register-Stop as it sends the copy -- RFC 4610 sec. 4 names the
+	     * loss that follows -- after which nothing more arrives here but
+	     * the DR's probes.  A Null-Register copy never carries data in the
+	     * first place, and on FreeBSD every copy is one, the kernel handing
+	     * the copying member only the headers.  With receivers here, the
+	     * source tree is the only way the data will keep arriving,
+	     * whatever the switch policy says.
+	     */
+	    if (is_copy) {
+		calc_oifs(mrtentry, oifs);
+		if (!PIMD_VIFM_ISEMPTY(oifs))
+		    switch_shortest_path(inner_src, inner_grp);
+	    }
+
 	    if (!is_null) {
 		calc_oifs(mrtentry, oifs);
 		/* RFC 7761 sec. 4.4.2 asks for an empty inherited_olist(S,G)
@@ -1440,6 +1605,14 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 		logit(LOG_DEBUG, 0, "No output intefaces found for group %s source %s (*,G)",
 		      inet_fmt(inner_grp, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)));
 
+	    /* RFC 4610 sec. 3: every member of an Anycast-RP set that is sent
+	     * a Register creates (S,G) state, receivers or not, so that one
+	     * joining later has a source tree to join at once.  Without a set
+	     * this stays as it was: the Register-Stop and nothing more.
+	     */
+	    if (anycast_rp_configured(rpaddr))
+		register_sg_state(inner_src, inner_grp);
+
 	    /* Name the source rather than sending the RFC 2362 "stop
 	     * encapsulating every source of this group": RFC 7761 sec. 4.4.1
 	     * says an RP should not send a Register-Stop(*,G), and sec. 4.4.2
@@ -1465,9 +1638,16 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 		k_chg_mfc(igmp_socket, mfc_source, inner_grp,
 			  mrtentry->incoming, mrtentry->oifs,
 			  mrtentry->group->rpaddr);
-
-		return TRUE;
 	    }
+
+	    /* Receivers here and a copy from another member: see the (S,G)
+	     * case above for why this joins the source tree, data or not.
+	     * The kernel entry above still forwards the packet this copy
+	     * carried, and any that follow before the Join takes effect. */
+	    if (is_copy)
+		switch_shortest_path(inner_src, inner_grp);
+
+	    return TRUE;
 	}
 
 	return TRUE;
@@ -1486,6 +1666,56 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 }
 
 
+/*
+ * Register (@source,@group) to every other member of the Anycast-RP set for
+ * @anycast, this router being the RP of the group and the DR of the source:
+ * RFC 4610 sec. 5.1's "the router itself".  The Registers go from this
+ * router's own member address, which is what tells the members receiving
+ * them that they came from inside the set, so that they neither copy them
+ * on nor refuse them for being sent to their unique address.  @ip is the
+ * packet to encapsulate, @pktlen long, or NULL for a Null-Register.
+ *
+ * One Register-Suppression timer covers the whole set, the caller's: the
+ * first member to send a Register-Stop suppresses the Registers to all of
+ * them, and the probes that follow go to all of them.
+ */
+static void register_to_set(uint32_t anycast, uint32_t source, uint32_t group, struct ip *ip, int pktlen)
+{
+    uint32_t local, member;
+    size_t i;
+    int len;
+
+    local = anycast_rp_local(anycast);
+    if (local == INADDR_ANY_N)
+	return;
+
+    for (i = 0; (member = anycast_rp_member_at(anycast, i)) != INADDR_ANY_N; i++) {
+	if (member == local)
+	    continue;
+
+	/* Rebuilt per member, send_frame() rewrites the buffer when it
+	 * fragments, see copy_register_to_set() */
+	if (ip) {
+	    char *buf = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
+
+	    memset(buf, 0, sizeof(pim_register_t));
+	    memcpy(buf + sizeof(pim_register_t), ip, pktlen);
+	    len = sizeof(pim_register_t) + pktlen;
+	} else {
+	    len = build_null_register(source, group);
+	}
+
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_DEBUG, 0, "Send PIM Register for (%s, %s) to Anycast-RP member %s, %s",
+		  inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
+		  inet_fmt(member, s3, sizeof(s3)), ip ? "data" : "null");
+
+	send_pim_unicast(pim_send_buf, ip ? ip->ip_tos : 0, MAXTTL, 0, local, member,
+			 PIM_REGISTER, len);
+    }
+}
+
+
 int send_pim_register(char *packet, size_t len)
 {
     struct ip  *ip;
@@ -1497,6 +1727,7 @@ int send_pim_register(char *packet, size_t len)
     uint32_t     reg_src, reg_dst;
     int		reg_mtu, pktlen = 0;
     char       *buf;
+    int		anycast = FALSE;
 
     /* `len` is what the kernel actually handed up behind its own header.
      * Both the addresses read here and the copy further down are inside the
@@ -1534,8 +1765,11 @@ int send_pim_register(char *packet, size_t len)
 	return FALSE;		/* No RP for this group */
 
     if (local_address(rpentry->address) != NO_VIF) {
-	/* TODO: XXX: not sure it is working! */
-	return FALSE;		/* I am the RP for this group */
+	/* I am the RP for this group, and there is nobody to register to
+	 * unless it is an Anycast-RP set with other members in it */
+	if (!anycast_rp_peers(rpentry->address))
+	    return FALSE;
+	anycast = TRUE;
     }
 
     mrtentry = find_route(source, group, MRTF_SG, CREATE);
@@ -1573,6 +1807,11 @@ int send_pim_register(char *packet, size_t len)
 	/* The Register-Suppression Timer is not running.
 	 * Encapsulate the data and send to the RP.
 	 */
+	if (anycast) {
+	    register_to_set(rpentry->address, source, group, ip, pktlen);
+	    return TRUE;
+	}
+
 	buf = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
 	memset(buf, 0, sizeof(pim_register_t)); /* No flags set */
 	buf += sizeof(pim_register_t);
@@ -1600,17 +1839,15 @@ int send_pim_register(char *packet, size_t len)
 }
 
 
-int send_pim_null_register(mrtentry_t *mrtentry)
+/*
+ * A Null-Register for (@source,@group) in pim_send_buf, behind the room
+ * send_pim_unicast() fills with the IP and PIM headers.  Returns the length
+ * to hand it, the Register header and the dummy IP header.
+ */
+static int build_null_register(uint32_t source, uint32_t group)
 {
     struct ip *ip;
     pim_register_t *pim_register;
-    int reg_mtu, pktlen;
-    vifi_t vifi;
-    uint32_t reg_src, reg_dst;
-
-    /* No directly connected source; no local address */
-    if ((vifi = find_vif_direct_local(mrtentry->source->address, TRUE))== NO_VIF)
-	return FALSE;
 
     pim_register = (pim_register_t *)(pim_send_buf + sizeof(struct ip) +
 				      sizeof(pim_header_t));
@@ -1628,13 +1865,38 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     ip->ip_p     = IPPROTO_PIM;			/* RFC 7761 sec. 4.9.3: 103 */
     ip->ip_len   = htons(sizeof(struct ip));
     ip->ip_ttl   = MINTTL; /* TODO: XXX: check whether need to setup the ttl */
-    ip->ip_src.s_addr = mrtentry->source->address;
-    ip->ip_dst.s_addr = mrtentry->group->group;
+    ip->ip_src.s_addr = source;
+    ip->ip_dst.s_addr = group;
     ip->ip_sum   = 0;
     ip->ip_sum   = inet_cksum((uint16_t *)ip, sizeof(struct ip));
 
     /* include the dummy ip header */
-    pktlen = sizeof(pim_register_t) + sizeof(struct ip);
+    return sizeof(pim_register_t) + sizeof(struct ip);
+}
+
+
+int send_pim_null_register(mrtentry_t *mrtentry)
+{
+    int reg_mtu, pktlen;
+    vifi_t vifi;
+    uint32_t reg_src, reg_dst;
+
+    /* No directly connected source; no local address */
+    if ((vifi = find_vif_direct_local(mrtentry->source->address, TRUE))== NO_VIF)
+	return FALSE;
+
+    /* The RP registering its own source to the rest of its Anycast-RP
+     * set, see register_to_set() */
+    if (local_address(mrtentry->group->rpaddr) != NO_VIF) {
+	if (!anycast_rp_peers(mrtentry->group->rpaddr))
+	    return FALSE;
+
+	register_to_set(mrtentry->group->rpaddr, mrtentry->source->address,
+			mrtentry->group->group, NULL, 0);
+	return TRUE;
+    }
+
+    pktlen = build_null_register(mrtentry->source->address, mrtentry->group->group);
 
     reg_mtu = uvifs[vifi].uv_mtu;
     reg_dst = mrtentry->group->rpaddr;
@@ -1658,6 +1920,14 @@ int send_pim_null_register(mrtentry_t *mrtentry)
  */
 #define PIM_REGISTER_STOP_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN \
 				  + PIM_ENCODE_UNI_ADDR_LEN)
+
+/* A Register-Stop from another member of the Anycast-RP set this router is
+ * registering its own source to, see register_to_set(): the RP of the group
+ * is this router, and the sender is one of the members it sent to. */
+static int register_stop_from_set(uint32_t rpaddr, uint32_t reg_src)
+{
+    return i_am_rp(rpaddr) && anycast_rp_member(rpaddr, reg_src) && local_address(reg_src) == NO_VIF;
+}
 
 /* Stop encapsulating this source to the RP: restart the Register-Suppression
  * timer and take the register vif out of the entry's outgoing interfaces.
@@ -1728,7 +1998,8 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
 	 * source we are registering right now, and none that starts later.
 	 */
 	grp = find_group(egaddr.mcast_addr);
-	if (!grp || !grp->active_rp_grp || grp->rpaddr != reg_src)
+	if (!grp || !grp->active_rp_grp ||
+	    (grp->rpaddr != reg_src && !register_stop_from_set(grp->rpaddr, reg_src)))
 	    return FALSE;
 
 	for (mrtentry = grp->mrtlink; mrtentry; mrtentry = mrtentry->grpnext) {
@@ -1752,7 +2023,8 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
     /* XXX: not in the spec: check if the PIM_REGISTER_STOP originator is
      * really the RP
      */
-    if (check_mrtentry_rp(mrtentry, reg_src) == FALSE)
+    if (check_mrtentry_rp(mrtentry, reg_src) == FALSE &&
+	!(mrtentry->group->active_rp_grp && register_stop_from_set(mrtentry->group->rpaddr, reg_src)))
 	return FALSE;
 
     suppress_register(mrtentry);

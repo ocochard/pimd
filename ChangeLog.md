@@ -8,6 +8,23 @@ pimd on all routers in the same domain.  See issue #93 for details.
 **Note:** command line arguments in v3.0 are not compatible with v2.x!
 
 ### Changes
+- New `anycast-rp` setting in `pimd.conf`: Anycast-RP using PIM, RFC 4610.
+  Several RPs hold one RP address, usually on a loopback, and unicast
+  routing takes each DR's Registers to the nearest of them; each line names
+  one member of the set by its unique address.  A member copies every
+  Register it gets from outside the set to the other members, so that a
+  receiver joined at any member reaches every source with no MSDP between
+  them, and a member that is itself the DR of a source registers it to the
+  others.  A member that is sent a copy creates the (S,G) state whether or
+  not it has receivers, and one that has receivers joins the source tree.
+  `pimctl show status` lists the sets and counts the copies sent.  Where
+  this differs from the RFC: on FreeBSD a copy of a data Register is a
+  Null-Register, the kernel handing pimd only the headers; a copy's TTL is
+  one less than the Register's; and the join on a copy ignores
+  `spt-threshold`.  See pimd.conf(5).  Tested by `test/anycast.sh`, the
+  `anycast` and `anycast-dr` scenarios of `test/freebsd-lab.sh`, and in both
+  directions against an Arista vEOS 4.36.1F member by the `anycast` scenario
+  of `test/freebsd-interop.sh`
 - New `accept-nbr-from` setting for a `phyint` in `pimd.conf`, the routers
   an interface accepts PIM messages from.  RFC 7761 sec. 6.2 asks for the
   option and requires it to default to accepting every router, which an

@@ -484,6 +484,13 @@ extern int	is_ssm_group		(uint32_t group);
 extern void	dump_ssm_ranges		(FILE *fp);
 extern int	register_accepted_from	(uint32_t addr);
 extern void	dump_reg_acl		(FILE *fp);
+extern void	dump_anycast_rp		(FILE *fp);
+extern int	anycast_rp_configured	(uint32_t anycast);
+extern int	anycast_rp_member	(uint32_t anycast, uint32_t addr);
+extern uint32_t	anycast_rp_member_at	(uint32_t anycast, size_t index);
+extern uint32_t	anycast_rp_local	(uint32_t anycast);
+extern int	anycast_rp_peers	(uint32_t anycast);
+extern void	anycast_rp_copied	(uint32_t anycast, uint32_t member);
 
 /* dvmrp_proto.c */
 extern void	dvmrp_accept_probe	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);

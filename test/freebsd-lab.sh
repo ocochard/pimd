@@ -54,7 +54,7 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Seventeen scenarios are built on that topology.  Most differ only in which
+# Nineteen scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
@@ -533,6 +533,41 @@
 #               configured RP is still there.  Takes about 3 minutes, most
 #               of it that wait.
 #
+#   anycast     The chain with R2 and R3 both the RP, and the only scenario
+#               where two routers are: RFC 4610's Anycast-RP, where the
+#               members of a set hold one RP address and copy each other
+#               the Registers they are sent.  $ANY_ADDR is on lo0 in both,
+#               R1's route to it goes to R2, and R3 is where ED2's shared
+#               tree ends, so the source registers to one member and the
+#               receiver joins at the other -- the only arrangement in
+#               which the copies are what makes the traffic arrive.
+#
+#               It starts without a set, as the control: the same source
+#               and a receiver behind R3 that hears nothing.  Then both get
+#               the anycast-rp lines, and the scenario asserts the copy
+#               from R2 to R3 -- a Null-Register, since FreeBSD hands pimd
+#               only the headers of a data Register -- its TTL one less
+#               than the Register's, R3 holding the (S,G) before anybody
+#               joins and not copying it on, that (S,G) living past its
+#               own timeout on nothing but the copied probes, and at last a
+#               receiver behind R3 reached.  Takes about 5 minutes, most of
+#               it that timeout.
+#
+#   anycast-dr  The same set, moved one router upstream: R1 and R3 hold
+#               $ANY_ADDR, and R2 is a plain router whose route to it goes
+#               to R1.  R1 is then the RP of the group and the DR of the
+#               source at once, and receives no Register for it at all --
+#               which is the case RFC 4610 sec. 5.1 means by a source
+#               registered by "the router itself".  The only way R3 learns
+#               of it is a Register R1 sends it from its own member
+#               address, whole this time, from the kernel's upcall.
+#
+#               Starts without a set as anycast does, then asserts the data
+#               Register from R1 to R3, R1 honouring R3's Register-Stop and
+#               probing it with Null-Registers afterwards, and a receiver
+#               behind R3 reached.  Takes 2 to 3 minutes, depending on when
+#               the probe falls due.
+#
 #   crafted     The rpt topology with nothing forwarded, and the only
 #               scenario whose messages pimd did not build.  Every other
 #               test here has pimd at both ends, so the only messages pimd
@@ -644,7 +679,8 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifgone", "renumber", "register-filter", "crafted", "static-rp", or "all"
+# "ifgone", "renumber", "register-filter", "crafted", "static-rp", "anycast",
+# "anycast-dr", or "all"
 # for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
@@ -749,8 +785,8 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifgone renumber register-filter crafted static-rp"
-SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
+	   ifgone renumber register-filter crafted static-rp anycast anycast-dr"
+SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
 		     rpt register-filter alias crafted static-rp ssm ifgone
 		     renumber ssm-range"
@@ -995,6 +1031,22 @@ SSMR_DEFAULT_RANGE=232.0.0.0/8
 # one entry -- see check_static_rp() for why that matters.
 STATICRP_ADDR=${STATICRP_ADDR:-10.0.23.2}
 STATICRP_WAIT=${STATICRP_WAIT:-180}
+
+# anycast: the RP address both members hold on lo0, the unique address each
+# one is a member under -- their ends of the R2-R3 link -- the group the
+# set is tested on, and how long the (S,G) on R3 has to outlive with nobody
+# joined.  ANY_REFRESH has to exceed PIM_DATA_TIMEOUT in src/pimd.h, or the
+# entry would pass without anything refreshing it.  ANY_DR is the address
+# R1 registers from, the VIF of the source, see REGF_SENDER.
+ANY_ADDR=${ANY_ADDR:-10.0.99.1}
+ANY_R2=${ANY_R2:-10.0.23.2}
+ANY_R3=${ANY_R3:-10.0.23.3}
+ANY_DR=${ANY_DR:-10.0.1.1}
+ANY_GROUP=${ANY_GROUP:-225.1.2.4}
+ANY_REFRESH=${ANY_REFRESH:-240}
+# anycast-dr: R1's member address, its end of the R1-R2 link.  R3 is
+# member $ANY_R3 as in anycast.
+ANYDR_R1=${ANYDR_R1:-10.0.12.1}
 
 # crafted: the addresses and the one bad byte that scenario is built on.
 #
@@ -1281,7 +1333,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp)
+	rpt|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1443,6 +1495,30 @@ addrs() {
 		return
 	fi
 
+	# anycast: the RP address is the only address lo0 has in R2 and R3,
+	# so it is lo0's primary, the one pimd makes a VIF of
+	if [ "$SCENARIO" = anycast-dr ]; then
+		case $1 in
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24 lo0 $ANY_ADDR/32" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 lo0 $ANY_ADDR/32" ;;
+		ed2) echo "${EP}203b 10.0.3.10/24" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = anycast ]; then
+		case $1 in
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24 lo0 $ANY_ADDR/32" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 lo0 $ANY_ADDR/32" ;;
+		ed2) echo "${EP}203b 10.0.3.10/24" ;;
+		esac
+		return
+	fi
+
 	if [ "$SCENARIO" = alias ]; then
 		case $1 in
 		ed1) echo "${EP}101a $ALIAS_SRC_ADDR/24" ;;
@@ -1563,6 +1639,28 @@ routes() {
 		r5)  echo "10.0.1.0/24 $SL_R3_ADDR 10.0.12.0/24 $SL_R3_ADDR 10.0.23.0/24 $SL_R3_ADDR" ;;
 		ed2) echo "default 10.0.5.1" ;;
 		ed3) echo "default $SL_DR_ADDR" ;;
+		esac
+		return ;;
+	anycast-dr)
+		# The rpt routes, and R2's route to the RP address, to R1
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2" ;;
+		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3 $ANY_ADDR/32 10.0.12.1" ;;
+		r3)  echo "10.0.1.0/24 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
+		ed2) echo "default 10.0.3.1" ;;
+		esac
+		return ;;
+	anycast)
+		# The rpt routes, and R1's route to the RP address, which is
+		# what makes R2 the member it registers to.  R2 and R3 hold the
+		# address themselves and need none.
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2 $ANY_ADDR/32 10.0.12.2" ;;
+		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3" ;;
+		r3)  echo "10.0.1.0/24 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
+		ed2) echo "default 10.0.3.1" ;;
 		esac
 		return ;;
 	alias)
@@ -1855,6 +1953,53 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: the only router with an RP of its own configuration
 		rp-address $STATICRP_ADDR
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = anycast-dr ]; then
+		# As in anycast, with the set moved to R1 and R3: R1 is the
+		# DR of $SRC_ADDR, and the route R2 has to $ANY_ADDR takes it
+		# to R1 as well.  The anycast-rp lines are added by
+		# check_anycast_dr() after the control half.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: DR for $SRC_ADDR and holder of $ANY_ADDR on lo0, so the
+		# RP of the group its own source sends to
+		rp-address $ANY_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: no RP role, its route to $ANY_ADDR goes to R1
+		rp-address $ANY_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: holds $ANY_ADDR on lo0, the RP ED2's shared tree ends at
+		rp-address $ANY_ADDR
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = anycast ]; then
+		# No BSR: the RP is configured, the same on all three, because
+		# every router has to agree on one RP address and the point is
+		# that two routers hold it.  The anycast-rp lines are not here
+		# on purpose, check_anycast() adds them once the control half
+		# has run without.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router and DR for $SRC_ADDR, registering to
+		# $ANY_ADDR, which its route takes to R2
+		rp-address $ANY_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: holds $ANY_ADDR on lo0, the RP R1's Registers reach
+		rp-address $ANY_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: holds $ANY_ADDR on lo0, the RP ED2's shared tree ends at
+		rp-address $ANY_ADDR
 		EOF
 		return
 	fi
@@ -3145,6 +3290,8 @@ check() {
 	register-filter) check_register_filter; return $? ;;
 	crafted)    check_crafted; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
+	anycast)    check_anycast; return $? ;;
+	anycast-dr) check_anycast_dr; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -3550,6 +3697,366 @@ regf_acl_is() {
 }
 
 
+
+# anycast: RFC 4610, Anycast-RP using PIM.  R2 and R3 both hold $ANY_ADDR,
+# the RP of every group.  R1 registers to R2, because that is where its
+# route to the address goes, and ED2's shared tree ends at R3, which is
+# the RP for ED2's LAN as well as its DR.  Two RPs that do not know of each
+# other split the domain in two there: the source is known to R2 only and
+# the receiver to R3 only.  An Anycast-RP set joins them up again, R2
+# copying to R3 every Register it takes from R1.
+#
+# Every assertion about the copy is read off the two routers' logs, the
+# "Copy PIM Register" line R2 writes as it sends one and the "Received PIM
+# register" line R3 writes when it arrives, TTL included.  That is two pimds
+# agreeing, the weakness the header of this file names, and the traffic at
+# the end is what does not depend on it.
+check_anycast() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. Both RPs hold $ANY_ADDR, and R1 has it for its RP"
+	for r in r2 r3; do
+		if pimctl "$r" show interface 2>/dev/null | grep -q "$ANY_ADDR"; then
+			ok "$r has a VIF on $ANY_ADDR, the anycast address on lo0"
+		else
+			fail "$r has no VIF on $ANY_ADDR, it cannot be the RP for it"
+		fi
+	done
+	if wait_for 30 has_static_rp r1 "$ANY_ADDR"; then
+		ok "r1 registers to $ANY_ADDR"
+	else
+		fail "r1 has no static RP $ANY_ADDR"
+	fi
+	if wait_for 60 has_neighbor r3 "$ANY_R2" && wait_for 60 has_neighbor r2 10.0.12.1; then
+		ok "r3 and r2 have the neighbours their Joins toward the source need"
+	else
+		fail "the R1-R2-R3 chain has no PIM neighbours"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The control, and it has to be one.  A set that did nothing would
+	# leave exactly this, so the source has to be seen to register to R2,
+	# or the silence at ED2 below would be a lab that never registered.
+	print "3. Without a set, a receiver behind R3 hears nothing of the source"
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/anycast-control-receiver.log" 2>&1 &
+	receiver=$!
+	sleep 5
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
+		>"$WORKDIR/anycast-control-sender.log" 2>&1 || true
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/anycast-control-sender.log")
+	if logged r2 "Received PIM register: .* from $ANY_DR"; then
+		ok "r2 was sent the source's Registers"
+	else
+		fail "r2 got no Register from $ANY_DR, the control proves nothing"
+		return 1
+	fi
+	if [ "${replies:-0}" -eq 0 ] && ! has_sg r3 "$SRC_ADDR" "$GROUP"; then
+		ok "ed2 got nothing and r3 never heard of $SRC_ADDR, two RPs with no set"
+	else
+		fail "ed2 answered ${replies:-0} packet(s) or r3 has ($SRC_ADDR,$GROUP) with no set configured"
+		return 1
+	fi
+
+	print "4. R2 and R3 are made one Anycast-RP set"
+	for r in r2 r3; do
+		printf 'anycast-rp %s %s\nanycast-rp %s %s\n' "$ANY_ADDR" "$ANY_R2" "$ANY_ADDR" "$ANY_R3" \
+			>> "$WORKDIR/$r.conf"
+		pimctl "$r" restart >/dev/null 2>&1 || die "failed reloading pimd on $r"
+	done
+	if wait_for 30 anycast_member_is r2 "$ANY_R2" && wait_for 30 anycast_member_is r3 "$ANY_R3"; then
+		ok "r2 is member $ANY_R2 and r3 member $ANY_R3 of the set for $ANY_ADDR"
+	else
+		fail "'show status' has no Anycast-RP set naming each router's own member"
+		return 1
+	fi
+	# restart() (src/main.c) rebuilds the VIFs and the neighbours with them
+	if wait_for 60 has_neighbor r3 "$ANY_R2" && wait_for 60 has_neighbor r2 10.0.12.1; then
+		ok "the neighbours are back after the reload"
+	else
+		fail "r2 or r3 did not get its neighbours back after the reload"
+		return 1
+	fi
+
+	print "5. A source registering to R2 is copied to R3"
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c $((ANY_REFRESH + 120)) -w $((ANY_REFRESH + 150)) \
+		"$ANY_GROUP" >"$WORKDIR/anycast-sender.log" 2>&1 &
+	sender=$!
+	copy="Copy PIM Register from $ANY_DR for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
+	if wait_for 30 logged r2 "$copy"; then
+		ok "r2 copied the Register for ($SRC_ADDR,$ANY_GROUP) to $ANY_R3"
+	else
+		fail "r2 sent $ANY_R3 no copy of the Registers for ($SRC_ADDR,$ANY_GROUP)"
+		kill "$sender" 2>/dev/null || true
+		return 1
+	fi
+	# What FreeBSD's pim_input() hands pimd of a data Register is the
+	# headers, so a copy of one can only be a Null-Register.  A "data"
+	# here would mean the kernel passes the whole packet up now, and the
+	# man page's deviation would want rewriting.
+	if logged r2 "$copy, TTL [0-9]*, null" && ! logged r2 "$copy, TTL [0-9]*, data"; then
+		ok "every copy is a Null-Register, the kernel gave r2 the headers only"
+	else
+		fail "r2 copied a data Register, which FreeBSD should not have handed it whole"
+	fi
+	if wait_for 30 has_sg r3 "$SRC_ADDR" "$ANY_GROUP"; then
+		ok "r3 holds ($SRC_ADDR,$ANY_GROUP) with nobody joined, RFC 4610 sec. 3"
+	else
+		fail "r3 has no ($SRC_ADDR,$ANY_GROUP), the copy made no state"
+	fi
+
+	print "6. The copy carries one less TTL than the Register it copies"
+	ttl_in=$(anycast_ttl r2 "$ANY_DR")
+	ttl_out=$(anycast_ttl r3 "$ANY_R2")
+	if [ -n "$ttl_in" ] && [ -n "$ttl_out" ] && [ "$ttl_out" -eq $((ttl_in - 1)) ]; then
+		ok "r2 was sent TTL $ttl_in, r3 was sent the copy at TTL $ttl_out"
+	else
+		fail "r2 was sent TTL '${ttl_in}', r3 the copy at TTL '${ttl_out}'"
+	fi
+
+	print "7. R3 does not copy on what it was copied"
+	if logged r3 "Received PIM register: .* from $ANY_R2" && ! logged r3 "Copy PIM Register"; then
+		ok "r3 took the copies from $ANY_R2 and sent none of its own"
+	else
+		fail "r3 copied a Register it was sent by another member, or never got one"
+	fi
+	[ "$FAILED" -eq 0 ] || { kill "$sender" 2>/dev/null || true; return 1; }
+
+	# The DR probes with a Null-Register once R2 has stopped it, 25 to 85
+	# seconds apart, and those are copied too.  Nothing else reaches R3
+	# about this source while nobody there has joined, so the (S,G) only
+	# outlives PIM_DATA_TIMEOUT if the copies keep refreshing it.
+	print "8. With nobody joined, R3 keeps the source for ${ANY_REFRESH}s on the copies alone"
+	before=$(anycast_copies r2)
+	elapsed=0
+	lost=
+	while [ "$elapsed" -lt "$ANY_REFRESH" ]; do
+		if ! has_sg r3 "$SRC_ADDR" "$ANY_GROUP"; then
+			lost=$elapsed
+			break
+		fi
+		sleep 5
+		elapsed=$((elapsed + 5))
+	done
+	after=$(anycast_copies r2)
+	if [ -z "$lost" ]; then
+		ok "r3 held ($SRC_ADDR,$ANY_GROUP) for ${ANY_REFRESH}s"
+	else
+		fail "r3 lost ($SRC_ADDR,$ANY_GROUP) after ${lost}s"
+	fi
+	if [ "${after:-0}" -gt "${before:-0}" ]; then
+		ok "r2 sent $((after - before)) more copies meanwhile, the probes being copied"
+	else
+		fail "r2 sent no copy in ${ANY_REFRESH}s, nothing refreshed r3"
+	fi
+
+	print "9. A receiver joining at R3 gets the source's traffic"
+	if jrun ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
+		>"$WORKDIR/anycast-receiver.log" 2>&1; then
+		ok "ed2 received 5 packets from $SRC_ADDR through r3"
+	else
+		fail "ed2 received fewer than 5 packets in 90s"
+	fi
+	iif=$(route_iif r3 "$SRC_ADDR" "$ANY_GROUP")
+	if [ -n "$iif" ] && [ "$iif" -ne 0 ]; then
+		ok "r3's ($SRC_ADDR,$ANY_GROUP) comes in on vif $iif, the source tree, not the register vif"
+	else
+		fail "r3's ($SRC_ADDR,$ANY_GROUP) has iif '${iif}'"
+	fi
+	kill "$sender" 2>/dev/null || true
+	wait "$sender" 2>/dev/null || true
+
+	result
+}
+
+# anycast-dr: RFC 4610 sec. 5.1, an Anycast-RP member that is the DR of the
+# source as well as its RP.  R1 is sent no Register for the source -- it
+# would be sending it to itself -- so there is nothing to copy, and before
+# this R3 never heard of the source at all.  R1 has to register it to the
+# rest of the set itself: process_cache_miss() (src/route.c) puts the
+# register vif in the oifs, and send_pim_register() sends the Register to
+# each other member from R1's own member address rather than to the RP.
+#
+# The Register is a data Register on FreeBSD too, unlike anycast's copies:
+# what R1 encapsulates comes from the kernel's upcall for the packet, which
+# holds all of it, not from a Register the kernel had already opened.
+check_anycast_dr() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if pimctl "$r" show status >/dev/null 2>&1; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R1 and R3 hold $ANY_ADDR, and R2 has it for its RP"
+	for r in r1 r3; do
+		if pimctl "$r" show interface 2>/dev/null | grep -q "$ANY_ADDR"; then
+			ok "$r has a VIF on $ANY_ADDR, the anycast address on lo0"
+		else
+			fail "$r has no VIF on $ANY_ADDR, it cannot be the RP for it"
+		fi
+	done
+	if wait_for 30 has_static_rp r2 "$ANY_ADDR"; then
+		ok "r2 has $ANY_ADDR for its RP"
+	else
+		fail "r2 has no static RP $ANY_ADDR"
+	fi
+	if wait_for 60 has_neighbor r3 "$ANY_R2" && wait_for 60 has_neighbor r2 "$ANYDR_R1"; then
+		ok "r3 and r2 have the neighbours their Joins toward the source need"
+	else
+		fail "the R1-R2-R3 chain has no PIM neighbours"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# R1 being the RP, nothing at all is registered without a set: the
+	# control has to show the source reached R1, or the silence is a lab
+	# that never sent.
+	print "3. Without a set, a receiver behind R3 hears nothing of the source"
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/anycast-dr-control-receiver.log" 2>&1 &
+	receiver=$!
+	sleep 5
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
+		>"$WORKDIR/anycast-dr-control-sender.log" 2>&1 || true
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/anycast-dr-control-sender.log")
+	if has_sg r1 "$SRC_ADDR" "$GROUP"; then
+		ok "r1 has ($SRC_ADDR,$GROUP), the source reached its DR"
+	else
+		fail "r1 has no ($SRC_ADDR,$GROUP), the control proves nothing"
+		return 1
+	fi
+	if [ "${replies:-0}" -eq 0 ] && ! has_sg r3 "$SRC_ADDR" "$GROUP" && \
+		! logged r1 "Send PIM Register for"; then
+		ok "r1 registered nothing, ed2 got nothing and r3 never heard of $SRC_ADDR"
+	else
+		fail "with no set, ed2 answered ${replies:-0} packet(s), or r3 has the source, or r1 registered it"
+		return 1
+	fi
+
+	print "4. R1 and R3 are made one Anycast-RP set"
+	for r in r1 r3; do
+		printf 'anycast-rp %s %s\nanycast-rp %s %s\n' "$ANY_ADDR" "$ANYDR_R1" "$ANY_ADDR" "$ANY_R3" \
+			>> "$WORKDIR/$r.conf"
+		pimctl "$r" restart >/dev/null 2>&1 || die "failed reloading pimd on $r"
+	done
+	if wait_for 30 anycast_member_is r1 "$ANYDR_R1" && wait_for 30 anycast_member_is r3 "$ANY_R3"; then
+		ok "r1 is member $ANYDR_R1 and r3 member $ANY_R3 of the set for $ANY_ADDR"
+	else
+		fail "'show status' has no Anycast-RP set naming each router's own member"
+		return 1
+	fi
+	if wait_for 60 has_neighbor r3 "$ANY_R2" && wait_for 60 has_neighbor r2 "$ANYDR_R1"; then
+		ok "the neighbours are back after the reload"
+	else
+		fail "r2 or r3 did not get its neighbours back after the reload"
+		return 1
+	fi
+
+	print "5. R1 registers its own source to R3, from its member address"
+	stops=$(register_stops r1)
+	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 180 -w 210 "$ANY_GROUP" \
+		>"$WORKDIR/anycast-dr-sender.log" 2>&1 &
+	sender=$!
+	reg="Send PIM Register for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
+	if wait_for 30 logged r1 "$reg, data"; then
+		ok "r1 sent $ANY_R3 a data Register for ($SRC_ADDR,$ANY_GROUP)"
+	else
+		fail "r1 sent $ANY_R3 no data Register for ($SRC_ADDR,$ANY_GROUP)"
+		kill "$sender" 2>/dev/null || true
+		return 1
+	fi
+	# A data Register on the wire, which R3's pimd cannot say: FreeBSD hands
+	# it the headers of any data Register, 28 bytes, see anycast step 5.
+	# pim_input() counts what it decapsulates, and that counter can, while
+	# the log says who it came from and at what TTL -- one less than R1 sent
+	# it at, R2 having routed it.
+	rcvd=$(registers_rcvd r3)
+	got=$(${SUDO} grep "Received PIM register: .* from $ANYDR_R1" "$WORKDIR/r3.log" 2>/dev/null | \
+		sed -n '1s/.* ttl = \([0-9]*\) .*/\1/p')
+	if [ "${rcvd:-0}" -gt 0 ] && [ -n "$got" ]; then
+		ok "r3's kernel decapsulated ${rcvd} data Register(s), and pimd logged $ANYDR_R1 sending at TTL $got"
+	else
+		fail "r3's kernel counted ${rcvd:-0} data Register(s), pimd logged TTL '$got' from $ANYDR_R1"
+	fi
+	if wait_for 30 has_sg r3 "$SRC_ADDR" "$ANY_GROUP" && ! logged r3 "Copy PIM Register"; then
+		ok "r3 holds ($SRC_ADDR,$ANY_GROUP) and copied the Register nowhere"
+	else
+		fail "r3 has no ($SRC_ADDR,$ANY_GROUP), or took R1's Register for one to copy"
+	fi
+
+	print "6. R1 honours R3's Register-Stop"
+	if wait_for 30 register_stops_above r1 "$stops" && \
+		logged r1 "Received PIM_REGISTER_STOP from RP $ANY_R3"; then
+		ok "r1 got a Register-Stop from $ANY_R3"
+	else
+		fail "r1 got no Register-Stop from $ANY_R3"
+	fi
+	if wait_for 10 register_oif_gone r1 "$SRC_ADDR" "$ANY_GROUP"; then
+		ok "r1 dropped the register vif from ($SRC_ADDR,$ANY_GROUP), a member's Register-Stop is acted on"
+	else
+		fail "r1 still registers ($SRC_ADDR,$ANY_GROUP), it ignored the member's Register-Stop"
+	fi
+
+	# Register_Suppression_Time is 30 to 90 seconds and the probe goes out
+	# 5 before it ends, so one is due within REGF_SUPP_WAIT.
+	print "7. And probes R3 with a Null-Register while suppressed"
+	if wait_for "$REGF_SUPP_WAIT" logged r1 "$reg, null"; then
+		ok "r1 sent $ANY_R3 a Null-Register for ($SRC_ADDR,$ANY_GROUP)"
+	else
+		fail "r1 sent $ANY_R3 no Null-Register in ${REGF_SUPP_WAIT}s"
+	fi
+
+	print "8. A receiver joining at R3 gets the source's traffic"
+	if jrun ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
+		>"$WORKDIR/anycast-dr-receiver.log" 2>&1; then
+		ok "ed2 received 5 packets from $SRC_ADDR through r3"
+	else
+		fail "ed2 received fewer than 5 packets in 90s"
+	fi
+	iif=$(route_iif r3 "$SRC_ADDR" "$ANY_GROUP")
+	if [ -n "$iif" ] && [ "$iif" -ne 0 ]; then
+		ok "r3's ($SRC_ADDR,$ANY_GROUP) comes in on vif $iif, the source tree, not the register vif"
+	else
+		fail "r3's ($SRC_ADDR,$ANY_GROUP) has iif '${iif}'"
+	fi
+	kill "$sender" 2>/dev/null || true
+	wait "$sender" 2>/dev/null || true
+
+	result
+}
+
+# anycast: is $2 this router's own member in the set "show status" lists on $1?
+anycast_member_is() {
+	pimctl "$1" show status 2>/dev/null | \
+		grep -q "^Anycast-RP set *: $ANY_ADDR, members .*$2 (this router)"
+}
+
+# anycast: how many Registers $1 has copied to $ANY_R3, off "show status"
+anycast_copies() {
+	pimctl "$1" show status 2>/dev/null | \
+		sed -n "s/^Anycast-RP set.* $ANY_R3 (\([0-9]*\) copies).*/\1/p"
+}
+
+# anycast: the TTL of the first Register $1 logged receiving from $2
+anycast_ttl() {
+	${SUDO} grep "Received PIM register: .* ttl = [0-9]* from $2" "$WORKDIR/$1.log" 2>/dev/null | \
+		sed -n '1s/.* ttl = \([0-9]*\) from .*/\1/p'
+}
 
 # static-rp: RFC 7761 sec. 4.7, "A PIM router MUST support the static
 # configuration of group-to-RP mappings", against a domain that also has a
@@ -6564,7 +7071,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same seventeen either way, ordered by how long they
+		# The same nineteen either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH

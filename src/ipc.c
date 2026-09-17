@@ -882,6 +882,7 @@ static int show_status(FILE *fp)
 	fprintf(fp, "Local (S,G) entries  : %u of %u\n", local_sg_entries, local_sg_limit);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
+	dump_anycast_rp(fp);
 	fprintf(fp, "SPT Threshold        : %s\n", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
 	if (spt_threshold.mode != SPT_INF) {
 		if (spt_threshold.mode == SPT_RATE) {

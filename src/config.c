@@ -71,6 +71,7 @@
 #define CONF_REGISTER_ACCEPT_FROM               19
 #define CONF_RPT_PRUNE_LIMIT                    20
 #define CONF_LOCAL_SG_LIMIT                     21
+#define CONF_ANYCAST_RP                         22
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -126,6 +127,32 @@ struct reg_acl {
 #define REG_ACL_MAX_ENTRIES 255
 
 /*
+ * One member of an Anycast-RP set, from an anycast-rp line in pimd.conf:
+ * a router holding the anycast RP address that also has a unique address
+ * of its own, the one Registers are copied to (RFC 4610 sec. 2).  A set
+ * is every entry sharing an anycast address, this router's own member
+ * included, so that the same lines can be pasted into every member.
+ *
+ * Only the addresses are kept.  Which member is this router is looked up
+ * each time it is needed, because an address can be added to or removed
+ * from an interface long after the file was read.
+ */
+struct anycast_rp {
+    struct anycast_rp *next;
+
+    uint32_t  anycast;		/* Network byte order */
+    uint32_t  member;		/* Network byte order */
+    uint32_t  lineno;		/* For the checks made once the file is read */
+    uint32_t  copies;		/* Registers copied to this member */
+};
+
+/* Every Register accepted from outside a set is copied once to each other
+ * member, so the size of a set is the factor a Register is multiplied by.
+ * RFC 4610 sec. 4 wants the set kept small for the same reason. */
+#define ANYCAST_RP_MAX_MEMBERS 8
+#define ANYCAST_RP_MAX_ENTRIES 255
+
+/*
  * Global settings
  */
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
@@ -140,6 +167,9 @@ static char	*next_word	(char **);
 static int       parse_option   (char *s);
 static int	 parse_phyint	(char *s);
 static int	 parse_state_limit (char *s, const char *name, uint32_t *limit, uint32_t dflt);
+static int	 parse_anycast_rp (char *s);
+static void	 reset_anycast_rp (void);
+static void	 check_anycast_rp (void);
 static uint32_t	 ifname2addr	(char *s);
 
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
@@ -147,6 +177,7 @@ static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
 static uint32_t          lineno;
 static struct ssm_range *ssm_list = NULL;
 static struct reg_acl   *reg_acl_list = NULL;
+static struct anycast_rp *anycast_rp_list = NULL;
 extern struct rp_hold   *g_rp_hold;
 
 
@@ -617,6 +648,8 @@ static int parse_option(char *word)
 	return CONF_SSM_RANGE;
     if (EQUAL(word, "register-accept-from"))
 	return CONF_REGISTER_ACCEPT_FROM;
+    if (EQUAL(word, "anycast-rp"))
+	return CONF_ANYCAST_RP;
     if (EQUAL(word, "spt-threshold"))
 	return CONF_SPT_THRESHOLD;
     if (EQUAL(word, "default-route-metric"))
@@ -868,6 +901,297 @@ void dump_reg_acl(FILE *fp)
     for (acl = reg_acl_list; acl; acl = acl->next)
 	fprintf(fp, " %s/%u", inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
     fprintf(fp, "\n");
+}
+
+
+static void reset_anycast_rp(void)
+{
+    struct anycast_rp *arp, *next;
+
+    for (arp = anycast_rp_list; arp; arp = next) {
+	next = arp->next;
+	free(arp);
+    }
+
+    anycast_rp_list = NULL;
+}
+
+/*
+ * Appended rather than pushed, so that a set is listed in the order its
+ * lines were written.
+ */
+static int add_anycast_rp(uint32_t anycast, uint32_t member)
+{
+    struct anycast_rp *arp, **tail;
+    size_t num = 0, members = 0;
+
+    for (tail = &anycast_rp_list; *tail; tail = &(*tail)->next) {
+	arp = *tail;
+	num++;
+
+	if (arp->anycast != anycast)
+	    continue;
+
+	if (arp->member == member) {
+	    WARN("anycast-rp %s %s given twice, ignoring", inet_fmt(anycast, s1, sizeof(s1)),
+		 inet_fmt(member, s2, sizeof(s2)));
+	    return FALSE;
+	}
+	members++;
+    }
+
+    if (num >= ANYCAST_RP_MAX_ENTRIES) {
+	WARN("Too many anycast-rp lines, at most %d", ANYCAST_RP_MAX_ENTRIES);
+	return FALSE;
+    }
+
+    if (members >= ANYCAST_RP_MAX_MEMBERS) {
+	WARN("Too many members for anycast-rp %s, at most %d", inet_fmt(anycast, s1, sizeof(s1)),
+	     ANYCAST_RP_MAX_MEMBERS);
+	return FALSE;
+    }
+
+    arp = calloc(1, sizeof(*arp));
+    if (!arp) {
+	logit(LOG_WARNING, 0, "Out of memory when adding anycast-rp %s %s",
+	      inet_fmt(anycast, s1, sizeof(s1)), inet_fmt(member, s2, sizeof(s2)));
+	return FALSE;
+    }
+
+    arp->anycast = anycast;
+    arp->member  = member;
+    arp->lineno  = lineno;
+    *tail = arp;
+
+    logit(LOG_INFO, 0, "Anycast-RP %s: member %s",
+	  inet_fmt(anycast, s1, sizeof(s1)), inet_fmt(member, s2, sizeof(s2)));
+
+    return TRUE;
+}
+
+/* The first entry of each set, so that a walk over the list visits every
+ * anycast address once. */
+static int anycast_rp_first(const struct anycast_rp *arp)
+{
+    const struct anycast_rp *prev;
+
+    for (prev = anycast_rp_list; prev != arp; prev = prev->next) {
+	if (prev->anycast == arp->anycast)
+	    return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
+ * What can be told wrong about a set once the whole file has been read,
+ * each said once per set.  Nothing is refused here: interfaces come and go
+ * after startup, and a set that does not work yet may work once an
+ * address has been added, so these are warnings about the state at
+ * startup or reload rather than errors.
+ */
+static void check_anycast_rp(void)
+{
+    struct anycast_rp *arp, *m;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	uint32_t local = INADDR_ANY_N;
+	size_t nlocal = 0;
+
+	if (!anycast_rp_first(arp))
+	    continue;
+
+	for (m = arp; m; m = m->next) {
+	    if (m->anycast != arp->anycast)
+		continue;
+
+	    if (local_address(m->member) == NO_VIF) {
+		/* The copies another member sends come from this address. */
+		if (!register_accepted_from(m->member))
+		    logit(LOG_WARNING, 0, "%s:%u - anycast-rp member %s is outside "
+			  "register-accept-from", config_file, m->lineno,
+			  inet_fmt(m->member, s1, sizeof(s1)));
+		continue;
+	    }
+
+	    if (nlocal++ == 0)
+		local = m->member;
+	    else
+		logit(LOG_WARNING, 0, "%s:%u - anycast-rp %s: %s and %s are both local, "
+		      "a router is one member", config_file, m->lineno,
+		      inet_fmt(arp->anycast, s1, sizeof(s1)), inet_fmt(local, s2, sizeof(s2)),
+		      inet_fmt(m->member, s3, sizeof(s3)));
+	}
+
+	if (nlocal == 0)
+	    logit(LOG_WARNING, 0, "%s:%u - anycast-rp %s: no member is local, "
+		  "no Register will be copied", config_file, arp->lineno,
+		  inet_fmt(arp->anycast, s1, sizeof(s1)));
+
+	if (local_address(arp->anycast) == NO_VIF)
+	    logit(LOG_WARNING, 0, "%s:%u - anycast-rp %s is not local, "
+		  "this router cannot be the RP for it", config_file, arp->lineno,
+		  inet_fmt(arp->anycast, s1, sizeof(s1)));
+
+	/* RFC 3446 sec. 3.1: the anycast address is not unique, so it must
+	 * not name the router.  A Cand-RP advertising it is what a member
+	 * should do; a Cand-BSR using it is several routers claiming to be
+	 * one BSR. */
+	if (cand_bsr_flag && my_bsr_address == arp->anycast)
+	    logit(LOG_WARNING, 0, "%s:%u - bsr-candidate %s is an anycast-rp address, "
+		  "use a unique one", config_file,
+		  arp->lineno, inet_fmt(arp->anycast, s1, sizeof(s1)));
+    }
+}
+
+/**
+ * anycast_rp_configured - Is there an Anycast-RP set for this RP address?
+ * @anycast: RP address, in network byte order
+ *
+ * Returns:
+ * %TRUE if an anycast-rp line names @anycast, o.w. %FALSE
+ */
+int anycast_rp_configured(uint32_t anycast)
+{
+    struct anycast_rp *arp;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (arp->anycast == anycast)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/**
+ * anycast_rp_member - Is this address a member of an Anycast-RP set?
+ * @anycast: RP address of the set, in network byte order
+ * @addr:    Unique address to look for, in network byte order
+ *
+ * Returns:
+ * %TRUE if @addr is listed as a member of the set for @anycast, o.w. %FALSE
+ */
+int anycast_rp_member(uint32_t anycast, uint32_t addr)
+{
+    struct anycast_rp *arp;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (arp->anycast == anycast && arp->member == addr)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/**
+ * anycast_rp_member_at - The members of an Anycast-RP set, one at a time
+ * @anycast: RP address of the set, in network byte order
+ * @index:   Which member, from 0
+ *
+ * Returns:
+ * The unique address of member @index, in the order the lines were
+ * written, or %INADDR_ANY_N past the last one.
+ */
+uint32_t anycast_rp_member_at(uint32_t anycast, size_t index)
+{
+    struct anycast_rp *arp;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (arp->anycast != anycast)
+	    continue;
+
+	if (index-- == 0)
+	    return arp->member;
+    }
+
+    return INADDR_ANY_N;
+}
+
+/**
+ * anycast_rp_local - This router's own member of an Anycast-RP set
+ * @anycast: RP address of the set, in network byte order
+ *
+ * Looked up now rather than when the file was read, see struct anycast_rp.
+ *
+ * Returns:
+ * The first member address that is local, or %INADDR_ANY_N if none is.
+ */
+uint32_t anycast_rp_local(uint32_t anycast)
+{
+    struct anycast_rp *arp;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (arp->anycast == anycast && local_address(arp->member) != NO_VIF)
+	    return arp->member;
+    }
+
+    return INADDR_ANY_N;
+}
+
+/**
+ * anycast_rp_peers - Has this router other members to register to?
+ * @anycast: RP address of the set, in network byte order
+ *
+ * Returns:
+ * %TRUE if this router is a member of the set for @anycast and the set
+ * has at least one other member, o.w. %FALSE
+ */
+int anycast_rp_peers(uint32_t anycast)
+{
+    uint32_t local, member;
+    size_t i;
+
+    local = anycast_rp_local(anycast);
+    if (local == INADDR_ANY_N)
+	return FALSE;
+
+    for (i = 0; (member = anycast_rp_member_at(anycast, i)) != INADDR_ANY_N; i++) {
+	if (member != local)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* One more Register copied to @member, for "pimctl show status". */
+void anycast_rp_copied(uint32_t anycast, uint32_t member)
+{
+    struct anycast_rp *arp;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (arp->anycast == anycast && arp->member == member) {
+	    arp->copies++;
+	    return;
+	}
+    }
+}
+
+/*
+ * The Anycast-RP sets, for "pimctl show status", one line per set, with
+ * this router's own member marked and the Registers copied to each of the
+ * others counted since the file was last read.  Silent when nothing is
+ * configured.
+ */
+void dump_anycast_rp(FILE *fp)
+{
+    struct anycast_rp *arp, *m;
+
+    for (arp = anycast_rp_list; arp; arp = arp->next) {
+	if (!anycast_rp_first(arp))
+	    continue;
+
+	fprintf(fp, "Anycast-RP set       : %s, members", inet_fmt(arp->anycast, s1, sizeof(s1)));
+	for (m = arp; m; m = m->next) {
+	    if (m->anycast != arp->anycast)
+		continue;
+
+	    if (local_address(m->member) != NO_VIF)
+		fprintf(fp, " %s (this router)", inet_fmt(m->member, s1, sizeof(s1)));
+	    else
+		fprintf(fp, " %s (%u copies)", inet_fmt(m->member, s1, sizeof(s1)), m->copies);
+	}
+	fprintf(fp, "\n");
+    }
 }
 
 
@@ -1505,6 +1829,63 @@ static int parse_register_accept_from(char *s)
     }
 
     return add_reg_acl(addr, masklen);
+}
+
+
+/**
+ * parse_anycast_rp - Parse anycast-rp configuration.
+ * @s: String token
+ *
+ * One member of an Anycast-RP set (RFC 4610): @anycast is the RP address
+ * every member holds, @member the unique address of one of them, which is
+ * where Registers are copied to.  A set is every line with the same
+ * anycast address, this router's own unique address included, as RFC 4610
+ * Appendix A suggests so that the lines can be the same on every member.
+ *
+ * Syntax:
+ * anycast-rp <anycast-address> <member-address>
+ *
+ * Returns:
+ * %TRUE if the parsing was successful, o.w. %FALSE
+ */
+static int parse_anycast_rp(char *s)
+{
+    uint32_t anycast, member;
+    char *w;
+
+    w = next_word(&s);
+    if (EQUAL(w, "")) {
+	WARN("Missing anycast-rp address");
+	return FALSE;
+    }
+
+    anycast = inet_parse(w, 4);
+    if (anycast == 0xffffff || !inet_valid_host(anycast)) {
+	WARN("Invalid anycast-rp address '%s'", w);
+	return FALSE;
+    }
+
+    w = next_word(&s);
+    if (EQUAL(w, "")) {
+	WARN("Missing member address for anycast-rp %s", inet_fmt(anycast, s1, sizeof(s1)));
+	return FALSE;
+    }
+
+    member = inet_parse(w, 4);
+    if (member == 0xffffff || !inet_valid_host(member)) {
+	WARN("Invalid anycast-rp member address '%s'", w);
+	return FALSE;
+    }
+
+    /* RFC 4610 sec. 3: the addresses the members talk to each other with
+     * must be different from the anycast address. */
+    if (member == anycast) {
+	WARN("anycast-rp member %s is the anycast address, a member needs a unique one",
+	     inet_fmt(member, s1, sizeof(s1)));
+	return FALSE;
+    }
+
+    return add_anycast_rp(anycast, member);
 }
 
 
@@ -2148,6 +2529,7 @@ void config_vifs_from_file(void)
     cand_bsr_flag = FALSE;
     reset_ssm_ranges();
     reset_reg_acl();
+    reset_anycast_rp();
 
     fp = fopen(config_file, "r");
     if (!fp) {
@@ -2197,6 +2579,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_REGISTER_ACCEPT_FROM:
 		parse_register_accept_from(s);
+		break;
+
+	    case CONF_ANYCAST_RP:
+		parse_anycast_rp(s);
 		break;
 
 	    case CONF_BOOTSTRAP_RP:
@@ -2279,6 +2665,7 @@ void config_vifs_from_file(void)
     }
 
     check_igmp_timers();
+    check_anycast_rp();
 
     IF_DEBUG(DEBUG_IGMP) {
 	logit(LOG_INFO, 0, "IGMP query interval  : %u sec", igmp_query_interval);

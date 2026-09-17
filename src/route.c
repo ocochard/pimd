@@ -1565,7 +1565,14 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	 * dropped each one -- the whole SSM data rate crossing into user
 	 * space and back, on the one router guaranteed to see all of it.
 	 */
-	if (!i_am_rp(mrt->group->rpaddr) && !IN_PIM_SSM_RANGE(group))
+	/* An RP in an Anycast-RP set with other members is the exception to
+	 * the first half: RFC 4610 sec. 5.1 counts a source registered by
+	 * "the router itself" as internal like any other, and the only way
+	 * the other members learn of it is a Register from this router.
+	 * send_pim_register() sends it to them rather than to itself.
+	 */
+	if ((!i_am_rp(mrt->group->rpaddr) || anycast_rp_peers(mrt->group->rpaddr)) &&
+	    !IN_PIM_SSM_RANGE(group))
 	    PIMD_VIFM_SET(PIMREG_VIF, mrt->joined_oifs);
 	change_interfaces(mrt,
 			  mrt->incoming,

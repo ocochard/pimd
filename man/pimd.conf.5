@@ -383,6 +383,64 @@ packet, which has already been forwarded if the group has a shared tree
 to forward it on.  An RP that must keep forged traffic off that tree
 needs a packet filter for IP protocol 103 in front of it; this setting
 does not replace one.
+.It Cm anycast-rp Ar anycast-address Ar member-address
+One member of an Anycast-RP set, RFC 4610: several rendezvous points
+sharing one RP address, the
+.Ar anycast-address ,
+each with a unique address of its own.  Every member holds the anycast
+address, usually as a /32 on a loopback interface, and unicast routing
+takes each designated router's Registers to the nearest member.  That
+member copies every Register it receives from outside the set to all the
+other members, so that a receiver joined at any of them is reached by
+every source, with no MSDP between the members.  A member that is itself
+the designated router of a source is sent no Register to copy, and
+registers the source to the other members instead, from its unique
+address, honouring their Register-Stops as a designated router does.
+.Pp
+Give one line per member, this router's own unique address included, so
+that the same lines can be used on every member.  At most 8 members per
+anycast address.  This router is the member whose
+.Ar member-address
+is the primary address of one of its PIM interfaces; a secondary address
+does not count.
+.Pp
+For the set to work, on every member: the anycast address must be the RP
+for the groups, from
+.Cm rp-address
+or
+.Cm rp-candidate ,
+and an address of the router; a
+.Cm register-accept-from
+list, if any, must cover the other members' unique addresses as well as
+the designated routers; and
+.Cm bsr-candidate
+must not use the anycast address, which several routers hold.
+.Nm pimd
+warns at startup and on reload when the anycast address is not local, when
+no member or more than one is, when
+.Cm bsr-candidate
+uses the anycast address, and when a member is outside
+.Cm register-accept-from .
+.Pp
+.Sy Note:
+where this differs from RFC 4610.  On FreeBSD the kernel hands
+.Nm pimd
+only the headers of a Register carrying data, so the copy sent to the
+other members is a Null-Register, and receivers behind them miss the
+packets sent before their RP joins the source tree.  A copy's TTL is the
+received TTL less one, rather than the same TTL, so that a copy cannot
+circulate between members with inconsistent sets.  A member that receives
+a copy and has receivers for the group joins the source tree whatever
+.Cm spt-threshold
+says: the member that sent the copy answers the designated router by its
+own state, and stops it with a Register-Stop as soon as it has no receivers
+of its own, after which no data would reach the others.
+.Pp
+Members running Arista EOS interoperate, tested with 4.36.1F under vEOS in
+both directions: copies, Null-Register copies, and the Registers of a
+member that is the designated router of a source.  EOS requires its own
+member address to be a /32 on a loopback interface; configured with any
+other address it accepts the set and silently never acts on it.
 .It Cm spt-threshold Oo Cm rate Ar KBPS | Cm packets Ar NUM | Cm infinity Oc Oo Cm interval Ar SEC Oc
 This replaces two previous configuration settings:
 .Cm switch_data_threshold
