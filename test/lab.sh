@@ -857,10 +857,12 @@ fi
 # findings would leave with the work directory of a scenario that passed.
 #
 # Leak checking is off by default, ASan turning it on at exit on Linux:
-# what leaks in a daemon that is being torn down is a hunt of its own, and
-# it would fail every scenario here before it started.  SAN_ASAN_OPTIONS
-# and SAN_UBSAN_OPTIONS are the whole option strings, log_path included, so
-# a run that wants leaks asks for them: SAN_ASAN_OPTIONS="detect_leaks=1".
+# what leaks in a daemon that is being torn down is a hunt of its own.
+# SAN_ASAN_OPTIONS="detect_leaks=1" asks for it, and then "run" is the
+# command to use -- the daemons have to exit for a leak report to exist,
+# which "run" sees to before it looks and "check" on a running lab cannot.
+# The log_path is the lab's to set, the reports going to the work
+# directory beside the logs of the run that made them.
 SANITIZE=${SANITIZE:-no}
 SAN_DIR=$WORKDIR/sanitizer
 SAN_ASAN_OPTIONS=${SAN_ASAN_OPTIONS:-detect_leaks=0}
@@ -7100,6 +7102,24 @@ stop() {
 	${SUDO} rm -rf "$WORKDIR"
 }
 
+# SIGTERM every pimd this lab started, and wait for them to go.  What a
+# sanitizer has to say at exit -- a leak check above all, which is the whole
+# of what LeakSanitizer does -- is said when the daemon exits, so for those
+# reports to exist at all the daemons have to be stopped before they are
+# looked for.  stop() does that too, but it takes the work directory with
+# it, reports and all.
+stop_pimd() {
+	for r in $SHARED_ROUTERS; do
+		[ -f "$WORKDIR/$r.pid" ] || continue
+		${SUDO} pkill -F "$WORKDIR/$r.pid" 2>/dev/null || true
+	done
+
+	for r in $SHARED_ROUTERS; do
+		[ -f "$WORKDIR/$r.pid" ] || continue
+		wait_for 15 pimd_is_down "$r" || true
+	done
+}
+
 # What the sanitizers wrote while the scenario ran, if this is a SANITIZE
 # run.  A scenario whose pimd hit undefined behaviour did not pass, whatever
 # its assertions made of what came out on the wire, so this is asked after
@@ -7228,6 +7248,7 @@ run_one() {
 	one_rc=0
 	start
 	check || one_rc=$?
+	[ "$SANITIZE" = no ] || stop_pimd
 	check_sanitizer || one_rc=$?
 	if [ "$one_rc" -ne 0 ]; then
 		# stop() wipes the work directory, keep what failed
