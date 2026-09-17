@@ -368,7 +368,9 @@ once, and `rpt_see_prune()` sets the Override Timer, `rpt_override`, for a
 neighbor's Prune we do not want.  Steps 10 to 13 of `crafted` in
 `test/freebsd-lab.sh` assert all of it with pimsend playing the other routers,
 which is the only way to see it: between two pimds the override Join hides
-what the upstream router did with the Prune.  Two things are left out on
+what the upstream router did with the Prune.  `rpt-override` in
+`test/freebsd-interop.sh` asks the other half of the wire: that an Arista
+honours the Join(S,G,rpt) pimd sends to override a Prune(S,G,rpt).  Two things are left out on
 purpose.  "See Prune(S,G) to RPF'(S,G,rpt)", the event sec. 4.5.7 keeps for
 routers written to RFC 2362, overrides only where an (S,G) entry exists
 already rather than making one for every Prune(S,G) on the link; and "RPF'(S,G,rpt)

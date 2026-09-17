@@ -154,6 +154,46 @@
 #               Takes about 12 minutes, most of it the last sub-case,
 #               which has to outlive Assert_Time (180s).
 #
+#   rpt-override
+#               Whether the Arista honours the Join(S,G,rpt) pimd sends to
+#               override another router's Prune(S,G,rpt), RFC 7761
+#               sec. 4.5.3 on the Arista's side and sec. 4.5.7 on pimd's.
+#               arista-rp's chain, with a sixth box on the link between the
+#               Arista and R3:
+#
+#                 ED1 --- R1 --- vEOS --- bridge823 --- R3 --- ED2
+#                               (BSR+RP)      |
+#                                             X3 .9, pimsend
+#
+#               R3 is held on the shared tree with spt-threshold infinity,
+#               so what the Arista forwards to it is what it inherits from
+#               R3's (*,G) Join.  X3 is a second downstream router played
+#               by test/pimsend.c: it says Hello and prunes the source off
+#               the shared tree at the Arista, and R3, which still wants
+#               the source for ED2, has to override inside the Arista's
+#               J/P_Override_Interval.  pimd did not send Join(S,G,rpt) at
+#               all before deviation M1 was fixed, so this is also the
+#               only test whose reader of that message is not pimd.
+#
+#               Three things are asserted, each by traffic rather than by
+#               anybody's tables -- R3's kernel counts the packets the
+#               Arista delivers -- and by a capture on X3 of what R3
+#               actually sent:
+#
+#                 - the control: with R3's pimd stopped the Prune goes
+#                   unanswered, and the Arista stops sending the source.
+#                   Without it a Prune the Arista ignored would pass
+#                   everything below.
+#                 - once R3 runs again it overrides the Prune that queued
+#                   up while it was stopped, and the Arista puts the source
+#                   back: a Join(S,G,rpt) honoured in the Prune state.
+#                 - with R3 running, the Prune is overridden in time and
+#                   the source never stops, over several trials, each one
+#                   read off the capture to be R3's Join(S,G,rpt) and not
+#                   a periodic Join(*,G) that happened to fall in the
+#                   window.
+#               Takes about 6 minutes.
+#
 # Which is also why this is not another scenario in freebsd-lab.sh: that
 # script needs nothing but jails, and this one needs a 4G VM image, bhyve
 # and a vendor OS.
@@ -276,6 +316,7 @@ WORKDIR=${WORKDIR:-/tmp/pimd-interop$TAG}
 PIMD="$PIMD_SRC/src/pimd"
 PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
+PIMSEND="$WORKDIR/pimsend"
 EAPI="$WORKDIR/eapi.py"
 
 DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp,asserts"}
@@ -290,7 +331,7 @@ VEOS_SH=${VEOS_SH:-$(cd "$(dirname "$0")" && pwd)/veos-bhyve.sh}
 VEOS_VM=${VEOS_VM:-veos$TAG}
 
 SCENARIO=${SCENARIO:-arista-rp}
-SCENARIOS="arista-rp pimd-rp assert-lan"
+SCENARIOS="arista-rp pimd-rp assert-lan rpt-override"
 
 # Jails.  A prefix of their own so this lab and freebsd-lab.sh can be built
 # in the same tree without either one destroying the other's boxes.  ED4
@@ -299,6 +340,7 @@ SCENARIOS="arista-rp pimd-rp assert-lan"
 DEFAULT_BOXES="ed1 r1 r3 ed2"
 REVERSED_BOXES="ed1 r1 r3 ed2 ed4"
 ASSERT_BOXES="ed1 r1 r3 r5 ed2 ed3 ed6"
+RPT_BOXES="ed1 r1 r3 ed2 x3"
 BOXES=$DEFAULT_BOXES
 
 DEFAULT_ROUTERS="r1 r3"
@@ -328,12 +370,13 @@ TAP_ET3=tap${TAG}804
 DEFAULT_EPAIRS="${EP}801 ${EP}812 ${EP}823 ${EP}803"
 REVERSED_EPAIRS="$DEFAULT_EPAIRS ${EP}804"
 ASSERT_EPAIRS="${EP}801 ${EP}812 ${EP}832 ${EP}833 ${EP}853 ${EP}863 ${EP}805 ${EP}836"
+RPT_EPAIRS="$DEFAULT_EPAIRS ${EP}824"
 EPAIRS=$DEFAULT_EPAIRS
 
 # Every epair either scenario can create, for a teardown that does not
 # depend on which one built the lab
-ALL_EPAIRS="$DEFAULT_EPAIRS ${EP}804 ${EP}832 ${EP}833 ${EP}853 ${EP}863 ${EP}805 ${EP}836"
-ALL_BOXES="ed1 r1 r3 r5 ed2 ed3 ed4 ed6"
+ALL_EPAIRS="$DEFAULT_EPAIRS ${EP}804 ${EP}832 ${EP}833 ${EP}853 ${EP}863 ${EP}805 ${EP}836 ${EP}824"
+ALL_BOXES="ed1 r1 r3 r5 ed2 ed3 ed4 ed6 x3"
 
 ED1_IF=${EP}801a
 ED2_IF=${EP}803b
@@ -535,6 +578,25 @@ AL_STREAM_LIFE=$((AL_FWD_WAIT + AL_ASSERT_TIME + 2 * AL_ELECTION_WAIT + 150))
 # is also its duration in seconds.
 AL_STREAM_PKTS=${AL_STREAM_PKTS:-$AL_STREAM_LIFE}
 
+# rpt-override ----------------------------------------------------------
+#
+# X3's address on the link between the Arista and R3, and the Arista's own
+# there, which X3's Prune names as the upstream neighbour.
+RO_X3_ADDR=10.0.23.9
+RO_EOS_ADDR=10.0.23.2
+RO_X3_IF=${EP}824b
+RO_R3_IF=${EP}823b
+# The stream, one packet a second, long enough for every step below
+RO_STREAM_PKTS=${RO_STREAM_PKTS:-420}
+# How long after a Prune the Arista's Prune-Pending Timer has certainly run
+# out: J/P_Override_Interval is 3 seconds on defaults, which is also what
+# pimsend's Hello leaves the link on, having no LAN Prune Delay option
+RO_SETTLE=${RO_SETTLE:-6}
+# Seconds of R3's kernel counters that tell a stream from its absence at
+# one packet a second
+RO_WINDOW=${RO_WINDOW:-5}
+RO_TRIALS=${RO_TRIALS:-3}
+
 # One /24 per slot: the host has an address on this segment, unlike every
 # other one in this lab, so two slots cannot share it.
 MGMT_HOST=172.20.$SLOT.1
@@ -608,7 +670,7 @@ usage() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	arista-rp|pimd-rp|assert-lan) SCENARIO=${1:-$SCENARIO} ;;
+	arista-rp|pimd-rp|assert-lan|rpt-override) SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
 
@@ -627,6 +689,11 @@ set_scenario() {
 		# R1 is the RP here too, on the same interface as in
 		# pimd-rp, so the two share the address
 		RP_ADDR=$PIMD_RP_ADDR ;;
+	rpt-override)
+		BOXES=$RPT_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
+		EPAIRS=$RPT_EPAIRS
+		RP_ADDR=$ARISTA_RP_ADDR ;;
 	*)
 		BOXES=$DEFAULT_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -661,6 +728,7 @@ ifaces() {
 	r3)  echo "${EP}823b ${EP}803a" ;;
 	ed2) echo "${EP}803b" ;;
 	ed4) echo "${EP}804b" ;;
+	x3)  echo "$RO_X3_IF" ;;
 	esac
 }
 
@@ -684,6 +752,7 @@ addrs() {
 	r3)  echo "${EP}823b 10.0.23.3/24 ${EP}803a 10.0.3.1/24" ;;
 	ed2) echo "${EP}803b 10.0.3.10/24" ;;
 	ed4) echo "${EP}804b $ED4_ADDR/24" ;;
+	x3)  echo "$RO_X3_IF $RO_X3_ADDR/24" ;;
 	esac
 }
 
@@ -975,6 +1044,10 @@ write_configs() {
 	# that has to learn R1's RP set through the Arista.
 	hello-interval 10
 	EOF
+	# rpt-override: held on the shared tree, so that the source reaches
+	# it only through what its (*,G) Join gives the link, which is what a
+	# Prune(S,G,rpt) takes away and a Join(S,G,rpt) gives back
+	[ "$SCENARIO" = rpt-override ] && echo "spt-threshold infinity" >> "$WORKDIR/r3.conf"
 
 	# The Arista's whole configuration, written onto the guest flash as
 	# startup-config before the VM boots.  Declaring it here rather than
@@ -1181,6 +1254,8 @@ create_lans() {
 		bridges="$bridges $BR4"
 		bridged_epairs="$bridged_epairs ${EP}804"
 	fi
+	# X3's end of the link R3 shares with the Arista
+	[ "$SCENARIO" = rpt-override ] && bridged_epairs="$bridged_epairs ${EP}824"
 
 	for br in $bridges; do
 		if ifconfig "$br" >/dev/null 2>&1; then
@@ -1201,6 +1276,7 @@ create_lans() {
 	${SUDO} ifconfig "$BR12" addm ${EP}812a
 	${SUDO} ifconfig "$BR23" addm ${EP}823a
 	[ "$SCENARIO" = pimd-rp ] && ${SUDO} ifconfig "$BR4" addm ${EP}804a
+	[ "$SCENARIO" = rpt-override ] && ${SUDO} ifconfig "$BR23" addm ${EP}824a
 
 	return 0
 }
@@ -1297,6 +1373,11 @@ start() {
 	print "Building mping (multicast ping) from the pimd tree ..."
 	cc -O2 -o "$MPING" "$PIMD_SRC/test/mping.c" || \
 		die "failed building $PIMD_SRC/test/mping.c"
+	if [ "$SCENARIO" = rpt-override ]; then
+		print "Building pimsend (crafted PIM message generator) ..."
+		cc -O2 -o "$PIMSEND" "$PIMD_SRC/test/pimsend.c" || \
+			die "failed building $PIMD_SRC/test/pimsend.c"
+	fi
 
 	print "Disabling multicast loopback on the host (restored by stop) ..."
 	disable_mcast_loop
@@ -2353,6 +2434,7 @@ check() {
 	case $SCENARIO in
 	pimd-rp)    check_pimd_rp;    return $? ;;
 	assert-lan) check_assert_lan; return $? ;;
+	rpt-override) check_rpt_override; return $? ;;
 	esac
 
 	print "1. pimd and EOS become PIM neighbours on both links"
@@ -2487,6 +2569,191 @@ check() {
 		fail "only $replies of $STREAM_PKTS packets answered, wanted $MIN_REPLIES"
 		dprint "$(eos "show ip mroute")"
 	fi
+
+	return $((FAILED > 0))
+}
+
+# --- rpt-override -----------------------------------------------------
+
+# One crafted PIM message from X3
+x3_send() {
+	jrun x3 "$PIMSEND" -i "$RO_X3_ADDR" "$@" || \
+		die "failed sending a crafted $1 from X3"
+}
+
+# Packets R3's kernel has forwarded for the stream so far, from the
+# "Origin Group Packets In-Vif Out-Vifs" rows of netstat -gn, and 0 while it
+# has no entry for it
+r3_stream_pkts() {
+	jrun r3 netstat -gn 2>/dev/null | awk -v s="$SRC_ADDR" -v g="$GROUP" '
+		$1 == s && $2 == g { n = $3 }
+		END { print n + 0 }'
+}
+
+# Does the stream reach R3, i.e. does the Arista forward it onto the link?
+# Two readings $RO_WINDOW seconds apart.  A count that went down is an entry
+# pimd took out and put back, which a packet arriving is what did.
+stream_reaches_r3() {
+	a=$(r3_stream_pkts)
+	sleep "$RO_WINDOW"
+	b=$(r3_stream_pkts)
+	[ "$b" -gt "$a" ] || { [ "$b" -gt 0 ] && [ "$b" -lt "$a" ]; }
+}
+stream_stopped_at_r3() { ! stream_reaches_r3; }
+
+# R3's pimd, stopped and continued.  The pidfile is pimd's own, not the
+# daemon(8) supervisor's, and the jails share the host's filesystem.
+r3_signal() { ${SUDO} kill "-$1" "$(${SUDO} cat "$WORKDIR/r3.pid")"; }
+
+# Capture what R3 sends on the link, from X3, for $1 seconds into $2
+r3_capture() {
+	jrun x3 timeout "$1" tcpdump -l -nvvi "$RO_X3_IF" \
+		"pim and src host 10.0.23.3" > "$2" 2>/dev/null &
+	sleep 1
+}
+
+# In a capture tcpdump decoded: did R3 send a Join(S,G,rpt) for the stream,
+# and did it send a Join(*,G)?  tcpdump prints an Encoded-Source's flags
+# after the address, S, W and R, so (SR) is (S,G,rpt) and (SWR) is (*,G).
+sent_rpt_join() { grep -q "joined source #[0-9]*: $SRC_ADDR(SR)" "$1"; }
+sent_wc_join()  { grep -q "joined source #[0-9]*: $RP_ADDR(SWR)" "$1"; }
+
+check_rpt_override() {
+	print "1. R3 and X3 are both the Arista's PIM neighbours on its Ethernet2"
+	x3_send hello -H 105
+	if wait_for 60 has_neighbor r3 "$RO_EOS_ADDR"; then
+		ok "R3 sees the Arista at $RO_EOS_ADDR"
+	else
+		fail "R3 never saw the Arista at $RO_EOS_ADDR"
+	fi
+	if wait_for 60 eos_has_neighbor 10.0.23.3; then
+		ok "the Arista sees R3 at 10.0.23.3"
+	else
+		fail "the Arista never saw R3"
+	fi
+	# Two neighbours on the link is what gives the Arista a Prune-Pending
+	# interval at all; with one it prunes on receipt and there is
+	# nothing to override
+	x3_send hello -H 105
+	if wait_for 30 eos_has_neighbor "$RO_X3_ADDR"; then
+		ok "the Arista took X3's crafted Hello, it has two neighbours on Ethernet2"
+	else
+		fail "the Arista never took X3 at $RO_X3_ADDR as a neighbour"
+	fi
+	if wait_for 30 has_neighbor r3 "$RO_X3_ADDR"; then
+		ok "R3 took X3 as a neighbour, so it reads X3's Join/Prunes"
+	else
+		fail "R3 never took X3 as a neighbour"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The stream reaches R3 over the shared tree"
+	if ! wait_for 90 has_rp r3 "$RP_ADDR"; then
+		fail "R3 never learned RP $RP_ADDR from the Arista"
+		return 1
+	fi
+	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W "$((RO_STREAM_PKTS + 60))" "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	jrun ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$RO_STREAM_PKTS" \
+		-w "$((RO_STREAM_PKTS + 60))" "$GROUP" >"$WORKDIR/sender.log" 2>&1 &
+	sender=$!
+	# wait_for() counts attempts, and each of these takes $RO_WINDOW seconds
+	if wait_for 24 stream_reaches_r3; then
+		ok "the Arista forwards $SRC_ADDR to R3"
+	else
+		fail "the stream never reached R3"
+		dprint "$(eos "show ip mroute $GROUP")"
+		kill "$sender" "$receiver" 2>/dev/null
+		return 1
+	fi
+	# Everything below is about what the Arista gives R3 off R3's (*,G)
+	# Join.  An R3 on the shortest path tree would be getting the source
+	# off a Join(S,G), which no Prune(S,G,rpt) touches.
+	if has_spt r3 "$SRC_ADDR"; then
+		fail "R3 is on the shortest path tree despite spt-threshold infinity, nothing below can be asked"
+		kill "$sender" "$receiver" 2>/dev/null
+		return 1
+	fi
+	ok "R3 is held on the shared tree"
+
+	# The control.  A Prune(S,G,rpt) nobody overrides has to take the
+	# source away, or every override below passes against an Arista that
+	# ignores the Prune altogether.  R3's pimd is stopped rather than
+	# reconfigured, so that it is the same R3 in the same state that
+	# overrides afterwards; its Hello holdtime is 35s, and it is stopped
+	# for less than that.
+	print "3. A Prune(S,G,rpt) nobody overrides takes the source off the link"
+	r3_signal STOP
+	x3_send hello -H 105
+	x3_send prune -u "$RO_EOS_ADDR" -g "$GROUP" -s "$SRC_ADDR" -R
+	sleep "$RO_SETTLE"
+	if stream_stopped_at_r3; then
+		ok "the Arista stopped forwarding $SRC_ADDR to R3 on X3's Prune(S,G,rpt)"
+	else
+		fail "the Arista still forwards $SRC_ADDR ${RO_SETTLE}s after a Prune(S,G,rpt) nobody overrode"
+		dprint "$(eos "show ip mroute $GROUP")"
+	fi
+
+	# R3 reads the Prune that queued up while it was stopped as soon as
+	# it runs, and is NotPruned, so it overrides: the Arista is in the
+	# Prune state by now, and a Join(S,G,rpt) has to take it to NoInfo
+	print "4. R3's Join(S,G,rpt) puts it back"
+	cap="$WORKDIR/override-0.txt"
+	r3_capture 15 "$cap"
+	r3_signal CONT
+	if wait_for 6 stream_reaches_r3; then
+		ok "the Arista forwards $SRC_ADDR to R3 again"
+	else
+		fail "the Arista never put $SRC_ADDR back"
+		dprint "$(eos "show ip mroute $GROUP")"
+	fi
+	wait_for 20 sent_rpt_join "$cap"
+	if sent_rpt_join "$cap"; then
+		ok "R3 sent the Join(S,G,rpt) that did it"
+	else
+		fail "no Join(S,G,rpt) from R3 in the capture of the 15s after it ran again"
+		dprint "$(cat "$cap")"
+	fi
+	[ "$FAILED" -eq 0 ] || { kill "$sender" "$receiver" 2>/dev/null; return 1; }
+
+	# The override proper: R3 answers inside the Arista's
+	# J/P_Override_Interval and the source never stops.  A trial whose
+	# capture holds R3's periodic Join(*,G) says nothing, since that
+	# cancels the Prune too, and is not counted.
+	print "5. With R3 running, a Prune(S,G,rpt) is overridden in time"
+	i=0
+	counted=0
+	while [ "$i" -lt "$RO_TRIALS" ]; do
+		i=$((i + 1))
+		cap="$WORKDIR/override-$i.txt"
+		x3_send hello -H 105
+		r3_capture $((RO_SETTLE + RO_WINDOW + 4)) "$cap"
+		x3_send prune -u "$RO_EOS_ADDR" -g "$GROUP" -s "$SRC_ADDR" -R
+		sleep "$RO_SETTLE"
+		flowing=no
+		stream_reaches_r3 && flowing=yes
+		sleep 4
+		if sent_wc_join "$cap"; then
+			dprint "trial $i: R3's periodic Join(*,G) fell in the window, not counted"
+			continue
+		fi
+		counted=$((counted + 1))
+		if ! sent_rpt_join "$cap"; then
+			fail "trial $i: R3 sent no Join(S,G,rpt) for X3's Prune(S,G,rpt)"
+		elif [ "$flowing" = yes ]; then
+			ok "trial $i: R3 overrode X3's Prune(S,G,rpt) and the Arista kept forwarding $SRC_ADDR"
+		else
+			fail "trial $i: R3 sent its Join(S,G,rpt) and the Arista pruned $SRC_ADDR all the same"
+			dprint "$(eos "show ip mroute $GROUP")"
+		fi
+	done
+	if [ "$counted" -eq 0 ]; then
+		fail "every trial had a periodic Join(*,G) in it, nothing was measured"
+	fi
+
+	kill "$sender" "$receiver" 2>/dev/null
+	wait "$sender" "$receiver" 2>/dev/null
 
 	return $((FAILED > 0))
 }

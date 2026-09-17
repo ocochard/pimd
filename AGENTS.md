@@ -170,7 +170,15 @@ same way as its encoder passes one and fails the other:
   `ok` and stay as tripwires. `AL_SKIP_RESEND=yes` skips the 180s case, which also times pimd's
   resend against the 177 seconds of RFC 7761 sec. 4.6.1.
 
-`run all` walks all three. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
+- `rpt-override`, whether the Arista honours pimd's Join(S,G,rpt): `arista-rp`'s chain plus X3, a
+  pimsend box on the link between the Arista and R3, which is held on the shared tree with
+  `spt-threshold infinity`. X3 prunes the source off the shared tree at the Arista and R3 has to
+  override inside the J/P_Override_Interval. Read off R3's kernel packet counters and a tcpdump
+  capture on X3 of what R3 sent, with a control first: R3's pimd stopped with SIGSTOP, so the Prune
+  goes unanswered and the source has to stop, then continued, so its override has to bring the
+  source back.
+
+`run all` walks all four. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
 `-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path). `-s` and `-j` work as
 in `freebsd-lab.sh` and additionally name the taps, the bhyve VM and the management subnet apart;
 what bounds `-j` here is a vEOS per scenario, 4G of RAM and a converted 4G disk each. A lab in the
