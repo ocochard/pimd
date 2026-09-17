@@ -123,6 +123,13 @@ and `PRIV_NET_BPF` to jails with their own network stack, so pimd's raw
 sockets and `MRT_INIT` work inside one.  `ip_mroute.ko` has to be loaded
 from the host, a jail may not `kldload`.
 
+The scenarios never reach the host directly.  Everything that builds a
+box, runs a command in one, changes an interface or a route under it, or
+reads the kernel's multicast state back is a function in
+`test/lab-freebsd.sh`, which `freebsd-lab.sh` sources; its header lists
+them.  That file is the one to write again for the same scenarios to run
+on another system.
+
 Most scenarios share one topology, a chain of three routers with an end
 device at each end; the ones that do not say so below.  Unicast routing
 is static on purpose — a static route carries a metric of its own, which

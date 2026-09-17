@@ -732,6 +732,9 @@ fi
 # than whatever is installed.  Override to point somewhere else.
 PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 
+# Where this script and the files it sources are, which PIMD_SRC need not be
+LAB_DIR=$(cd "$(dirname "$0")" && pwd)
+
 # Which of the labs this invocation is, 0 to 31, from -s.  Every name that
 # lives on the host carries it -- the jails, the epairs, the bridges, the
 # work directory, the interface group -- so several scenarios can be built
@@ -767,14 +770,6 @@ fi
 # the same way its lower case twin does.
 EP=epair$TAG
 EPU=Epair$TAG
-JAIL_PREFIX=pimd${TAG}_
-
-# The ifconfig(8) group every interface this lab creates is put in, so a
-# human can find or destroy one lab's links and not another's.  The slot
-# is spelled in letters, digit by digit -- slot 0 is "pimda" and slot 31
-# "pimddb" -- because a group name may not end in a digit: it would be
-# ambiguous with an interface name, and setifgroup refuses it outright.
-IFGROUP=pimd$(echo "$SLOT" | tr 0-9 a-j)
 
 # Set in the environment it is one directory for every slot, which cannot
 # work once more than one of them runs; run_parallel() refuses it.
@@ -1722,18 +1717,11 @@ route_metrics() {
 	esac
 }
 
-# route(8) learned -metric in FreeBSD 16 (2e2d402d061d); 15.x rejects it
-# as a bad keyword, before it reaches the kernel, so a "get" is enough to
-# ask without touching a table.
-route_has_metric() {
-	route -n get -metric 1 127.0.0.1 >/dev/null 2>&1
-}
+# The host side of the lab -- the jails, the links, and what the kernel
+# makes of pimd's requests -- lives in a file of its own, see its header
+. "$LAB_DIR/lab-freebsd.sh"
 
-jname() { echo "$JAIL_PREFIX$1"; }
-
-jrun() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
-
-pimctl() { j=$1; shift; jrun "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
+pimctl() { j=$1; shift; box_run "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
 # Retry a command until it succeeds or $1 seconds have passed.  PIM is
 # slow by design (hello 30s, bootstrap 60s; shortened in the configs
@@ -1754,86 +1742,12 @@ wait_for() {
 check_req() {
 	[ "$(id -u)" -eq 0 ] || ${SUDO} -n true 2>/dev/null || \
 		die "need root or passwordless sudo"
-	[ "$(sysctl -n kern.features.vimage 2>/dev/null || echo 0)" = "1" ] || \
-		die "kernel has no VIMAGE support, cannot create vnet jails"
 	[ -x "$PIMD" ] || die "$PIMD not found, build it first (PIMD_SRC=$PIMD_SRC)"
 	[ -x "$PIMCTL" ] || die "$PIMCTL not found, build it first"
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
 	[ -f "$PIMD_SRC/test/igmpv3.c" ] || die "$PIMD_SRC/test/igmpv3.c not found"
 	[ -f "$PIMD_SRC/test/pimsend.c" ] || die "$PIMD_SRC/test/pimsend.c not found"
-	# ip_mroute is a module on GENERIC and a jail may not kldload
-	${SUDO} kldload -n ip_mroute 2>/dev/null || \
-		die "cannot load ip_mroute.ko, kernel has no multicast routing"
-	# Same for netlink: a pimd built --enable-netlink opens its routing
-	# socket in the jail, and the module has to be there before it does
-	if [ "$NETLINK" = yes ]; then
-		${SUDO} kldload -n netlink 2>/dev/null || \
-			die "cannot load netlink.ko, needed for NETLINK=yes"
-	fi
-}
-
-# net.inet.ip.mcast.loop must be 0 for any PIM router on FreeBSD.
-#
-# phyint_send() in sys/netinet/ip_mroute.c copies the sysctl into every
-# packet it forwards (imo.imo_multicast_loop = !!in_mcast_loop), and
-# ip_output() then loops that packet straight back into ip_input() -
-# "even if we are not a member of the group".  The router therefore
-# receives its own forwarded traffic on the interface it just sent it
-# out of, ip_mdq() raises IGMPMSG_WRONGVIF for it, and pimd answers the
-# wrong-iif upcall with a PIM Assert.  The neighbour asserts back, pimd
-# loses the election against itself and prunes the oif, which installs an
-# MFC entry with an empty outgoing interface list and black-holes the
-# group.  Measured here: 4 of 60 packets delivered with the sysctl at its
-# default of 1, 40 of 40 with it set to 0.
-#
-# The sysctl is a plain global, not VNET-ized (in_mcast_loop in
-# sys/netinet/in_mcast.c has no CTLFLAG_VNET), so it cannot be set per
-# jail: the value has to be changed on the host.
-#
-# It is therefore the one thing the slots cannot each have their own of,
-# and the one thing a lab must not restore on its own: a stop that put the
-# host value back while another slot -- or freebsd-interop.sh, which wants
-# the same 0 -- was still forwarding would black-hole that run, for the
-# reason spelled out above, and it would do it silently.  So the value is
-# saved once, by whichever lab arrives first, in a directory on the host
-# that every lab shares; each one leaves a file of its own there while it
-# runs, and the last to leave is the one that puts the value back.
-#
-# lockf(1) around both halves, because a pool of slots starts one scenario
-# as another finishes, which is exactly when "am I the first" and "am I the
-# last" are asked at the same moment.  It holds a real flock, so a lab that
-# is killed outright leaves no stale lock behind -- only, as before, a
-# sysctl still at 0, which the next stop on that slot puts right.
-MCAST_LOOP_DIR=${MCAST_LOOP_DIR:-/var/run/pimd-lab-mcastloop}
-MCAST_LOOP_LOCK=$MCAST_LOOP_DIR.lock
-MCAST_LOOP_TOKEN=lab$SLOT
-
-disable_mcast_loop() {
-	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
-		dir=$1
-		if [ ! -d "$dir" ]; then
-			mkdir -p "$dir" || exit 1
-			sysctl -n net.inet.ip.mcast.loop > "$dir/saved"
-		fi
-		: > "$dir/$2"
-		sysctl -q net.inet.ip.mcast.loop=0
-	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
-}
-
-restore_mcast_loop() {
-	[ -d "$MCAST_LOOP_DIR" ] || return 0
-	${SUDO} lockf -k "$MCAST_LOOP_LOCK" /bin/sh -c '
-		dir=$1
-		rm -f "$dir/$2"
-		for f in "$dir"/*; do
-			[ -e "$f" ] || continue
-			[ "${f##*/}" = saved ] || exit 0
-		done
-		if [ -f "$dir/saved" ]; then
-			sysctl -q net.inet.ip.mcast.loop="$(cat "$dir/saved")"
-		fi
-		rm -rf "$dir"
-	' mcastloop "$MCAST_LOOP_DIR" "$MCAST_LOOP_TOKEN"
+	backend_check_req
 }
 
 # R2 is the only BSR and RP candidate, pinned to its 10.0.12.2 address so
@@ -2392,128 +2306,17 @@ build_msend() {
 	cc -O2 -o "$MSEND" "$WORKDIR/msend.c" || die "failed building $WORKDIR/msend.c"
 }
 
-# shared-lan: the two bridged segments.  Each is a host bridge holding the
-# "a" end of every epair on it while the "b" ends go into the jails, so the
-# boxes really do share one broadcast domain instead of meeting over a mesh
-# of point-to-point links.  The bridges live on the host rather than in a
-# jail of their own because a jail cannot kldload if_bridge, and they carry
-# no addresses: the host is a wire here, not a router.
-create_lans() {
-	is_shared_lan || return 0
-
-	for br in $BR_UPSTREAM $BR_RECEIVER; do
-		if ifconfig "$br" >/dev/null 2>&1; then
-			die "$br already exists, it is not ours to reuse"
-		fi
-	done
-
-	${SUDO} kldload -n if_bridge 2>/dev/null || \
-		die "cannot load if_bridge.ko, needed for the shared segments"
-
-	${SUDO} ifconfig "$BR_UPSTREAM" create group "$IFGROUP" up >/dev/null
-	${SUDO} ifconfig "$BR_RECEIVER" create group "$IFGROUP" up >/dev/null
-
-	for e in $BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS; do
-		${SUDO} ifconfig "$e" create group "$IFGROUP" >/dev/null
-		${SUDO} ifconfig "${e}a" up
-	done
-
-	for e in $BR_UPSTREAM_EPAIRS; do
-		${SUDO} ifconfig "$BR_UPSTREAM" addm "${e}a"
-	done
-	for e in $BR_RECEIVER_EPAIRS; do
-		${SUDO} ifconfig "$BR_RECEIVER" addm "${e}a"
-	done
-}
-
-create_box() {
-	box=$1
-	name=$(jname "$box")
-
-	if [ "$(jls -d -j "$name" dying 2>/dev/null || true)" = "true" ]; then
-		die "previous jail $name stuck dying, see FreeBSD bug 264981"
-	fi
-
-	set -- $(ifaces "$box")
-	vnetargs=""
-	for i in "$@"; do
-		# The "a" end creates both ends of the pair
-		case $i in
-		*a) ${SUDO} ifconfig "${i%a}" create group "$IFGROUP" >/dev/null ;;
-		esac
-		vnetargs="$vnetargs vnet.interface=$i"
-	done
-
-	# shellcheck disable=SC2086
-	${SUDO} jail -c name="$name" host.hostname="$box" persist vnet $vnetargs
-
-	set -- $(renames "$box")
-	while [ $# -ge 2 ]; do
-		jrun "$box" ifconfig "$1" name "$2"
-		shift 2
-	done
-
-	set -- $(addrs "$box")
-	while [ $# -ge 2 ]; do
-		jrun "$box" ifconfig "$1" inet "$2" up
-		shift 2
-	done
-
-	# After the addresses: "alias" is what keeps the kernel from
-	# replacing the address the interface already has
-	set -- $(aliases "$box")
-	while [ $# -ge 2 ]; do
-		jrun "$box" ifconfig "$1" inet "$2" alias
-		shift 2
-	done
-
-	# Before the routes: gif-tunnel points some of them at $GIF_R1/$GIF_R3
-	set -- $(tunnels "$box")
-	while [ $# -ge 5 ]; do
-		jrun "$box" ifconfig "$1" create
-		jrun "$box" ifconfig "$1" tunnel "$2" "$3"
-		jrun "$box" ifconfig "$1" inet "$4" "$5" netmask "$GIF_MASK" up
-		shift 5
-	done
-
-	set -- $(routes "$box")
-	while [ $# -ge 2 ]; do
-		jrun "$box" route -q add "$1" "$2" >/dev/null
-		shift 2
-	done
-
-	# After the routes: a metric is a property of one that already exists
-	set -- $(route_metrics "$box")
-	while [ $# -ge 3 ]; do
-		jrun "$box" route -q change "$1" "$2" -metric "$3" >/dev/null
-		shift 3
-	done
-
-	case $box in
-	r*) jrun "$box" sysctl -q net.inet.ip.forwarding=1 >/dev/null ;;
-	esac
-}
-
-destroy_box() {
-	box=$1
-	name=$(jname "$box")
-
-	jls -j "$name" jid >/dev/null 2>&1 || return 0
-	${SUDO} jail -r "$name" 2>/dev/null || true
-}
-
 # Start pimd on one router.  Split out of start() so that a scenario can
 # restart a single daemon in the middle of a run: the command line has to
 # be the same one, or the router that comes back is not the one the rest of
-# the scenario was written against.  daemon(8) opens the log with O_APPEND,
-# so what the first incarnation logged is still there afterwards.
+# the scenario was written against.  box_daemon() appends to the log, so
+# what the first incarnation logged is still there afterwards.
 start_pimd() {
 	r=$1
 
 	# shellcheck disable=SC2086
-	${SUDO} daemon -f -p "$WORKDIR/$r.daemon.pid" \
-		-o "$WORKDIR/$r.log" \
-		jexec "$(jname "$r")" "$PIMD" -i "$r" -n $DEBUG \
+	box_daemon "$r" "$WORKDIR/$r.daemon.pid" "$WORKDIR/$r.log" \
+		"$PIMD" -i "$r" -n $DEBUG \
 		-f "$WORKDIR/$r.conf" \
 		-p "$WORKDIR/$r.pid" \
 		-u "$WORKDIR/$r.sock"
@@ -2576,7 +2379,7 @@ restart_pimd() {
 start() {
 	check_req
 
-	if jls -j "$(jname r1)" jid >/dev/null 2>&1; then
+	if box_exists r1; then
 		die "lab already running, run '$0 stop' first"
 	fi
 
@@ -2615,14 +2418,14 @@ start() {
 	if [ "$SCENARIO" = keepalive ]; then
 		print "Starting the source on ED1, $KEEP_NUM groups from $KEEP_GROUP ..."
 		build_msend
-		${SUDO} daemon -f -p "$WORKDIR/msend.pid" -o "$WORKDIR/msend.log" \
-			jexec "$(jname ed1)" "$MSEND" "$SRC_ADDR" "$KEEP_GROUP" "$KEEP_NUM"
+		box_daemon ed1 "$WORKDIR/msend.pid" "$WORKDIR/msend.log" \
+			"$MSEND" "$SRC_ADDR" "$KEEP_GROUP" "$KEEP_NUM"
 	fi
 
 	print "Lab is up ($SCENARIO).  Poke at it with:"
-	echo "  ${SUDO} jexec $(jname r2) $PIMCTL -u $WORKDIR/r2.sock show pim detail"
-	echo "  ${SUDO} jexec $(jname r3) netstat -gn"
-	echo "  ${SUDO} jexec $(jname ed2) $MPING -r -i $ED2_IF $GROUP"
+	echo "  $(box_hint r2) $PIMCTL -u $WORKDIR/r2.sock show pim detail"
+	echo "  $(box_hint r3) $MFC_SHOW_CMD"
+	echo "  $(box_hint ed2) $MPING -r -i $ED2_IF $GROUP"
 	echo "  tail -f $WORKDIR/r1.log"
 }
 
@@ -2653,7 +2456,6 @@ took_p2p_branch() {
 }
 has_rp()       { pimctl "$1" show rp 2>/dev/null | grep -q "$2"; }
 has_mrt()      { pimctl "$1" show mrt 2>/dev/null | grep -q "$2"; }
-has_mfc()      { jrun "$1" netstat -gn 2>/dev/null | grep -q "$2"; }
 
 # Every (S,G) the source is sending to, one per line, as pimctl shows them
 sources() { pimctl r1 show mrt 2>/dev/null | awk -v s="$SRC_ADDR" '$1 == s { print $2 }'; }
@@ -2748,19 +2550,7 @@ forwards_on() {
 	idx=$(vif_index "$1" "$2")
 	[ -n "$idx" ] || return 1
 
-	jrun "$1" netstat -gn 2>/dev/null | awk -v s="$SRC_ADDR" -v g="$3" -v v="$idx" '
-		$1 == s && $2 == g {
-			# "Origin Group Packets In-Vif Out-Vifs:Ttls", the
-			# out-vifs being "<vif>:<ttl>" from field 5 on
-			for (i = 5; i <= NF; i++) {
-				split($i, oif, ":")
-				if (oif[1] == v)
-					found = 1
-			}
-			exit
-		}
-		END { exit !found }
-	'
+	mfc_forwards_on "$1" "$SRC_ADDR" "$3" "$idx"
 }
 
 asserted_on() {
@@ -2864,7 +2654,7 @@ queriers_settled() {
 # towards the source, which is the state router A shows in #243.
 run_stream_and_sample() {
 	regs_before=$(registers_seen)
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 &
 	sender=$!
 
@@ -2916,7 +2706,7 @@ run_stream_and_sample() {
 # ED2's membership within seconds, after which both routers drop the leaf
 # and the assert state goes with it.
 run_stream_and_sample_shared() {
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 
 	fwd3=
@@ -2964,7 +2754,7 @@ sl_lan_is_held_by() {
 }
 
 sl_set_rp_metric() {
-	jrun "$1" route -q change "$SL_RP_NET" "$SL_RP_GW" -metric "$2" >/dev/null
+	box_route_change "$1" "$SL_RP_NET" "$SL_RP_GW" "$2" >/dev/null
 }
 
 # The assert election decided by the routing table instead of by the
@@ -2997,13 +2787,13 @@ check_assert_metric() {
 		return 0
 	fi
 
-	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/joiner-metric.log" 2>&1 &
 	joiner=$!
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver-metric.log" 2>&1 &
 	receiver=$!
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
 		-w "$SL_METRIC_PKTS" "$GROUP" \
 		>"$WORKDIR/sender-metric.log" 2>&1 &
 	sender=$!
@@ -3055,8 +2845,8 @@ ar_resumes() {
 ar_resumed_since() { [ "$(ar_resumes)" -gt "$1" ]; }
 
 ar_restore_addr() {
-	jrun r4 ifconfig "$SL_R4_IF" inet "$AR_DR_NEW" delete 2>/dev/null || true
-	jrun r4 ifconfig "$SL_R4_IF" inet "$SL_DR_ADDR/24" alias 2>/dev/null || true
+	box_addr_del r4 "$SL_R4_IF" "$AR_DR_NEW" 2>/dev/null || true
+	box_addr_add r4 "$SL_R4_IF" "$SL_DR_ADDR/24" 2>/dev/null || true
 }
 
 # The Assert state router $1 holds for (*,$3) on interface $2, which for a
@@ -3084,8 +2874,8 @@ ar_dump() {
 		pimctl "$r" show interface 2>&1 || true
 		dprint "--- $r: pimctl show mrt detail ---"
 		pimctl "$r" show mrt detail 2>&1 | head -40 || true
-		dprint "--- $r: netstat -gn ---"
-		jrun "$r" netstat -gn 2>&1 || true
+		dprint "--- $r: $MFC_SHOW_CMD ---"
+		mfc_show "$r" 2>&1 || true
 	done
 }
 
@@ -3155,13 +2945,13 @@ check_assert_recover() {
 	# not the entry's iif, so the stream underneath all of this is not
 	# scenery: a LAN nobody is sending to keeps whatever it decided last,
 	# and every step below would read the previous step's answer.
-	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
+	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
 		>"$WORKDIR/joiner-recover.log" 2>&1 &
 	joiner=$!
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
 		>"$WORKDIR/receiver-recover.log" 2>&1 &
 	receiver=$!
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
 		>"$WORKDIR/sender-recover.log" 2>&1 &
 	sender=$!
 
@@ -3226,8 +3016,8 @@ check_assert_recover() {
 	fi
 
 	print "7. The winner is renumbered and still knows it won the election"
-	jrun r4 ifconfig "$SL_R4_IF" inet "$SL_DR_ADDR" delete
-	jrun r4 ifconfig "$SL_R4_IF" inet "$AR_DR_NEW/24" alias
+	box_addr_del r4 "$SL_R4_IF" "$SL_DR_ADDR"
+	box_addr_add r4 "$SL_R4_IF" "$AR_DR_NEW/24"
 	if wait_for 60 iface_is r4 "$SL_R4_IF" "$AR_DR_NEW"; then
 		ok "r4: the VIF on $SL_R4_IF moved to $AR_DR_NEW"
 	else
@@ -3285,7 +3075,7 @@ check_assert_recover() {
 }
 
 check() {
-	jls -j "$(jname r1)" jid >/dev/null 2>&1 || die "lab is not running, run '$0 start'"
+	box_exists r1 || die "lab is not running, run '$0 start'"
 
 	# "run all" walks the scenarios in one shell, and every check_*()
 	# gates its later assertions on "[ $FAILED -eq 0 ] || return 1".
@@ -3359,11 +3149,11 @@ check() {
 	# what builds the tree.  Count the replies instead and require the
 	# stream to be flowing rather than perfect.
 	print "4. Multicast is forwarded from ED1 to ED2 through the RP"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	sleep 2
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -3423,28 +3213,10 @@ has_sg() {
 		awk -v s="$2" -v g="$3" '$1 == s && $2 == g { found = 1 } END { exit !found }'
 }
 
-# How many PIM Registers the kernel in $1's vnet has taken in, out of
-# netstat(1).  pim_input() (sys/netinet/ip_mroute.c) counts one here, and
-# hands the inner packet to if_simloop() on the register vif, before the
-# daemon is given its copy of the header -- so this is what arrived and was
-# decapsulated, whatever pimd then made of it.  The counter is per vnet,
-# pimstat being a VNET_PCPUSTAT, so it is this jail's own.
-#
-# Both halves of the pattern are load bearing.  netstat writes "1 data
-# register message received" and "2 data register messages received", and
-# the RP that accepts a Register stops the DR after the first one, so a
-# plural-only match reads zero on exactly the run that should show one.
-# The trailing anchor keeps out the "... received on wrong iif" line, which
-# is a superstring of this one.
-registers_rcvd() {
-	jrun "$1" netstat -sp pim 2>/dev/null | \
-		awk '/data register messages? received$/ { print $1; exit }'
-}
-
 # Let ED1 send to the group with nobody listening.  mping counts replies and
 # exits non-zero when it gets none, which here is the expected outcome.
 regf_send() {
-	jrun ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$REGF_PKTS" \
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$REGF_PKTS" \
 		-w $((REGF_PKTS + 20)) "$GROUP" >"$WORKDIR/sender.log" 2>&1 || true
 }
 
@@ -3768,11 +3540,11 @@ check_anycast() {
 	# leave exactly this, so the source has to be seen to register to R2,
 	# or the silence at ED2 below would be a lab that never registered.
 	print "3. Without a set, a receiver behind R3 hears nothing of the source"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
 		>"$WORKDIR/anycast-control-receiver.log" 2>&1 &
 	receiver=$!
 	sleep 5
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
 		>"$WORKDIR/anycast-control-sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -3811,7 +3583,7 @@ check_anycast() {
 	fi
 
 	print "5. A source registering to R2 is copied to R3"
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c $((ANY_REFRESH + 120)) -w $((ANY_REFRESH + 150)) \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c $((ANY_REFRESH + 120)) -w $((ANY_REFRESH + 150)) \
 		"$ANY_GROUP" >"$WORKDIR/anycast-sender.log" 2>&1 &
 	sender=$!
 	copy="Copy PIM Register from $ANY_DR for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
@@ -3883,7 +3655,7 @@ check_anycast() {
 	fi
 
 	print "9. A receiver joining at R3 gets the source's traffic"
-	if jrun ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
+	if box_run ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
 		>"$WORKDIR/anycast-receiver.log" 2>&1; then
 		ok "ed2 received 5 packets from $SRC_ADDR through r3"
 	else
@@ -3904,7 +3676,7 @@ check_anycast() {
 	# A Register whose inner packet is an IP header alone is one FreeBSD
 	# hands pimd whole, so its copies start out as data copies.
 	print "10. A burst of Registers is copied only up to the budget"
-	jrun ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_BURST_GROUP" \
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_BURST_GROUP" \
 		-s "$ANY_BURST_SRC" -c "$ANY_BURST" >/dev/null 2>&1 || true
 	sleep 3
 	burst="Copy PIM Register from $SRC_ADDR for ($ANY_BURST_SRC, $ANY_BURST_GROUP) to Anycast-RP member $ANY_R3"
@@ -3943,7 +3715,7 @@ check_anycast() {
 		fail "r2 counts '$count' Register (S,G) entries after a reload"
 	fi
 	for i in 101 102 103 104 105 106; do
-		jrun ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_LIMIT_GROUP" \
+		box_run ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_LIMIT_GROUP" \
 			-s "10.0.1.$i" -N >/dev/null 2>&1 || true
 	done
 	sleep 2
@@ -4012,11 +3784,11 @@ check_anycast_dr() {
 	# control has to show the source reached R1, or the silence is a lab
 	# that never sent.
 	print "3. Without a set, a receiver behind R3 hears nothing of the source"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
 		>"$WORKDIR/anycast-dr-control-receiver.log" 2>&1 &
 	receiver=$!
 	sleep 5
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
 		>"$WORKDIR/anycast-dr-control-sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -4056,7 +3828,7 @@ check_anycast_dr() {
 
 	print "5. R1 registers its own source to R3, from its member address"
 	stops=$(register_stops r1)
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 180 -w 210 "$ANY_GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 180 -w 210 "$ANY_GROUP" \
 		>"$WORKDIR/anycast-dr-sender.log" 2>&1 &
 	sender=$!
 	reg="Send PIM Register for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
@@ -4109,7 +3881,7 @@ check_anycast_dr() {
 	fi
 
 	print "8. A receiver joining at R3 gets the source's traffic"
-	if jrun ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
+	if box_run ed2 timeout 90 "$MPING" -r -i "$ED2_IF" -t 5 -c 5 "$ANY_GROUP" \
 		>"$WORKDIR/anycast-dr-receiver.log" 2>&1; then
 		ok "ed2 received 5 packets from $SRC_ADDR through r3"
 	else
@@ -4129,7 +3901,7 @@ check_anycast_dr() {
 	# entry here R1 holds only because a member's Register made it, and a
 	# Register-Stop acted on would still arm its Register-Suppression timer.
 	print "9. A member's Register-Stop leaves an entry R1 does not register alone"
-	jrun r3 "$PIMSEND" -i "$ANY_R3" register -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
+	box_run r3 "$PIMSEND" -i "$ANY_R3" register -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
 		-s "$ANYDR_STOP_SRC" -N >/dev/null 2>&1 || true
 	if wait_for 10 has_sg r1 "$ANYDR_STOP_SRC" "$ANYDR_STOP_GROUP"; then
 		ok "r1 holds ($ANYDR_STOP_SRC,$ANYDR_STOP_GROUP) from a member's Register, and registers nothing for it"
@@ -4137,7 +3909,7 @@ check_anycast_dr() {
 		fail "r1 holds no ($ANYDR_STOP_SRC,$ANYDR_STOP_GROUP) after a member's Register"
 		return 1
 	fi
-	jrun r3 "$PIMSEND" -i "$ANY_R3" regstop -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
+	box_run r3 "$PIMSEND" -i "$ANY_R3" regstop -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
 		-s "$ANYDR_STOP_SRC" >/dev/null 2>&1 || true
 	if wait_for 10 logged r1 "Received PIM_REGISTER_STOP from RP $ANY_R3 to $ANYDR_R1 for src = $ANYDR_STOP_SRC"; then
 		ok "r1 was sent the Register-Stop"
@@ -4310,7 +4082,7 @@ check_crafted() {
 	# The two addresses this scenario is built on.  Only the first says
 	# Hello, so from here on R1 holds one neighbour on the link and one
 	# stranger, both able to reach it.
-	jrun ed1 ifconfig "${EP}101a" inet "$CRAFT_ADDR/24" alias 2>/dev/null || \
+	box_addr_add ed1 "${EP}101a" "$CRAFT_ADDR/24" 2>/dev/null || \
 		die "failed adding $CRAFT_ADDR to ${EP}101a on ed1"
 	craft "$SRC_ADDR" hello -H 105
 	if wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
@@ -4407,7 +4179,7 @@ check_crafted() {
 	# Here, before step 14, because a group needs an RP that step 14's
 	# Bootstrap starts ageing out.
 	print "5. A Join overheard on the upstream link holds back our own"
-	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR/24" alias 2>/dev/null || \
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || \
 		die "failed adding $SUPP_ADDR to ${EPU}112b on r2"
 	craft_on r2 "$SUPP_ADDR" hello -H 105
 	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
@@ -4538,7 +4310,7 @@ check_crafted() {
 		fail "every answer came within ${HELLO_PROMPT}ms of the Hello, r1 answers new neighbours at once"
 	fi
 
-	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR" -alias 2>/dev/null
+	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
 	# link with more than one PIM neighbour holds the interface in
@@ -4744,7 +4516,7 @@ check_crafted() {
 	# the Prune as an (S,G) one, found no (S,G) entry and did nothing.
 	# Timed as step 7 is, over $RPT_OVR_TRIALS trials.
 	print "13. A Prune(S,G,rpt) overheard upstream is overridden in time"
-	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR/24" alias 2>/dev/null || \
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || \
 		die "failed adding $SUPP_ADDR to ${EPU}112b on r2"
 	craft_on r2 "$SUPP_ADDR" hello -H 105
 	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
@@ -4861,7 +4633,7 @@ check_crafted() {
 			done
 		fi
 	fi
-	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR" -alias 2>/dev/null
+	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# Step 16 needs $CRAFT_ADDR to be nobody's neighbour again
 	craft "$CRAFT_ADDR" hello -H 0
@@ -5130,7 +4902,7 @@ check_crafted() {
 	# to be asked of a router before it could become a neighbour, take
 	# the DR role, join the assert election and have its Joins believed.
 	print "26. A router the interface does not name is not a neighbour"
-	jrun ed1 ifconfig "${EP}101a" inet "$DENIED_ADDR/24" alias 2>/dev/null || \
+	box_addr_add ed1 "${EP}101a" "$DENIED_ADDR/24" 2>/dev/null || \
 		die "failed adding $DENIED_ADDR to ${EP}101a on ed1"
 	craft "$DENIED_ADDR" hello -H 105
 	if wait_for 10 logged r1 "Ignoring PIM HELLO from $DENIED_ADDR"; then
@@ -5264,7 +5036,7 @@ craft_on() {
 	jail=$1
 	addr=$2
 	shift 2
-	jrun "$jail" "$PIMSEND" -i "$addr" "$@" || \
+	box_run "$jail" "$PIMSEND" -i "$addr" "$@" || \
 		die "failed sending a crafted $1 from $addr on $jail"
 }
 
@@ -5343,7 +5115,7 @@ no_neighbor() { ! has_neighbor "$@"; }
 craft() {
 	addr=$1
 	shift
-	jrun ed1 "$PIMSEND" -i "$addr" "$@" || \
+	box_run ed1 "$PIMSEND" -i "$addr" "$@" || \
 		die "failed sending a crafted $1 from $addr"
 }
 
@@ -5478,7 +5250,7 @@ check_ssm() {
 	# needs; the stream is short because what is asserted is the shape of
 	# the entry and not anything that has to be forwarded.
 	print "7. A directly connected SSM source gets no register vif"
-	jrun ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$SSM_PKTS" \
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c "$SSM_PKTS" \
 		-w $((SSM_PKTS + 10)) "$GROUP" >"$WORKDIR/sender.log" 2>&1 || true
 	if ! wait_for 15 has_sg r1 "$SSM_SRC1" "$GROUP"; then
 		fail "r1 built no ($SSM_SRC1,$GROUP), the stream never reached its DR"
@@ -5568,7 +5340,7 @@ check_ssm_range() {
 # Send one IGMPv3 report for a group from ED2
 group_report() {
 	grp=$1; shift
-	jrun ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$grp" "$@" || \
+	box_run ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$grp" "$@" || \
 		die "failed sending an IGMPv3 report from ed2"
 }
 
@@ -5614,14 +5386,6 @@ iface_not_up() {
 	[ "$(iface_state "$1" "$2")" != "Up" ]
 }
 
-# Local address the kernel holds for one VIF index, out of "netstat -gn".
-# VIF 0 is the register VIF: uvifs[0] is reserved for it, which is why
-# config_vifs_from_kernel() starts its loop at 1 (src/config.c), and the
-# kernel index is the same one.
-kern_vif_addr() {
-	jrun "$1" netstat -gn 2>/dev/null | awk -v v="$2" '$1 == v { print $3 }'
-}
-
 logged() {
 	${SUDO} grep -q "$2" "$WORKDIR/$1.log" 2>/dev/null
 }
@@ -5642,14 +5406,14 @@ missing_groups() {
 	mg_if=$2
 	shift 2
 
-	# ifmcstat exits non-zero for a name it cannot resolve, and the
-	# assignment would take "set -e" with it -- inside the command
+	# if_memberships() exits non-zero for an interface it cannot read, and
+	# the assignment would take "set -e" with it -- inside the command
 	# substitution this runs in, that is a subshell leaving quietly and a
 	# caller reading an empty answer as "nothing missing".  An interface
 	# that cannot be read holds nothing we can prove it holds, so say so.
-	mg_held=$(jrun "$mg_box" ifmcstat -i "$mg_if" -f inet 2>/dev/null) || mg_held=
+	mg_held=$(if_memberships "$mg_box" "$mg_if") || mg_held=
 	for mg_group in "$@"; do
-		echo "$mg_held" | grep -q "group $mg_group\b" || printf '%s ' "$mg_group"
+		echo "$mg_held" | grep -Fqx "$mg_group" || printf '%s ' "$mg_group"
 	done
 }
 
@@ -5771,11 +5535,11 @@ check_alias() {
 	[ "$FAILED" -eq "$converged" ] || return 1
 
 	print "5. Multicast from a sender on the aliased subnet reaches ED2"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	sleep 2
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
@@ -5821,7 +5585,7 @@ check_alias() {
 	# options, so the PIM header is at byte 20.  tcpdump prints the
 	# addresses of the option only from -vv up.
 	print "7. R1's Hello on $ALIAS_UP_IF lists its secondary address"
-	jrun r2 timeout 45 tcpdump -l -c 1 -nvvi "${EPU}112b" \
+	box_run r2 timeout 45 tcpdump -l -c 1 -nvvi "${EPU}112b" \
 		"ip proto 103 and src 10.0.12.1 and ip[20] & 0x0f = 0" \
 		>"$WORKDIR/hello.txt" 2>/dev/null || true
 	if grep -q "Address List" "$WORKDIR/hello.txt" && \
@@ -5875,8 +5639,8 @@ check_alias() {
 		return 0
 	fi
 	print "RESULT: FAIL ($FAILED assertion(s))"
-	dprint "--- r1: ifconfig $ALIAS_IF ---"
-	jrun r1 ifconfig "$ALIAS_IF" 2>&1 || true
+	dprint "--- r1: $ALIAS_IF ---"
+	box_if_show r1 "$ALIAS_IF" 2>&1 || true
 	for r in $ROUTERS; do
 		dprint "--- $r: pimctl show pim detail ---"
 		pimctl "$r" show pim detail 2>&1 | tail -40 || true
@@ -5910,7 +5674,7 @@ check_ifgone() {
 	dprint "register VIF sits on ${reg_before:-none}"
 
 	print "3. The interface is destroyed under pimd"
-	jrun ed1 ifconfig "$IFGONE_PEER_IF" destroy || \
+	box_if_destroy ed1 "$IFGONE_PEER_IF" || \
 		die "failed destroying $IFGONE_PEER_IF on ed1"
 	# age_vifs() polls every TIMER_INTERVAL (5s), src/defs.h
 	if wait_for 30 iface_not_up r1 "$IFGONE_IF"; then
@@ -6012,14 +5776,14 @@ check_renumber() {
 	fi
 
 	print "3. The address is changed under pimd"
-	jrun r2 ifconfig "$RENUM_IF" inet "$RENUM_OLD" delete || \
+	box_addr_del r2 "$RENUM_IF" "$RENUM_OLD" || \
 		die "failed removing $RENUM_OLD from $RENUM_IF on r2"
-	jrun r2 ifconfig "$RENUM_IF" inet "$RENUM_NEW/24" alias || \
+	box_addr_add r2 "$RENUM_IF" "$RENUM_NEW/24" || \
 		die "failed adding $RENUM_NEW to $RENUM_IF on r2"
 	# The unicast routing follows the address, as it would in the field:
 	# R3 reaches the source and the RP through the gateway that just moved.
 	for net in 10.0.1.0/24 10.0.12.0/24; do
-		jrun "$RENUM_PEER" route -q change "$net" "$RENUM_NEW" >/dev/null 2>&1 || \
+		box_route_change "$RENUM_PEER" "$net" "$RENUM_NEW" >/dev/null 2>&1 || \
 			dprint "$RENUM_PEER: no route to $net to repoint, continuing"
 	done
 	dprint "r2: $RENUM_IF is now $RENUM_NEW"
@@ -6175,8 +5939,8 @@ check_keepalive() {
 	# packets reached R1 at all.
 	print "5. local-sg-limit $KEEP_NUM keeps a flood of $KEEP_FLOOD_NUM more groups out"
 	m1=$(log_lines r1)
-	${SUDO} daemon -f -p "$WORKDIR/msend-flood.pid" -o "$WORKDIR/msend-flood.log" \
-		jexec "$(jname ed1)" "$MSEND" "$SRC_ADDR" "$KEEP_FLOOD_GROUP" "$KEEP_FLOOD_NUM"
+	box_daemon ed1 "$WORKDIR/msend-flood.pid" "$WORKDIR/msend-flood.log" \
+		"$MSEND" "$SRC_ADDR" "$KEEP_FLOOD_GROUP" "$KEEP_FLOOD_NUM"
 	if ! wait_for 15 log_since r1 "$m1" "Cache miss, src $SRC_ADDR, dst $KEEP_FLOOD_GROUP,"; then
 		fail "r1 logged no cache miss for $KEEP_FLOOD_GROUP, the flood is not reaching it"
 	else
@@ -6281,7 +6045,7 @@ check_rp_lasthop() {
 	fi
 
 	print "3. ED2's membership reaches the RP it is directly attached to"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
@@ -6339,8 +6103,8 @@ check_rp_lasthop() {
 		dprint "--- $r: pimctl show mrt detail ---"
 		pimctl "$r" show mrt detail 2>&1 | tail -40 || true
 	done
-	dprint "--- r3: netstat -gn ---"
-	jrun r3 netstat -gn 2>&1 || true
+	dprint "--- r3: $MFC_SHOW_CMD ---"
+	mfc_show r3 2>&1 || true
 	dprint "--- registers decapsulated by r3, total: $(registers_seen) ---"
 	return 1
 }
@@ -6356,7 +6120,7 @@ check_rp_lasthop() {
 # runs, because killing the receiver expires the membership and the (S,G)
 # with it.
 run_stream_and_sample_offpath() {
-	jrun ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 &
 	sender=$!
 
@@ -6443,7 +6207,7 @@ check_rp_offpath() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. ED2's membership gives the last hop router a group entry"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
@@ -6565,7 +6329,7 @@ check_gif_tunnel() {
 	fi
 
 	print "5. ED2's membership reaches the RP it is directly attached to"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
@@ -6615,8 +6379,8 @@ check_gif_tunnel() {
 	for r in $(pim_routers); do
 		dprint "--- $r: pimctl show compat detail ---"
 		pimctl "$r" show compat detail 2>&1 | head -30 || true
-		dprint "--- $r: ifconfig $GIF_IF ---"
-		jrun "$r" ifconfig "$GIF_IF" 2>&1 | head -4 || true
+		dprint "--- $r: $GIF_IF ---"
+		box_if_show "$r" "$GIF_IF" 2>&1 | head -4 || true
 	done
 	dprint "--- registers decapsulated by r3, total: $(registers_seen) ---"
 	return 1
@@ -6663,7 +6427,7 @@ check_gif_staticrp() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. ED2's membership reaches the RP it is directly attached to"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
@@ -6822,7 +6586,7 @@ check_shared_lan() {
 	# trigger PIM joins" - a deliberate deviation, and the reason this
 	# scenario needs a downstream router to get its second forwarder.
 	print "6. An IGMP report on the LAN is taken by the DR and by nobody else"
-	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/joiner.log" 2>&1 &
 	joiner=$!
 	if wait_for 60 has_mrt r4 "$GROUP"; then
@@ -6842,7 +6606,7 @@ check_shared_lan() {
 	# neighbour is R3, so its Join names R3, and R3 is the one router on
 	# the LAN that may act on it.
 	print "7. A downstream Join gives the non-DR an oif on the same LAN"
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	if wait_for 90 joined_on r3 "$SL_R3_IF" "$GROUP"; then
@@ -6984,8 +6748,8 @@ check_shared_lan() {
 		pimctl "$r" show igmp 2>&1 || true
 		dprint "--- $r: pimctl show mrt detail ---"
 		pimctl "$r" show mrt detail 2>&1 | head -40 || true
-		dprint "--- $r: netstat -gn ---"
-		jrun "$r" netstat -gn 2>&1 || true
+		dprint "--- $r: $MFC_SHOW_CMD ---"
+		mfc_show "$r" 2>&1 || true
 	done
 	return 1
 }
@@ -7007,18 +6771,7 @@ stop() {
 		destroy_box "$box"
 	done
 
-	# Jails can linger in the dying state and hold their interfaces
-	sleep 1
-	for e in $ALL_EPAIRS; do
-		for end in a b; do
-			${SUDO} ifconfig "$e$end" destroy 2>/dev/null || true
-		done
-		${SUDO} ifconfig "$e" destroy 2>/dev/null || true
-	done
-
-	for br in $BR_UPSTREAM $BR_RECEIVER; do
-		${SUDO} ifconfig "$br" destroy 2>/dev/null || true
-	done
+	destroy_links
 
 	restore_mcast_loop
 	${SUDO} rm -rf "$WORKDIR"

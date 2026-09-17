@@ -943,7 +943,7 @@ check_req() {
 }
 
 # net.inet.ip.mcast.loop must be 0 for any PIM router on FreeBSD; see the
-# long comment on the same sysctl in freebsd-lab.sh.  It is a plain global,
+# long comment on the same sysctl in lab-freebsd.sh.  It is a plain global,
 # not VNET-ized, so it has to be changed on the host -- which makes it the
 # one thing the slots, and the two labs, cannot each have their own of.
 #
