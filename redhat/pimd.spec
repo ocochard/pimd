@@ -6,7 +6,7 @@ Summary:        pimd, the PIM-SM/SSM v2 multicast daemon
 
 Group:          System Environment/Daemons
 License:        BSD
-URL:            https://github.com/troglobit/%{name}/releases/download/%{version}/%{name}-%{version}.tar.gz
+URL:            https://github.com/ocochard/%{name}/releases/download/%{version}/%{name}-%{version}.tar.gz
 Source0:        %{name}-%{version}.tar.gz
 Source1:        %{name}.init
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}

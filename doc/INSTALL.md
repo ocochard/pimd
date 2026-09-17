@@ -5,8 +5,11 @@ It is recommended to use a pimd from your distribution, be it from ports
 in one of the major BSD's, or your GNU/Linux distribution of choice.
 
 However, if you want to try the latest bleeding edge pimd, clone the GIT
-sources from <https://github.com/ocochard/pimd>, or download one of the
-2.x release tarballs at <https://github.com/troglobit/pimd/releases>
+sources from <https://github.com/ocochard/pimd>.  The 2.x release
+tarballs predate this fork and are still on the releases page of the
+project it forked from, <https://github.com/troglobit/pimd/releases>;
+report anything about the sources here in this repository's tracker,
+<https://github.com/ocochard/pimd/issues>.
 
 After unpacking the tarball, cd to the new directory, e.g. `pimd-3.0/`
 followed by:

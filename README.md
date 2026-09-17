@@ -27,10 +27,12 @@ restored original version from University of Southern California, by
 Ahmed Helmy, Rusty Eddy and Pavlin Ivanov Radoslavov.
 
 Development happens in [this GitHub repository][GitHub], which is where
-pimd is maintained today.  This is the preferred way to access the GIT
-sources, report bugs, and send patches or pull requests.  The project
-started out as a fork of [troglobit/pimd][upstream], and tarballs of the
-2.x releases are still on that [releases page][releases page].
+pimd is maintained today.  This is the place to access the GIT sources,
+report bugs, and send patches or pull requests.  The project started out
+as a fork of [troglobit/pimd][upstream], and tarballs of the 2.x releases
+are still on that [releases page][releases page], but that repository has
+none of the changes here: its issue tracker is not the one for this pimd,
+and support questions about this pimd belong in [our tracker][issues].
 
 The protocol pimd implements is PIM-SM as specified in [RFC 7761][], the
 current PIM-SM standard (STD 83), with the Bootstrap Router mechanism of
@@ -463,8 +465,10 @@ Contributing
 pimd was restored and maintained for many years by [Joachim Wiberg][] at
 [troglobit/pimd][upstream].  This repository is where it is maintained
 now, and where the FreeBSD work and the changes listed in the
-[ChangeLog][] happen.  If you find bugs, have feature requests, or want
-to contribute fixes or features, check out the code from GitHub:
+[ChangeLog][] happen.  Bugs, feature requests and patches go to [this
+repository's issue tracker][issues]; do not file them against the project
+this one forked from.  To contribute fixes or features, check out the
+code from GitHub:
 
 	git clone https://github.com/ocochard/pimd
 	cd pimd
@@ -487,6 +491,7 @@ Stanford Junior University.
 [License Badge]:   https://img.shields.io/badge/License-BSD%203--Clause-blue.svg
 [github]:          https://github.com/ocochard/pimd
 [upstream]:        https://github.com/troglobit/pimd
+[issues]:          https://github.com/ocochard/pimd/issues
 [ChangeLog]:       https://github.com/ocochard/pimd/blob/master/ChangeLog.md
 [releases page]:   https://github.com/troglobit/pimd/releases
 [buildsystem]:     https://autotools.io/

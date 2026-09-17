@@ -1,3 +1,8 @@
+This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
+<https://github.com/troglobit/pimd>.  A bare issue number in an entry
+below, `#93` say, is an issue of the tracker pimd was forked from; an
+issue of this repository is written out in full.
+
 [v3.0.0][UNRELEASED]
 --------------------
 
@@ -278,6 +283,13 @@ pimd on all routers in the same domain.  See issue #93 for details.
   stop restored it under every other.  `test/veos-bhyve.sh` keeps each
   VM's files in `$WORK/<name>`, two guests having never been able to share
   the one disk image
+- The documentation says which pimd this is: the man pages, the READMEs and
+  the RPM spec name <https://github.com/ocochard/pimd> as the project, with
+  a `BUGS` section in each man page pointing bug reports and support
+  questions at its issue tracker.  The repository pimd forked from is still
+  named where it is the accurate reference -- its 2.x tarballs, its wiki,
+  the issue numbers cited in code comments and in the tests -- but it carries
+  none of the work here and is no longer given as the place to ask
 - The release tarball carries `doc/` again: the READMEs, the FAQ, the
   install notes, `TODO.org`, `rfc7761-compliance.md` and the security
   review prompt.  v2.3.2 shipped all of these from the top of the tree; the
@@ -2463,8 +2475,8 @@ v2.1.0-alpha1 - 1997-08-26
 First alpha version of the "new, up to date" pimd.  RSRR and Solaris
 support added.  Many functions rewritten and/or modified.
 
-[UNRELEASED]: https://github.com/troglobit/pimd/compare/2.3.2...HEAD
-[v3.0.0]:     https://github.com/troglobit/pimd/compare/2.3.2...3.0.0
+[UNRELEASED]: https://github.com/ocochard/pimd/compare/2.3.2...HEAD
+[v3.0.0]:     https://github.com/ocochard/pimd/compare/2.3.2...3.0.0
 [v2.3.2]:     https://github.com/troglobit/pimd/compare/2.3.1...2.3.2
 [v2.3.1]:     https://github.com/troglobit/pimd/compare/2.3.0...2.3.1
 [v2.3.0]:     https://github.com/troglobit/pimd/compare/2.2.1...2.3.0

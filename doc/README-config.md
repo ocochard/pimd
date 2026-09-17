@@ -2,14 +2,17 @@
 
 This is file contains help for configuring and using pimd, the
 PIM-SM/SSM multicast daemon.  For the latest pimd version, see
-<https://github.com/troglobit/pimd>
+<https://github.com/ocochard/pimd>, which is where pimd is maintained
+today.  It started out as a fork of <https://github.com/troglobit/pimd>;
+that repository does not carry the changes here and is not where issues
+about this pimd belong.
 
 There is an older Japanese version of this file, it could need
 some updating help, in the meantime, see [README.config.jp][jp]
 
 **NOTE:** currently, this file is very incomplete.  If something is
           missing and/or unclear, email the current maintainer of pimd
-          or file an issue in the GitHub issue tracker.
+          or file an issue in the [GitHub issue tracker][issues].
 
 ## Using GRE Tunnels for Multicast Routing
 
@@ -120,7 +123,8 @@ For a complete list of all available options, see `pimd.conf` and the man page.
 
         phyint eth1 scoped 239.0.0.0 masklen 8
 
-[jp]: https://github.com/troglobit/pimd/blob/master/README.config.jp
+[jp]:     https://github.com/ocochard/pimd/blob/master/doc/README.config.jp
+[issues]: https://github.com/ocochard/pimd/issues
 
 <!--
   -- Local Variables:
