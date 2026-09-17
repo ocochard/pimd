@@ -18,7 +18,8 @@ Two labs live in this directory, and neither is part of `make check`.
 
 Neither is in `TESTS`: automake drives that under an unprivileged
 `unshare -mrun`, and a lab box has to outlive the command that built it,
-so both want real root and a couple of kernel modules loaded beforehand.
+so both want real root, and on FreeBSD a couple of kernel modules loaded
+beforehand.
 The vEOS lab also needs a licensed VM image, which is why it is the one
 CI cannot run.  There used to be a third suite, a set of Linux-only
 scripts that `make check` ran; the section below says where it went.
@@ -40,10 +41,11 @@ Shared tools
 | File        | What it is                                                  |
 |-------------|-------------------------------------------------------------|
 | `mping.c`   | Multicast ping.  `-s` sends to a group, `-r` joins it and answers each packet by sending to the same group, so one run builds a tree in each direction.  The sender's "packets transmitted" line counts the replies that came back, which is how every forwarding assertion is measured. |
+| `pimsend.c` | Builds one PIM message of any type and sends it once, or `-c COUNT` times, with every field that can be got wrong exposed as an option: version, type, checksum, mask lengths, address family and encoding type, the B and Z bits, holdtime.  Two pimds share one reading of the wire, so a field pimd encodes wrongly it also decodes wrongly and the lab stays green; this is the way past that, and the `crafted` scenario is its user.  Write the positive control beside every "was it refused?" assertion — a parser that refuses everything passes all of them. |
 | `igmpv3.c`  | Sends exactly one IGMPv3 membership report and exits.  Needed wherever a test has to watch a membership *age out*: a kernel that joined a group answers every query afterwards, so the membership never expires while the emulated device is on the LAN. |
 
-`mping` and `igmpv3` are built by `configure --enable-test`; both labs
-compile them on their own when they start.
+`mping`, `igmpv3` and `pimsend` are built by `configure --enable-test`;
+both labs compile their own copies when they start.
 
 
 The Linux suite, and where it went
@@ -76,19 +78,33 @@ The vnet jail and network namespace lab
     sh test/lab.sh check rpt        # assertions against a running lab
     sh test/lab.sh stop
 
-Deliberately **not** in `TESTS`, which automake runs under `unshare
--mrun`, a Linux command.  What the lab itself wants is root, and
-`ip_mroute.ko` plus `if_bridge.ko` for the shared segment scenarios
-loaded before it starts, because a jail may not `kldload`.  Nothing there
-calls for a custom kernel: GENERIC is built with VIMAGE and ships both
-modules.  Without this lab the BSD half of the tree would be compiled and
-never executed.
+One set of scenarios, two backends, picked by `uname -s`: vnet jails,
+epairs and `if_bridge` on FreeBSD, named network namespaces, veth pairs
+and Linux bridges on Linux.  Every scenario runs on both, and the
+per-scenario notes below hold for both unless they say otherwise.
+
+Deliberately **not** in `TESTS`.  automake runs that under an
+unprivileged `unshare -mrun`, and a lab box has to outlive the command
+that built it — `start` and `check` are separate invocations, and so is
+every slot of a `-j` run.  What the lab wants instead:
+
+| | FreeBSD | Linux |
+|---|---|---|
+| Privilege     | root, or passwordless `sudo` | the same |
+| Kernel        | VIMAGE, in GENERIC | `CONFIG_IP_MROUTE`, `CONFIG_IP_PIMSM_V2` |
+| Loaded first  | `ip_mroute.ko`, and `if_bridge.ko` for the shared segments, because a jail may not `kldload` | nothing; `ipip` is loaded by the lab for the tunnel scenarios |
+| Tools         | base system | iproute2, ethtool |
+
+Without this lab the BSD half of the tree would be compiled and never
+executed; without its Linux backend, `netlink.c` and the Linux kernel
+glue would be, since nothing else in the tree runs a router any more.
 
 Run as root the lab uses no `sudo` at all; as an ordinary user it wraps
 every privileged command in one, and `SUDO=` in the environment overrides
 that either way.
 
-`NETLINK=yes` runs the same scenarios against the other RPF backend.
+`NETLINK=yes` runs the same scenarios against the other RPF backend, on
+FreeBSD; Linux has only the one and is always netlink.
 FreeBSD 13.2 and later answer the lookups `routesock.c` makes over the
 routing socket through `netlink(4)` as well, and a tree configured
 `--enable-netlink` builds `netlink.c` for them instead, the same file
@@ -120,27 +136,22 @@ of its own.  `SAN_ASAN_OPTIONS=detect_leaks=1` asks for it anyway.
 Both sanitizers slow a router down, so a scenario measuring a timer can
 want a smaller `-j` than the same run without them.
 
-What makes it possible: `sys/netinet/ip_mroute.c` is fully VNET-ized, so
-each vnet jail owns a private forwarding cache and vif table, and
-`prison_priv_check()` grants `PRIV_NETINET_MROUTE`, `PRIV_NETINET_RAW`
-and `PRIV_NET_BPF` to jails with their own network stack, so pimd's raw
-sockets and `MRT_INIT` work inside one.  `ip_mroute.ko` has to be loaded
-from the host, a jail may not `kldload`.
+What makes a box a router of its own, per system: on FreeBSD
+`sys/netinet/ip_mroute.c` is fully VNET-ized, so each vnet jail owns a
+private forwarding cache and vif table, and `prison_priv_check()` grants
+`PRIV_NETINET_MROUTE`, `PRIV_NETINET_RAW` and `PRIV_NET_BPF` to jails
+with their own network stack, so pimd's raw sockets and `MRT_INIT` work
+inside one.  On Linux a network namespace owns the same three things,
+and `ip netns` names it so it outlives the command that made it.
 
-The scenarios never reach the host directly.  Everything that builds a
+The scenarios never reach either host directly.  Everything that builds a
 box, runs a command in one, changes an interface or a route under it, or
-reads the kernel's multicast state back is a function in
-`test/lab-freebsd.sh`, which `lab.sh` sources; its header lists
-them.  `test/lab-linux.sh` is the same functions over named network
-namespaces, veth pairs and Linux bridges, and the script picks one by
-`uname -s`, so on a Linux host, as root,
-
-    ./test/lab.sh -j 19 run all
-
-runs the same twenty scenarios against the Linux kernel and `netlink.c`.
-It needs iproute2, ethtool and a kernel with `CONFIG_IP_MROUTE` and
-`CONFIG_IP_PIMSM_V2`.  Unlike the automake suite it does not run under an
-unprivileged `unshare`: a box has to outlive the command that built it.
+reads the kernel's multicast state back is a function of the backend:
+`test/lab-freebsd.sh` or `test/lab-linux.sh`, one set of the same names,
+sourced by `lab.sh` on the strength of `uname -s`.  Each file's header
+lists them, and a fact a scenario asserts that differs by kernel is a
+variable there too — the loopback's name, and what the kernel hands pimd
+of a data Register.
 
 Most scenarios share one topology, a chain of three routers with an end
 device at each end; the ones that do not say so below.  Unicast routing
@@ -171,7 +182,7 @@ Scenarios run in parallel, several labs at a time — `-s` and `-j` below.
 | `shared-lan-spt`      | ~3m  | The same LAN with the last hop router allowed onto the SPT, which by RFC 7761 4.6.1 must decide the assert on the RPT bit before either address is looked at.  Holds the one `xfail()` written so far — pimd took the bit straight from `MRTF_RP` and lost a comparison it should have won.  Now reports `ok`, fixed in `4cb79f1`. |
 | `ssm`                 | ~90s | IGMPv3 (S,G) membership on the last hop router: two sources reported for one group, one blocked, the survivor ageing out once the reports stop, and a report with more sources than pimd keeps. |
 | `ssm-range`           | ~30s | The SSM range moved off 232.0.0.0/8 by `ssm-range` in `pimd.conf` — [issue #185][185].  The configured range *replaces* the default, like Cisco's, so both halves are asserted at once: a group in the new range becomes source specific and one in 232/8 stops being. |
-| `alias`               | ~90s | An interface carrying a second address, on a subnet of its own, with the sender on that second subnet.  The only scenario reaching the alias branch of `config_vifs_from_kernel()`, and one Linux cannot show: on BSD a dropped alias means the DR does not believe the sender is on its LAN and never registers it. |
+| `alias`               | ~90s | An interface carrying a second address, on a subnet of its own, with the sender on that second subnet.  The only scenario reaching the alias branch of `config_vifs_from_kernel()`.  It runs on both systems, but only on FreeBSD is it the whole story: there a dropped alias means the DR does not believe the sender is on its LAN and never registers it. |
 | `ifgone`              | ~50s | An interface destroyed under a running pimd — [issue #218][218].  FreeBSD answers `ENXIO` where Linux answers `ENODEV`, and `check_vif_state()` used to know only the Linux one.  Also asks the link that survived what groups it is still a member of, which is where the leave for the one that went used to take them. |
 | `renumber`            | ~50s | The counterpart: the interface stays and its address moves, inside its own subnet.  Asserts that pimd notices, takes the VIF out of service and back in, that the neighbour on the far side sees the new address without waiting for a periodic Hello, and that neither link lost a group membership on the way — a neighbour outlives the membership that feeds it, so it has to be asked for separately. |
 
@@ -182,8 +193,8 @@ lab started with `-s N`.
 ### Several labs at once
 
 `-s SLOT`, 0 to 31, picks which lab an invocation is.  Everything the lab
-puts on the host carries the slot — the jails (`pimd3_r1`), the epairs
-(`epair3101a`), the bridges, the interface group and the work directory
+puts on the host carries the slot — the jails or namespaces (`pimd3_r1`),
+the epairs or veths (`epair3101a`), the bridges and the work directory
 (`/tmp/pimd-test3`) — so labs in different slots cannot see, or tear
 down, each other:
 
@@ -191,12 +202,14 @@ down, each other:
     sh test/lab.sh -s 2 start rp-offpath    # another, beside it
     sh test/lab.sh -s 1 stop                # just that one
 
-The addresses inside the jails are the same in every slot and can be: a
-vnet jail has an interface namespace, a routing table and a multicast
-forwarding cache of its own.  What the slots do share is
-`net.inet.ip.mcast.loop`, which is not VNET-ized, so they hold it between
-them under a lock and the last one to stop puts the host value back —
-`freebsd-interop.sh` takes part in the same count.
+The addresses inside the boxes are the same in every slot and can be: a
+vnet jail, like a network namespace, has an interface namespace, a
+routing table and a multicast forwarding cache of its own.  What the
+slots share, on FreeBSD only, is `net.inet.ip.mcast.loop`, which is not
+VNET-ized, so they hold it between them under a lock and the last one to
+stop puts the host value back — `freebsd-interop.sh` takes part in the
+same count.  Linux needs no such thing: its equivalent is a socket
+option, not a host-wide sysctl.
 
 `-j JOBS` runs several scenarios at a time, one slot each, and prints
 each one's output whole when it ends rather than interleaving them:
@@ -374,12 +387,12 @@ the contested LAN is R3's only outgoing interface, and losing an assert
 empties the list, which leaves `JoinDesired(S,G)` false and no way back
 onto the tree — M10 tangled up with M3.
 
-Requirements, on top of the vnet jail lab's: `bhyve` with a VIMAGE
+Requirements, on top of `lab.sh`'s: `bhyve` with a VIMAGE
 kernel, `sysutils/grub2-bhyve`, `emulators/qemu-tools`,
 `sysutils/e2fsprogs`, `python3` (eAPI is JSON), and the image named by
 `-i` above.
 
-`-s SLOT` and `-j JOBS` work as they do in the vnet jail lab, and name
+`-s SLOT` and `-j JOBS` work as they do in `lab.sh`, and name
 the same things apart plus the taps, the bhyve VM (`veos2`) and the
 management subnet eAPI is reached over (`172.20.2.0/24`).  What bounds
 `-j` here is not cores: each scenario boots a vEOS of its own, 4 GiB of
@@ -448,8 +461,8 @@ Which suite sees what
 | One router in every role    | `solo` | `solo` | no |
 | A foreign implementation    | no | no | yes |
 
-A change to `src/pim_proto.c` or `src/route.c` wants at least the Linux
-suite and the vnet jail lab.  A change to how a message is *encoded* —
+A change to `src/pim_proto.c` or `src/route.c` wants the lab on both
+systems.  A change to how a message is *encoded* —
 Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert —
 wants the vEOS lab too, because it is the only one that can tell a wrong
 encoding from a matching pair of wrong ones.
