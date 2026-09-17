@@ -870,6 +870,15 @@ if [ "$SANITIZE" = yes ]; then
 	PIMD_ENV="$PIMD_ENV UBSAN_OPTIONS=$SAN_UBSAN_OPTIONS:log_path=$SAN_DIR/ubsan"
 fi
 
+# How long the "pimd is alive" step of a scenario waits for a daemon to
+# answer on its socket.  start() waits for the first router itself, through
+# verify_rpf_backend(), and the rest are usually up by the time the first
+# assertion asks -- usually: a host running many labs at once starts them
+# all at once too, and a sample taken once has failed a scenario whose pimd
+# was still opening its sockets.  Every other assertion here polls; so does
+# this one now.
+PIMD_START_WAIT=${PIMD_START_WAIT:-20}
+
 # pimd debug flags, e.g. DEBUG="-l debug -d mrt,rpf" or "-l debug -d all"
 DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap"}
 
@@ -1089,6 +1098,12 @@ SSMR_DEFAULT_RANGE=232.0.0.0/8
 # one entry -- see check_static_rp() for why that matters.
 STATICRP_ADDR=${STATICRP_ADDR:-10.0.23.2}
 STATICRP_WAIT=${STATICRP_WAIT:-180}
+
+# A PIM Register carrying nothing but the IP header of the packet it stands
+# for: the four byte PIM header and a 20 byte IPv4 header and its own four
+# byte reserved field.  What a Null-Register is, and what FreeBSD hands pimd
+# of a data Register as well, see REGISTER_UPCALL in the backends.
+REG_NULL_LEN=${REG_NULL_LEN:-28}
 
 # anycast: the RP address both members hold on lo0, the unique address each
 # one is a member under -- their ends of the R2-R3 link -- the group the
@@ -2985,7 +3000,7 @@ ar_dump() {
 check_assert_recover() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -3170,7 +3185,7 @@ check() {
 
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -3309,7 +3324,7 @@ regf_send() {
 check_register_filter() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -3570,7 +3585,7 @@ regf_acl_is() {
 check_anycast() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -3677,6 +3692,19 @@ check_anycast() {
 		ok "r3 holds ($SRC_ADDR,$ANY_GROUP) with nobody joined, RFC 4610 sec. 3"
 	else
 		fail "r3 has no ($SRC_ADDR,$ANY_GROUP), the copy made no state"
+	fi
+
+	# ... and the same fact read at the receiving end, off the wire rather
+	# than off what r2 said it sent
+	len=$(anycast_reglen r3 "$ANY_R2")
+	if [ -z "$len" ]; then
+		fail "r3 logged no Register from $ANY_R2 to measure"
+	elif [ "$REGISTER_UPCALL" = headers ] && [ "$len" -eq "$REG_NULL_LEN" ]; then
+		ok "r3 was handed $len bytes, a Register carrying only the header it encapsulates"
+	elif [ "$REGISTER_UPCALL" = whole ] && [ "$len" -gt "$REG_NULL_LEN" ]; then
+		ok "r3 was handed $len bytes, more than the $REG_NULL_LEN of a Null-Register"
+	else
+		fail "r3 was handed $len bytes for a $want copy, expected ${REGISTER_UPCALL} of the Register"
 	fi
 
 	print "6. The copy carries one less TTL than the Register it copies"
@@ -3822,7 +3850,7 @@ check_anycast() {
 check_anycast_dr() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -4008,6 +4036,16 @@ anycast_copies() {
 		sed -n "s/^Anycast-RP set.* $ANY_R3 (\([0-9]*\) copies).*/\1/p"
 }
 
+# anycast: the length of the first Register $1 logged receiving from $2.
+# A Register holding nothing but the inner IP header is 28 bytes, the PIM
+# header and the header it encapsulates, so this is how the receiving end
+# tells a copy of a data Register from a Null-Register -- what r2 logged
+# copying says only what r2 believed it was sending.
+anycast_reglen() {
+	${SUDO} grep "Received PIM register: len = [0-9]* .* from $2" "$WORKDIR/$1.log" 2>/dev/null | \
+		sed -n '1s/.*len = \([0-9]*\) .*/\1/p'
+}
+
 # anycast: the TTL of the first Register $1 logged receiving from $2
 anycast_ttl() {
 	${SUDO} grep "Received PIM register: .* ttl = [0-9]* from $2" "$WORKDIR/$1.log" 2>/dev/null | \
@@ -4046,7 +4084,7 @@ anycast_ttl() {
 check_static_rp() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -4141,7 +4179,7 @@ has_dynamic_rp() {
 check_crafted() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5214,7 +5252,7 @@ no_dynamic_rp() {
 check_ssm() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5348,7 +5386,7 @@ check_ssm() {
 check_ssm_range() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5553,7 +5591,7 @@ iface_is() {
 check_alias() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5721,7 +5759,7 @@ check_alias() {
 check_ifgone() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5823,7 +5861,7 @@ check_ifgone() {
 check_renumber() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -5940,7 +5978,7 @@ check_renumber() {
 
 check_keepalive() {
 	print "1. pimd is alive on R1"
-	if pimctl r1 show status >/dev/null 2>&1; then
+	if wait_for "$PIMD_START_WAIT" pimd_is_up r1; then
 		ok "r1: pimd answers on its pimctl socket"
 	else
 		fail "r1: pimd not answering, see $WORKDIR/r1.log"
@@ -6092,7 +6130,7 @@ check_keepalive() {
 check_rp_lasthop() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -6228,7 +6266,7 @@ run_stream_and_sample_offpath() {
 check_rp_offpath() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -6347,7 +6385,7 @@ check_rp_offpath() {
 check_gif_tunnel() {
 	print "1. pimd is alive on both tunnel endpoints"
 	for r in $(pim_routers); do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -6465,7 +6503,7 @@ check_gif_tunnel() {
 check_gif_staticrp() {
 	print "1. pimd is alive on both tunnel endpoints"
 	for r in $(pim_routers); do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
@@ -6580,7 +6618,7 @@ check_gif_staticrp() {
 check_shared_lan() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
-		if pimctl "$r" show status >/dev/null 2>&1; then
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
 			ok "$r: pimd answers on its pimctl socket"
 		else
 			fail "$r: pimd not answering, see $WORKDIR/$r.log"
