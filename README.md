@@ -420,8 +420,8 @@ Configure with `--enable-test` to build the test tools, then:
 
 The automake suite in `test/` is **Linux only** — every script builds its
 router topology out of network namespaces, veth pairs and bridges — and
-needs root plus `ethtool`, `tshark` and `bird`.  A missing dependency
-makes a test SKIP, not fail.
+needs root plus `ethtool` and `tcpdump`.  A missing dependency makes a
+test SKIP, not fail.
 
 `test/lab.sh` is the other lab.  On FreeBSD it builds the same kind of
 topologies out of vnet jails, epairs and `if_bridge`, and is the only

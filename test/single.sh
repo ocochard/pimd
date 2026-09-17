@@ -6,10 +6,14 @@
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib.sh"
 
+# tcpdump is given -Z root throughout: it drops privileges to its own user
+# by default, which cannot open the capture file inside the user namespace
+# `make check` runs each script in.
+#
 # Requires ethtool to disable UDP checksum offloading
 print "Check deps ..."
 check_dep ethtool
-check_dep tshark
+check_dep tcpdump
 
 print "Creating world ..."
 left="/tmp/$NM/a1"
@@ -77,9 +81,9 @@ EOF
 cat "/tmp/$NM/conf"
 
 print "Starting collectors ..."
-nsenter --net="$left"  -- tshark -lni eth0 -w "/tmp/$NM/left.pcap" 2>/dev/null &
+nsenter --net="$left"  -- tcpdump -Z root -lnUi eth0 -w "/tmp/$NM/left.pcap" 2>/dev/null &
 echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$right" -- tshark -lni eth0 -w "/tmp/$NM/right.pcap" 2>/dev/null &
+nsenter --net="$right" -- tcpdump -Z root -lnUi eth0 -w "/tmp/$NM/right.pcap" 2>/dev/null &
 echo $! >> "/tmp/$NM/PIDs"
 sleep 1
 
@@ -109,8 +113,8 @@ fi
 kill_pids
 
 print "Analyzing left.pcap ..."
-lines1=$(tshark -n -r "/tmp/$NM/left.pcap" pim 2>/dev/null  | tee "/tmp/$NM/result"   | wc -l)
-lines2=$(tshark -n -r "/tmp/$NM/left.pcap" igmp 2>/dev/null | grep "Membership Query" | tee -a "/tmp/$NM/result" | wc -l)
+lines1=$(tcpdump -Z root -nr "/tmp/$NM/left.pcap" pim 2>/dev/null  | tee "/tmp/$NM/result"   | wc -l)
+lines2=$(tcpdump -Z root -nr "/tmp/$NM/left.pcap" igmp 2>/dev/null | grep "igmp query"    | tee -a "/tmp/$NM/result" | wc -l)
 cat "/tmp/$NM/result"
 echo " => $lines1 PIM, expected >= 2"
 echo " => $lines2 IGMP Query, expected >= 1"
@@ -118,8 +122,8 @@ echo " => $lines2 IGMP Query, expected >= 1"
 [ $lines1 -ge 2 -a $lines2 -ge 1 ] || FAIL
 
 print "Analyzing right.pcap ..."
-lines1=$(tshark -n -r "/tmp/$NM/right.pcap" pim 2>/dev/null  | tee "/tmp/$NM/result"   | wc -l)
-lines2=$(tshark -n -r "/tmp/$NM/right.pcap" igmp 2>/dev/null | grep "Membership Query" | tee -a "/tmp/$NM/result" | wc -l)
+lines1=$(tcpdump -Z root -nr "/tmp/$NM/right.pcap" pim 2>/dev/null  | tee "/tmp/$NM/result"   | wc -l)
+lines2=$(tcpdump -Z root -nr "/tmp/$NM/right.pcap" igmp 2>/dev/null | grep "igmp query"    | tee -a "/tmp/$NM/result" | wc -l)
 cat "/tmp/$NM/result"
 echo " => $lines1 PIM, expected >= 2"
 echo " => $lines2 IGMP Query, expected >= 1"

@@ -63,10 +63,13 @@ traffic.  The ASCII diagram in each script header is the topology.
     make check TESTS=rp.sh           # one, from test/ or the top directory
     make check || cat test/test-suite.log
 
-Needs root plus `ethtool`, `tshark` and `bird`.  `bird` runs OSPF, which
-is what builds the unicast RPF tree PIM depends on; `ethtool` disables
-UDP checksum offloading, since frames leave kernel space on these veth
-pairs.  A missing dependency makes a test **SKIP** (exit 77), not fail,
+Needs root plus `ethtool` and `tcpdump`.  `ethtool` disables UDP checksum
+offloading, since frames leave kernel space on these veth pairs;
+`tcpdump` is what `single.sh` reads its two packet assertions out of.
+The unicast routes are written by hand: pimd reads the FIB and has no
+interest in what put a route there — there is no `RTPROT_*` anywhere in
+`src/` — so the OSPF these scripts used to run only added `bird` to what
+`make check` needs.  A missing dependency makes a test **SKIP** (exit 77), not fail,
 so a green run on a machine without them has tested nothing — check the
 log.
 
@@ -77,11 +80,15 @@ and runtime `pimctl` dumps.
 |-------------|-----------------------------|------------------------------------------|
 | `single.sh` | One router, two end devices | Forwarding between two LANs on one router, and an IGMPv3 query on both. |
 | `two.sh`    | Two routers in a row        | The same, with the sender starting *before* the receiver joins — the other tests do it the other way round. |
-| `three.sh`  | Three routers in a row      | Forwarding across two transit hops. |
-| `rp.sh`     | Triangle, R2 is the RP      | Rendez-vous Point operation and the switch to the shortest path tree.  R2 is the RP and R3 the last hop router, on separate routers. |
-| `shared.sh` | Two routers, both LANs bridged | Two routers on one shared segment at each end. |
-| `pod.sh`    | Four routers, redundant paths | Two disjoint paths between the same pair of LANs. |
-| `ssm.sh`    | One router, one end device  | IGMPv3 (S,G) membership state, not forwarding: two sources reported for one SSM group, one blocked, and the survivor still ageing out once the reports stop.  Driven by `igmpv3.c`, for the reason given above. |
+| `rp.sh`     | Triangle, R2 is the RP      | Rendez-vous Point operation, with the BSR and the RP on different routers and a second candidate for each, so both elections are contested. |
+
+Three is all that is left of the suite.  Every other script here asserted
+something the lab below now asserts on both systems, and more of it, so
+they were retired rather than kept running beside it — the coverage they
+had is named in the table at the end of this file.  What these three keep
+is what no lab scenario reproduces: a single router that is BSR, RP, DR
+and last hop router at once; a sender that starts before anyone joins
+([issue #192][192]); and an election with more than one candidate.
 
 
 The vnet jail and network namespace lab
@@ -186,7 +193,7 @@ Scenarios run in parallel, several labs at a time — `-s` and `-j` below.
 | `gif-tunnel-staticrp` | ~3m  | The same tunnel with a static `rp-address` instead of an elected RP.  A different code path, not another route to the same state: `my_cand_rp_address` is only ever set while parsing `cand_rp`, so with a static RP the router that *is* the RP answers "no" to every internal test of whether it is. |
 | `shared-lan`          | ~3m  | Five routers over two bridges, three of them on one segment.  The only scenario with more than one PIM router on a link, so the only one where DR election, IGMP querier election and the assert election run at all.  Its addresses put the DR and the querier on different routers, the two elections taking opposite ends of the address range. |
 | `shared-lan-spt`      | ~3m  | The same LAN with the last hop router allowed onto the SPT, which by RFC 7761 4.6.1 must decide the assert on the RPT bit before either address is looked at.  Holds the one `xfail()` written so far — pimd took the bit straight from `MRTF_RP` and lost a comparison it should have won.  Now reports `ok`, fixed in `4cb79f1`. |
-| `ssm`                 | ~90s | IGMPv3 (S,G) membership on the last hop router, the FreeBSD counterpart to `ssm.sh`. |
+| `ssm`                 | ~90s | IGMPv3 (S,G) membership on the last hop router: two sources reported for one group, one blocked, the survivor ageing out once the reports stop, and a report with more sources than pimd keeps. |
 | `ssm-range`           | ~30s | The SSM range moved off 232.0.0.0/8 by `ssm-range` in `pimd.conf` — [issue #185][185].  The configured range *replaces* the default, like Cisco's, so both halves are asserted at once: a group in the new range becomes source specific and one in 232/8 stops being. |
 | `alias`               | ~90s | An interface carrying a second address, on a subnet of its own, with the sender on that second subnet.  The only scenario reaching the alias branch of `config_vifs_from_kernel()`, and one Linux cannot show: on BSD a dropped alias means the DR does not believe the sender is on its LAN and never registers it. |
 | `ifgone`              | ~50s | An interface destroyed under a running pimd — [issue #218][218].  FreeBSD answers `ENXIO` where Linux answers `ENODEV`, and `check_vif_state()` used to know only the Linux one.  Also asks the link that survived what groups it is still a member of, which is where the leave for the one that went used to take them. |
@@ -457,8 +464,9 @@ Which suite sees what
 | Runs in `make check`        | yes | no  | no  |
 | Unicast RPF lookups         | `netlink.c` | `routesock.c` | `routesock.c` |
 | Kernel glue                 | Linux `kern.c` | BSD `kern.c` | BSD `kern.c` |
-| Unicast routing             | OSPF, via bird | static | static |
-| Several PIM routers per link| `shared.sh`, `pod.sh` | `shared-lan*` | `assert-lan` |
+| Unicast routing             | static | static | static |
+| Runs on Linux               | yes | yes, over netns | no |
+| Several PIM routers per link| no | `shared-lan*` | `assert-lan` |
 | Assert metrics that differ  | no | no | `assert-lan` |
 | Point-to-point vifs         | no | `gif-tunnel*` | no |
 | Interfaces changing at runtime | no | `ifgone`, `renumber` | no |
@@ -472,6 +480,7 @@ encoding from a matching pair of wrong ones.
 
 [arista-dl]: https://www.arista.com/en/support/software-download
 [185]: https://github.com/troglobit/pimd/issues/185
+[192]: https://github.com/troglobit/pimd/issues/192
 [211]: https://github.com/troglobit/pimd/issues/211
 [218]: https://github.com/troglobit/pimd/issues/218
 [243]: https://github.com/troglobit/pimd/issues/243

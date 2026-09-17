@@ -9,11 +9,9 @@
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib.sh"
 
-# Requires OSPF (bird) to build the unicast rpf tree
 print "Check deps ..."
 check_dep ethtool
-check_dep tshark
-check_dep bird
+check_dep tcpdump
 
 print "Creating world ..."
 ED1="/tmp/$NM/ED1"
@@ -140,54 +138,32 @@ dprint "$R2"
 nsenter --net="$R2" -- ip -br l
 nsenter --net="$R2" -- ip -br a
 
-print "Creating OSPF config ..."
-cat <<EOF > "/tmp/$NM/bird.conf"
-protocol device {
-}
-protocol direct {
-	ipv4;
-}
-protocol kernel {
-	ipv4 {
-		export all;
-	};
-	learn;
-}
-protocol ospf {
-	ipv4 {
-		import all;
-	};
-	area 0 {
-		interface "eth*" {
-			type broadcast;
-			hello 1;
-			wait  3;
-			dead  5;
-		};
-	};
-}
-EOF
-cat "/tmp/$NM/bird.conf"
-
-print "Starting Bird OSPF ..."
-nsenter --net="$R1" -- bird -c "/tmp/$NM/bird.conf" -d -s "/tmp/$NM/r1-bird.sock" &
-echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$R2" -- bird -c "/tmp/$NM/bird.conf" -d -s "/tmp/$NM/r2-bird.sock" &
-echo $! >> "/tmp/$NM/PIDs"
-sleep 1
+# Static routes rather than a routing daemon: pimd reads the FIB and never
+# asks what put a route there -- there is no RTPROT_* anywhere in src/ --
+# so OSPF only added a routing daemon to what `make check` needs.  Each
+# router needs
+# the far LAN, the near ones being on its own interfaces.
+print "Creating static routes ..."
+nsenter --net="$R1" -- ip route add 10.0.2.0/24 via 10.0.0.2
+nsenter --net="$R2" -- ip route add 10.0.1.0/24 via 10.0.0.1
 
 print "Starting collectors ..."
-nsenter --net="$ED1"  -- tshark -lni eth0 -w "/tmp/$NM/ed1.pcap" 2>/dev/null &
+nsenter --net="$ED1"  -- tcpdump -Z root -lnUi eth0 -w "/tmp/$NM/ed1.pcap" 2>/dev/null &
 echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$R2"  -- tshark -lni eth3 -w "/tmp/$NM/eth3.pcap" 2>/dev/null &
+nsenter --net="$R2"  -- tcpdump -Z root -lnUi eth3 -w "/tmp/$NM/eth3.pcap" 2>/dev/null &
 echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$ED2" -- tshark -lni eth0 -w "/tmp/$NM/ed2.pcap" 2>/dev/null &
+nsenter --net="$ED2" -- tcpdump -Z root -lnUi eth0 -w "/tmp/$NM/ed2.pcap" 2>/dev/null &
 echo $! >> "/tmp/$NM/PIDs"
 sleep 1
 
-print "Disabling rp_filter on routers ..."
-nsenter --net="$R1" -- sysctl -w net.ipv4.conf.all.rp_filter=0
-nsenter --net="$R2" -- sysctl -w net.ipv4.conf.all.rp_filter=0
+# Unicast forwarding is what the reachability check below rests on, and a
+# fresh netns inherits it from the host rather than having it: a machine
+# with net.ipv4.ip_forward=0 failed this test before it tested anything.
+print "Enabling forwarding and disabling rp_filter on routers ..."
+for ns in "$R1" "$R2"; do
+    nsenter --net="$ns" -- sysctl -w net.ipv4.ip_forward=1
+    nsenter --net="$ns" -- sysctl -w net.ipv4.conf.all.rp_filter=0
+done
 
 print "Creating PIM config ..."
 cat <<EOF > "/tmp/$NM/conf"
@@ -213,11 +189,11 @@ echo $! >> "/tmp/$NM/PIDs"
 sleep 5
 
 # Must start after the pimd's, doesn't exist before that ...
-# nsenter --net="$R2"  -- tshark -lni pimreg -w "/tmp/$NM/pimreg.pcap" 2>/dev/null &
+# nsenter --net="$R2"  -- tcpdump -lnUi pimreg -w "/tmp/$NM/pimreg.pcap" 2>/dev/null &
 # echo $! >> "/tmp/$NM/PIDs"
 
 # Wait for routers to peer
-print "Waiting for OSPF routers to peer (30 sec) ..."
+print "Waiting for the routers to pass unicast (30 sec) ..."
 tenacious 30 nsenter --net="$ED1" -- ping -qc 1 -W 1 10.0.2.10 >/dev/null
 
 dprint "PIM Status $R1"
@@ -233,18 +209,6 @@ nsenter --net="$R1" -- ../src/pimctl -u "/tmp/$NM/r1.sock" show compat detail
 dprint "PIM Status $NR2"
 nsenter --net="$R2" -- ../src/pimctl -u "/tmp/$NM/r2.sock" show compat detail
 dprint "OK"
-
-# dprint "OSPF State & Routing Table $R1:"
-# nsenter --net="$R1" -- echo "show ospf state" | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- echo "show ospf int"   | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- echo "show ospf neigh" | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- ip route
-
-# dprint "OSPF State & Routing Table $R2:"
-# nsenter --net="$R2" -- echo "show ospf state" | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- echo "show ospf int"   | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- echo "show ospf neigh" | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- ip route
 
 print "Starting sender ..."
 nsenter --net="$ED1"  -- ./mping -s -d -i eth0 -t 5 -c 30 -w 60 225.1.2.3 &
@@ -272,13 +236,13 @@ if [ $rc -ne 0 ]; then
     print "Show pcaps"
     kill_pids
     dprint "ED1 pcap"
-    tshark -n -r "/tmp/$NM/ed1.pcap"
+    tcpdump -Z root -nr "/tmp/$NM/ed1.pcap"
     dprint "Eth3 pcap"
-    tshark -n -r "/tmp/$NM/eth3.pcap"
+    tcpdump -Z root -nr "/tmp/$NM/eth3.pcap"
     # dprint "pimreg pcap"
-    # tshark -n -r "/tmp/$NM/pimreg.pcap"
+    # tcpdump -Z root -nr "/tmp/$NM/pimreg.pcap"
     dprint "ED2 pcap"
-    tshark -n -r "/tmp/$NM/ed2.pcap"
+    tcpdump -Z root -nr "/tmp/$NM/ed2.pcap"
     echo "Failed routing, expected at least 30 multicast ping replies"
     FAIL
 fi

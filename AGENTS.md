@@ -40,8 +40,9 @@ CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
 ## Tests
 
 Automake test suite in `test/`, all shell scripts driven by `TESTS_ENVIRONMENT = unshare -mrun`.
-They are **Linux-only** (network namespaces, veth, bridges) and need root plus `ethtool`, `tshark`,
-and `bird` (OSPF, for the unicast RPF tree). Missing deps make a test SKIP (exit 77), not fail.
+They are **Linux-only** (network namespaces, veth, bridges) and need root plus `ethtool` and
+`tcpdump`; the unicast routes are static, pimd never asking what wrote a route. Missing deps make a
+test SKIP (exit 77), not fail.
 
 ```sh
 make check                       # run all, or: make check || cat test/test-suite.log
@@ -50,10 +51,12 @@ make check TESTS=rp.sh           # single test (from test/ or top dir)
 
 Each script builds a router topology (ASCII diagram in its header) from `test/lib.sh` helpers
 (`topo()`, `ifsetup()`, `emitter()`/`collect()` around the `mping` tool built from `test/mping.c`),
-starts one `pimd` per namespace and asserts on forwarded traffic. Topologies: `single.sh` (one
-router), `two.sh`/`three.sh` (chains), `rp.sh` (RP + SPT switchover), `shared.sh`, `pod.sh`
-(redundant paths), `anycast.sh` (an RFC 4610 Anycast-RP set, twice: Register copies between members,
-then a member that is the source's DR; static routes, so no bird). Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
+starts one `pimd` per namespace and asserts on forwarded traffic. What is left of it are the three
+`lab.sh` has no answer for: `single.sh` (one router that is BSR, RP, DR and last hop router at
+once), `two.sh` (a chain whose sender starts before the receiver joins, issue #192) and `rp.sh` (a
+triangle whose BSR and RP are different routers, both elected against a second candidate). The
+others were retired once `lab.sh` asserted the same and more, on Linux as well as FreeBSD; `two.sh`
+Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
 runtime `pimctl` dumps.
 
 `test/pimsend.c` is the PIM-socket counterpart of `test/igmpv3.c`: it builds one PIM
@@ -65,9 +68,8 @@ pimd encodes wrongly it also decodes wrongly and the lab stays green -- and this
 past that. The `crafted` scenario is its first user; write the positive control beside every
 "was it refused?" assertion, since a parser that refuses everything passes all of them.
 
-`ssm.sh` is the exception to "asserts on forwarded traffic": it asserts on the IGMPv3 (S,G)
-membership state one router holds, and drives it with `test/igmpv3.c`, which sends one membership
-report and exits. Use that tool, not a kernel join, whenever a test needs a router to age a
+`test/igmpv3.c` sends one IGMPv3 membership report and exits, which is what the `ssm` scenario of
+`lab.sh` drives to assert (S,G) membership state rather than forwarded traffic. Use that tool, not a kernel join, whenever a test needs a router to age a
 membership out: a kernel that joined a group answers every query afterwards, so the membership
 never expires while the emulated device is on the LAN.
 

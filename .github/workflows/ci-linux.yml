@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev bird2 ethtool keepalived tshark tree
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool tcpdump tree
       - uses: actions/checkout@v7
       - name: Configure
         # Build in a sub-directory so we can safely set a+w on all
@@ -71,3 +71,59 @@ jobs:
         with:
           name: pimd-test-${{ matrix.compiler }}
           path: test/*
+
+  lab:
+    # The network namespace lab: nineteen PIM-SM scenarios over real
+    # namespaces, veth pairs and bridges, asserting on forwarded traffic and
+    # on the kernel MFC in each namespace.  The suite above cannot hold them:
+    # automake runs it under an unprivileged `unshare`, and a lab box has to
+    # outlive the command that built it, so the lab wants real root and named
+    # namespaces.  test/lab.sh is the same file the FreeBSD job runs, the two
+    # backends differing only in how a box, a link or an address is made.
+    #
+    # A job of its own rather than another step of the build, because even
+    # two at a time it takes far longer than the build, which should report
+    # without waiting for it.
+    name: Lab on Linux
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2
+
+      - name: Build
+        run: |
+          ./autogen.sh
+          ./configure --prefix= --enable-test
+          make V=1
+
+      - name: Run the network namespace lab
+        # Under sudo the script's own sudo wrapper is empty, and the boxes,
+        # links and daemons are all root's.
+        #
+        # Two scenarios at a time: this runner has four vCPUs, every
+        # assertion in the lab is a poll against a timeout, and what a lab
+        # too crowded to converge loses is a deadline rather than time.  It
+        # is most of the win either way, keepalive having to outlive
+        # PIM_DATA_TIMEOUT whatever else runs beside it.
+        #
+        # A scenario that fails keeps its work directory, one pimd log per
+        # router and the captures; print them here, or a failed run leaves
+        # nothing but the assertion that tripped.  The slot is part of the
+        # name, slot 0 being /tmp/pimd-test, so the glob has to reach past it.
+        run: |
+          sudo sh test/lab.sh -j 2 run all || rc=$?
+          for d in /tmp/pimd-test*.*.failed; do
+                  test -d "$d" || continue
+                  for f in "$d"/*.log; do
+                          test -f "$f" || continue
+                          echo "===== $f ====="
+                          sudo tail -n 200 "$f"
+                  done
+          done
+          exit ${rc:-0}

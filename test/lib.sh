@@ -62,63 +62,6 @@ tenacious()
     FAIL "Timeed out $*"
 }
 
-# Start keepalived for VRRP in netns $1, with config $2, logging to $3 and
-# using pidfiles $4 (parent) and $5 (VRRP child).
-#
-# Each instance gets a mount namespace with a private /run.  From 2.3 on,
-# keepalived's "daemon is already running" check is machine wide rather
-# than per --pid file, so the second instance to start refuses to run even
-# when every pidfile path it was given is unique:
-#
-#   Opening file '/tmp/pod/keep-r1.conf'.
-#   daemon is already running
-#
-# pod.sh needs four of them at once and shared.sh two, and `make check`
-# runs the scripts in parallel on top of that, so without this only one
-# VRRP instance on the machine ever comes up and every virtual address but
-# the first is missing.  --namespace would scope it too, but that enters a
-# named namespace under /var/run/netns and these tests bind-mount theirs
-# somewhere else.
-start_vrrp()
-{
-    ns=$1
-    conf=$2
-    log=$3
-    pid=$4
-    vpid=$5
-
-    nsenter --net="$ns" -- unshare -m sh -c \
-	    "mount -t tmpfs none /run && exec keepalived -P -p '$pid' -r '$vpid' -f '$conf' -l -D -n" \
-	    >"$log" 2>&1 &
-    echo $! >> "/tmp/$NM/PIDs"
-}
-
-# Wait for keepalived in netns $1 to take the VRRP address $2, dumping the
-# log named by $3 if it never does.  Without this a VRRP instance that
-# fails to start surfaces thirty seconds later as an unreachable default
-# gateway, and keepalived's own reason for failing is nowhere in the
-# output: the tests start it in the background and its stderr goes with it.
-wait_vip()
-{
-    ns=$1
-    vip=$2
-    log=$3
-    timeout=${4:-30}
-
-    while [ "$timeout" -gt 0 ]; do
-	if nsenter --net="$ns" -- ip -4 -br addr | grep -q "${vip}/"; then
-	    return 0
-	fi
-	sleep 1
-	timeout=$((timeout - 1))
-    done
-
-    echo "VRRP address $vip never appeared in $ns, keepalived said:"
-    [ -f "$log" ] && cat "$log"
-    nsenter --net="$ns" -- ip -4 -br addr
-    FAIL "keepalived never took $vip in $ns"
-}
-
 # Show active routes (and counters)
 show_mroute()
 {
@@ -146,7 +89,7 @@ emitter()
 collect()
 {
     print "Starting collector on $1 ..."
-    tshark -w "/tmp/$NM/pcap" -lni "$@" 2>/dev/null &
+    tcpdump -Z root -w "/tmp/$NM/pcap" -lnUi "$@" 2>/dev/null &
     echo $! >> "/tmp/$NM/PIDs"
     sleep 2
 }

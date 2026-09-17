@@ -24,7 +24,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   `spt-threshold`.  A member copies at most 256 Registers a second, and at
   most 64 of them whole, the rest as Null-Registers, since the sender need
   not be a DR that rate-limits itself.  See pimd.conf(5).  Tested by
-  `test/anycast.sh`, the
+  the
   `anycast` and `anycast-dr` scenarios of `test/lab.sh`, and in both
   directions against an Arista vEOS 4.36.1F member by the `anycast` scenario
   of `test/freebsd-interop.sh`
@@ -188,6 +188,23 @@ pimd on all routers in the same domain.  See issue #93 for details.
   Linux bridges instead of vnet jails, epairs and `if_bridge`.  What it
   needs of the host is in `test/lab-freebsd.sh` and `test/lab-linux.sh`,
   one set of functions per system, picked by `uname -s`
+- The Linux suite needs only `ethtool` and `tcpdump` now.  `bird` ran OSPF
+  to build the unicast RPF tree, which pimd cannot tell from the static
+  routes the remaining scripts are given -- no `RTPROT_*` is read anywhere
+  in `src/` -- and `tshark` read two packet assertions `tcpdump` reads
+  instead, the lab having used `tcpdump` all along.  Two things the change
+  turned up: the scripts inherited `net.ipv4.ip_forward` from the host
+  rather than setting it, so on a machine with it off they failed before
+  they tested anything, and `tcpdump` has to be told `-Z root` or it drops
+  privileges to a user the namespace `make check` runs in cannot become
+- The Linux suite keeps only `single.sh`, `two.sh` and `rp.sh`, the three
+  whose topology or ordering no `test/lab.sh` scenario reproduces.  What
+  `three.sh`, `shared.sh`, `pod.sh`, `ssm.sh` and `anycast.sh` asserted is
+  asserted by `rpt`, `shared-lan`, `ssm`, `anycast` and `anycast-dr`, on
+  Linux as well as FreeBSD and with more read back from pimd and from the
+  kernel each time, so they ran beside the lab rather than adding to it.
+  CI-Linux grew a lab job for them to be retired into, the counterpart of
+  the FreeBSD one
 - `test/lab.sh` takes `SANITIZE=yes` to run its scenarios against a pimd
   built `-fsanitize=address,undefined`, failing any scenario whose daemons
   reported anything -- which is not the same question as whether its

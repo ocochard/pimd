@@ -20,11 +20,8 @@ DEBUG="-l debug -d mrt,rpf"
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib.sh"
 
-# Requires OSPF (bird) to build the unicast rpf tree
 print "Check deps ..."
 check_dep ethtool
-check_dep tshark
-check_dep bird
 
 print "Creating PIM configs, let R2 become RP and R1 BSR ..."
 cat <<EOF > "/tmp/$NM/conf1"
@@ -202,48 +199,27 @@ nsenter --net="$R3" -- ip addr add 10.0.23.2/24 broadcast + dev eth7
 #     nsenter --net="$ns" -- ip -br addr show
 # done
 
-print "Creating OSPF config ..."
-cat <<EOF > "/tmp/$NM/bird.conf"
-protocol device {
-}
-protocol direct {
-	ipv4;
-}
-protocol kernel {
-	ipv4 {
-		export all;
-	};
-	learn;
-}
-protocol ospf {
-	ipv4 {
-		import all;
-	};
-	area 0 {
-		interface "eth*" {
-			type broadcast;
-			hello 1;
-			wait  3;
-			dead  5;
-		};
-	};
-}
-EOF
-cat "/tmp/$NM/bird.conf"
+# Static routes rather than a routing daemon: pimd reads the FIB and never
+# asks what put a route there.  The triangle is what the scenario is about,
+# so each router is given the far side of it both ways round: R1 reaches the
+# receiver LAN over its own link to R3, and the RP over R2.
+print "Creating static routes ..."
+nsenter --net="$R1" -- ip route add 10.0.23.0/24 via 10.0.12.2
+nsenter --net="$R1" -- ip route add 10.0.3.0/24  via 10.0.13.2
+nsenter --net="$R2" -- ip route add 10.0.1.0/24  via 10.0.12.1
+nsenter --net="$R2" -- ip route add 10.0.13.0/24 via 10.0.12.1
+nsenter --net="$R2" -- ip route add 10.0.3.0/24  via 10.0.23.2
+nsenter --net="$R3" -- ip route add 10.0.1.0/24  via 10.0.13.1
+nsenter --net="$R3" -- ip route add 10.0.12.0/24 via 10.0.13.1
 
-print "Starting Bird OSPF ..."
-nsenter --net="$R1" -- bird -c "/tmp/$NM/bird.conf" -d -s "/tmp/$NM/r1-bird.sock" &
-echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$R2" -- bird -c "/tmp/$NM/bird.conf" -d -s "/tmp/$NM/r2-bird.sock" &
-echo $! >> "/tmp/$NM/PIDs"
-nsenter --net="$R3" -- bird -c "/tmp/$NM/bird.conf" -d -s "/tmp/$NM/r3-bird.sock" &
-echo $! >> "/tmp/$NM/PIDs"
-sleep 1
-
-print "Disabling rp_filter on routers ..."
-nsenter --net="$R1" -- sysctl -w net.ipv4.conf.all.rp_filter=0
-nsenter --net="$R2" -- sysctl -w net.ipv4.conf.all.rp_filter=0
-nsenter --net="$R3" -- sysctl -w net.ipv4.conf.all.rp_filter=0
+# Unicast forwarding is what the reachability check below rests on, and a
+# fresh netns inherits it from the host rather than having it: a machine
+# with net.ipv4.ip_forward=0 failed this test before it tested anything.
+print "Enabling forwarding and disabling rp_filter on routers ..."
+for ns in "$R1" "$R2" "$R3"; do
+    nsenter --net="$ns" -- sysctl -w net.ipv4.ip_forward=1
+    nsenter --net="$ns" -- sysctl -w net.ipv4.conf.all.rp_filter=0
+done
 
 
 print "Starting pimd ..."
@@ -256,7 +232,7 @@ echo $! >> "/tmp/$NM/PIDs"
 sleep 1
 
 # Wait for routers to peer
-print "Waiting for OSPF routers to peer (30 sec) ..."
+print "Waiting for the routers to pass unicast (30 sec) ..."
 tenacious 30 nsenter --net="$ED1" -- ping -qc 1 -W 1 10.0.3.10 >/dev/null
 dprint "OK"
 
@@ -292,24 +268,6 @@ else
     nsenter --net="$R3" -- ../src/pimctl -u "/tmp/$NM/r3.sock" show rp
     dprint "OK"
 fi
-
-# dprint "OSPF State & Routing Table $R1:"
-# nsenter --net="$R1" -- echo "show ospf state" | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- echo "show ospf int"   | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- echo "show ospf neigh" | birdc -s "/tmp/$NM/r1-bird.sock"
-# nsenter --net="$R1" -- ip route
-
-# dprint "OSPF State & Routing Table $R2:"
-# nsenter --net="$R2" -- echo "show ospf state" | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- echo "show ospf int"   | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- echo "show ospf neigh" | birdc -s "/tmp/$NM/r2-bird.sock"
-# nsenter --net="$R2" -- ip route
-
-# dprint "OSPF State & Routing Table $R3:"
-# nsenter --net="$R3" -- echo "show ospf state" | birdc -s "/tmp/$NM/r3-bird.sock"
-# nsenter --net="$R3" -- echo "show ospf int"   | birdc -s "/tmp/$NM/r3-bird.sock"
-# nsenter --net="$R3" -- echo "show ospf neigh" | birdc -s "/tmp/$NM/r3-bird.sock"
-# nsenter --net="$R3" -- ip route
 
 # print "Verifying $ED1 ability to reach its gateway ..."
 # tenacious 30 nsenter --net="$ED1" -- ping -qc 1 -W 1 10.0.0.1 >/dev/null
