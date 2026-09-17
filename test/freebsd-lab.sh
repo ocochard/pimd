@@ -561,7 +561,10 @@
 #               above is a soak test of it; sec. 4.3.4's Hello Address
 #               List, which pimd sends too, but an encoder pimd did not
 #               write is the only one that can tell a list pimd reads from
-#               a list pimd reads the way it writes one; and the two rules of sec. 4.8.1
+#               a list pimd reads the way it writes one; the (S,G,rpt)
+#               machines of sec. 4.5.3 and 4.5.7, which between two pimds
+#               the override Join hides, so pimsend plays both the router
+#               that prunes and the one that overrides; and the two rules of sec. 4.8.1
 #               about what an SSM-unaware router may still send: no shared
 #               tree for a group in the SSM range, and a Register for one
 #               answered with a Register-Stop rather than dropped in
@@ -1046,6 +1049,19 @@ PP_GROUP=${PP_GROUP:-225.1.5.5}
 PP_WINDOW=${PP_WINDOW:-3000}
 PP_EARLY=${PP_EARLY:-50}
 PP_LATE=${PP_LATE:-500}
+
+# crafted, the (S,G,rpt) steps, M1 of doc/rfc7761-compliance.md.  A group of
+# their own each, so no state an earlier step left decides an answer:
+# $RPT_SG_GROUP carries an (S,G) Join and nothing else, $RPT_GROUP a (*,G)
+# Join that the source $CRAFT_FAR_SRC is pruned off.  $RPT_SETTLE is how
+# long after a Prune the Prune-Pending Timer has certainly run out,
+# $PP_WINDOW plus a tick, and $RPT_PROMPT the most a check made "right
+# after" a message may lag it and still be inside that window.
+RPT_SG_GROUP=${RPT_SG_GROUP:-225.1.6.6}
+RPT_GROUP=${RPT_GROUP:-225.1.7.7}
+RPT_SETTLE=${RPT_SETTLE:-6}
+RPT_PROMPT=${RPT_PROMPT:-2}
+RPT_OVR_TRIALS=${RPT_OVR_TRIALS:-3}
 
 # The longer group range of R2 in doc/rfc7761-compliance.md, covering $GROUP
 # and not $CRAFT_OUT_GROUP, which both sit in the 224.0.0.0/4 R2 advertises
@@ -3730,7 +3746,7 @@ check_crafted() {
 	# suppression was not the fix: a Join with a short HoldTime keeps the
 	# upstream's state only that long, so it must not keep R1 quiet longer.
 	#
-	# Here, before step 10, because a group needs an RP that step 10's
+	# Here, before step 14, because a group needs an RP that step 14's
 	# Bootstrap starts ageing out.
 	print "5. A Join overheard on the upstream link holds back our own"
 	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR/24" alias 2>/dev/null || \
@@ -3908,7 +3924,199 @@ check_crafted() {
 			fi
 		done
 	fi
-	# Step 12 needs $CRAFT_ADDR to be nobody's neighbour again
+	# M1 of doc/rfc7761-compliance.md, the steps from here to 13: RFC 7761
+	# keeps (S,G,rpt) state apart from (S,G) state, and pimd had only the
+	# one (S,G) entry for both.  $SRC_ADDR and $CRAFT_ADDR are two
+	# downstream routers on R1's LAN, and the point of playing them with
+	# pimsend is that neither overrides anything unless told: between two
+	# pimds the override Join hides what R1 does with the Prune.
+	#
+	# Sec. 4.5.3 gives a Prune(S,G,rpt) a state machine of its own, which
+	# takes the source off what the interface inherits from joins(*,G)
+	# and nothing else.  pimd applied it to the (S,G) machine, so the
+	# (S,G) Join another router on the LAN still wanted went with it.
+	print "10. A Prune(S,G,rpt) leaves another router's Join(S,G) alone"
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 never took $CRAFT_ADDR as a second neighbour on the LAN"
+		return 1
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_SG_GROUP" -s "$CRAFT_FAR_SRC"
+	if ! wait_for 15 sg_joined_on r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_SG_GROUP"; then
+		fail "r1 built no ($CRAFT_FAR_SRC,$RPT_SG_GROUP) joined on the LAN, nothing below can be asked"
+		return 1
+	fi
+	m1=$(log_lines r1)
+	craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_SG_GROUP" -s "$CRAFT_FAR_SRC" -R
+	if ! wait_for 10 has_rpt_msg r1 "$m1" PRUNE "$CRAFT_ADDR" "$RPT_SG_GROUP" "$CRAFT_FAR_SRC"; then
+		fail "r1 logged no Prune(S,G,rpt) from $CRAFT_ADDR"
+		return 1
+	fi
+	sleep "$RPT_SETTLE"
+	if sg_joined_on r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_SG_GROUP"; then
+		ok "r1 kept $SRC_ADDR's Join($CRAFT_FAR_SRC,$RPT_SG_GROUP) past $CRAFT_ADDR's Prune(S,G,rpt)"
+	else
+		xfail "r1 dropped $SRC_ADDR's Join(S,G) for $CRAFT_ADDR's Prune(S,G,rpt), which sec. 4.5.3 applies to the (S,G,rpt) machine alone"
+	fi
+	# The control: the same Prune without the RPT bit is one for the
+	# (S,G) machine, and nobody overrides it
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_SG_GROUP" -s "$CRAFT_FAR_SRC"
+	if ! wait_for 15 sg_joined_on r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_SG_GROUP"; then
+		fail "r1 did not take $SRC_ADDR's Join(S,G) back, there is no control"
+	else
+		craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_SG_GROUP" -s "$CRAFT_FAR_SRC"
+		if wait_for 15 sg_not_joined_on r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_SG_GROUP"; then
+			ok "the same Prune without the RPT bit does take the Join(S,G) away"
+		else
+			fail "r1 kept the Join(S,G) past a Prune(S,G) nobody overrode, the Prunes are not being read"
+		fi
+	fi
+
+	# Sec. 4.5.3 again, on a group joined from the shared tree: the Prune
+	# takes the source off the interface once the Prune-Pending Timer runs
+	# out, and until then "functions exactly like the NoInfo state".  A
+	# Join(S,G,rpt) is how another router on the LAN says it still wants
+	# the source, before the timer runs out or after, and pimd had no
+	# branch for one at all.  Sec. 4.5.7 is R1's side of it towards R2:
+	# with the LAN pruned its inherited_olist(S,G,rpt) is empty and it
+	# prunes the source upstream, and when the Join(S,G,rpt) makes it
+	# non-empty again it sends R2 one of its own, rather than leave R2
+	# to wait for a Join(*,G) that carries no Prune.
+	print "11. A Prune(S,G,rpt) takes one source off the shared tree, a Join(S,G,rpt) puts it back"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -w -r "$RP_ADDR"
+	if ! wait_for 15 joined_on r1 "${EP}101b" "$RPT_GROUP"; then
+		fail "r1 built no (*,$RPT_GROUP) joined on the LAN, nothing below can be asked"
+		return 1
+	fi
+	m1=$(log_lines r1)
+	m2=$(log_lines r2)
+	t0=$(date +%s)
+	craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+	if ! wait_for 10 has_rpt_msg r1 "$m1" PRUNE "$CRAFT_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC"; then
+		fail "r1 logged no Prune(S,G,rpt) from $CRAFT_ADDR"
+		return 1
+	fi
+	pending=yes
+	sg_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP" && pending=no
+	if [ $(($(date +%s) - t0)) -ge "$RPT_PROMPT" ]; then
+		dprint "the Prune-Pending check came $(($(date +%s) - t0))s late, skipping it"
+	elif [ "$pending" = yes ]; then
+		ok "r1 still forwards $CRAFT_FAR_SRC on the LAN while the Prune may be overridden"
+	else
+		xfail "r1 pruned $CRAFT_FAR_SRC off the LAN on receipt, with no Prune-Pending interval for anybody to override it in"
+	fi
+	if wait_for "$RPT_SETTLE" sg_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+		ok "r1 took $CRAFT_FAR_SRC off the LAN and left the rest of $RPT_GROUP on it"
+	else
+		fail "r1 still forwards $CRAFT_FAR_SRC on the LAN, nobody overrode the Prune(S,G,rpt)"
+	fi
+	if ! joined_on r1 "${EP}101b" "$RPT_GROUP"; then
+		fail "r1 dropped the (*,$RPT_GROUP) Join along with the one source"
+	fi
+	if wait_for 10 has_rpt_msg r2 "$m2" PRUNE "$R1_UP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC"; then
+		ok "r1, with nowhere left to send $CRAFT_FAR_SRC, pruned it off the shared tree at r2"
+	else
+		fail "r2 heard no Prune(S,G,rpt) from r1 for $CRAFT_FAR_SRC"
+	fi
+
+	m2=$(log_lines r2)
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+	if wait_for 5 sg_not_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+		ok "a Join(S,G,rpt) from $SRC_ADDR put $CRAFT_FAR_SRC back on the LAN"
+	else
+		xfail "r1 ignored $SRC_ADDR's Join(S,G,rpt), $CRAFT_FAR_SRC stays pruned until the Prune expires"
+	fi
+	if wait_for 10 has_rpt_msg r2 "$m2" JOIN "$R1_UP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC"; then
+		ok "and r1 sent r2 a Join(S,G,rpt) of its own, sec. 4.5.7"
+	else
+		xfail "r1 sent r2 no Join(S,G,rpt) once it wanted $CRAFT_FAR_SRC again, sec. 4.5.7"
+	fi
+
+	# The override proper: the Join(S,G,rpt) arrives inside the interval
+	m1=$(log_lines r1)
+	craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+	if ! wait_for 10 has_rpt_msg r1 "$m1" JOIN "$SRC_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC"; then
+		fail "r1 logged no Join(S,G,rpt) from $SRC_ADDR"
+	else
+		sleep "$RPT_SETTLE"
+		if sg_not_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+			ok "a Join(S,G,rpt) inside the override interval kept $CRAFT_FAR_SRC on the LAN"
+		else
+			xfail "r1 pruned $CRAFT_FAR_SRC off the LAN although $SRC_ADDR overrode the Prune in time"
+		fi
+	fi
+
+	# Sec. 4.5.3's two transient states, which is how a Join(*,G) and the
+	# Prune(S,G,rpt)s in the same group set are read: the Join moves every
+	# pruned source to PruneTmp, the Prunes that follow it put theirs back,
+	# and the ones left at the end of the message go.  So the periodic
+	# compound message of sec. 4.5.6 holds a prune, and a Join(*,G) that
+	# no longer carries one lifts it.  pimd lifted every one on the Join
+	# and set the Prune again on the Prune, which kept it only because an
+	# entry that had never been joined on the LAN let it skip the
+	# Prune-Pending Timer: this step is a guard on the transient states
+	# that replaced that, not a deviation reproduced.
+	print "12. A Join(*,G) lifts an (S,G,rpt) Prune unless it carries it"
+	craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+	if ! wait_for $((RPT_SETTLE * 2)) sg_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+		fail "r1 never took $CRAFT_FAR_SRC off the LAN, nothing below can be asked"
+	else
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -w -r "$RP_ADDR" -X "$CRAFT_FAR_SRC"
+		sleep 1
+		if sg_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+			ok "a Join(*,G) carrying the Prune(S,G,rpt) kept $CRAFT_FAR_SRC off the LAN"
+		else
+			fail "a Join(*,G) carrying the Prune(S,G,rpt) put $CRAFT_FAR_SRC back on the LAN"
+		fi
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$RPT_GROUP" -w -r "$RP_ADDR"
+		if wait_for 5 sg_not_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$RPT_GROUP"; then
+			ok "a Join(*,G) without it put $CRAFT_FAR_SRC back"
+		else
+			fail "r1 kept $CRAFT_FAR_SRC pruned past a Join(*,G) that no longer prunes it"
+		fi
+	fi
+
+	# Sec. 4.5.7 from the other side of R1: $SUPP_ADDR is a router on R1's
+	# link to R2 again, played from R2's jail as in step 5, and it prunes
+	# $CRAFT_FAR_SRC off the shared tree at R2.  R1 still wants the source
+	# for its LAN, so it is in NotPruned and has to override with a
+	# Join(S,G,rpt) inside the J/P_Override_Interval R2 waits.  pimd read
+	# the Prune as an (S,G) one, found no (S,G) entry and did nothing.
+	# Timed as step 7 is, over $RPT_OVR_TRIALS trials.
+	print "13. A Prune(S,G,rpt) overheard upstream is overridden in time"
+	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR/24" alias 2>/dev/null || \
+		die "failed adding $SUPP_ADDR to ${EPU}112b on r2"
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
+		fail "r1 never took $SUPP_ADDR as a neighbour on its link to r2"
+	else
+		i=0
+		while [ "$i" -lt "$RPT_OVR_TRIALS" ]; do
+			i=$((i + 1))
+			m1=$(log_lines r1)
+			m2=$(log_lines r2)
+			craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$RPT_GROUP" -s "$CRAFT_FAR_SRC" -R
+			if ! wait_for 10 has_rpt_msg r2 "$m2" JOIN "$R1_UP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC"; then
+				xfail "trial $i: r1 sent no Join(S,G,rpt) in 10s of hearing $SUPP_ADDR prune $CRAFT_FAR_SRC off the shared tree"
+				continue
+			fi
+			t0=$(rpt_msg r1 "$m1" PRUNE "$SUPP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC" | log_msec | tail -1)
+			t1=$(rpt_msg r2 "$m2" JOIN "$R1_UP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC" | log_msec | head -1)
+			if [ -z "$t0" ]; then
+				fail "trial $i: r1 logged no Prune(S,G,rpt) from $SUPP_ADDR, nothing to time the Join from"
+			elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
+				ok "trial $i: r1 overrode the Prune(S,G,rpt) $((t1 - t0))ms after it, inside ${OVR_WINDOW}ms"
+			else
+				fail "trial $i: r1 overrode the Prune(S,G,rpt) $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
+			fi
+			sleep 1
+		done
+	fi
+	jrun r2 ifconfig "${EPU}112b" inet "$SUPP_ADDR" -alias 2>/dev/null
+
+	# Step 16 needs $CRAFT_ADDR to be nobody's neighbour again
 	craft "$CRAFT_ADDR" hello -H 0
 	if ! wait_for 10 no_neighbor r1 "$CRAFT_ADDR"; then
 		fail "r1 kept $CRAFT_ADDR as a neighbour past a Hello with HoldTime 0"
@@ -3921,9 +4129,9 @@ check_crafted() {
 	# (S,G) above is on 224.0.0.0/4 and R2's RP; a second one, outside the
 	# new range, is the control that the range and not the whole RP set
 	# moved.  It sits here because it needs a converged domain with groups
-	# on it, which step 11 takes away; the short holdtime is so the range is
+	# on it, which step 15 takes away; the short holdtime is so the range is
 	# gone again well inside that step's wait.
-	print "10. A longer group range takes over the groups inside it"
+	print "14. A longer group range takes over the groups inside it"
 	# Step 1's Hello has run out by now, and a Join from an address with
 	# no Hello is refused before it builds anything
 	craft "$SRC_ADDR" hello -H 105
@@ -3960,7 +4168,7 @@ check_crafted() {
 	# the BSR and R1's RP set has to age out before any of it can be
 	# asked.  That is the state a booting router is in, which is the
 	# state the entry is about.
-	print "11. R1 is put back where a booting router starts, with no RP"
+	print "15. R1 is put back where a booting router starts, with no RP"
 	dprint "stopping the BSR and waiting for R1's dynamic RP to expire ..."
 	[ -f "$WORKDIR/r2.pid" ] && ${SUDO} pkill -9 -F "$WORKDIR/r2.pid" 2>/dev/null
 	if wait_for "$CRAFT_RP_WAIT" no_dynamic_rp r1; then
@@ -3970,7 +4178,7 @@ check_crafted() {
 		return 1
 	fi
 
-	print "12. A unicast Bootstrap from a stranger on the LAN is refused"
+	print "16. A unicast Bootstrap from a stranger on the LAN is refused"
 	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
 	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring unicast Bootstrap from $CRAFT_ADDR"; then
@@ -3987,7 +4195,7 @@ check_crafted() {
 	# The other half, and the reason the check is safe: the DR that
 	# unicasts an RP set has sent its Hello first, on the same path,
 	# immediately before.  Here that Hello is sent explicitly.
-	print "13. The same Bootstrap, once its sender has said Hello, is taken"
+	print "17. The same Bootstrap, once its sender has said Hello, is taken"
 	craft "$CRAFT_ADDR" hello -H 105
 	if wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
 		ok "r1 took $CRAFT_ADDR as a neighbour"
@@ -4010,7 +4218,7 @@ check_crafted() {
 	# list have been committed -- which is where the group ranges are
 	# read -- would hand any neighbour the domain's RP set for the price
 	# of one bad byte.
-	print "14. A malformed Bootstrap from that neighbour changes nothing"
+	print "18. A malformed Bootstrap from that neighbour changes nothing"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 \
 	      -m "$CRAFT_BADLEN" -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	if wait_for 10 logged r1 "Ignoring Bootstrap from $CRAFT_ADDR, group mask length"; then
@@ -4054,7 +4262,7 @@ check_crafted() {
 	# every entry that wanted a message pimd will not build.  R1 is the
 	# RP here as well as the DR's router, so the Register assertions have
 	# somewhere to go.
-	print "15. A message whose version is not 2 is discarded"
+	print "19. A message whose version is not 2 is discarded"
 	craft "$SRC_ADDR" hello -V 3 -H 105
 	if wait_for 10 logged r1 "Ignoring PIM v3"; then
 		ok "r1 refused a PIM v3 Hello"
@@ -4062,7 +4270,7 @@ check_crafted() {
 		fail "r1 parsed a v3 message as though it were v2, sec. 4.9 says discard"
 	fi
 
-	print "16. And one sent to a destination its type may not use"
+	print "20. And one sent to a destination its type may not use"
 	craft "$SRC_ADDR" hello -d "$R1_LAN_ADDR" -H 105
 	if wait_for 10 logged r1 "not a destination that message may use"; then
 		ok "r1 refused a Hello unicast to it rather than to ALL-PIM-ROUTERS"
@@ -4076,7 +4284,7 @@ check_crafted() {
 	# group and source records alone and leave it IPv4.  A parser that
 	# checked the upstream address and nothing else would pass the first
 	# of these and fail the rest.
-	print "17. An encoded address of a family this router cannot read"
+	print "21. An encoded address of a family this router cannot read"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -f 2
 	if wait_for 10 logged r1 "upstream address family 2 type 0 is not IPv4"; then
 		ok "r1 refused a Join whose upstream address declares family 2"
@@ -4096,7 +4304,7 @@ check_crafted() {
 		fail "r1 ignored the encoding type, sec. 4.9.1"
 	fi
 
-	print "18. A group range this router does not implement"
+	print "22. A group range this router does not implement"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
 	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO" -B
 	if wait_for 10 logged r1 "a range this router does not implement"; then
@@ -4122,7 +4330,7 @@ check_crafted() {
 	# test/freebsd-interop.sh will either: rule 4, no (*,G) state for a
 	# group in the range, and the second half of sec. 4.8.1's Register
 	# rule, which is the only thing that quiets an SSM-unaware DR down.
-	print "19. No shared tree is built for a group in the SSM range"
+	print "23. No shared tree is built for a group in the SSM range"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$SSM_GROUP" -w -r "$SSM_VIRTUAL_RP"
 	if wait_for 10 logged r1 "shared tree Join for SSM group $SSM_GROUP"; then
 		ok "r1 refused a (*,$SSM_GROUP) Join naming $SSM_VIRTUAL_RP"
@@ -4135,7 +4343,7 @@ check_crafted() {
 		ok "r1 built no state for $SSM_GROUP at all"
 	fi
 
-	print "20. And a Register for one is answered, not merely dropped"
+	print "24. And a Register for one is answered, not merely dropped"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -g "$SSM_GROUP" -s "$CRAFT_FAR_SRC"
 	if wait_for 10 logged r1 "REGISTER STOP.*group = $SSM_GROUP"; then
 		ok "r1 answered an SSM Register with a Register-Stop"
@@ -4143,7 +4351,7 @@ check_crafted() {
 		fail "r1 dropped it silently, so an SSM-unaware DR keeps encapsulating at the data rate"
 	fi
 
-	print "21. A Null-Register is believed only where its checksum allows"
+	print "25. A Null-Register is believed only where its checksum allows"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -K -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "bad checksum in the dummy IP header"; then
 		ok "r1 discarded a Null-Register whose dummy header checksum is wrong"
@@ -4174,7 +4382,7 @@ check_crafted() {
 	# does not name.  Being on a subnet R1 has a VIF on is all that used
 	# to be asked of a router before it could become a neighbour, take
 	# the DR role, join the assert election and have its Joins believed.
-	print "22. A router the interface does not name is not a neighbour"
+	print "26. A router the interface does not name is not a neighbour"
 	jrun ed1 ifconfig "${EP}101a" inet "$DENIED_ADDR/24" alias 2>/dev/null || \
 		die "failed adding $DENIED_ADDR to ${EP}101a on ed1"
 	craft "$DENIED_ADDR" hello -H 105
@@ -4196,7 +4404,7 @@ check_crafted() {
 		fail "r1 lost a neighbour the list names, so the filter refuses more than it was told to"
 	fi
 
-	print "23. The No-Forward bit is what waives the RPF check"
+	print "27. The No-Forward bit is what waives the RPF check"
 	craft "$SRC_ADDR" bootstrap -u "$NOFWD_BSR" -g "$NOFWD_RANGE" -m 16 \
 	      -r "$SRC_ADDR" -p "$CRAFT_PRIO"
 	sleep 2
@@ -4217,8 +4425,8 @@ check_crafted() {
 	# one names a BSR both routers have a route to and whose RPF
 	# neighbour is the sender, so nothing but the bit stops R1 forwarding
 	# it and nothing but the bit stops R2 taking what R1 forwarded.
-	print "24. And it is not forwarded onward"
-	# Step 11 stopped the BSR, and a dead router learns nothing whatever
+	print "28. And it is not forwarded onward"
+	# Step 15 stopped the BSR, and a dead router learns nothing whatever
 	# R1 does, so this needs it back: without a live R2 the assertion
 	# below passes for the wrong reason, which is how the first version
 	# of it passed with the fix reverted.
@@ -4257,7 +4465,7 @@ check_crafted() {
 	# replaces the list the last one left, so every step here is also the
 	# control for the one after it: the list is seen to be there before
 	# it is seen to go.
-	print "25. A Hello Address List is kept, replaced and cleared"
+	print "29. A Hello Address List is kept, replaced and cleared"
 	craft "$SRC_ADDR" hello -H 105 -A "$SRC_ADDR" -A "$CRAFT_SECADDR"
 	if wait_for 10 has_secaddr r1 "$SRC_ADDR" "$CRAFT_SECADDR"; then
 		ok "r1 holds $CRAFT_SECADDR as a secondary address of $SRC_ADDR"
@@ -4323,10 +4531,31 @@ r1_wc_joins_above() { [ "$(r1_wc_joins)" -gt "$1" ]; }
 
 # Lines in router $1's log so far, and the lines holding $3 written after
 # the first $2 of them
-log_lines() { ${SUDO} wc -l < "$WORKDIR/$1.log" | tr -d ' '; }
+# The file is opened by wc and not by a redirection: the shell doing the
+# redirecting is not the one sudo made root, and the log is root's.
+log_lines() { ${SUDO} wc -l "$WORKDIR/$1.log" | awk '{ print $1 }'; }
 log_since() {
 	${SUDO} tail -n +$(($2 + 1)) "$WORKDIR/$1.log" 2>/dev/null | grep -F "$3"
 }
+
+# Is interface $2 in the Joined, or the Outgoing, map of router $1's ($3,$4)
+# entry?  Neither is, of an entry that does not exist.
+sg_joined_on()   { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Joined)"; }
+sg_forwards_on() { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Outgoing)"; }
+sg_not_joined_on() { ! sg_joined_on "$@"; }
+
+# Has router $1 taken source $3 of group $4 off interface $2?  Only an
+# (S,G) entry can say so: without one the (*,G) forwards every source.
+sg_pruned_off() { has_sg "$1" "$3" "$4" && ! sg_forwards_on "$@"; }
+sg_not_pruned_off() { ! sg_pruned_off "$@"; }
+
+# The (S,G,rpt) $3 (JOIN or PRUNE) from $4 for group $5 and source $6 in
+# router $1's log after its first $2 lines, and the time of the first one
+rpt_msg() {
+	log_since "$1" "$2" "Received PIM $3 from $4 to group $5 for source $6 on " | \
+		grep '(S,G,rpt)$'
+}
+has_rpt_msg() { rpt_msg "$@" >/dev/null; }
 
 # The time of day of each log line read, "r1: HH:MM:SS.mmm ...", in
 # milliseconds

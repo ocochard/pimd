@@ -616,6 +616,47 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 
 
 /*
+ * The two timers of the downstream (S,G,rpt) machine, RFC 7761 sec. 4.5.3, by
+ * @now: the Prune-Pending Timer takes an interface on to Prune, the Expiry
+ * Timer takes it back to NoInfo.  @next is lowered to a Prune-Pending Timer
+ * still running; the Expiry Timer is seconds long and the tick ages it.
+ * Returns TRUE when the caller owes a change_interfaces().
+ */
+static int expire_rpt_timers(mrtentry_t *mrt, uint64_t now, uint64_t *next)
+{
+    int change = FALSE;
+    vifi_t vifi;
+
+    if (PIMD_VIFM_ISEMPTY(mrt->rpt_pruned_oifs) && PIMD_VIFM_ISEMPTY(mrt->rpt_pp_oifs))
+	return FALSE;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs)) {
+	    if (mrt->rpt_pp_expires[vifi] > now) {
+		if (next && (!*next || mrt->rpt_pp_expires[vifi] < *next))
+		    *next = mrt->rpt_pp_expires[vifi];
+		continue;
+	    }
+
+	    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
+	    PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
+	    change = TRUE;
+	}
+
+	if (!PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs))
+	    continue;
+
+	/* Zero is a HoldTime of 0xffff, held until a Join cancels it */
+	if (mrt->rpt_expires[vifi] && mrt->rpt_expires[vifi] <= now) {
+	    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
+	    change = TRUE;
+	}
+    }
+
+    return change;
+}
+
+/*
  * RFC 7761 sec. 4.5.5:
  *
  *   bool JoinDesired(S,G) {
@@ -719,8 +760,8 @@ int join_desired(mrtentry_t *mrt)
  *                          (+) ( pim_include(*,G) (-) pim_exclude(S,G) )
  *                          (-) ( lost_assert(*,G) (+) lost_assert(S,G,rpt) )
  *
- * which is the (*,G) olist calc_oifs() already keeps, less three terms that
- * are (S,G,rpt) state pimd does not have.  All three subtract, so an empty
+ * which is the (*,G) olist calc_oifs() already keeps, less three terms of
+ * (S,G,rpt) state this does not read.  All three subtract, so an empty
  * (*,G) olist is an empty inherited_olist(S,G,rpt) whatever they would have
  * removed: answering the alternative from it can only set the bit where the
  * spec sets it too, and a non-empty one is left alone as before.
@@ -953,8 +994,13 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
      *   inherited_olist(S,G) = inherited_olist(S,G,rpt)
      *       (+) joins(S,G) (+) pim_include(S,G) (-) lost_assert(S,G)
      *
-     * lost_assert(*,G) is the (*,G) entry's own `asserted_oifs`, subtracted
-     * from the inherited half alone.  The other two are this entry's, and
+     * prunes(S,G,rpt) is this entry's `rpt_pruned_oifs`, the Prune state of
+     * the downstream (S,G,rpt) machine in src/pim_proto.c, and it is taken
+     * off joins(*,G) alone: not off pim_include(*,G), and not off joins(S,G),
+     * which is where pimd used to put it by marking the interface in
+     * `pruned_oifs`, taking a Join(S,G) some other router still wanted with
+     * it.  lost_assert(*,G) is the (*,G) entry's own `asserted_oifs`,
+     * subtracted from the inherited half alone.  The other two are this entry's, and
      * lost_assert_rpt() (src/pim_proto.c) is which of them applies: until
      * SPTbit(S,G) is set sec. 4.2 forwards off inherited_olist(S,G,rpt) and
      * the answer is lost_assert(S,G,rpt), plain assert state, taking the
@@ -981,14 +1027,28 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
 	if (grp) {
 	    PIMD_VIFM_MERGE(oifs, grp->joined_oifs, oifs);
 	    PIMD_VIFM_CLR_MASK(oifs, grp->pruned_oifs);
+	    /* prunes(S,G,rpt) */
+	    PIMD_VIFM_CLR_MASK(oifs, mrt->rpt_pruned_oifs);
 	    merge_local_members(oifs, grp->leaves);
 	    /* lost_assert(*,G) */
 	    PIMD_VIFM_CLR_MASK(oifs, grp->asserted_oifs);
 	}
     }
 
-    /* Calculate my own stuff */
-    PIMD_VIFM_MERGE(oifs, mrt->joined_oifs, oifs);
+    /* Calculate my own stuff.  An (S,G) entry's joined_oifs holds, beside
+     * joins(S,G), the copy of joins(*,G) VOIF_COPY() seeded it with, and
+     * prunes(S,G,rpt) take the source off that copy as they do off the
+     * (*,G) itself -- but not off an interface a Join(S,G) holds. */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (!PIMD_VIFM_ISSET(vifi, mrt->joined_oifs))
+	    continue;
+
+	if ((mrt->flags & MRTF_SG) && PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) &&
+	    !PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs))
+	    continue;
+
+	PIMD_VIFM_SET(vifi, oifs);
+    }
     PIMD_VIFM_CLR_MASK(oifs, mrt->pruned_oifs);
     merge_local_members(oifs, mrt->leaves);
 
@@ -1000,6 +1060,81 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
     }
 
     PIMD_VIFM_COPY(oifs, oifs_ptr);
+}
+
+/*
+ * inherited_olist(S,G,rpt) of RFC 7761 sec. 4.1.5, which PruneDesired(S,G,rpt)
+ * reads.  Not what calc_oifs() forwards off: that one subtracts assert state
+ * once over both halves, and keeps its own reasons for it.
+ *
+ *   inherited_olist(S,G,rpt) = ( joins(*,G) (-) prunes(S,G,rpt) )
+ *       (+) ( pim_include(*,G) (-) pim_exclude(S,G) )
+ *       (-) ( lost_assert(*,G) (+) lost_assert(S,G,rpt) )
+ *
+ * pim_exclude(S,G) is IGMPv3 EXCLUDE state pimd does not keep for an ASM
+ * group, and subtracting nothing for it can only leave the list non-empty
+ * where the spec's is empty, which is the side PruneDesired(S,G,rpt) wants to
+ * err on: a Prune not sent costs traffic nobody asked for, one sent wrongly
+ * costs traffic somebody did.
+ */
+static void calc_rpt_oifs(mrtentry_t *mrt, uint8_t *oifs)
+{
+    mrtentry_t *grp = mrt->group->grp_route;
+    vifi_t vifi;
+
+    PIMD_VIFM_CLRALL(oifs);
+    if (!grp)
+	return;
+
+    PIMD_VIFM_MERGE(oifs, grp->joined_oifs, oifs);
+    PIMD_VIFM_CLR_MASK(oifs, grp->pruned_oifs);
+    PIMD_VIFM_CLR_MASK(oifs, mrt->rpt_pruned_oifs);
+    merge_local_members(oifs, grp->leaves);
+    PIMD_VIFM_CLR_MASK(oifs, grp->asserted_oifs);
+
+    /* lost_assert(S,G,rpt,I): never on RPF_interface(RP(G)), nor on
+     * RPF_interface(S) once SPTbit(S,G) is set */
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (vifi == grp->incoming)
+	    continue;
+	if (vifi == mrt->source->incoming && (mrt->flags & MRTF_SPT))
+	    continue;
+	if (assert_lost_on(mrt, vifi))
+	    PIMD_VIFM_CLR(vifi, oifs);
+    }
+}
+
+/*
+ * PruneDesired(S,G,rpt) of RFC 7761 sec. 4.5.7:
+ *
+ *   bool PruneDesired(S,G,rpt) {
+ *        return ( RPTJoinDesired(G) AND
+ *                 ( inherited_olist(S,G,rpt) == NULL
+ *                   OR (SPTbit(S,G)==TRUE
+ *                       AND (RPF'(*,G) != RPF'(S,G)) )))
+ *   }
+ *
+ * RPTJoinDesired(G) is JoinDesired(*,G), which is the (*,G) olist being
+ * non-empty.
+ */
+int prune_desired_rpt(mrtentry_t *mrt)
+{
+    uint8_t oifs[MAXVIFS];
+    mrtentry_t *mwc;
+
+    if (!mrt || !(mrt->flags & MRTF_SG) || !mrt->source)
+	return FALSE;
+
+    mwc = mrt->group->grp_route;
+    if (!mwc || PIMD_VIFM_ISEMPTY(mwc->oifs))
+	return FALSE;
+
+    if ((mrt->flags & MRTF_SPT) && mrt->upstream != mwc->upstream)
+	return TRUE;
+
+    calc_rpt_oifs(mrt, oifs);
+
+    return PIMD_VIFM_ISEMPTY(oifs);
 }
 
 /*
@@ -1901,7 +2036,7 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	src_action = join_or_prune(mrt_srcs, mrt_srcs->upstream);
 
     action = jp_timer_action(mrt_srcs, src_action);
-    if (action != PIM_ACTION_NOTHING)
+    if (action != PIM_ACTION_NOTHING) {
 	add_jp_entry(mrt_srcs->upstream,
 		     PIM_JOIN_PRUNE_HOLDTIME,
 		     mrt_srcs->group->group,
@@ -1910,6 +2045,9 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 		     SINGLE_SRC_MSKLEN,
 		     mrt_srcs->flags & MRTF_RP,
 		     action);
+	if (action == PIM_ACTION_PRUNE && (mrt_srcs->flags & MRTF_RP))
+	    mrt_srcs->flags |= MRTF_RPT_PRUNED;
+    }
 
     if (mrt_wide) {
 	/* Have both (S,G) and (*,G) (or (*,*,RP)).
@@ -1921,7 +2059,7 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	    /* XXX: TODO: do error check if
 	     * src_action == PIM_ACTION_JOIN, which
 	     * should be an error. */
-	    if (src_action_rp == PIM_ACTION_PRUNE)
+	    if (src_action_rp == PIM_ACTION_PRUNE) {
 		add_jp_entry(mrt_wide->upstream,
 			     PIM_JOIN_PRUNE_HOLDTIME,
 			     mrt_srcs->group->group,
@@ -1930,9 +2068,72 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 			     SINGLE_SRC_MSKLEN,
 			     MRTF_RP,
 			     src_action_rp);
+		mrt_srcs->flags |= MRTF_RPT_PRUNED;
+	    }
 	}
     }
     jp_timer_set(mrt_srcs, PIM_JOIN_PRUNE_PERIOD * 1000);
+}
+
+/*
+ * The triggered half of the upstream (S,G,rpt) state machine of RFC 7761
+ * sec. 4.5.7, which pimd did not have: it sent the Prune(S,G,rpt) off the
+ * Join Timer and never a Join(S,G,rpt), so a router could neither take back
+ * its own Prune nor override somebody else's.  The Prune itself stays the
+ * Join Timer's, see jp_timer_expire_sg(), which marks the entry
+ * MRTF_RPT_PRUNED when it sends one.  Two things send the Join:
+ *
+ *  - PruneDesired(S,G,rpt) -> False in the Pruned state, a source we want
+ *    again, at once;
+ *  - the Override Timer, which rpt_see_prune() in src/pim_proto.c sets for
+ *    a neighbor's Prune we do not want, when it runs out.
+ *
+ * RPTJoinDesired(G) -> False is RPTNotJoined(G) and cancels both.  @next is
+ * lowered to an Override Timer still running.
+ */
+static void rpt_timers_expire(mrtentry_t *mrt, uint64_t now, uint64_t *next)
+{
+    mrtentry_t *mwc = mrt->group->grp_route;
+    int send = FALSE;
+
+    if (!(mrt->flags & MRTF_SG) || !mrt->source)
+	return;
+
+    if (!mwc || !mwc->upstream || PIMD_VIFM_ISEMPTY(mwc->oifs)) {
+	mrt->flags &= ~MRTF_RPT_PRUNED;
+	mrt->rpt_override = 0;
+	return;
+    }
+
+    if (prune_desired_rpt(mrt)) {
+	mrt->rpt_override = 0;
+	return;
+    }
+
+    if (mrt->flags & MRTF_RPT_PRUNED) {
+	mrt->flags &= ~MRTF_RPT_PRUNED;
+	send = TRUE;
+    } else if (mrt->rpt_override) {
+	if (mrt->rpt_override > now) {
+	    if (next && (!*next || mrt->rpt_override < *next))
+		*next = mrt->rpt_override;
+	    return;
+	}
+	send = TRUE;
+    }
+
+    if (!send)
+	return;
+
+    mrt->rpt_override = 0;
+    add_jp_entry(mwc->upstream,
+		 PIM_JOIN_PRUNE_HOLDTIME,
+		 mrt->group->group,
+		 SINGLE_GRP_MSKLEN,
+		 mrt->source->address,
+		 SINGLE_SRC_MSKLEN,
+		 MRTF_RP,
+		 PIM_ACTION_JOIN);
 }
 
 /* Send all pending Join/Prune messages */
@@ -1959,6 +2160,8 @@ static void route_timers_expire_oifs(mrtentry_t *mrt, uint64_t now, uint64_t *ne
     vifi_t vifi;
 
     if (expire_prune_pending_timers(mrt, now, next))
+	change = TRUE;
+    if (expire_rpt_timers(mrt, now, next))
 	change = TRUE;
     if (age_asserts(mrt, TRUE))
 	change = TRUE;
@@ -2015,6 +2218,7 @@ static void route_timers_run(void *arg __attribute__((unused)))
 		    mrt_next = mrt->grpnext;
 		    route_timers_expire_oifs(mrt, now, &next);
 		    jp_timer_expire_sg(mrt, cand_rp->rpentry, grp_action, now);
+		    rpt_timers_expire(mrt, now, &next);
 		    if (!next_jp || mrt->jp_expires < next_jp)
 			next_jp = mrt->jp_expires;
 		}
@@ -2250,6 +2454,8 @@ void age_routes(void)
 		    change_flag = age_asserts(mrt_srcs, FALSE);
 		    if (expire_prune_pending_timers(mrt_srcs, now, NULL))
 			change_flag = TRUE;
+		    if (expire_rpt_timers(mrt_srcs, now, NULL))
+			change_flag = TRUE;
 
 		    for (vifi = 0; vifi < numvifs; vifi++) {
 			if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {
@@ -2334,6 +2540,7 @@ void age_routes(void)
 
 		    /* Join/Prune timer */
 		    jp_timer_expire_sg(mrt_srcs, rp, grp_action, now);
+		    rpt_timers_expire(mrt_srcs, now, NULL);
 
 		    /* Register-Suppression timer */
 		    /* TODO: to reduce the kernel calls, if the timer

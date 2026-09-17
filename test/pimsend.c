@@ -57,6 +57,13 @@
  *   -H TIME    holdtime, default per message     (sec. 4.9.2, 4.9.5)
  *   -A ADDR    a Hello Address List entry        (sec. 4.3.4, 4.9.2)
  *
+ * And two that build what a correct router sends, but only in a state a
+ * test cannot easily put one in:
+ *
+ *   -R         the (S,G) entries of a Join/Prune are (S,G,rpt)  (sec. 4.5.3)
+ *   -X SOURCE  a Prune(S,G,rpt) in the same group set as a (*,G) Join,
+ *              the compound message of sec. 4.5.6
+ *
  * Examples, each naming what it is for:
  *
  *   # F3: a group range nobody advertised, over the whole RP set
@@ -155,7 +162,9 @@ struct opts {
 	int	 null_register;
 	int	 no_forward;		/* Bootstrap N bit, RFC 5059 sec. 4.1 */
 	int	 zerosum;		/* leave the dummy header's checksum 0 */
-	int	 rpt;			/* Assert RPT bit */
+	int	 rpt;			/* Assert RPT bit, or (S,G,rpt) entries */
+	struct in_addr rpt_prunes[MAX_SOURCES];	/* -X, sec. 4.5.6 */
+	int	 nrpt_prunes;
 	unsigned pref;
 	unsigned metric;
 	unsigned priority;
@@ -291,6 +300,7 @@ static uint8_t *build_hello(uint8_t *p, const struct opts *o)
 static uint8_t *build_join_prune(uint8_t *p, const struct opts *o, int prune)
 {
 	unsigned holdtime = o->holdtime < 0 ? 210 : (unsigned)o->holdtime;
+	unsigned sflags = USADDR_S_BIT | (o->rpt ? USADDR_RP_BIT : 0);
 	int njoin, nprune, i;
 
 	p = put_euaddr(p, o, o->upstream);
@@ -303,14 +313,19 @@ static uint8_t *build_join_prune(uint8_t *p, const struct opts *o, int prune)
 	njoin  = prune ? 0 : (o->wildcard ? 1 : o->nsources);
 	nprune = prune ? (o->wildcard ? 1 : o->nsources) : 0;
 	p = put_short(p, njoin);
-	p = put_short(p, nprune);
+	p = put_short(p, nprune + o->nrpt_prunes);
 
 	if (o->wildcard)
-		return put_esaddr(p, o, o->rp,
-				  USADDR_WC_BIT | USADDR_RP_BIT | USADDR_S_BIT);
+		p = put_esaddr(p, o, o->rp,
+			       USADDR_WC_BIT | USADDR_RP_BIT | USADDR_S_BIT);
+	else
+		for (i = 0; i < o->nsources; i++)
+			p = put_esaddr(p, o, o->sources[i], sflags);
 
-	for (i = 0; i < o->nsources; i++)
-		p = put_esaddr(p, o, o->sources[i], USADDR_S_BIT);
+	/* The Pruned list follows the Joined one, so these go last */
+	for (i = 0; i < o->nrpt_prunes; i++)
+		p = put_esaddr(p, o, o->rpt_prunes[i],
+			       USADDR_RP_BIT | USADDR_S_BIT);
 
 	return p;
 }
@@ -486,7 +501,10 @@ static int usage(int rc)
 		"  -p PRIO    Priority: DR, BSR or candidate RP, default 1\n"
 		"  -P PREF    Assert metric preference, default 101\n"
 		"  -C METRIC  Assert metric, default 1024\n"
-		"  -R         Set the Assert RPT bit\n"
+		"  -R         Set the Assert RPT bit, or make a Join/Prune's (S,G)\n"
+		"             entries (S,G,rpt) ones\n"
+		"  -X SOURCE  Add a Prune(S,G,rpt) for SOURCE to the group set, the\n"
+		"             compound Join(*,G) of RFC 7761 sec. 4.5.6, repeatable\n"
 		"\n"
 		"Fields that exist here to be got wrong:\n"
 		"  -V VER     PIM version, default 2\n"
@@ -558,7 +576,7 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "0A:BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wZ")) != -1) {
+	while ((c = getopt(argc, argv, "0A:BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wX:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
@@ -596,6 +614,12 @@ int main(int argc, char *argv[])
 			if (o.nsources >= MAX_SOURCES)
 				errx(1, "too many sources, max %d", MAX_SOURCES);
 			o.sources[o.nsources++] = addr(optarg, "source");
+			break;
+
+		case 'X':
+			if (o.nrpt_prunes >= MAX_SOURCES)
+				errx(1, "too many (S,G,rpt) prunes, max %d", MAX_SOURCES);
+			o.rpt_prunes[o.nrpt_prunes++] = addr(optarg, "source");
 			break;
 
 		default:

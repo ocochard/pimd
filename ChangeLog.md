@@ -203,6 +203,19 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Keep (S,G,rpt) state apart from (S,G) state, as RFC 7761 sections 4.5.3,
+  4.5.6 and 4.5.7 do.  A Prune(S,G,rpt), which takes one source off the
+  shared tree on an interface, was applied to the (S,G) Join state there
+  instead, so on a LAN it cancelled the Join(S,G) another router still
+  wanted, and a Prune(S,G) took the source off what the interface got from
+  the shared tree too.  A Join(S,G,rpt) was ignored, and pimd never sent one,
+  so no router on a LAN could override another's Prune(S,G,rpt) and a router
+  that wanted a source back after pruning it waited for the next periodic
+  Join(*,G).  A Prune(S,G,rpt) now waits out the override interval before
+  it takes effect, a Join(S,G,rpt) cancels it, a Join(*,G) cancels every one
+  it does not carry, and pimd sends the Join(S,G,rpt) that overrides a
+  neighbour's Prune or takes back its own.  `pimctl show mrt detail` shows
+  the state as `RptPrune oifs`
 - A router downstream of an assert election now sends its Joins to the
   winner.  On its RPF interface pimd measured each Assert against its own
   route to the RP instead of simply losing to it, as RFC 7761 section 4.6.2

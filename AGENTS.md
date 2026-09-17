@@ -108,6 +108,9 @@ played by pimsend from R2's jail), the override Join to that router's Prune and 
 triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
 several trials off the routers' logs),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1),
+the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
+Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
+that does not carry it, and R1's own override Join(S,G,rpt) upstream),
 the Hello Address List of sec. 4.3.4 parsed from a list pimd did not write,
 a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole
@@ -121,9 +124,10 @@ entries for the group either way because the kernel decapsulates before pimd is 
 That last part is A3 of `doc/rfc7761-compliance.md`, and the scenario asserts it rather than working
 around it.
 Assertions that reproduce a deviation report `KNOWN` through `xfail()` instead of failing the run,
-and turn into an `ok` once pimd is fixed; `shared-lan-spt` has this file's only one, for the assert
+and turn into an `ok` once pimd is fixed; `shared-lan-spt` has one, for the assert
 RPT bit of RFC 7761 4.6.1, and it now reports `ok` -- the deviation it guards was fixed in
-`4cb79f1`, so the assertion stays as a tripwire. `test/freebsd-interop.sh` has four more and all
+`4cb79f1`, so the assertion stays as a tripwire. `crafted` has six more, steps 10, 11 and 13, for
+deviation M1, the (S,G,rpt) state, and they report `ok` the same way. `test/freebsd-interop.sh` has four more and all
 four report `ok` as well: two for deviation M3, now that the assert state is per interface -- an
 AssertCancel is acted on and a winner resends before the losers time out -- one for M10, the SPTbit
 evaluated per packet rather than only on an upcall, and one for M14, the (S,G) Assert machine

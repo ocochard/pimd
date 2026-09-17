@@ -609,6 +609,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	char incoming_iif[MAXVIFS+1];
 	char joined_oifs[MAXVIFS+1];
 	char pruned_oifs[MAXVIFS+1];
+	char rpt_oifs[MAXVIFS+1];
 	char leaves_oifs[MAXVIFS+1];
 	char oifs[MAXVIFS+1];
 	vifi_t vifi;
@@ -620,6 +621,11 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 			PIMD_VIFM_ISSET(vifi, r->joined_oifs) ? 'j' : '.';
 		pruned_oifs[vifi] =
 			PIMD_VIFM_ISSET(vifi, r->pruned_oifs) ? 'p' : '.';
+		/* The downstream (S,G,rpt) machine of RFC 7761 sec. 4.5.3:
+		 * 'p' in Prune, 'P' in Prune-Pending, which still forwards */
+		rpt_oifs[vifi] =
+			PIMD_VIFM_ISSET(vifi, r->rpt_pruned_oifs) ? 'p'
+			: (PIMD_VIFM_ISSET(vifi, r->rpt_pp_oifs) ? 'P' : '.');
 		leaves_oifs[vifi] =
 			PIMD_VIFM_ISSET(vifi, r->leaves) ? 'l' : '.';
 		asserted_oifs[vifi] =
@@ -635,6 +641,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	oifs[vifi]		= 0x0;	/* End of string */
 	joined_oifs[vifi]	= 0x0;
 	pruned_oifs[vifi]	= 0x0;
+	rpt_oifs[vifi]		= 0x0;
 	leaves_oifs[vifi]	= 0x0;
 	asserted_oifs[vifi] = 0x0;
 	assert_states[vifi] = 0x0;
@@ -660,6 +667,8 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 
 	fprintf(fp, "Joined   oifs: %-20s\n", joined_oifs);
 	fprintf(fp, "Pruned   oifs: %-20s\n", pruned_oifs);
+	if (r->flags & MRTF_SG)
+		fprintf(fp, "RptPrune oifs: %-20s\n", rpt_oifs);
 	fprintf(fp, "Leaves   oifs: %-20s\n", leaves_oifs);
 	fprintf(fp, "Asserted oifs: %-20s\n", asserted_oifs);
 	fprintf(fp, "Assert state : %-20s\n", assert_states);

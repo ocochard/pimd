@@ -766,6 +766,8 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     PIMD_VIFM_CLRALL(mrt->leaves);
     PIMD_VIFM_CLRALL(mrt->pruned_oifs);
     PIMD_VIFM_CLRALL(mrt->prune_pending_oifs);
+    PIMD_VIFM_CLRALL(mrt->rpt_pruned_oifs);
+    PIMD_VIFM_CLRALL(mrt->rpt_pp_oifs);
     PIMD_VIFM_CLRALL(mrt->asserted_oifs);
     PIMD_VIFM_CLRALL(mrt->oifs);
     mrt->upstream = NULL;
@@ -783,14 +785,19 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * numvifs);
     mrt->asserts	    = calloc(numvifs, sizeof(mrt->asserts[0]));
     mrt->pp_expires	    = calloc(numvifs, sizeof(mrt->pp_expires[0]));
+    mrt->rpt_expires	    = calloc(numvifs, sizeof(mrt->rpt_expires[0]));
+    mrt->rpt_pp_expires	    = calloc(numvifs, sizeof(mrt->rpt_pp_expires[0]));
     vif_numbers = numvifs;
 #else
     mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * total_interfaces);
     mrt->asserts	    = calloc(total_interfaces, sizeof(mrt->asserts[0]));
     mrt->pp_expires	    = calloc(total_interfaces, sizeof(mrt->pp_expires[0]));
+    mrt->rpt_expires	    = calloc(total_interfaces, sizeof(mrt->rpt_expires[0]));
+    mrt->rpt_pp_expires	    = calloc(total_interfaces, sizeof(mrt->rpt_pp_expires[0]));
     vif_numbers = total_interfaces;
 #endif /* SAVE_MEMORY */
-    if (!mrt->vif_timers || !mrt->asserts || !mrt->pp_expires) {
+    if (!mrt->vif_timers || !mrt->asserts || !mrt->pp_expires ||
+	!mrt->rpt_expires || !mrt->rpt_pp_expires) {
 	logit(LOG_WARNING, 0, "alloc_mrtentry(): out of memory");
 	FREE_MRTENTRY(mrt);
 	return NULL;
@@ -803,6 +810,7 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->flags = MRTF_NEW;
     RESET_TIMER(mrt->entry_timer);
     mrt->jp_expires = 0;
+    mrt->rpt_override = 0;
     RESET_TIMER(mrt->rs_timer);
     mrt->kernel_cache = NULL;
 

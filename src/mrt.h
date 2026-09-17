@@ -47,6 +47,11 @@
 					 * sec. 4.5.5 send once, see
 					 * jp_timer_action() in src/route.c */
 #define MRTF_REGISTER		0x0080	/* ???				    */
+#define MRTF_RPT_PRUNED		0x0100	/* Pruned(S,G,rpt) of the upstream
+					 * machine of RFC 7761 sec. 4.5.7: a
+					 * Prune(S,G,rpt) went out and no
+					 * Join(S,G,rpt) since, so wanting the
+					 * source again owes one	    */
 #define MRTF_KERNEL_CACHE	0x0200	/* a mirror for the kernel cache    */
 #define MRTF_NULL_OIF		0x0400	/* null oif cache..	???	    */
 #define MRTF_REG_SUPP		0x0800	/* register suppress	???	    */
@@ -77,6 +82,10 @@
 	    free((mrtentry_ptr)->asserts);			\
 	if ((mrtentry_ptr)->pp_expires)				\
 	    free((mrtentry_ptr)->pp_expires);			\
+	if ((mrtentry_ptr)->rpt_expires)			\
+	    free((mrtentry_ptr)->rpt_expires);			\
+	if ((mrtentry_ptr)->rpt_pp_expires)			\
+	    free((mrtentry_ptr)->rpt_pp_expires);		\
 	curr = (mrtentry_ptr)->kernel_cache;			\
 	while (curr) {						\
 	    next = curr->next;					\
@@ -268,6 +277,15 @@ typedef struct mrtentry {
 							 * here and the oif is waiting to
 							 * be overridden.  Which expiry
 							 * owes a PruneEcho	    */
+    uint8_t		  rpt_pruned_oifs[MAXVIFS];	/* prunes(S,G,rpt) of RFC 7761
+							 * sec. 4.1.5, the Prune state of
+							 * the downstream (S,G,rpt)
+							 * machine of sec. 4.5.3: the
+							 * source is off what the entry
+							 * inherits from joins(*,G) and
+							 * nothing else		    */
+    uint8_t		  rpt_pp_oifs[MAXVIFS];		/* Its Prune-Pending state, which
+							 * forwards as NoInfo does  */
     uint8_t		  asserted_oifs[MAXVIFS];	/* The asserted oifs (lost Assert)  */
     uint8_t		  leaves[MAXVIFS];		/* Has directly connected members   */
     struct pim_nbr_entry *upstream;	/* upstream router, needed because
@@ -291,6 +309,15 @@ typedef struct mrtentry {
     uint64_t		*pp_expires;	/* The Prune-Pending Timer of each
 					 * vif set in prune_pending_oifs,
 					 * on the clock of timer_now()	    */
+    uint64_t		*rpt_expires;	/* ET(S,G,rpt,I) of each vif in
+					 * rpt_pruned_oifs or rpt_pp_oifs;
+					 * 0 is held, a HoldTime of 0xffff  */
+    uint64_t		*rpt_pp_expires;/* PPT(S,G,rpt,I) of each vif in
+					 * rpt_pp_oifs			    */
+    uint64_t		 rpt_override;	/* OT(S,G,rpt) of sec. 4.5.7, when
+					 * the Join(S,G,rpt) overriding a
+					 * neighbor's Prune is due; 0 is not
+					 * running			    */
     uint16_t		 flags;		/* The MRTF_* flags		    */
     uint16_t		 entry_timer;	/* entry timer			    */
     uint64_t		 jp_expires;	/* When the Join Timer expires, on

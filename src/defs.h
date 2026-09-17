@@ -609,6 +609,7 @@ extern int	change_interfaces	(mrtentry_t *mrtentry_ptr,  vifi_t new_iif,
                                          uint8_t *new_leaves_, uint8_t *new_asserted_oifs, uint16_t flags);
 extern void	calc_oifs		(mrtentry_t *mrtentry_ptr, uint8_t *oifs_ptr);
 extern int	join_desired		(mrtentry_t *mrtentry_ptr);
+extern int	prune_desired_rpt	(mrtentry_t *mrtentry_ptr);
 extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);

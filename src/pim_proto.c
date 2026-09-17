@@ -1872,8 +1872,11 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 		    logit(LOG_DEBUG, 0, "No action for SSM (RP)");
 		    return PIM_ACTION_NOTHING;
 		}
-		/* Upstream router toward RP */
-		if (PIMD_VIFM_ISEMPTY(entry_oifs))
+		/* Upstream router toward RP.  The same question
+		 * rpt_timers_expire() (src/route.c) asks before it sends the
+		 * Join(S,G,rpt) taking a Prune back, so the two cannot answer
+		 * it differently and send one of each every period. */
+		if (prune_desired_rpt(mrtentry))
 		    return PIM_ACTION_PRUNE;
 	    }
 	}
@@ -1899,6 +1902,21 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
     }
 
     return PIM_ACTION_NOTHING;
+}
+
+/*
+ * Which of the three entry types of RFC 7761 sec. 4.9.5 an Encoded-Source
+ * flag byte makes, for the log: the RPT and WC bits are the whole difference
+ * between a Join(S,G), a Join(S,G,rpt) and a Join(*,G) naming the RP.
+ */
+static const char *jp_entry_kind(uint8_t flags)
+{
+    if (flags & USADDR_WC_BIT)
+	return " (*,G)";
+    if (flags & USADDR_RP_BIT)
+	return " (S,G,rpt)";
+
+    return "";
 }
 
 /*
@@ -1962,18 +1980,18 @@ void log_pim_join_prune(uint32_t src, uint8_t *data_ptr, int num_groups, char* i
 	    GET_ESADDR(&encod_src, data_ptr);
 	    source = encod_src.src_addr;
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_INFO, 0, "Received PIM JOIN from %s to group %s for source %s on %s",
+		logit(LOG_INFO, 0, "Received PIM JOIN from %s to group %s for source %s on %s%s",
 		      inet_fmt(src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
-		      inet_fmt(source, s3, sizeof(s3)), ifname);
+		      inet_fmt(source, s3, sizeof(s3)), ifname, jp_entry_kind(encod_src.flags));
 	}
 
 	while (num_p_srcs--) {
 	    GET_ESADDR(&encod_src, data_ptr);
 	    source = encod_src.src_addr;
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_INFO, 0, "Received PIM PRUNE from %s to group %s for source %s on %s",
+		logit(LOG_INFO, 0, "Received PIM PRUNE from %s to group %s for source %s on %s%s",
 		      inet_fmt(src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
-		      inet_fmt(source, s3, sizeof(s3)), ifname);
+		      inet_fmt(source, s3, sizeof(s3)), ifname, jp_entry_kind(encod_src.flags));
 	}
     }
 }
@@ -2087,6 +2105,141 @@ static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
     route_timers_schedule(mrt->pp_expires[vifi]);
 }
 
+/*
+ * "Receive Prune(S,G,rpt)" in the downstream (S,G,rpt) state machine of
+ * RFC 7761 sec. 4.5.3, which is a machine of its own and not the (S,G) one:
+ * it takes the source off what interface I inherits from joins(*,G) and
+ * leaves joins(S,G) alone.  pimd had the one (S,G) entry for both and applied
+ * this Prune to its Join state, so on a LAN it cancelled the Join(S,G)
+ * another router still wanted.
+ *
+ * NoInfo goes to Prune-Pending with the same Prune-Pending Timer as the other
+ * two machines, and straight to Prune where that timer is zero.  Prune
+ * restarts its Expiry Timer, and so does Prune-Pending when a Join(*,G)
+ * earlier in the same group set had it in Prune-Pending-Tmp: @wc_join says
+ * so.  The two transient states are otherwise left to the end of the group
+ * set, see receive_pim_join_prune().
+ */
+static void rpt_prune(mrtentry_t *mrt, vifi_t vifi, uint16_t holdtime, int wc_join)
+{
+    uint64_t now = timer_now();
+    uint32_t delay;
+
+    if (!PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs) || wc_join) {
+	if (holdtime == PIM_HELLO_HOLDTIME_FOREVER)
+	    mrt->rpt_expires[vifi] = 0;
+	else
+	    mrt->rpt_expires[vifi] = now + holdtime * 1000ULL;
+    }
+
+    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) || PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs))
+	return;
+
+    delay = prune_pending_delay(vifi);
+    if (delay == 0) {
+	PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
+	return;
+    }
+
+    mrt->rpt_pp_expires[vifi] = now + delay;
+    PIMD_VIFM_SET(vifi, mrt->rpt_pp_oifs);
+    route_timers_schedule(mrt->rpt_pp_expires[vifi]);
+}
+
+/*
+ * The (S,G,rpt) machine on @vifi back to NoInfo, its timers cancelled, which
+ * is "Receive Join(S,G,rpt)" and the "End of Message" of the two transient
+ * states.  TRUE where the source had been pruned off the interface, so that
+ * what the entry forwards changes.
+ */
+static int rpt_noinfo(mrtentry_t *mrt, vifi_t vifi)
+{
+    int pruned = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs);
+
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
+
+    return pruned;
+}
+
+/*
+ * Does the Pruned list of a group set, @num_p_srcs entries from @data, hold
+ * a Prune(S,G,rpt) for @source?  Only called on a list the length checks of
+ * receive_pim_join_prune() have already walked.
+ */
+static int jp_prunes_rpt(uint8_t *data, uint16_t num_p_srcs, uint32_t source)
+{
+    pim_encod_src_addr_t esaddr;
+
+    while (num_p_srcs--) {
+	GET_ESADDR(&esaddr, data);
+	if (esaddr.src_addr == source &&
+	    (esaddr.flags & (USADDR_RP_BIT | USADDR_WC_BIT)) == USADDR_RP_BIT)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * "See Prune(S,G,rpt) to RPF'(S,G,rpt)" and "See Prune(S,G) to
+ * RPF'(S,G,rpt)" in the upstream (S,G,rpt) machine of sec. 4.5.7: a router
+ * on our upstream interface asks the router we take the shared tree from to
+ * stop sending it @source, and we still want it, so the Override Timer is
+ * set to t_override and a Join(S,G,rpt) goes when it runs out, see
+ * rpt_timers_expire() in src/route.c.  pimd read both as (S,G) Prunes and
+ * overrode only where it held (S,G) state of its own, and with a Join(S,G)
+ * rather than the Join(S,G,rpt) the upstream's (S,G,rpt) machine answers to.
+ *
+ * RPF'(S,G,rpt) is RPF'(*,G) here, the (*,G) entry's upstream.  The machine
+ * needs state per (S,G), which a router forwarding the source off its (*,G)
+ * does not have, so a Prune(S,G,rpt) makes it an (S,G)RPbit entry, the same
+ * one a received Prune(S,G,rpt) makes.  A Prune(S,G) does not: it is there for
+ * routers written to RFC 2362, and every router on the link seeing one
+ * building state for a source it may never receive is too much for that.
+ */
+static void rpt_see_prune(uint32_t source, uint32_t group, pim_nbr_entry_t *upstream,
+			  vifi_t vifi, uint16_t holdtime, int rpt)
+{
+    mrtentry_t *mwc, *mrt;
+    uint64_t when;
+
+    if (IN_PIM_SSM_RANGE(group))
+	return;
+
+    mwc = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
+    if (!mwc || !(mwc->flags & MRTF_WC) || mwc->upstream != upstream)
+	return;
+
+    /* RPTJoinDesired(G) is false, RPTNotJoined(G) */
+    if (PIMD_VIFM_ISEMPTY(mwc->oifs))
+	return;
+
+    mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
+    if (!mrt) {
+	if (!rpt)
+	    return;
+
+	mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
+	if (!mrt)
+	    return;
+
+	mrt->flags &= ~MRTF_NEW;
+	if (mrt->entry_timer < holdtime)
+	    SET_TIMER(mrt->entry_timer, holdtime);
+    }
+
+    /* Pruned(S,G,rpt): the Prune is one we want too */
+    if (prune_desired_rpt(mrt))
+	return;
+
+    when = timer_now() + jp_override_timeout(vifi);
+    if (!mrt->rpt_override || mrt->rpt_override > when) {
+	mrt->rpt_override = when;
+	route_timers_schedule(when);
+    }
+}
+
 int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), char *msg, size_t len)
 {
     vifi_t vifi;
@@ -2121,6 +2274,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     uint8_t *data_group_j_start;
     uint8_t *data_group_p_start;
     uint32_t new_join;
+    uint16_t num_p_srcs_all;
+    int wc_join;
 
     if ((vifi = find_vif_direct(src)) == NO_VIF) {
 	/* Either a local vif or somehow received PIM_JOIN_PRUNE from
@@ -2472,6 +2627,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    continue;
 		} /* End of (*,G) Join suppression */
 
+		if (s_flags & USADDR_RP_BIT) {
+		    /* "See Join(S,G,rpt) to RPF'(S,G,rpt)", sec. 4.5.7: somebody
+		     * else has overridden the Prune we were going to, so the
+		     * Override Timer is cancelled.  Not a Join(S,G), and not
+		     * one to suppress ours with. */
+		    mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
+		    if (mrt && mrt->group->grp_route &&
+			mrt->group->grp_route->upstream == upstream_router)
+			mrt->rpt_override = 0;
+		    continue;
+		}
+
 		/* (S,G) Join suppresion */
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
 		if (!mrt)
@@ -2539,6 +2706,11 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    } /* For all (S,G) */
 		    continue;  /* End of (*,G) prune suppression */
 		}
+
+		/* The upstream (S,G,rpt) machine, whether or not there is an
+		 * (S,G) machine below to answer as well */
+		rpt_see_prune(source, group, upstream_router, vifi, holdtime,
+			      s_flags & USADDR_RP_BIT);
 
 		/* (S,G) prune suppression */
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
@@ -2633,6 +2805,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	data_group_j_start = data;
 	data_group_p_start = data + num_j_srcs * sizeof(pim_encod_src_addr_t);
 	data_group_end = data + (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
+	num_p_srcs_all = num_p_srcs;
+	wc_join = FALSE;
 
 	/* Scan the Join part for (*,G) Join and then clear the
 	 * particular interface from pruned_oifs for all (S,G).
@@ -2654,6 +2828,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    if ((esaddr.flags & USADDR_RP_BIT) && (esaddr.flags & USADDR_WC_BIT)) {
 		if (!rpentry || rpentry->address != esaddr.src_addr)
 		    break;
+
+		/* "Receive Join(*,G)" of sec. 4.5.3: Prune and Prune-Pending
+		 * go to their transient states for the rest of the set */
+		wc_join = TRUE;
 
 		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		if (mrt) {
@@ -2709,9 +2887,11 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		/* TODO: XXX: increase the entry timer? */
 		prune_pending(mrt, vifi);
 		IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
+		    /* Joins(S,G) and nothing else: an (S,G) Prune ends the
+		     * Join state of sec. 4.5.2, where marking the interface
+		     * pruned took it off what the (*,G) gives the entry too. */
 		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
 		    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
-		    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
 		    change_interfaces(mrt,
 				      mrt->incoming,
 				      mrt->joined_oifs,
@@ -2723,51 +2903,34 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    }
 
 	    if ((s_flags & USADDR_RP_BIT) && (!(s_flags & USADDR_WC_BIT))) {
-		/* ~(S,G)RPbit prune sent toward the RP */
+		/* Prune(S,G,rpt), sec. 4.5.3, see rpt_prune().  An (S,G) entry
+		 * holds the machine, and one is made for it where there is only
+		 * the (*,G) whose joins it prunes. */
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
-		if (mrt) {
-		    SET_TIMER(mrt->entry_timer, holdtime);
-		    prune_pending(mrt, vifi);
-		    IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
-			PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-			PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
-			PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
-			change_interfaces(mrt,
-					  mrt->incoming,
-					  mrt->joined_oifs,
-					  mrt->pruned_oifs,
-					  mrt->leaves,
-					  mrt->asserted_oifs, 0);
-		    }
-		    continue;
-		}
+		if (!mrt) {
+		    if (!find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE))
+			continue;
 
-		/* There is no (S,G) entry. Check for (*,G) */
-		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
-		if (mrt) {
 		    mrt = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
 		    if (!mrt)
 			continue;
 
 		    mrt->flags &= ~MRTF_NEW;
-		    RESET_TIMER(mrt->vif_timers[vifi]);
-		    /* TODO: XXX: The spec doens't say what value to use for
-		     * the entry time. Use the J/P holdtime.
-		     */
-		    SET_TIMER(mrt->entry_timer, holdtime);
-		    /* TODO: XXX: The spec says to delete the oif. However,
-		     * its timer only should be lowered, so the prune can be
-		     * overwritten on multiaccess LAN. Spec BUG.
-		     */
-		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-		    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
-		    change_interfaces(mrt,
-				      mrt->incoming,
-				      mrt->joined_oifs,
-				      mrt->pruned_oifs,
-				      mrt->leaves,
-				      mrt->asserted_oifs, 0);
 		}
+
+		/* The spec gives the entry no timer of its own, so it lives as
+		 * long as the Prune may.  Only ever raised: the entry can hold
+		 * (S,G) state that wants longer. */
+		if (mrt->entry_timer < holdtime)
+		    SET_TIMER(mrt->entry_timer, holdtime);
+
+		rpt_prune(mrt, vifi, holdtime, wc_join);
+		change_interfaces(mrt,
+				  mrt->incoming,
+				  mrt->joined_oifs,
+				  mrt->pruned_oifs,
+				  mrt->leaves,
+				  mrt->asserted_oifs, 0);
 		continue;
 	    }
 
@@ -2823,6 +2986,35 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    } /* (*,G) prune */
 	} /* while (num_p_srcs--) */
 	/* End of (S,G) and (*,G) Prune handling */
+
+	/* "End of Message" for PruneTmp and Prune-Pending-Tmp, sec. 4.5.3:
+	 * a source the Join(*,G) moved to one of them and no Prune(S,G,rpt)
+	 * in the set moved back goes to NoInfo.  This is what lets the
+	 * periodic Join(*,G) of sec. 4.5.6 carry its Prunes and keep them,
+	 * where clearing every prune on the Join and re-running the
+	 * Prune-Pending Timer on the Prune put the source back on the
+	 * interface for an override interval each period.  The end of the
+	 * group set is the end of the message for this machine: no other
+	 * set can name the same group.
+	 */
+	if (wc_join && (grp = find_group(group))) {
+	    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
+		if (!PIMD_VIFM_ISSET(vifi, mrt_srcs->rpt_pruned_oifs) &&
+		    !PIMD_VIFM_ISSET(vifi, mrt_srcs->rpt_pp_oifs))
+		    continue;
+
+		if (jp_prunes_rpt(data_group_p_start, num_p_srcs_all, mrt_srcs->source->address))
+		    continue;
+
+		if (rpt_noinfo(mrt_srcs, vifi))
+		    change_interfaces(mrt_srcs,
+				      mrt_srcs->incoming,
+				      mrt_srcs->joined_oifs,
+				      mrt_srcs->pruned_oifs,
+				      mrt_srcs->leaves,
+				      mrt_srcs->asserted_oifs, 0);
+	    }
+	}
 
 	/* Jump back to the Join part and process it */
 	data = data_group_j_start;
@@ -2912,6 +3104,22 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 				      mrt_srcs->pruned_oifs,
 				      mrt_srcs->leaves,
 				      mrt_srcs->asserted_oifs, 0);
+		continue;
+	    }
+
+	    if ((s_flags & USADDR_RP_BIT) && !(s_flags & USADDR_WC_BIT)) {
+		/* "Receive Join(S,G,rpt)", sec. 4.5.3: Prune and Prune-Pending
+		 * go to NoInfo, which is how another router on the LAN
+		 * overrides a Prune(S,G,rpt).  pimd had no branch for it, and
+		 * the source stayed pruned for the life of the Prune. */
+		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
+		if (mrt && rpt_noinfo(mrt, vifi))
+		    change_interfaces(mrt,
+				      mrt->incoming,
+				      mrt->joined_oifs,
+				      mrt->pruned_oifs,
+				      mrt->leaves,
+				      mrt->asserted_oifs, 0);
 		continue;
 	    }
 

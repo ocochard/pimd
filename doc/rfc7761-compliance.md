@@ -34,13 +34,14 @@ confirmed to be intentional, move it to the last section with the reason.
 
 A deviation that a test reproduces should be asserted through `xfail()`, in
 `test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
-unasserted, so that it flips to `ok` the day it is fixed.  Five are carried
-that way and all five report `ok`, so every one of them is now a tripwire
+unasserted, so that it flips to `ok` the day it is fixed.  Eleven are carried
+that way and all eleven report `ok`, so every one of them is now a tripwire
 against the deviation coming back rather than a live report: the assert
 RPT-bit entry of 4.6.1 in `shared-lan-spt`, the SPTbit entry of 4.2.2 in
 `assert-lan`, the assert winner state of 4.6.1 and 4.6.2, which `assert-lan`
 asserts from both sides, and the (S,G) machine's reach past a lost (\*,G),
-which the `rpt-bit` sub-case of `assert-lan` asks for.  A `KNOWN` line in a
+which the `rpt-bit` sub-case of `assert-lan` asks for, and the six of
+`crafted` for M1's (S,G,rpt) machines, steps 10, 11 and 13.  A `KNOWN` line in a
 run is therefore a regression, not an expected result.
 
 Every entry below ends with a `Test:` note saying what reproduces it, and
@@ -60,12 +61,12 @@ not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
 `test/freebsd-lab.sh` closes and asserts the whole packet format section,
 S3 and S4 of the SSM one, T2's Join suppression, T1's override Join and
-T3's triggered Hello, R2's longer group range, R3's No-Forward bit and A1's
-neighbor list.
+T3's triggered Hello, R2's longer group range, R3's No-Forward bit, A1's
+neighbor list and M1's (S,G,rpt) state.
 
-What is left divides in two.  M1, M7 and S1 are state pimd does not keep,
-each a structural change rather than a check: (S,G,rpt) entries, a
-traffic-driven Keepalive Timer, and SSM groups that carry no RP.  A3 and
+What is left divides in two.  M7 and S1 are state pimd does not keep, each
+a structural change rather than a check: a traffic-driven Keepalive Timer,
+and SSM groups that carry no RP.  A3 and
 A4 are the two that stay open on purpose, one because the kernel decapsulates
 before the daemon is handed anything and the other because sec. 6.4
 describes rather than prescribes.  No parser entry is left.
@@ -186,7 +187,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Twelve entries this section held are fixed.  M3, the assert winner state,
+Thirteen entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -244,7 +245,9 @@ is left: `JoinDesired(S,G)`'s second half, `inherited_olist(S,G)` while the
 Keepalive Timer runs, is still `calc_oifs()`, so its source-specific term
 loses an interface to `lost_assert(S,G,rpt)` where sec. 4.1.5 subtracts only
 `lost_assert(S,G)`.  Closing that needs the two halves of `inherited_olist()`
-told apart, which is M1; `immediate_olist(S,G)`, the half the Note under
+told apart in `calc_oifs()`, which M1's fix did not do: it added
+`calc_rpt_oifs()` for `PruneDesired(S,G,rpt)` beside it rather than change the
+olist pimd forwards off.  `immediate_olist(S,G)`, the half the Note under
 sec. 4.6.5 is about, is exact.
 
 M2 is the eighth: the LAN Prune Delay option of sec. 4.3.3 is sent in every
@@ -345,34 +348,32 @@ now, where the SPT threshold is zero (`spt_switch_on_first_packet()`), and
 sends none otherwise.  Step 4 of `assert-recover` asserts M15 directly: the
 downstream router reads L on its RPF interface.
 
+M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
+the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
+Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
+on the LAN still wanted, a Join(S,G,rpt) matched no branch, and pimd never
+sent one, so no router could override another's Prune(S,G,rpt) or take back
+its own.  The downstream machine is `rpt_pruned_oifs` and `rpt_pp_oifs` on
+the (S,G) entry now (`src/mrt.h`), with an Expiry and a Prune-Pending Timer per
+interface: `rpt_prune()` and `rpt_noinfo()` in `src/pim_proto.c` are its
+transitions, PruneTmp and Prune-Pending-Tmp are resolved at the end of the
+group set that carried the Join(\*,G), and `calc_oifs()` (`src/route.c`)
+subtracts the Prune state from what the entry inherits from `joins(*,G)` and
+from nothing else.  A Prune(S,G) no longer marks the interface pruned either,
+which took the source off the shared tree as well; it ends the Join state and
+that is all.  The upstream machine is `prune_desired_rpt()` and
+`rpt_timers_expire()` in `src/route.c`: `MRTF_RPT_PRUNED` records a
+Prune(S,G,rpt) sent, so wanting the source again sends the Join(S,G,rpt) at
+once, and `rpt_see_prune()` sets the Override Timer, `rpt_override`, for a
+neighbor's Prune we do not want.  Steps 10 to 13 of `crafted` in
+`test/freebsd-lab.sh` assert all of it with pimsend playing the other routers,
+which is the only way to see it: between two pimds the override Join hides
+what the upstream router did with the Prune.  Two things are left out on
+purpose.  "See Prune(S,G) to RPF'(S,G,rpt)", the event sec. 4.5.7 keeps for
+routers written to RFC 2362, overrides only where an (S,G) entry exists
+already rather than making one for every Prune(S,G) on the link; and "RPF'(S,G,rpt)
+-> RPF'(\*,G)" has nothing to fire it, RPF'(S,G,rpt) being RPF'(\*,G) here.
 
-**M1.  No (S,G,rpt) state at all.**  Sec. 4.5.3, 4.5.6 and 4.5.7 define a
-downstream and an upstream (S,G,rpt) machine with their own Expiry,
-Prune-Pending and Override timers.  pimd has one (S,G) entry with one
-`joined_oifs`/`pruned_oifs` pair and the `MRTF_RP` flag standing in for the RPT
-variant, which produces three distinct failures.  A received Prune(S,G,rpt) is
-applied to the (S,G) machine (`src/pim_proto.c:2271-2288`), so on a LAN it
-cancels an (S,G) Join another router still wants, and the two flap against each
-other with a 60-second period; `calc_oifs()` subtracts the one `pruned_oifs`
-from the (S,G) olist unconditionally (`src/route.c:869` for the inherited half
-and `:878` for the entry's own), which sec. 4.1.5 forbids.  A received
-Join(S,G,rpt) matches neither branch of the Join loop (`src/pim_proto.c:2383`
-and `:2450`) and is silently ignored, so a downstream
-router can never override another router's RPT prune — the one mechanism
-sec. 4.5.7 exists to provide.  And pimd never sends a Join(S,G,rpt) either:
-`join_or_prune()` can only return PRUNE for an RPbit entry
-(`src/pim_proto.c:1521-1529`), so the triggered machine of 4.5.7 has no
-implementation.  Note that the *compound* Join(\*,G)+Prune(S,G,rpt) of sec. 4.5.6
-is implemented, via `MRTF_RP` entries dragged into the same group set
-(`src/route.c:1933-1952`), and is wire-correct; it is the triggered half that is
-missing.
-*Check: sec. 4.5.3, `doc/rfc7761.txt:2975` (downstream), sec. 4.5.7, `:3983`
-(upstream triggered), sec. 4.5.6, `:3927` (the periodic compound message); the
-olist rule pimd breaks is sec. 4.1.5, `:1138`, where `prunes(S,G,rpt)`
-subtracts from `joins(*,G)` alone and not from `inherited_olist(S,G)` at
-`:1142`.  Effort: large.  Test: none.  `shared-lan` in `test/freebsd-lab.sh` is
-the topology it needs -- two downstream routers on one segment, one pruning
-what the other joined.*
 
 **M4.  The assert metric preference is a configured constant, not the routing
 protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both say the metric preference and the
@@ -875,7 +876,8 @@ Checked, no action
   RFC 4601's (\*,\*,RP) support was removed.*
 - **Sec. 4.5.6's compound Join(\*,G)+Prune(S,G,rpt) is implemented**, through
   `MRTF_RP` entries pulled into the same group set (`src/route.c:1933-1952`) and
-  the RPT bit set from that flag.  What is missing around it is M1, not this.  *Check: sec. 4.5.6, `doc/rfc7761.txt:3927`.*
+  the RPT bit set from that flag.  The triggered half of sec. 4.5.7 beside it
+  is `rpt_timers_expire()` (`src/route.c`).  *Check: sec. 4.5.6, `doc/rfc7761.txt:3927`.*
 - **The RP's decapsulate-and-forward step is the kernel's**, via `MRT_PIM` and
   the register vif, which is the literal reading of sec. 4.4.2's note that
   implementations should not make it a special case.  One consequence worth
@@ -947,13 +949,13 @@ Checked, no action
 - **Rules one and two of sec. 4.8.1 are kept.**  `join_or_prune()` returns no
   action for a (\*,G) in the SSM range (`src/pim_proto.c:1463` and `:1522`)
   and the periodic builder skips any entry of such a group that is not (S,G)
-  (`:2614`), so no (\*,G) Join/Prune is sent for one; no (S,G,rpt) message is
-  sent for any group whatsoever, which is M1, and this is the one place M1
-  costs nothing.  *Check: sec. 4.8.1, `doc/rfc7761.txt:5668` and `:5670`.*
+  (`:2614`), so no (\*,G) Join/Prune is sent for one; nor is an (S,G,rpt)
+  message, which both machines send only beside a (\*,G) and
+  `rpt_see_prune()` refuses outright for a group in the range.  *Check: sec. 4.8.1, `doc/rfc7761.txt:5668` and `:5670`.*
 - **Sec. 4.8.2 does not apply, and the two notes under it hold anyway.**
   pimd implements the full protocol rather than the subset, the (S,G,rpt)
-  machines of M1 excepted -- which that section happens to list among what an
-  SSM-only router may leave out.  Of its two "treat it as" notes, the
+  machines included, which that section lists among what an SSM-only router
+  may leave out.  Of its two "treat it as" notes, the
   Keepalive Timer is M7's subject, and the SPTbit ends up set on the first
   packet of an SSM
   (S,G) rather than by construction: `update_sptbit()` (`src/route.c:653`),
