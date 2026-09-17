@@ -340,21 +340,6 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
     if (mask_ptr == NULL)
 	return NULL;
 
-/* TODO: delete */
-#if 0
-    if (mask_ptr->grp_rp_next) {
-	/* Check for obsolete grp_rp chain */
-	if ((my_bsr_address != curr_bsr_address) && (mask_ptr->grp_rp_next->fragment_tag != fragment_tag)) {
-	    /* This grp_rp chain is obsolete. Delete it. */
-	    delete_grp_mask(used_cand_rp_list, used_grp_mask_list, group_addr, group_mask);
-	    mask_ptr = add_grp_mask(used_grp_mask_list, group_addr, group_mask, bsr_hash_mask);
-
-	    if (mask_ptr == NULL)
-		return NULL;
-	}
-    }
-#endif /* 0 */
-
     rp_addr_h = ntohl(rp_addr);
     mask_ptr->fragment_tag = fragment_tag;   /* For garbage collection */
 
@@ -384,11 +369,21 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	    continue;
 	if (ntohl(entry_next->rp->rpentry->address) < rp_addr_h)
 	    break;
-	/* We already have this entry. Update the holdtime */
-	/* TODO: We shoudn't have old existing entry, because with the
-	 * current implementation all of them will be deleted
-	 * (different fragment_tag). Debug and check and eventually
-	 * delete.
+	/* We already have this entry. Update the holdtime.
+	 *
+	 * This is the common case, not an oddity: a BSR sends the whole RP
+	 * set every bootstrap period under a fresh fragment tag -- ours is
+	 * incremented per message in create_pim_bootstrap_message() -- so
+	 * every RP that is still advertised arrives again and lands here.
+	 * Refreshing the tag below is what keeps it: the garbage collection
+	 * at the end of receive_pim_bootstrap() runs once the whole message
+	 * has been added and deletes only the entries whose tag is still the
+	 * previous one, i.e. those this BSR has stopped advertising.
+	 *
+	 * A change of priority does not reach this branch at all.  Priority
+	 * is the first sort key of the loop above, so the entry breaks out
+	 * of it, the new priority is linked in as a new entry and the old
+	 * one is collected with its stale tag.
 	 */
 	/* A static entry keeps the holdtime that makes it one.  Letting the
 	 * advertisement overwrite it would leave the configured RP mortal:
