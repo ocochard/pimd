@@ -59,16 +59,24 @@ static void	   move_kernel_cache (mrtentry_t *, uint16_t);
 
 void init_pim_mrt(void)
 {
-    /* Free the routing table before re-initializing it */
-    if (srclist != NULL)
-	free(srclist);
-
-    if (grplist != NULL)
-    {
-	while ( grplist->next != NULL )
+    /* Free the routing table before re-initializing it.  The groups go
+     * first, and the head of srclist has to outlive them: deleting a group
+     * deletes every source it leaves without an entry, and unlinking a
+     * source writes to the one before it, the head for the first source.
+     * What sources are left then have no entry at all.
+     */
+    if (grplist != NULL) {
+	while (grplist->next != NULL)
 	    delete_grpentry(grplist->next);
 
 	free(grplist);
+    }
+
+    if (srclist != NULL) {
+	while (srclist->next != NULL)
+	    delete_srcentry(srclist->next);
+
+	free(srclist);
     }
 
     /* Initialize the source list */

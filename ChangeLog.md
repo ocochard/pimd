@@ -253,6 +253,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Fix a use after free on every reload, `SIGHUP` or `pimctl restart`, of a
+  router holding (S,G) state.  Rebuilding the routing table freed the head
+  of the source list before deleting the groups, and deleting a group
+  unlinks from that head every source it leaves with no entry.  On Linux
+  glibc caught the write and aborted pimd; on FreeBSD it went unnoticed.
+  A source still listed with no entry at all, if there is one, is freed
+  now as well rather than leaked.  Found by the `keepalive` scenario of `test/lab.sh` on
+  Linux, and pinned down by building pimd with AddressSanitizer on both
 - On Linux, send the route's metric in a PIM Assert.  The route lookup
   `netlink.c` makes is answered with the route resolved for the address,
   and Linux never puts the metric in that answer, so every Assert said 0
