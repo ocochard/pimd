@@ -748,6 +748,12 @@ PIMD_SRC=${PIMD_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 # Where this script and the files it sources are, which PIMD_SRC need not be
 LAB_DIR=$(cd "$(dirname "$0")" && pwd)
 
+# This script, by a path that works from anywhere: "run -j" starts a slot by
+# running it again, and "$0" is whatever the caller typed -- `sh lab.sh` from
+# this directory leaves it without a slash, which the shell then looks for in
+# PATH and does not find.  Run through sh, so it needs no execute bit either.
+LAB_SELF=$LAB_DIR/${0##*/}
+
 # Which of the labs this invocation is, 0 to 31, from -s.  Every name that
 # lives on the host carries it -- the jails, the epairs, the bridges, the
 # work directory, the interface group -- so several scenarios can be built
@@ -7251,7 +7257,7 @@ parallel_abort() {
 	# The scenario shell is gone, its jails are not: each slot is asked
 	# to stop itself, which is the same teardown a finished run does.
 	for entry in $PARALLEL_BUSY; do
-		"$0" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
+		sh "$LAB_SELF" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
 	done
 
 	exit 130
@@ -7312,7 +7318,7 @@ run_parallel() {
 				# written there, so the file cannot be seen
 				# half written by the loop below
 				set +e
-				"$0" -s "$slot" run "$scenario" \
+				sh "$LAB_SELF" -s "$slot" run "$scenario" \
 					> "$out/$slot.log" 2>&1
 				echo $? > "$out/$slot.rc.part"
 				mv "$out/$slot.rc.part" "$out/$slot.rc"

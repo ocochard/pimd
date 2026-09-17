@@ -204,6 +204,10 @@ pimd on all routers in the same domain.  See issue #93 for details.
   unicast routes were static in the lab all along -- pimd reads the FIB and
   never asks what wrote a route, there being no `RTPROT_*` in `src/` -- and
   the lab reads packets with `tcpdump`
+- `test/lab.sh -j` and `test/freebsd-interop.sh -j` run from a directory
+  that is not on `PATH` again: a slot is started by running the script
+  again, and it was run as `$0`, which `sh lab.sh` leaves without a slash
+  for the shell to look for in `PATH` and not find
 - `test/lab.sh` takes `SANITIZE=yes` to run its scenarios against a pimd
   built `-fsanitize=address,undefined`, failing any scenario whose daemons
   reported anything -- which is not the same question as whether its

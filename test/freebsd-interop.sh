@@ -364,6 +364,13 @@ DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_jp,asserts"}
 # reboots - was learned for this lab.  The image itself is not in the tree
 # and cannot be: it is a licensed Arista download.
 VEOS_SH=${VEOS_SH:-$(cd "$(dirname "$0")" && pwd)/veos-bhyve.sh}
+
+# This script, by a path that works from anywhere: "run -j" starts a slot by
+# running it again, and "$0" is whatever the caller typed -- `sh
+# freebsd-interop.sh` from this directory leaves it without a slash, which
+# the shell then looks for in PATH and does not find.  Run through sh, so it
+# needs no execute bit either.
+LAB_SELF=$(cd "$(dirname "$0")" && pwd)/${0##*/}
 VEOS_VM=${VEOS_VM:-veos$TAG}
 
 SCENARIO=${SCENARIO:-arista-rp}
@@ -3187,7 +3194,7 @@ parallel_abort() {
 	# slot is asked to stop itself, which is the teardown a finished
 	# run does, vEOS included.
 	for entry in $PARALLEL_BUSY; do
-		"$0" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
+		sh "$LAB_SELF" -s "${entry%%:*}" stop >/dev/null 2>&1 || true
 	done
 
 	exit 130
@@ -3247,7 +3254,7 @@ run_parallel() {
 				# written there, so the file cannot be seen
 				# half written by the loop below
 				set +e
-				"$0" -i "$VEOS_QCOW" -s "$slot" run "$scenario" \
+				sh "$LAB_SELF" -i "$VEOS_QCOW" -s "$slot" run "$scenario" \
 					> "$out/$slot.log" 2>&1
 				echo $? > "$out/$slot.rc.part"
 				mv "$out/$slot.rc.part" "$out/$slot.rc"
