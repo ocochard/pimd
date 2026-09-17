@@ -278,6 +278,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   stop restored it under every other.  `test/veos-bhyve.sh` keeps each
   VM's files in `$WORK/<name>`, two guests having never been able to share
   the one disk image
+- The release tarball carries `doc/` again: the READMEs, the FAQ, the
+  install notes, `TODO.org`, `rfc7761-compliance.md` and the security
+  review prompt.  v2.3.2 shipped all of these from the top of the tree; the
+  move to GNU Configure and Build put them under `doc/` and left
+  `doc/LICENSE.mrouted` the only one named in `EXTRA_DIST`, so everything
+  README.md points a reader at was missing from a release tarball.  The
+  RFC texts and the papers beside them stay out, being reference copies of
+  documents published elsewhere
 
 ### Fixes
 - Remove undefined shifts UndefinedBehaviorSanitizer reported, and the

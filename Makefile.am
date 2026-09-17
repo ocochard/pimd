@@ -1,5 +1,9 @@
 doc_DATA       = README.md ChangeLog.md LICENSE doc/LICENSE.mrouted pimd.conf
-EXTRA_DIST     = README.md ChangeLog.md LICENSE doc/LICENSE.mrouted pimd.conf
+EXTRA_DIST     = README.md ChangeLog.md LICENSE doc/LICENSE.mrouted pimd.conf	\
+		 doc/AUTHORS doc/CREDITS doc/FAQ.md doc/INSTALL.md		\
+		 doc/README-config.md doc/README-debug.md doc/README.config.jp	\
+		 doc/RELEASE.NOTES doc/TODO.org doc/rfc7761-compliance.md	\
+		 doc/security-review-prompt.md
 DISTCLEANFILES = *~ DEADJOE semantic.cache *.gdb *.elf core core.* *.d
 SUBDIRS        = src include man
 
