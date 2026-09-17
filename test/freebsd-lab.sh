@@ -1188,6 +1188,7 @@ FAILED=0
 XFAILED=0
 ok()   { printf "  \033[32mok\033[0m    %s\n" "$1"; }
 fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
+skip() { printf "  \033[33mSKIP\033[0m  %s\n" "$1"; }
 
 # A behaviour that is wrong but known to be wrong: pimd deviates from the
 # spec here, the scenario reproduces it on purpose, and the run is not red
@@ -1573,6 +1574,7 @@ routes() {
 # can better it on either side and watch the assert election follow.  Every
 # other route in this file keeps the metric FreeBSD gives a static route.
 route_metrics() {
+	route_has_metric || return 0
 	case $SCENARIO in
 	shared-lan|assert-recover)
 		case $1 in
@@ -1580,6 +1582,13 @@ route_metrics() {
 		esac
 		;;
 	esac
+}
+
+# route(8) learned -metric in FreeBSD 16 (2e2d402d061d); 15.x rejects it
+# as a bad keyword, before it reaches the kernel, so a "get" is enough to
+# ask without touching a table.
+route_has_metric() {
+	route -n get -metric 1 127.0.0.1 >/dev/null 2>&1
 }
 
 jname() { echo "$JAIL_PREFIX$1"; }
@@ -2792,6 +2801,11 @@ sl_set_rp_metric() {
 # nobody is sending to keeps whatever it decided last.
 check_assert_metric() {
 	print "12. The assert election follows the unicast route metric"
+
+	if ! route_has_metric; then
+		skip "route(8) here has no -metric, so nothing can move the metric pimd asserts with"
+		return 0
+	fi
 
 	jrun ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/joiner-metric.log" 2>&1 &
@@ -6204,11 +6218,14 @@ stop() {
 	${SUDO} rm -rf "$WORKDIR"
 }
 
+# Its status has a name of its own: sh has no locals, and "run all" keeps
+# the verdict of the whole walk in rc, which a passing scenario after a
+# failed one would otherwise put back to 0.
 run_one() {
-	rc=0
+	one_rc=0
 	start
-	check || rc=$?
-	if [ "$rc" -ne 0 ]; then
+	check || one_rc=$?
+	if [ "$one_rc" -ne 0 ]; then
 		# stop() wipes the work directory, keep what failed
 		saved="$WORKDIR.$SCENARIO.failed"
 		${SUDO} rm -rf "$saved"
@@ -6216,7 +6233,7 @@ run_one() {
 		echo "pimd logs and traffic captures kept in $saved"
 	fi
 	stop
-	return $rc
+	return $one_rc
 }
 
 # Scenarios started by run_parallel() and not yet reaped, "slot:name", and

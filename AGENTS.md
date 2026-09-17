@@ -84,7 +84,7 @@ restoring it -- `freebsd-interop.sh` counts in the same place. `shared-lan`,
 `shared-lan-spt` and `assert-recover` are one topology and the only one with several PIM routers on
 a link, so DR election, IGMP querier election and the assert election only ever run there
 (`shared-lan` is also the only one that gives two routers different
-route metrics, with `route change -metric`, so it is the one place an assert election is decided by
+route metrics, with `route change -metric` (FreeBSD 16 and later, step 12 skips itself on older route(8)), so it is the one place an assert election is decided by
 the routing table instead of by the addresses, and `assert-recover` is the only one about how a
 router *leaves* the assert state rather than how it enters one -- it kills the winner's pimd so the
 loser meets a new GenID, then renumbers the winner's interface downwards),
