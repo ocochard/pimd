@@ -16,6 +16,17 @@ it is not what everybody assumes somebody else did.
 
 
 * pimd 3.1 release:
+** Drop privileges after init, upstream issue #115
+
+An option, -p USER[:GROUP], to leave the daemon running as somebody other
+than root once it is up.  It cannot be a setuid() at the end of main():
+restart() (src/main.c) closes and reopens the IGMP and PIM raw sockets, the
+routing socket and the kernel's MFC on every SIGHUP and every `pimctl
+restart`, and touches the PID file, all of which want the privileges that
+were just given away.  So this wants the split the upstream issue names, a
+privileged parent holding the sockets and a lesser child inheriting them,
+which is a structural change and not a thing to land beside a release.
+
 ** Merge pimd-dense
 ** Add sparse-dense mode, triggered per group
  - Cisco relies on group joins by the router itself
@@ -56,11 +67,21 @@ question today is an FRR interface or none.
 
 ** Work through doc/rfc7761-compliance.md
 
-The list itself is done: sections 4.2 to 4.6 and 4.10/4.11 were read against
-the code and what disagrees is written up there, with a file:line and an
-effort estimate per entry.  Three of them are input validation or trust
-issues and are listed first.  Still unread: 4.7 (BSR, and RFC 5059), 4.8
-(SSM), 4.9 as a whole, and the security considerations.
+The list itself is done: every normative section of the RFC has been read
+against the code and what disagrees is written up there, with a file:line, an
+effort estimate and a `Test:` note per entry.  The input validation and trust
+entries are listed first and all six are fixed, and no parser entry is left.
+
+What is left open is four entries.  M7, a traffic-driven Keepalive Timer, and
+S1, SSM groups that carry no RP, are state pimd does not keep, so each is a
+structural change rather than a check.  A3 and A4 stay open on purpose, one
+because the kernel decapsulates a Register before the daemon is handed
+anything, the other because sec. 6.4 describes rather than prescribes.  None
+of the four is worth holding a release for.
+
+What the list has never covered is RFC 5059, which owns the BSR mechanism
+sec. 4.7 names without specifying, and RFC 5796, which sec. 6.3 defers IPsec
+to and which asks nothing of this daemon; see the entry below.
 
 ** Look into updates RFC 5059 and RFC 5796
 
