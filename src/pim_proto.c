@@ -214,7 +214,7 @@ static void triggered_hello_send(struct uvif *v)
 	    continue;
 
 	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf)))
-	    send_pim_unicast(pim_send_buf, 0, v->uv_mtu, v->uv_lcl_addr, nbr->address,
+	    send_pim_unicast(pim_send_buf, 0, MAXTTL, v->uv_mtu, v->uv_lcl_addr, nbr->address,
 			     PIM_BOOTSTRAP, bsr_length);
     }
 }
@@ -1143,7 +1143,7 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
  * AND AT THE SAME TIME IGNORE ANY CACHE_MISS
  * SIGNALS FROM THE KERNEL.
  */
-int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t len)
+int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *msg, size_t len)
 {
     uint32_t inner_src, inner_grp;
     pim_register_t *reg;
@@ -1200,8 +1200,8 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t l
     }
 
     IF_DEBUG(DEBUG_PIM_REGISTER)
-        logit(LOG_DEBUG, 0, "Received PIM register: len = %zu from %s",
-              len, inet_fmt(reg_src, s1, sizeof(s1)));
+        logit(LOG_DEBUG, 0, "Received PIM register: len = %zu ttl = %u from %s",
+              len, ttl, inet_fmt(reg_src, s1, sizeof(s1)));
 
     /*
      * Message length validation.
@@ -1591,7 +1591,7 @@ int send_pim_register(char *packet, size_t len)
 	 * ECN bits and the DSCP RFC 7761 sec. 4.4.1 asks us to copy into the
 	 * encapsulating header rather than set on our own.
 	 */
-	send_pim_unicast(pim_send_buf, ip->ip_tos, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
+	send_pim_unicast(pim_send_buf, ip->ip_tos, MAXTTL, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
 
 	return TRUE;
     }
@@ -1640,7 +1640,7 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     reg_dst = mrtentry->group->rpaddr;
     reg_src = uvifs[vifi].uv_lcl_addr;
 
-    send_pim_unicast(pim_send_buf, 0, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
+    send_pim_unicast(pim_send_buf, 0, MAXTTL, reg_mtu, reg_src, reg_dst, PIM_REGISTER, pktlen);
 
     return TRUE;
 }
@@ -1790,7 +1790,7 @@ send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, u
     data = (uint8_t *)buf;
     PUT_EGADDR(inner_grp, SINGLE_GRP_MSKLEN, 0, data);
     PUT_EUADDR(inner_src, data);
-    send_pim_unicast(pim_send_buf, 0, 0, reg_src, reg_dst, PIM_REGISTER_STOP, data - (uint8_t *)buf);
+    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, reg_src, reg_dst, PIM_REGISTER_STOP, data - (uint8_t *)buf);
 
     return TRUE;
 }
@@ -5769,7 +5769,7 @@ int send_pim_cand_rp_adv(void)
 
     data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
     memcpy(data, cand_rp_adv_message.buffer, cand_rp_adv_message.message_size);
-    send_pim_unicast(pim_send_buf, 0, 0, my_cand_rp_address, curr_bsr_address,
+    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, my_cand_rp_address, curr_bsr_address,
 		     PIM_CAND_RP_ADV, cand_rp_adv_message.message_size);
 
     return TRUE;

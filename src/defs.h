@@ -562,14 +562,14 @@ extern void	add_kernel_cache	(mrtentry_t *mrtentry_ptr, uint32_t source, uint32_
 /* pim.c */
 extern void	init_pim		(void);
 extern void	send_pim		(char *buf, uint32_t src, uint32_t dst, int type, size_t len);
-extern void	send_pim_unicast	(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t dst, int type, size_t len);
+extern void	send_pim_unicast	(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src, uint32_t dst, int type, size_t len);
 
 /* pim_proto.c */
 extern uint32_t	rpt_prune_entries;
 extern int	receive_pim_hello	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_hello		(struct uvif *v, uint16_t holdtime);
 extern void	delete_pim_nbr		(pim_nbr_entry_t *nbr_delete);
-extern int	receive_pim_register	(uint32_t src, uint32_t dst, char *msg, size_t len);
+extern int	receive_pim_register	(uint32_t src, uint32_t dst, uint8_t ttl, char *msg, size_t len);
 extern int	send_pim_null_register	(mrtentry_t *r);
 extern int	receive_pim_register_stop (uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_register	(char *pkt, size_t len);

@@ -278,7 +278,7 @@ static void accept_pim(ssize_t recvlen)
 	    break;
 
 	case PIM_REGISTER:
-	    receive_pim_register(src, dst, (char *)(pim), pimlen);
+	    receive_pim_register(src, dst, ip->ip_ttl, (char *)(pim), pimlen);
 	    break;
 
 	case PIM_REGISTER_STOP:
@@ -431,9 +431,12 @@ void send_pim(char *buf, uint32_t src, uint32_t dst, int type, size_t len)
  * and data length (after the PIM common header) = "len".  `tos` is the
  * Type of Service byte of the outgoing header: RFC 7761 sec. 4.4.1 wants
  * the ECN bits and the DSCP of the packet a Register encapsulates copied
- * into the Register itself.  Everything else passes 0.
+ * into the Register itself.  Everything else passes 0.  `ttl` is the Time
+ * to Live of the outgoing header, MAXTTL for every message pimd originates;
+ * RFC 4610 sec. 4 has a Register copied between Anycast-RP members carry
+ * the TTL of the one it copies.
  */
-void send_pim_unicast(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t dst, int type, size_t len)
+void send_pim_unicast(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src, uint32_t dst, int type, size_t len)
 {
     struct sockaddr_in sin;
     struct ip *ip;
@@ -447,7 +450,7 @@ void send_pim_unicast(char *buf, uint8_t tos, int mtu, uint32_t src, uint32_t ds
     ip->ip_src.s_addr  = src;
     ip->ip_dst.s_addr  = dst;
     ip->ip_tos         = tos;
-    ip->ip_ttl         = MAXTTL; /* TODO: XXX: setup TTL from the inner mcast packet? */
+    ip->ip_ttl         = ttl;
 #ifdef HAVE_IP_HDRINCL_BSD_ORDER
     ip->ip_len         = sendlen;
 #else
