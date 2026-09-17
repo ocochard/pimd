@@ -73,7 +73,7 @@ jobs:
             /tmp/inst/sbin/pimctl -u /tmp/pimd.sock kill
 
   lab:
-    # The vnet jail lab: nineteen PIM-SM scenarios over real jails, epairs
+    # The vnet jail lab: twenty PIM-SM scenarios over real jails, epairs
     # and bridges, asserting on forwarded traffic and on the kernel MFC in
     # each vnet.  It is the only regression test that exercises the RPF
     # lookups in routesock.c and the kern.c BSD branches, rather than merely

@@ -418,25 +418,26 @@ Configure with `--enable-test` to build the test tools, then:
 
     make check
 
-The automake suite in `test/` is **Linux only** — every script builds its
-router topology out of network namespaces, veth pairs and bridges — and
-needs root plus `ethtool` and `tcpdump`.  A missing dependency makes a
-test SKIP, not fail.
+The automake suite in `test/` is empty: `make check` builds the test
+tools and runs no test.  What it used to run lives in `test/lab.sh`,
+which asserts more of the same and runs on both systems, but needs real
+root and named namespaces — neither of which automake's unprivileged
+`unshare -mrun` can give it.
 
-`test/lab.sh` is the other lab.  On FreeBSD it builds the same kind of
-topologies out of vnet jails, epairs and `if_bridge`, and is the only
-regression test that exercises the BSD routing socket and kernel glue
-rather than merely compiling it; on Linux it runs the same scenarios over
-named network namespaces, as root.  GENERIC needs nothing added to run
+`test/lab.sh` is that lab.  On FreeBSD it builds its topologies out of
+vnet jails, epairs and `if_bridge`, and is the only regression test that
+exercises the BSD routing socket and kernel glue rather than merely
+compiling it; on Linux it runs the same scenarios over named network
+namespaces, as root.  GENERIC needs nothing added to run
 it — VIMAGE is in it and both modules ship with it — they just have to be
 loaded first, since a jail may not `kldload`:
 
     kldload -n ip_mroute if_bridge
     sh test/lab.sh run all
 
-It is out of `make check` all the same: automake drives `TESTS` under
-`unshare -mrun`, which exists on Linux and nowhere else, and the lab
-wants root, half an hour, and a host-global sysctl
+It is out of `make check`: automake drives `TESTS` under an
+unprivileged `unshare -mrun`, and the lab wants root, half an hour, and
+on FreeBSD a host-global sysctl
 (`net.inet.ip.mcast.loop`, restored when it finishes).  The [FreeBSD][]
 workflow runs it on every push instead.
 

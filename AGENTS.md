@@ -39,25 +39,19 @@ CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
 
 ## Tests
 
-Automake test suite in `test/`, all shell scripts driven by `TESTS_ENVIRONMENT = unshare -mrun`.
-They are **Linux-only** (network namespaces, veth, bridges) and need root plus `ethtool` and
-`tcpdump`; the unicast routes are static, pimd never asking what wrote a route. Missing deps make a
-test SKIP (exit 77), not fail.
+`TESTS` is empty: `make check` runs nothing. Every Linux-only script that was here is a scenario of
+`test/lab.sh` now, which asserts the same and more and runs on both systems; the last three went once
+`solo` and two steps of `rpt` covered their shape. The labs want real root and named namespaces,
+which automake's `unshare -mrun` cannot give, so CI runs `lab.sh` as a job of its own per system.
 
 ```sh
 make check                       # run all, or: make check || cat test/test-suite.log
 make check TESTS=rp.sh           # single test (from test/ or top dir)
 ```
 
-Each script builds a router topology (ASCII diagram in its header) from `test/lib.sh` helpers
-(`topo()`, `ifsetup()`, `emitter()`/`collect()` around the `mping` tool built from `test/mping.c`),
-starts one `pimd` per namespace and asserts on forwarded traffic. What is left of it are the three
-`lab.sh` has no answer for: `single.sh` (one router that is BSR, RP, DR and last hop router at
-once), `two.sh` (a chain whose sender starts before the receiver joins, issue #192) and `rp.sh` (a
-triangle whose BSR and RP are different routers, both elected against a second candidate). The
-others were retired once `lab.sh` asserted the same and more, on Linux as well as FreeBSD; `two.sh`
-Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs and
-runtime `pimctl` dumps.
+`make check` builds `mping`, `igmpv3` and `pimsend` (`--enable-test`) and runs no test; the labs
+compile their own copies of the three when they start. `DEBUG="-l debug -d all"` at the top of
+`lab.sh` gets pimd logs and runtime `pimctl` dumps out of a scenario.
 
 `test/pimsend.c` is the PIM-socket counterpart of `test/igmpv3.c`: it builds one PIM
 message of any type, with every field that can be got wrong exposed as an option (version,

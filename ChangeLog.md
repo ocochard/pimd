@@ -188,23 +188,22 @@ pimd on all routers in the same domain.  See issue #93 for details.
   Linux bridges instead of vnet jails, epairs and `if_bridge`.  What it
   needs of the host is in `test/lab-freebsd.sh` and `test/lab-linux.sh`,
   one set of functions per system, picked by `uname -s`
-- The Linux suite needs only `ethtool` and `tcpdump` now.  `bird` ran OSPF
-  to build the unicast RPF tree, which pimd cannot tell from the static
-  routes the remaining scripts are given -- no `RTPROT_*` is read anywhere
-  in `src/` -- and `tshark` read two packet assertions `tcpdump` reads
-  instead, the lab having used `tcpdump` all along.  Two things the change
-  turned up: the scripts inherited `net.ipv4.ip_forward` from the host
-  rather than setting it, so on a machine with it off they failed before
-  they tested anything, and `tcpdump` has to be told `-Z root` or it drops
-  privileges to a user the namespace `make check` runs in cannot become
-- The Linux suite keeps only `single.sh`, `two.sh` and `rp.sh`, the three
-  whose topology or ordering no `test/lab.sh` scenario reproduces.  What
-  `three.sh`, `shared.sh`, `pod.sh`, `ssm.sh` and `anycast.sh` asserted is
-  asserted by `rpt`, `shared-lan`, `ssm`, `anycast` and `anycast-dr`, on
-  Linux as well as FreeBSD and with more read back from pimd and from the
-  kernel each time, so they ran beside the lab rather than adding to it.
-  CI-Linux grew a lab job for them to be retired into, the counterpart of
-  the FreeBSD one
+- The Linux-only scripts `make check` used to run are gone, every one of
+  them a scenario of `test/lab.sh` now: it asserts what they did and more,
+  reads pimd and the kernel back rather than only the traffic, and runs on
+  FreeBSD as well as Linux.  The last three went once the lab grew what
+  their shape needed -- a `solo` scenario, one router being DR, BSR, RP and
+  last hop router at once, and two steps of `rpt`, which now contests both
+  elections (the BSR going to R1 on the higher priority, the RP to R2 on
+  the lower number, so a Cand-RP-Adv travels to a BSR elsewhere) and joins
+  a group after its stream has started, the ordering of issue #192.
+  `TESTS` is therefore empty and `make check` runs no test; the lab wants
+  real root and named namespaces, which automake's unprivileged
+  `unshare -mrun` cannot give it, so CI runs it as a job of its own on both
+  systems.  `bird` and `tshark` are no longer needed by anything: the
+  unicast routes were static in the lab all along -- pimd reads the FIB and
+  never asks what wrote a route, there being no `RTPROT_*` in `src/` -- and
+  the lab reads packets with `tcpdump`
 - `test/lab.sh` takes `SANITIZE=yes` to run its scenarios against a pimd
   built `-fsanitize=address,undefined`, failing any scenario whose daemons
   reported anything -- which is not the same question as whether its

@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool tcpdump tree
+          sudo apt-get -y install pkg-config libsystemd-dev tree
       - uses: actions/checkout@v7
       - name: Configure
         # Build in a sub-directory so we can safely set a+w on all
@@ -53,27 +53,11 @@ jobs:
           sudo ~/tmp/sbin/pimctl -u ~/tmp/foo.sock -h
           sudo ~/tmp/sbin/pimctl -u ~/tmp/foo.sock
           sudo ~/tmp/sbin/pimctl -u ~/tmp/foo.sock kill
-      - name: Test
-        # The suite runs every script under `unshare -mrun`, and the -r
-        # maps root through a user namespace.  Ubuntu 23.10 and later
-        # restrict unprivileged user namespaces with AppArmor, 26.04
-        # included, so that write fails with
-        #
-        #   unshare: write failed /proc/self/uid_map: Operation not permitted
-        #
-        # and every test errors out before it starts.  Lift the
-        # restriction for this job rather than pinning an older image.
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          make check || (cat test/test-suite.log; false)
-      - name: Upload Test Results
-        uses: actions/upload-artifact@v7
-        with:
-          name: pimd-test-${{ matrix.compiler }}
-          path: test/*
+      # No test step: TESTS is empty, every script that was in it being a
+      # scenario of test/lab.sh now, which the lab job below runs.
 
   lab:
-    # The network namespace lab: nineteen PIM-SM scenarios over real
+    # The network namespace lab: twenty PIM-SM scenarios over real
     # namespaces, veth pairs and bridges, asserting on forwarded traffic and
     # on the kernel MFC in each namespace.  The suite above cannot hold them:
     # automake runs it under an unprivileged `unshare`, and a lab box has to
@@ -94,7 +78,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
 
       - name: Build
         run: |

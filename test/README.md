@@ -1,38 +1,35 @@
 pimd Test Suites
 ================
 
-Three suites live in this directory.  They are not three ways of running
-the same tests: each one reaches code and situations the other two
-cannot, and a change is only really covered when the suite that can see
-it has run.
+Two labs live in this directory, and neither is part of `make check`.
 
-* The **Linux suite** is `make check`.  It builds router topologies out
-  of network namespaces and veth pairs, and exercises `netlink.c` and the
-  Linux kernel glue.  CI runs it on every push.
-* The **FreeBSD vnet jail lab** builds the same kind of topologies out
-  of vnet jails and epairs, and is the only thing that exercises
-  `routesock.c` and the BSD branches of `kern.c` rather than merely
-  compiling them.  It also holds the scenarios that reproduce specific
-  upstream issues.  CI runs it on every push too, in a FreeBSD VM.
+* The **vnet jail and network namespace lab**, `lab.sh`, is one set of
+  scenarios over two backends: vnet jails and epairs on FreeBSD, named
+  network namespaces and veth pairs on Linux.  It is the only thing that
+  exercises `routesock.c` and the BSD branches of `kern.c` rather than
+  merely compiling them, and on Linux it exercises `netlink.c` and the
+  Linux kernel glue the same way.  It holds the scenarios that reproduce
+  specific upstream issues.  CI runs it on both systems on every push.
 * The **Arista vEOS interoperability lab** puts a foreign PIM
-  implementation on the wire.  The other two have pimd on both ends of
+  implementation on the wire.  The other lab has pimd on both ends of
   every exchange, so a message pimd encodes wrongly is a message pimd
   decodes wrongly in the same way and the run stays green.  This one
   catches that.
 
-Only the first is part of `make check`, because automake drives `TESTS`
-under `unshare -mrun` and that is Linux.  The other two are shell scripts
-run on their own: both need root and a couple of kernel modules loaded
-beforehand, and the third also needs a licensed VM image, which is why it
-is the one CI cannot run.
+Neither is in `TESTS`: automake drives that under an unprivileged
+`unshare -mrun`, and a lab box has to outlive the command that built it,
+so both want real root and a couple of kernel modules loaded beforehand.
+The vEOS lab also needs a licensed VM image, which is why it is the one
+CI cannot run.  There used to be a third suite, a set of Linux-only
+scripts that `make check` ran; the section below says where it went.
 
 
 Table of Contents
 -----------------
 
 * [Shared tools](#shared-tools)
-* [The Linux suite](#the-linux-suite)
-* [The FreeBSD vnet jail lab](#the-freebsd-vnet-jail-lab)
+* [The Linux suite, and where it went](#the-linux-suite-and-where-it-went)
+* [The vnet jail and network namespace lab](#the-vnet-jail-and-network-namespace-lab)
 * [The Arista vEOS interoperability lab](#the-arista-veos-interoperability-lab)
 * [Which suite sees what](#which-suite-sees-what)
 
@@ -44,51 +41,29 @@ Shared tools
 |-------------|-------------------------------------------------------------|
 | `mping.c`   | Multicast ping.  `-s` sends to a group, `-r` joins it and answers each packet by sending to the same group, so one run builds a tree in each direction.  The sender's "packets transmitted" line counts the replies that came back, which is how every forwarding assertion is measured. |
 | `igmpv3.c`  | Sends exactly one IGMPv3 membership report and exits.  Needed wherever a test has to watch a membership *age out*: a kernel that joined a group answers every query afterwards, so the membership never expires while the emulated device is on the LAN. |
-| `lib.sh`    | Helpers for the Linux suite: `topo()` builds the namespaces and links, `ifsetup()` addresses them, `emitter()`/`collect()` wrap `mping`. |
 
-`mping` and `igmpv3` are built by `configure --enable-test`; the two
-FreeBSD labs compile them on their own when they start.
+`mping` and `igmpv3` are built by `configure --enable-test`; both labs
+compile them on their own when they start.
 
 
-The Linux suite
----------------
+The Linux suite, and where it went
+----------------------------------
 
-Automake test suite, driven by `TESTS_ENVIRONMENT = unshare -mrun`.
-Every script builds its topology from network namespaces, veth pairs and
-bridges, starts one pimd per namespace, and asserts on forwarded
-traffic.  The ASCII diagram in each script header is the topology.
+There is none any more: `TESTS` is empty and `make check` runs nothing.
+Every script that lived here — `single.sh`, `two.sh`, `three.sh`,
+`rp.sh`, `shared.sh`, `pod.sh`, `ssm.sh`, `anycast.sh` and the `lib.sh`
+they shared — is a scenario of the lab below, which asserts what they did
+and more of it, reads pimd and the kernel back rather than only the
+traffic, and runs on FreeBSD as well.  The last to go were the three
+whose shape the lab could not build until it grew `solo` and two steps
+of `rpt`: a router that is BSR, RP, DR and last hop at once, a receiver
+that joins after the stream has started ([issue #192][192]), and a BSR
+and an RP on different routers with a losing candidate for each.
 
-    ./configure --enable-test
-    make check                       # all of them
-    make check TESTS=rp.sh           # one, from test/ or the top directory
-    make check || cat test/test-suite.log
-
-Needs root plus `ethtool` and `tcpdump`.  `ethtool` disables UDP checksum
-offloading, since frames leave kernel space on these veth pairs;
-`tcpdump` is what `single.sh` reads its two packet assertions out of.
-The unicast routes are written by hand: pimd reads the FIB and has no
-interest in what put a route there — there is no `RTPROT_*` anywhere in
-`src/` — so the OSPF these scripts used to run only added `bird` to what
-`make check` needs.  A missing dependency makes a test **SKIP** (exit 77), not fail,
-so a green run on a machine without them has tested nothing — check the
-log.
-
-Set `DEBUG="-l debug -d all"` at the top of a script to get pimd logs
-and runtime `pimctl` dumps.
-
-| Test        | Topology                    | What it asserts                          |
-|-------------|-----------------------------|------------------------------------------|
-| `single.sh` | One router, two end devices | Forwarding between two LANs on one router, and an IGMPv3 query on both. |
-| `two.sh`    | Two routers in a row        | The same, with the sender starting *before* the receiver joins — the other tests do it the other way round. |
-| `rp.sh`     | Triangle, R2 is the RP      | Rendez-vous Point operation, with the BSR and the RP on different routers and a second candidate for each, so both elections are contested. |
-
-Three is all that is left of the suite.  Every other script here asserted
-something the lab below now asserts on both systems, and more of it, so
-they were retired rather than kept running beside it — the coverage they
-had is named in the table at the end of this file.  What these three keep
-is what no lab scenario reproduces: a single router that is BSR, RP, DR
-and last hop router at once; a sender that starts before anyone joins
-([issue #192][192]); and an election with more than one candidate.
+What that costs: the lab wants real root and named namespaces, where
+automake ran these under an unprivileged `unshare -mrun`, so there is no
+longer a test a contributor without root can run.  CI runs the lab as a
+job of its own, on Linux and on FreeBSD.
 
 
 The vnet jail and network namespace lab
@@ -106,8 +81,8 @@ Deliberately **not** in `TESTS`, which automake runs under `unshare
 `ip_mroute.ko` plus `if_bridge.ko` for the shared segment scenarios
 loaded before it starts, because a jail may not `kldload`.  Nothing there
 calls for a custom kernel: GENERIC is built with VIMAGE and ships both
-modules.  The Linux suite cannot run on FreeBSD at all, so without this
-lab the BSD half of the tree is compiled but never executed.
+modules.  Without this lab the BSD half of the tree would be compiled and
+never executed.
 
 Run as root the lab uses no `sudo` at all; as an ordinary user it wraps
 every privileged command in one, and `SUDO=` in the environment overrides
@@ -162,7 +137,7 @@ namespaces, veth pairs and Linux bridges, and the script picks one by
 
     ./test/lab.sh -j 19 run all
 
-runs the same nineteen scenarios against the Linux kernel and `netlink.c`.
+runs the same twenty scenarios against the Linux kernel and `netlink.c`.
 It needs iproute2, ethtool and a kernel with `CONFIG_IP_MROUTE` and
 `CONFIG_IP_PIMSM_V2`.  Unlike the automake suite it does not run under an
 unprivileged `unshare`: a box has to outlive the command that built it.
@@ -185,9 +160,10 @@ Scenarios run in parallel, several labs at a time — `-s` and `-j` below.
 
 | Scenario              | Time | What only this one covers |
 |-----------------------|------|---------------------------|
-| `rpt`                 | ~90s | The baseline: R2 is BSR and RP, the receiver joins, traffic has to arrive over the shared tree. |
+| `rpt`                 | ~3m  | The baseline: the receiver joins and traffic has to arrive over the shared tree.  Also the only scenario where both elections are contested — R1 wins the BSR on the higher priority and loses the RP on the higher number, so a Cand-RP-Adv travels to a BSR elsewhere and comes back in its Bootstrap — and the only one that starts a stream into a group nobody has joined yet and joins it afterwards ([issue #192][192]). |
+| `solo`                | ~60s | One router in every role at once: DR for the source, BSR, RP, and last hop router for a receiver on its other LAN.  The only scenario with a single PIM router, so the only one that reaches what a DR does when it is its own RP — register to nobody and forward down the shared tree itself. |
 | `keepalive`           | ~5m  | An (S,G) with an empty outgoing interface list, kept alive while its source sends — [issue #251][251].  Runs long on purpose, it has to outlive `PIM_DATA_TIMEOUT` (210s). |
-| `rp-lasthop`          | ~2m  | The RP *is* the last hop router for the only receiver — [issue #243][243].  `rp.sh` keeps those two roles on separate routers, so the RP there never has a directly connected member. |
+| `rp-lasthop`          | ~2m  | The RP *is* the last hop router for the only receiver — [issue #243][243].  Every other scenario keeps those two roles on separate routers, so the RP there never has a directly connected member. |
 | `rp-offpath`          | ~2m  | The only topology that is not a chain.  A triangle puts the RP off the path the traffic takes once the SPT is up, so the shared tree and the shortest path tree leave a router by different interfaces, and the last hop router is directly connected to the BSR — [issue #211][211]. |
 | `gif-tunnel`          | ~2m  | Two PIM routers either side of a plain unicast transit router, joined by a `gif` tunnel.  A gif is `IFF_POINTOPOINT`, so this is the only scenario reaching the point-to-point branch of `config_vifs_from_kernel()`. |
 | `gif-tunnel-staticrp` | ~3m  | The same tunnel with a static `rp-address` instead of an elected RP.  A different code path, not another route to the same state: `my_cand_rp_address` is only ever set while parsing `cand_rp`, so with a static RP the router that *is* the RP answers "no" to every internal test of whether it is. |
@@ -459,17 +435,17 @@ written onto the guest ext4 with `debugfs`, or the vendor's
 Which suite sees what
 ---------------------
 
-| | Linux suite | vnet jail lab | vEOS lab |
+| | lab, on FreeBSD | lab, on Linux | vEOS lab |
 |---|---|---|---|
-| Runs in `make check`        | yes | no  | no  |
-| Unicast RPF lookups         | `netlink.c` | `routesock.c` | `routesock.c` |
-| Kernel glue                 | Linux `kern.c` | BSD `kern.c` | BSD `kern.c` |
+| Runs in `make check`        | no  | no  | no  |
+| Unicast RPF lookups         | `routesock.c`, or `netlink.c` with `NETLINK=yes` | `netlink.c` | `routesock.c` |
+| Kernel glue                 | BSD `kern.c` | Linux `kern.c` | BSD `kern.c` |
 | Unicast routing             | static | static | static |
-| Runs on Linux               | yes | yes, over netns | no |
-| Several PIM routers per link| no | `shared-lan*` | `assert-lan` |
+| Several PIM routers per link| `shared-lan*` | `shared-lan*` | `assert-lan` |
 | Assert metrics that differ  | no | no | `assert-lan` |
-| Point-to-point vifs         | no | `gif-tunnel*` | no |
-| Interfaces changing at runtime | no | `ifgone`, `renumber` | no |
+| Point-to-point vifs         | `gif-tunnel*` | `gif-tunnel*`, over ipip | no |
+| Interfaces changing at runtime | `ifgone`, `renumber` | `ifgone`, `renumber` | no |
+| One router in every role    | `solo` | `solo` | no |
 | A foreign implementation    | no | no | yes |
 
 A change to `src/pim_proto.c` or `src/route.c` wants at least the Linux
