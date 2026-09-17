@@ -1,5 +1,5 @@
 # shellcheck shell=sh
-# The Linux side of freebsd-lab.sh, the same functions as lab-freebsd.sh
+# The Linux side of lab.sh, the same functions as lab-freebsd.sh
 # over the same topology tables: the boxes are named network namespaces
 # (ip-netns(8)), the links veth pairs named as the epairs they stand for,
 # the shared segments Linux bridges on the host, and what the kernel made

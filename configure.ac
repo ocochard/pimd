@@ -113,7 +113,7 @@ AC_ARG_ENABLE(memory_save,
 #   later answer the same RTM_GETROUTE through netlink(4), and map its
 #   RTA_PRIORITY onto the same rt_metrics.rmx_metric routesock.c reads.
 #   The routing socket stays the default there: it needs no kernel module
-#   and it is what test/freebsd-lab.sh exercises.
+#   and it is what test/lab.sh exercises.
 AC_ARG_ENABLE(netlink,
 	AS_HELP_STRING([--enable-netlink], [Use netlink(4) for RPF lookups instead of the
 			routing socket.  Always used on Linux; elsewhere needs

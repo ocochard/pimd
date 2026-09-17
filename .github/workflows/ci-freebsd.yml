@@ -57,7 +57,7 @@ jobs:
             # TESTS_ENVIRONMENT to `unshare -mrun` and every script in TESTS
             # builds its topology out of network namespaces and veth pairs,
             # none of which exist here.  The FreeBSD counterpart is
-            # test/freebsd-lab.sh, run by the lab job below.
+            # test/lab.sh, run by the lab job below.
             DESTDIR=/tmp/inst gmake install-strip
             /tmp/inst/sbin/pimd -h
             /tmp/inst/sbin/pimctl -h
@@ -129,7 +129,7 @@ jobs:
             # Already root in the VM, so the script's sudo wrapper is empty.
             #
             # Two scenarios at a time, each in a lab slot of its own.  The
-            # numbers in freebsd-lab.sh's header -- 4m35s at -j 4, and the
+            # numbers in lab.sh's header -- 4m35s at -j 4, and the
             # whole list at once under a load average of one -- were measured
             # on a 16-core host, and this runner has four vCPUs.  Every
             # assertion in the lab is a poll against a timeout, so on an
@@ -146,7 +146,7 @@ jobs:
             # slot is part of that directory's name -- slot 0 is
             # /tmp/pimd-test, slot 1 /tmp/pimd-test1 -- so the glob has to
             # reach past slot 0 or half the runs lose their logs.
-            SUDO= sh test/freebsd-lab.sh -j 2 run all || rc=$?
+            SUDO= sh test/lab.sh -j 2 run all || rc=$?
 
             for d in /tmp/pimd-test*.*.failed; do
                     test -d "$d" || continue

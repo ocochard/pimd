@@ -33,7 +33,7 @@ pimd does not have today.  When one is fixed, delete the entry; when one is
 confirmed to be intentional, move it to the last section with the reason.
 
 A deviation that a test reproduces should be asserted through `xfail()`, in
-`test/freebsd-lab.sh` or `test/freebsd-interop.sh`, rather than left
+`test/lab.sh` or `test/freebsd-interop.sh`, rather than left
 unasserted, so that it flips to `ok` the day it is fixed.  Eleven are carried
 that way and all eleven report `ok`, so every one of them is now a tripwire
 against the deviation coming back rather than a live report: the assert
@@ -47,7 +47,7 @@ run is therefore a regression, not an expected result.
 Every entry below ends with a `Test:` note saying what reproduces it, and
 all but three of them say `none`: M4's fixed half is covered, so is the
 half of A3 that pimd can be held to, by the `register-filter` scenario of
-`test/freebsd-lab.sh`, and so are A4's two caps, by `crafted` and
+`test/lab.sh`, and so are A4's two caps, by `crafted` and
 `keepalive`.  What the fixed entries are asserted by is named
 where each section says it is fixed, not here.  The point of writing it down is that the gap is
 visible from this list rather than only from grepping the labs.  Where an entry names a
@@ -60,7 +60,7 @@ blackbox-testable at all, and say so: a five-second latency or a startup race
 cannot be told from a slow lab.  The group that wanted a message pimd will
 not send is gone entirely: `test/pimsend.c` builds one PIM message with any
 field set to anything and sends it once, and the `crafted` scenario of
-`test/freebsd-lab.sh` closes and asserts the whole packet format section,
+`test/lab.sh` closes and asserts the whole packet format section,
 S3 and S4 of the SSM one, T2's Join suppression, T1's override Join and
 T3's triggered Hello, R2's longer group range, R3's No-Forward bit, A1's
 neighbor list and M1's (S,G,rpt) state.
@@ -116,7 +116,7 @@ repair.  Test: nothing reproduces it, and nothing cheaply could -- it wants a
 kernel that truncates an upcall or lies about `ip_len`.  What the labs give is
 the other half, that the guards refuse nothing a real kernel sends: `rpt`,
 `keepalive`, `rp-lasthop`, `rp-offpath` and both `gif-tunnel` scenarios of
-`test/freebsd-lab.sh` register through this path, and `arista-rp` and
+`test/lab.sh` register through this path, and `arista-rp` and
 `pimd-rp` of `test/freebsd-interop.sh` have an EOS decapsulate what pimd
 sends and pimd decapsulate what EOS sends.  All of them pass with the checks
 in.  That is a net under the fix, not a test of the deviation.*
@@ -179,7 +179,7 @@ and both kept forwarding a stream no later Assert could settle.  The olist
 three terms sec. 4.1.3 subtracts are (S,G,rpt) state pimd does not have and
 all three only subtract.  *Check: sec. 4.2.2 `doc/rfc7761.txt:1522`, the
 paragraph that needs item (3) at `:1565`, the macro at `:1137`.  Test:
-`shared-lan-spt` of `test/freebsd-lab.sh` reproduces it, and only in
+`shared-lan-spt` of `test/lab.sh` reproduces it, and only in
 parallel -- `-j 4 run all` failed its assert election four runs out of four
 while the scenario passed alone in every slot, the pool being what leaves a
 router the Assert loser on its RPF interface often enough to reach the
@@ -303,14 +303,14 @@ at most 32 secondary addresses, `MAX_SECADDRS` (`src/vif.h`), and says so
 at startup when it has more; and pimd still takes a Join/Prune as its own
 only when the upstream neighbor field is its primary address, which a
 neighbor implementing this section always sends.  `alias` in
-`test/freebsd-lab.sh` asserts the encoder through tcpdump and the mapping
+`test/lab.sh` asserts the encoder through tcpdump and the mapping
 between two pimds, the RP joining toward the first hop router through its
 secondary address; `crafted` asserts the parser on a list pimd did not
 write, kept, primary address excluded, unreadable and absent.  The Linux
 suite in `test/` asserts none of it.
 
 M15, M16 and M17 are the last three, and none was ever written down as an
-entry: all three turned up as `assert-recover` in `test/freebsd-lab.sh`
+entry: all three turned up as `assert-recover` in `test/lab.sh`
 failing one run in ten or so once enough labs ran beside it to move the
 timing.  M15
 was sec. 4.6.2 on a router's RPF interface.  CouldAssert is FALSE there, so
@@ -368,7 +368,7 @@ that is all.  The upstream machine is `prune_desired_rpt()` and
 Prune(S,G,rpt) sent, so wanting the source again sends the Join(S,G,rpt) at
 once, and `rpt_see_prune()` sets the Override Timer, `rpt_override`, for a
 neighbor's Prune we do not want.  Steps 10 to 13 of `crafted` in
-`test/freebsd-lab.sh` assert all of it with pimsend playing the other routers,
+`test/lab.sh` assert all of it with pimsend playing the other routers,
 which is the only way to see it: between two pimds the override Join hides
 what the upstream router did with the Prune.  `rpt-override` in
 `test/freebsd-interop.sh` asks the other half of the wire: that an Arista
@@ -417,7 +417,7 @@ wins.  Both numbers are what their own kernel calls the cost of that route.
 sec. 4.9.6, `:6766`, for the two wire fields.  Effort: medium, and it is a
 decision rather than work: an administrative distance has to come from
 somewhere both backends can reach, or from configuration as it does today.
-Test: step 12 of `shared-lan` in `test/freebsd-lab.sh` covers the half that is
+Test: step 12 of `shared-lan` in `test/lab.sh` covers the half that is
 fixed, in both directions -- the two contenders reach the RP at a metric
 `route change` sets, and the LAN changes hands when either one is bettered,
 which with a constant metric it never did.  It runs against both lookups:
@@ -436,7 +436,7 @@ and under `spt-threshold infinity` it returns before reading them at all
 (`src/route.c:1551`).
 
 Measured rather than reasoned about: the `rpt` topology of
-`test/freebsd-lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
+`test/lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
 ten minutes of continuous traffic, no entry deleted on any router and no gap in
 the receiver's stream.  Three refreshes cover the entries between them, and the
 cases they cover are disjoint, so the timer never reaches zero while a source
@@ -484,7 +484,7 @@ what happens to a mapping after it has been learned, and none of it is open:
 R1, a Bootstrap deleting a configured RP, R2, a longer group range learned
 after its groups had state and leaving them on the RP they had, and R3, the
 No-Forward bit, are all fixed, and `static-rp` and `crafted` in
-`test/freebsd-lab.sh` assert them.  RFC 5059 owns the BSR mechanism and is in
+`test/lab.sh` assert them.  RFC 5059 owns the BSR mechanism and is in
 the tree as `doc/rfc5059.txt`; it is cited where an entry needs it but has
 not otherwise been read against
 the code, so this section is not a statement about pimd's BSR conformance as
@@ -511,7 +511,7 @@ refuse to act on them.  pimd keeps all of them now.  The two rules about
 what arrives were S3, a Register for an SSM group dropped without the
 Register-Stop that is the only thing which quiets an SSM-unaware DR down,
 and S4, a (\*,G) or (S,G,rpt) Join/Prune for one acted on; both are fixed,
-and `crafted` in `test/freebsd-lab.sh` asserts them with messages
+and `crafted` in `test/lab.sh` asserts them with messages
 `test/pimsend.c` builds, neither pimd nor the EOS of
 `test/freebsd-interop.sh` being willing to send one.  The IGMP side of the
 same problem, S5, is fixed too and belonged to RFC 4604 rather than to this
@@ -559,7 +559,7 @@ collector, and from the next packet on the group ran on a 90-second RP that
 would take the group down with it when it expired.  That is closed.  The
 synthesized entry goes in through `parse_rp_address()` like any other
 `rp-address` (`src/config.c:2112`), so `add_static_rp()` marks it and the
-collector leaves it alone, and `crafted` in `test/freebsd-lab.sh` asserts
+collector leaves it alone, and `crafted` in `test/lab.sh` asserts
 exactly that: a well-formed Bootstrap for 232.0.0.0/8 from a real neighbor,
 and the invented RP still there afterwards.  The second copy in
 `find_route()` stays unreachable, which is what keeps its 90-second
@@ -636,7 +636,7 @@ matters for what `892acbe` saw: an upstream keeps the interface only as long
 as the Join it heard asked, so a suppression that outlived it let the state
 expire there, and the bound is what rules that out.  The report named no
 topology, so the loss itself was not reproduced.  `crafted` in
-`test/freebsd-lab.sh` asserts both halves, with a second router on R1's
+`test/lab.sh` asserts both halves, with a second router on R1's
 upstream link played by `test/pimsend.c`: R1 sends no Join(\*,G) of its own
 while that router sends one every 20 seconds, and sends one again within a
 suppression period once those Joins carry a 10-second HoldTime.
@@ -662,7 +662,7 @@ from one it has had no Hello from.  `trigger_hello()` (`src/pim_proto.c`)
 schedules the Hello per interface, the Bootstraps it owes wait on the
 neighbor for it, and a Join/Prune or Assert sent on the interface meanwhile
 sends the Hello first, as sec. 4.3.1 requires.  `crafted` in
-`test/freebsd-lab.sh` times both over several trials, the override from the
+`test/lab.sh` times both over several trials, the override from the
 Prune in R1's log to the Join in R2's, each under 3 seconds, and the Hello
 from the new neighbor to R1's answer, each within 5 seconds and not all of
 them prompt.  The Hello at startup is still whole seconds on a tick.
@@ -703,7 +703,7 @@ pimds, because the message that reproduces them is one pimd will not build
 it decodes wrongly to match.  `test/pimsend.c` is what got past that, the
 way `test/igmpv3.c` did for IGMP: one crafted PIM message, every field that
 can be got wrong exposed as an option, sent once.  The `crafted` scenario
-of `test/freebsd-lab.sh` guards all six, with the positive control each
+of `test/lab.sh` guards all six, with the positive control each
 needs beside it -- a parser that refuses everything passes every "was it
 refused?" test ever written.  S3 and S4 of the SSM section are the same
 wall, and now the same way through.
@@ -801,7 +801,7 @@ provided; the attack that outlives it is sec. 6.1.2, `:7352`, and the note
 that makes the decapsulation the kernel's is sec. 4.4.2, `:2420`.  Effort:
 out of reach from here -- it wants a kernel that filters before it
 decapsulates, or a `MRT_*` interface that hands the Register to the daemon
-first.  Test: `register-filter` in `test/freebsd-lab.sh`, which covers the
+first.  Test: `register-filter` in `test/lab.sh`, which covers the
 half that is fixed and counts the half that is not.  R2 is the RP and is
 given a `register-accept-from` that does not cover the address R1 registers
 from -- the DR's address on the sender's LAN, sec. 4.4.2's `outer.src`, and
@@ -872,7 +872,7 @@ state is a black hole for whoever was legitimately using it, which is why
 sec. 6.4 describes rather than prescribes, and a Join refused is a receiver
 cut off rather than a source not registered.  Test: the two caps are
 asserted, `rpt-prune-limit` by step 13b of `crafted` in
-`test/freebsd-lab.sh` and `local-sg-limit` by steps 5 and 6 of `keepalive`,
+`test/lab.sh` and `local-sg-limit` by steps 5 and 6 of `keepalive`,
 which flood R1 with groups at the limit and reload it; the Join and Hello
 bullets have none.*
 

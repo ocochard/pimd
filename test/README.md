@@ -84,15 +84,15 @@ and runtime `pimctl` dumps.
 | `ssm.sh`    | One router, one end device  | IGMPv3 (S,G) membership state, not forwarding: two sources reported for one SSM group, one blocked, and the survivor still ageing out once the reports stop.  Driven by `igmpv3.c`, for the reason given above. |
 
 
-The FreeBSD vnet jail lab
--------------------------
+The vnet jail and network namespace lab
+---------------------------------------
 
-    sh test/freebsd-lab.sh run all          # every scenario, one after another
-    sh test/freebsd-lab.sh -j 4 run all     # four at a time, ~4.5 min instead of ~31
-    sh test/freebsd-lab.sh run rp-offpath   # one of them
-    sh test/freebsd-lab.sh start rpt        # build it and leave it up
-    sh test/freebsd-lab.sh check rpt        # assertions against a running lab
-    sh test/freebsd-lab.sh stop
+    sh test/lab.sh run all          # every scenario, one after another
+    sh test/lab.sh -j 4 run all     # four at a time, ~4.5 min instead of ~31
+    sh test/lab.sh run rp-offpath   # one of them
+    sh test/lab.sh start rpt        # build it and leave it up
+    sh test/lab.sh check rpt        # assertions against a running lab
+    sh test/lab.sh stop
 
 Deliberately **not** in `TESTS`, which automake runs under `unshare
 -mrun`, a Linux command.  What the lab itself wants is root, and
@@ -126,12 +126,12 @@ from the host, a jail may not `kldload`.
 The scenarios never reach the host directly.  Everything that builds a
 box, runs a command in one, changes an interface or a route under it, or
 reads the kernel's multicast state back is a function in
-`test/lab-freebsd.sh`, which `freebsd-lab.sh` sources; its header lists
+`test/lab-freebsd.sh`, which `lab.sh` sources; its header lists
 them.  `test/lab-linux.sh` is the same functions over named network
 namespaces, veth pairs and Linux bridges, and the script picks one by
 `uname -s`, so on a Linux host, as root,
 
-    ./test/freebsd-lab.sh -j 19 run all
+    ./test/lab.sh -j 19 run all
 
 runs the same nineteen scenarios against the Linux kernel and `netlink.c`.
 It needs iproute2, ethtool and a kernel with `CONFIG_IP_MROUTE` and
@@ -182,9 +182,9 @@ puts on the host carries the slot — the jails (`pimd3_r1`), the epairs
 (`/tmp/pimd-test3`) — so labs in different slots cannot see, or tear
 down, each other:
 
-    sh test/freebsd-lab.sh -s 1 start shared-lan    # one lab
-    sh test/freebsd-lab.sh -s 2 start rp-offpath    # another, beside it
-    sh test/freebsd-lab.sh -s 1 stop                # just that one
+    sh test/lab.sh -s 1 start shared-lan    # one lab
+    sh test/lab.sh -s 2 start rp-offpath    # another, beside it
+    sh test/lab.sh -s 1 stop                # just that one
 
 The addresses inside the jails are the same in every slot and can be: a
 vnet jail has an interface namespace, a routing table and a multicast
@@ -196,8 +196,8 @@ them under a lock and the last one to stop puts the host value back —
 `-j JOBS` runs several scenarios at a time, one slot each, and prints
 each one's output whole when it ends rather than interleaving them:
 
-    sh test/freebsd-lab.sh -j 4 run all
-    sh test/freebsd-lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
+    sh test/lab.sh -j 4 run all
+    sh test/lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
 
 `-j N run all` walks the scenarios longest first, so the pool does not end
 up running `keepalive` alone with three slots idle.  Measured on a
@@ -380,7 +380,7 @@ management subnet eAPI is reached over (`172.20.2.0/24`).  What bounds
 `-j` here is not cores: each scenario boots a vEOS of its own, 4 GiB of
 guest memory and a converted 4 GiB disk apiece.
 
-`freebsd-lab.sh` must not be up **in the same slot** — the two labs use
+`lab.sh` must not be up **in the same slot** — the two labs use
 the same 10.0.0.0/8 addresses inside their jails, and `check_req()` says
 so on startup — but another slot of it may be, and
 `net.inet.ip.mcast.loop` is shared between the two labs the same way it

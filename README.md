@@ -423,15 +423,16 @@ router topology out of network namespaces, veth pairs and bridges — and
 needs root plus `ethtool`, `tshark` and `bird`.  A missing dependency
 makes a test SKIP, not fail.
 
-The FreeBSD counterpart is `test/freebsd-lab.sh`, which builds the same
-kind of topologies out of vnet jails, epairs and `if_bridge`, and is the
-only regression test that exercises the BSD routing socket and kernel
-glue rather than merely compiling it.  GENERIC needs nothing added to run
+`test/lab.sh` is the other lab.  On FreeBSD it builds the same kind of
+topologies out of vnet jails, epairs and `if_bridge`, and is the only
+regression test that exercises the BSD routing socket and kernel glue
+rather than merely compiling it; on Linux it runs the same scenarios over
+named network namespaces, as root.  GENERIC needs nothing added to run
 it — VIMAGE is in it and both modules ship with it — they just have to be
 loaded first, since a jail may not `kldload`:
 
     kldload -n ip_mroute if_bridge
-    sh test/freebsd-lab.sh run all
+    sh test/lab.sh run all
 
 It is out of `make check` all the same: automake drives `TESTS` under
 `unshare -mrun`, which exists on Linux and nowhere else, and the lab

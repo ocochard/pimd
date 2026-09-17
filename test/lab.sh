@@ -1,12 +1,15 @@
 #!/bin/sh
-# PIM-SM regression lab for FreeBSD, using vnet jails
+# PIM-SM regression lab, the same scenarios over FreeBSD vnet jails and
+# over Linux network namespaces
 #
-# Exercises the FreeBSD-specific code paths of pimd that no CI covers: the
-# rest of this directory is Linux-only, it is built on network namespaces,
-# veth pairs and `unshare`, so on FreeBSD none of it can even start, and it
-# is not in TESTS for that reason.  Everything asserted here goes through
-# the kern.c BSD branches, and through routesock.c (RPF lookups over the
-# PF_ROUTE socket) rather than netlink.c and the Linux ones.
+# Written for the FreeBSD code paths of pimd that no CI covered: the rest
+# of this directory is Linux-only, it is built on network namespaces, veth
+# pairs and `unshare`, so on FreeBSD none of it can even start.  Everything
+# asserted there goes through the kern.c BSD branches, and through
+# routesock.c (RPF lookups over the PF_ROUTE socket) rather than netlink.c
+# and the Linux ones.  On Linux the same scenarios run against that kernel
+# and netlink.c instead, most of them with no counterpart in the automake
+# suite.  Not in TESTS on either, see Requires below.
 #
 # NETLINK=yes runs the very same scenarios against the other RPF backend:
 # FreeBSD 13.2 and later answer the same lookups over netlink(4), and a
@@ -675,12 +678,12 @@
 # the last one out puts it back, see disable_mcast_loop().
 #
 # Usage:
-#   ./freebsd-lab.sh [-s SLOT] start [scenario]  build the lab, start pimd on its routers
-#   ./freebsd-lab.sh [-s SLOT] check [scenario]  run the assertions (start must have run)
-#   ./freebsd-lab.sh [-s SLOT] run   [scenario]  start + check + stop, exit 0 if all pass
-#   ./freebsd-lab.sh [-s SLOT] stop              tear that slot down
-#   ./freebsd-lab.sh -j 4 run all                every scenario, four at a time
-#   ./freebsd-lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
+#   ./lab.sh [-s SLOT] start [scenario]  build the lab, start pimd on its routers
+#   ./lab.sh [-s SLOT] check [scenario]  run the assertions (start must have run)
+#   ./lab.sh [-s SLOT] run   [scenario]  start + check + stop, exit 0 if all pass
+#   ./lab.sh [-s SLOT] stop              tear that slot down
+#   ./lab.sh -j 4 run all                every scenario, four at a time
+#   ./lab.sh -j 3 run shared-lan shared-lan-spt assert-recover
 #                                                three of them, all at once
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
@@ -699,7 +702,7 @@
 # and Linux bridges instead: root, iproute2, ethtool, a kernel with
 # CONFIG_IP_MROUTE and CONFIG_IP_PIMSM_V2, and NETLINK is always yes there.
 # Everything that touches the host is in lab-freebsd.sh or lab-linux.sh,
-# picked by uname(1); the name of this file is the system it was written on.
+# picked by uname(1).
 
 set -eu
 

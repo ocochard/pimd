@@ -121,7 +121,7 @@
 #               in doc/rfc7761-compliance.md), so between two pimds every
 #               router on a LAN advertises the same one; the metric beside
 #               it is the routing table's, and shared-lan in
-#               freebsd-lab.sh moves it with route(8), but that is the
+#               lab.sh moves it with route(8), but that is the
 #               second field compared and only after this scenario had
 #               been written.  EOS fills both from its own RIB, so this is
 #               the LAN where the preference comparison sec. 4.6.1 runs
@@ -230,8 +230,8 @@
 #               Takes about 5 minutes, the controls waiting out streams
 #               that must not arrive.
 #
-# Which is also why this is not another scenario in freebsd-lab.sh: that
-# script needs nothing but jails, and this one needs a 4G VM image, bhyve
+# Which is also why this is not another scenario in lab.sh: that
+# script needs nothing but jails or namespaces, and this one needs a 4G VM image, bhyve
 # and a vendor OS.
 #
 # Scenarios run in parallel, as they do there and for the same reason: -s
@@ -242,7 +242,7 @@
 # lab it is not cores that bound N: every scenario boots a vEOS of its
 # own, 4G of memory and a converted 4G disk apiece.
 #
-# The same slot of freebsd-lab.sh must not be up at the same time -- the
+# The same slot of lab.sh must not be up at the same time -- the
 # two labs use the same 10.0.0.0/8 addresses and check_req() says so --
 # but another slot of it may be, and the one piece of host state they both
 # want, net.inet.ip.mcast.loop, they now hold between them; see
@@ -369,7 +369,7 @@ VEOS_VM=${VEOS_VM:-veos$TAG}
 SCENARIO=${SCENARIO:-arista-rp}
 SCENARIOS="arista-rp pimd-rp assert-lan rpt-override anycast"
 
-# Jails.  A prefix of their own so this lab and freebsd-lab.sh can be built
+# Jails.  A prefix of their own so this lab and lab.sh can be built
 # in the same tree without either one destroying the other's boxes.  ED4
 # only exists in pimd-rp, where the Arista needs a LAN of its own to be the
 # first and last hop router for.
@@ -508,7 +508,7 @@ AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
 #                to win regardless; a router that got the bit wrong would
 #                win on a metric it should never have been asked about.
 #                This is the mixed-vendor counterpart of shared-lan-spt in
-#                freebsd-lab.sh, whose xfail() the fix in 4cb79f1 cleared
+#                lab.sh, whose xfail() the fix in 4cb79f1 cleared
 #                against pimd's own encoder.
 #
 #                What holds pimd on the shared tree is spt-threshold
@@ -699,7 +699,7 @@ fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
 
 # A behaviour that is wrong but known to be wrong: pimd deviates from the
 # spec here, the assertion reproduces it on purpose, and the run is not
-# red because of it.  Same convention as freebsd-lab.sh -- it is still
+# red because of it.  Same convention as lab.sh -- it is still
 # printed on every run, and the moment pimd starts doing the right thing
 # the assertion turns into an ok and says so.
 xfail() { printf "  \033[33mKNOWN\033[0m %s\n" "$1"; XFAILED=$((XFAILED + 1)); }
@@ -937,7 +937,7 @@ check_req() {
 		die "cannot load vmm.ko, bhyve is not available"
 
 	if ${SUDO} jls -j "pimd${TAG}_r1" jid >/dev/null 2>&1; then
-		die "freebsd-lab.sh is running in slot $SLOT, the two labs share" \
+		die "lab.sh is running in slot $SLOT, the two labs share" \
 		    "addresses -- stop it, or run this one in another slot"
 	fi
 }
@@ -951,7 +951,7 @@ check_req() {
 # saved once, by whichever lab arrives first, in a directory on the host
 # they all share, each one leaves a file of its own there while it runs,
 # and the last to leave is the one that puts the value back.  The same
-# directory and the same lock as freebsd-lab.sh, deliberately -- the two
+# directory and the same lock as lab.sh, deliberately -- the two
 # labs want the same 0 and must not undo it under each other.
 MCAST_LOOP_DIR=${MCAST_LOOP_DIR:-/var/run/pimd-lab-mcastloop}
 MCAST_LOOP_LOCK=$MCAST_LOOP_DIR.lock

@@ -14,7 +14,7 @@
 #    shared tree ends at R3.  R1 registers to R2 only, so ED2 is reached
 #    only if R2 copies the Registers to R3.  On Linux the kernel hands
 #    pimd the whole Register, so the copy is a data Register -- the one
-#    thing freebsd-lab.sh's anycast scenario cannot see, its kernel
+#    thing lab.sh's anycast scenario cannot see, its kernel
 #    passing pimd only the headers.
 #
 # 2. The RP as DR.  R1 and R3 hold X, R2's route to X goes to R1, which is
@@ -27,7 +27,7 @@
 # the length R3's pimd was handed, which on Linux is the length on the wire.
 #
 # The half without a set, which shows ED2 is not reached otherwise, is in
-# test/freebsd-lab.sh (anycast and anycast-dr); it does not depend on the
+# test/lab.sh (anycast and anycast-dr); it does not depend on the
 # kernel.
 
 # pimd debug, when enabled pimctl calls at runtime are also enabled

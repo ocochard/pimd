@@ -1,11 +1,11 @@
 # shellcheck shell=sh
-# The FreeBSD side of freebsd-lab.sh: every place the lab builds, drives or
+# The FreeBSD side of lab.sh: every place the lab builds, drives or
 # reads something through the operating system rather than through pimd.
 # The boxes are vnet jails, the links epairs, the shared segments if_bridge
 # on the host, and what the kernel made of pimd's requests is read back with
 # netstat(1) and ifmcstat(8).
 #
-# freebsd-lab.sh sources this once the slot is known, and its scenarios
+# lab.sh sources this once the slot is known, and its scenarios
 # reach the host through nothing but the functions below, so a lab on
 # another system is another file of the same functions rather than another
 # copy of the scenarios.  Nothing here runs on its own.

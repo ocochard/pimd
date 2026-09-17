@@ -779,7 +779,7 @@ int join_desired(mrtentry_t *mrt)
  * as an RPT forwarder for the life of the entry -- CouldAssert(S,G,I) is
  * false without the bit, so sec. 4.6.1 compares the RPT bit and stops.  Two
  * routers on one LAN then hold Winner on different entries and both keep
- * forwarding; shared-lan-spt of test/freebsd-lab.sh reproduces it under
+ * forwarding; shared-lan-spt of test/lab.sh reproduces it under
  * "-j 4 run all".
  */
 static void update_sptbit(mrtentry_t *mrt, vifi_t iif)

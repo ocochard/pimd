@@ -71,7 +71,7 @@ report and exits. Use that tool, not a kernel join, whenever a test needs a rout
 membership out: a kernel that joined a group answers every query afterwards, so the membership
 never expires while the emulated device is on the LAN.
 
-`test/freebsd-lab.sh` is the FreeBSD counterpart and is deliberately **not** in `TESTS`: it needs
+`test/lab.sh` is the FreeBSD counterpart (it runs on Linux too, see below) and is deliberately **not** in `TESTS`: it needs
 vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for the shared segment scenarios), and it drives the
 `routesock.c` and `kern.c` BSD branches the Linux suite can never reach. Its scenarios reach the host
 only through the functions of `test/lab-freebsd.sh` (jails, epairs, bridges, addresses, routes, and
@@ -209,9 +209,9 @@ same way as its encoder passes one and fails the other:
 
 `run all` walks all five. Not in `TESTS`: it needs bhyve and a licensed vEOS-lab image, named with
 `-i` (`vEOS64-lab-<version>.qcow2` from arista.com; there is no default path). `-s` and `-j` work as
-in `freebsd-lab.sh` and additionally name the taps, the bhyve VM and the management subnet apart;
+in `lab.sh` and additionally name the taps, the bhyve VM and the management subnet apart;
 what bounds `-j` here is a vEOS per scenario, 4G of RAM and a converted 4G disk each. A lab in the
-*same* slot of `freebsd-lab.sh` is refused, one in another slot is not.
+*same* slot of `lab.sh` is refused, one in another slot is not.
 `test/veos-bhyve.sh` is the VM runner it drives (see its header for how a vEOS boots under bhyve at
 all), usable on its own: `start`/`stop`/`console`, `inject` to write a startup-config onto the guest
 flash with `debugfs`, `cloudinit` for the vendor `ARISTA_CONFIG_DRIVE` day0 path, and `cli` to run

@@ -25,7 +25,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   most 64 of them whole, the rest as Null-Registers, since the sender need
   not be a DR that rate-limits itself.  See pimd.conf(5).  Tested by
   `test/anycast.sh`, the
-  `anycast` and `anycast-dr` scenarios of `test/freebsd-lab.sh`, and in both
+  `anycast` and `anycast-dr` scenarios of `test/lab.sh`, and in both
   directions against an Arista vEOS 4.36.1F member by the `anycast` scenario
   of `test/freebsd-interop.sh`
 - New `accept-nbr-from` setting for a `phyint` in `pimd.conf`, the routers
@@ -183,7 +183,12 @@ pimd on all routers in the same domain.  See issue #93 for details.
   is the only interface it has and the flag is implied there.  `pimctl
   show status` now reports which of the two a daemon was built with, as
   nothing else about a running router does
-- `test/freebsd-lab.sh` takes `NETLINK=yes` to run its scenarios against
+- `test/freebsd-lab.sh` is now `test/lab.sh`, and runs its scenarios on
+  Linux as well, as root, over named network namespaces, veth pairs and
+  Linux bridges instead of vnet jails, epairs and `if_bridge`.  What it
+  needs of the host is in `test/lab-freebsd.sh` and `test/lab-linux.sh`,
+  one set of functions per system, picked by `uname -s`
+- `test/lab.sh` takes `NETLINK=yes` to run its scenarios against
   such a build, and refuses to run if the tree it was pointed at was built
   the other way
 - `test/pimsend.c` grew `-F`/`-E`, the address family and encoding type of
@@ -196,7 +201,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the whole question where the group is in the SSM range, and a kernel join
   cannot be used to ask it: the kernel picks the version itself and follows
   whatever the querier on the LAN has negotiated
-- New `static-rp` scenario in `test/freebsd-lab.sh`: R3 is given an
+- New `static-rp` scenario in `test/lab.sh`: R3 is given an
   `rp-address` while R2 is the BSR, and the configured RP has to survive
   the Bootstrap and then outlive the BSR itself.  The two RPs are the same
   router under two addresses, so a configured entry that survived cannot be
@@ -211,7 +216,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   be reproduced by a lab of pimds at all, two pimds sharing one reading of
   the wire, so a field pimd encodes wrongly it also decodes wrongly and the
   lab stays green
-- New `crafted` scenario in `test/freebsd-lab.sh`, the first user of it and
+- New `crafted` scenario in `test/lab.sh`, the first user of it and
   a regression test for the whole packet format section of
   `doc/rfc7761-compliance.md` as well as for: a Join/Prune and a Bootstrap
   carrying a mask length no address has are refused, a unicast Bootstrap
@@ -221,7 +226,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   a parser that refuses everything passes every assertion about refusing.
   ED1 sends them, a host on a subnet the router has an interface on, which
   is the position RFC 7761 sec. 6.2 is about and all an attacker needs
-- New `register-filter` scenario in `test/freebsd-lab.sh` for
+- New `register-filter` scenario in `test/lab.sh` for
   `register-accept-from`: the RP is given a prefix that does not cover the
   address the DR registers from, which is its address on the sender's LAN
   and not the one the RP has in its neighbour table, and then one that
@@ -233,7 +238,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   has joined the group.  The scenario asserts that, and counts the
   Registers the RP's kernel opened while pimd refused them, so the limit
   is measured rather than described
-- `test/freebsd-lab.sh` and `test/freebsd-interop.sh` run several
+- `test/lab.sh` and `test/freebsd-interop.sh` run several
   scenarios at a time.  `-s SLOT`, 0 to 31, names everything a lab puts on
   the host after its slot -- jails, epairs, bridges, interface group, work
   directory, and in the interoperability lab the taps, the bhyve VM and
@@ -256,7 +261,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   routing table entry itself, with `RTM_F_FIB_MATCH`, when the answer has
   no metric; the next hop is still the one the ordinary lookup picked.
   FreeBSD's netlink always puts the metric in, so nothing changes there.
-  Found by the `shared-lan` scenario of `test/freebsd-lab.sh` run on Linux
+  Found by the `shared-lan` scenario of `test/lab.sh` run on Linux
 - Keep (S,G,rpt) state apart from (S,G) state, as RFC 7761 sections 4.5.3,
   4.5.6 and 4.5.7 do.  A Prune(S,G,rpt), which takes one source off the
   shared tree on an interface, was applied to the (S,G) Join state there
@@ -509,7 +514,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   sec. 4.1.3 subtracts from `inherited_olist(S,G,rpt)` are (S,G,rpt) state
   pimd does not keep, and all three only subtract, so an empty (\*,G) olist
   is an empty inherited olist whatever they would have removed.  Found by
-  `shared-lan-spt` of `test/freebsd-lab.sh`, which reproduces it under
+  `shared-lan-spt` of `test/lab.sh`, which reproduces it under
   `-j 4 run all`
 - Send and parse the LAN Prune Delay Hello option, RFC 7761 sec. 4.3.3,
   and derive the Prune-Pending Timer from it.  pimd advertised neither
@@ -576,7 +581,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   failed with "Address already in use".  Both calls now name the interface
   by an address it still has, and ask the kernel for nothing once the
   interface has gone and taken its memberships with it.  Caught by the
-  `ifgone` scenario of `test/freebsd-lab.sh`; Linux names the interface by
+  `ifgone` scenario of `test/lab.sh`; Linux names the interface by
   index and was never affected
 - Ask a netlink attribute for its bytes before reading them.  `RTA_OK()`
   only says an attribute is no longer than what is left of the message, so
@@ -674,7 +679,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   renumbered router tears its routing entry down and builds it again
   while the interface is bouncing, and the entry that comes back asserts
   from NoInfo like any other, so the segment settles on one forwarder
-  either way.  The assert-recover scenario of test/freebsd-lab.sh holds
+  either way.  The assert-recover scenario of test/lab.sh holds
   both halves of that, the deviation at assertion 7 and the convergence
   that happens regardless at assertion 8
 - Discard a PIM assert whose group is not a multicast group, or whose
@@ -813,7 +818,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   polls the interfaces unconditionally, takes the VIF out of service on
   either errno, and treats any other `SIOCGIFFLAGS` failure the same way
   rather than acting on interface flags the failed call never filled in.
-  Covered by the new `ifgone` scenario of `test/freebsd-lab.sh`
+  Covered by the new `ifgone` scenario of `test/lab.sh`
 - Fix `update_reg_vif()` reading one past the last VIF when it logs that
   it cannot restart the register VIF.  The index it printed was left over
   from a loop that had run to completion, so it was `numvifs`, which is
@@ -964,7 +969,7 @@ pimd on all routers in the same domain.  See issue #93 for details.
   them.  Such an address is now answered from the vif table instead, with
   the destination as its own RPF neighbor, the way `netlink.c` has always
   answered it on Linux.  Fix by Sylvain Meygret, now covered by the
-  `rp-offpath` scenario of `test/freebsd-lab.sh`
+  `rp-offpath` scenario of `test/lab.sh`
 - Issue #236: Stop the BSD routing socket from filling the log with
   "Timeout waiting for reply from routing socket", reported from pfSense.
   Two separate causes, both in `k_req_incoming()`:
