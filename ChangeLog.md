@@ -248,6 +248,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- On Linux, send the route's metric in a PIM Assert.  The route lookup
+  `netlink.c` makes is answered with the route resolved for the address,
+  and Linux never puts the metric in that answer, so every Assert said 0
+  and the election fell through to the addresses, as it did before the
+  metric was taken from the routing table at all.  pimd now asks for the
+  routing table entry itself, with `RTM_F_FIB_MATCH`, when the answer has
+  no metric; the next hop is still the one the ordinary lookup picked.
+  FreeBSD's netlink always puts the metric in, so nothing changes there.
+  Found by the `shared-lan` scenario of `test/freebsd-lab.sh` run on Linux
 - Keep (S,G,rpt) state apart from (S,G) state, as RFC 7761 sections 4.5.3,
   4.5.6 and 4.5.7 do.  A Prune(S,G,rpt), which takes one source off the
   shared tree on an interface, was applied to the (S,G) Join state there

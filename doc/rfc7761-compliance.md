@@ -383,8 +383,10 @@ already rather than making one for every Prune(S,G) on the link; and "RPF'(S,G,r
 protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both say the metric preference and the
 metric are the unicast routing protocol's.  The metric is, now: `struct rpfctl`
 (`src/vif.h`) carries MRIB.metric back from every RPF lookup -- the route's
-priority out of the netlink reply (`src/netlink.c`), `rmx_metric` out of the
-routing socket's (`src/routesock.c`) -- and `set_incoming()` (`src/route.c`)
+priority out of the netlink reply (`src/netlink.c`, which on Linux has to ask
+for the FIB entry with `RTM_F_FIB_MATCH` to get one, the resolved route never
+carrying it), `rmx_metric` out of the routing socket's (`src/routesock.c`) --
+and `set_incoming()` (`src/route.c`)
 gives it to the source, leaving `metric` in `pimd.conf` as the fallback for a
 kernel that answers neither.  Two routers on a LAN whose routing tables disagree
 about the cost of reaching the source, or the RP, now elect on that rather than
@@ -418,10 +420,10 @@ somewhere both backends can reach, or from configuration as it does today.
 Test: step 12 of `shared-lan` in `test/freebsd-lab.sh` covers the half that is
 fixed, in both directions -- the two contenders reach the RP at a metric
 `route change` sets, and the LAN changes hands when either one is bettered,
-which with a constant metric it never did.  That is `routesock.c`; the
-netlink half of the same lookup has no assertion anywhere, because no test in
-`test/` reads the outcome of an assert election on Linux at all.  The
-preference half has none either:
+which with a constant metric it never did.  It runs against both lookups:
+`routesock.c` by default, `netlink.c` with `NETLINK=yes` on FreeBSD and always
+on Linux, where it is what showed the Linux netlink answer carried no metric at
+all.  The preference half has no assertion:
 between two pimds it is 101 on both, so `assert-lan` in
 `test/freebsd-interop.sh` is where it would be seen, the Arista being the one
 router on that wire that advertises its RIB's own numbers.*

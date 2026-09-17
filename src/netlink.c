@@ -38,6 +38,8 @@ static uint32_t pid; /* pid_t, but /usr/include/linux/netlink.h says __u32 ... *
 static uint32_t seq;
 
 static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf);
+static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len);
+static uint32_t fib_metric(uint32_t dst);
 
 static int addattr32(struct nlmsghdr *n, size_t maxlen, int type, uint32_t data)
 {
@@ -122,12 +124,10 @@ void routesock_clean(void)
 /* get the rpf neighbor info */
 int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 {
-    int l, rlen;
+    int l;
     char buf[512];
     struct nlmsghdr *n = (struct nlmsghdr *)buf;
-    struct rtmsg *r = NLMSG_DATA(n);
-    struct sockaddr_nl addr;
-    
+
     rpf->source.s_addr      = source;
     rpf->iif                = NO_VIF;     /* Initialize, will be changed in kernel */
     rpf->rpfneighbor.s_addr = INADDR_ANY; /* Initialize */
@@ -148,52 +148,13 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	return FALSE;
     }
 
-    n->nlmsg_type = RTM_GETROUTE;
-    n->nlmsg_flags = NLM_F_REQUEST;
-    n->nlmsg_len = NLMSG_LENGTH(sizeof(*r));
-    n->nlmsg_pid = pid;
-    n->nlmsg_seq = ++seq;
-    
-    memset(r, 0, sizeof(*r));
-    r->rtm_family = AF_INET;
-    r->rtm_dst_len = 32;
-    addattr32(n, sizeof(buf), RTA_DST, rpf->source.s_addr);
-#ifdef CONFIG_RTNL_OLD_IFINFO
-    r->rtm_optlen = n->nlmsg_len - NLMSG_LENGTH(sizeof(*r));
-#endif
-    addr.nl_family = AF_NETLINK;
-    addr.nl_groups = 0;
-    addr.nl_pid = 0;
-    
     IF_DEBUG(DEBUG_RPF)
 	logit(LOG_DEBUG, 0, "k_req_incoming: ask path to %s", inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
 
-    do {
-	socklen_t alen = sizeof(addr);
+    l = getroute(rpf->source.s_addr, 0, buf, sizeof(buf));
+    if (l < 0)
+	return FALSE;
 
-	rlen = sendto(routing_socket, buf, n->nlmsg_len, 0, (struct sockaddr *)&addr, alen);
-	if (rlen < 0) {
-	    if (errno == EINTR)
-		continue;	/* Received signal, retry syscall. */
-
-	    logit(LOG_WARNING, errno, "Error writing to netlink socket");
-	    return FALSE;
-	}
-    } while (rlen < 0);
-
-    do {
-	socklen_t alen = sizeof(addr);
-
-	l = recvfrom(routing_socket, buf, sizeof(buf), 0, (struct sockaddr *)&addr, &alen);
-	if (l < 0) {
-	    if (errno == EINTR)
-		continue;	/* Received signal, retry syscall. */
-
-	    logit(LOG_WARNING, errno, "Error reading from netlink socket");
-	    return FALSE;
-	}
-    } while (n->nlmsg_seq != seq || n->nlmsg_pid != pid);
-    
     if (n->nlmsg_type != RTM_NEWROUTE) {
 	errno = -(*(int*)NLMSG_DATA(n));
 
@@ -209,6 +170,104 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     /* Cast, so that a reply shorter than the header it announces stays a
      * negative length here rather than becoming a huge unsigned one */
     return getmsg(NLMSG_DATA(n), l - (int)sizeof(*n), rpf);
+}
+
+/*
+ * Send one RTM_GETROUTE for dst, with rtm_flags set to flags, and read the
+ * answer to it into buf.  Returns the length read, or -1.
+ */
+static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len)
+{
+    int l, rlen;
+    struct nlmsghdr *n = (struct nlmsghdr *)buf;
+    struct rtmsg *r = NLMSG_DATA(n);
+    struct sockaddr_nl addr;
+
+    if (len < NLMSG_LENGTH(sizeof(*r)))
+	return -1;
+
+    n->nlmsg_type = RTM_GETROUTE;
+    n->nlmsg_flags = NLM_F_REQUEST;
+    n->nlmsg_len = NLMSG_LENGTH(sizeof(*r));
+    n->nlmsg_pid = pid;
+    n->nlmsg_seq = ++seq;
+
+    memset(r, 0, sizeof(*r));
+    r->rtm_family = AF_INET;
+    r->rtm_dst_len = 32;
+    r->rtm_flags = flags;
+    addattr32(n, len, RTA_DST, dst);
+#ifdef CONFIG_RTNL_OLD_IFINFO
+    r->rtm_optlen = n->nlmsg_len - NLMSG_LENGTH(sizeof(*r));
+#endif
+    addr.nl_family = AF_NETLINK;
+    addr.nl_groups = 0;
+    addr.nl_pid = 0;
+
+    do {
+	socklen_t alen = sizeof(addr);
+
+	rlen = sendto(routing_socket, buf, n->nlmsg_len, 0, (struct sockaddr *)&addr, alen);
+	if (rlen < 0) {
+	    if (errno == EINTR)
+		continue;	/* Received signal, retry syscall. */
+
+	    logit(LOG_WARNING, errno, "Error writing to netlink socket");
+	    return -1;
+	}
+    } while (rlen < 0);
+
+    do {
+	socklen_t alen = sizeof(addr);
+
+	l = recvfrom(routing_socket, buf, len, 0, (struct sockaddr *)&addr, &alen);
+	if (l < 0) {
+	    if (errno == EINTR)
+		continue;	/* Received signal, retry syscall. */
+
+	    logit(LOG_WARNING, errno, "Error reading from netlink socket");
+	    return -1;
+	}
+    } while (l < 0 || n->nlmsg_seq != seq || n->nlmsg_pid != pid);
+
+    return l;
+}
+
+/*
+ * The priority of the FIB entry that routes dst, what `ip route` prints as
+ * its "metric", or 0 when there is none to be had.
+ *
+ * The ordinary RTM_GETROUTE k_req_incoming() sends is answered on Linux
+ * with the route resolved for dst, and that answer never carries
+ * RTA_PRIORITY, whatever the metric of the entry it was resolved from:
+ * `ip route get` prints no metric, `ip route get fibmatch` does.
+ * RTM_F_FIB_MATCH (Linux 4.13) is what asks for the entry itself.  Only
+ * the priority is taken from that answer.  The next hop stays the one
+ * the ordinary lookup chose, since the entry of a multipath route lists
+ * them all.
+ */
+static uint32_t fib_metric(uint32_t dst)
+{
+#ifdef RTM_F_FIB_MATCH
+    int l;
+    char buf[512];
+    struct nlmsghdr *n = (struct nlmsghdr *)buf;
+    struct rtmsg *rtm;
+    struct rtattr *rta[RTA_MAX + 1];
+
+    l = getroute(dst, RTM_F_FIB_MATCH, buf, sizeof(buf));
+    if (l < (int)NLMSG_LENGTH(sizeof(*rtm)) || n->nlmsg_type != RTM_NEWROUTE)
+	return 0;
+
+    rtm = NLMSG_DATA(n);
+    memset(rta, 0, sizeof(rta));
+    parse_rtattr(rta, RTA_MAX, RTM_RTA(rtm), l - (int)NLMSG_LENGTH(sizeof(*rtm)));
+
+    if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))
+	return *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
+#endif
+
+    return 0;
 }
 
 static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
@@ -303,19 +362,21 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     }
 
     /* MRIB.metric, which RFC 7761 sec. 4.6.3 wants in the Assert: on Linux
-     * that is the route's priority, what `ip route` prints as "metric".  The
-     * kernel leaves the attribute out when it is zero, and zero is what an
-     * ordinary route has, so an absent one is the metric and not a missing
-     * answer.
+     * that is the route's priority, what `ip route` prints as "metric".
+     * This answer does not carry it there, see fib_metric(), which asks
+     * for it; zero is what an ordinary route has, so an entry without one
+     * is at metric 0 and not a missing answer.
      *
-     * FreeBSD fills the same attribute from nhop_get_metric(), which is
-     * the rt_metrics.rmx_metric `route -metric` sets (sys/net/route/
-     * nhop_ctl.c), the number routesock.c reads out of a routing socket
-     * reply there.  Its default is RT_DEFAULT_METRIC, 1, not 0.
+     * FreeBSD puts the attribute in this answer, filled from
+     * nhop_get_metric(), which is the rt_metrics.rmx_metric `route -metric`
+     * sets (sys/net/route/nhop_ctl.c), the number routesock.c reads out of
+     * a routing socket reply there.  Its default is RT_DEFAULT_METRIC, 1,
+     * not 0, so the second lookup is never made there.
      */
-    rpf->metric = 0;
     if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))
 	rpf->metric = *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
+    else
+	rpf->metric = fib_metric(rpf->source.s_addr);
 
     IF_DEBUG(DEBUG_RPF)
 	logit(LOG_DEBUG, 0, "netlink: metric is %u", rpf->metric);
