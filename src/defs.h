@@ -287,6 +287,7 @@ typedef void (*ihfunc_t) (int);
 extern uint16_t         pim_timer_hello_interval;
 extern uint16_t         pim_timer_hello_holdtime;
 extern uint32_t         rpt_prune_limit;
+extern uint32_t         local_sg_limit;
 
 /* TODO: describe the variables and clean up */
 extern char		*igmp_recv_buf;
@@ -595,6 +596,7 @@ extern int	send_pim_cand_rp_adv	(void);
 extern void	send_pim_bootstrap	(void);
 
 /* route.c */
+extern uint32_t	local_sg_entries;
 extern void	init_route		(void);
 extern int	set_incoming		(srcentry_t *srcentry_ptr, int srctype);
 extern vifi_t	get_iif			(uint32_t source);

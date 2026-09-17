@@ -2152,7 +2152,7 @@ static mrtentry_t *rpt_prune_entry(uint32_t src, uint32_t source, uint32_t group
 
     if (mrt->flags & MRTF_NEW) {
 	mrt->flags &= ~MRTF_NEW;
-	mrt->flags |= MRTF_RPT_LIMITED;
+	mrt->limit_count = &rpt_prune_entries;
 	rpt_prune_entries++;
     }
 

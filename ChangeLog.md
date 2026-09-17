@@ -42,6 +42,15 @@ pimd on all routers in the same domain.  See issue #93 for details.
   without bound.  Past the limit a Prune addressed to pimd is not applied,
   and one overheard upstream is overridden with an early Join(*,G) instead
   of a Join(S,G,rpt).  `pimctl show status` reports the count
+- New `local-sg-limit` setting in `pimd.conf`, default 4096: how many
+  (S,G) entries data from directly connected sources may make pimd hold as
+  their DR.  Every packet to a group with no entry yet made one, with a
+  kernel cache entry beside it, and on its own subnet the sender picks
+  both the group and the source, so one host could otherwise grow the
+  routing table until an allocation failed and pimd exited.  Past the
+  limit a new source is not registered, and so not forwarded beyond its
+  LAN; entries already held are unaffected.  `pimctl show status` reports
+  the count.  RFC 7761 sec. 6.4
 - Remove RSRR, Routing Support for Resource Reservation, the RSVP
   interface built with `--enable-rsrr`.  It implemented
   draft-ietf-rsvp-routing-02, an Internet-Draft that expired without

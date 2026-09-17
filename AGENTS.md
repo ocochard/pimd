@@ -73,11 +73,13 @@ it asks `pimctl show status` which backend the daemon has rather than trust the 
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `static-rp`); see the script
-header for the topologies and which upstream issue each one pins down. `-s SLOT` (0-31) puts every
+header for the topologies and which upstream issue each one pins down. `keepalive` is also the
+only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
+(steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
 host-visible name the lab creates -- jails, epairs, bridges, interface group, work directory -- in a
 namespace of its own, so several labs run side by side, and `-j JOBS` runs that many scenarios at
-once, a slot each (measured on 16 cores: `-j 4 run all` 4m35s, `-j 14` 4m11s, against the ~31
-minutes the scenarios add up to sequentially; `keepalive` alone is a 4 minute floor). The addresses inside
+once, a slot each (measured on 16 cores: `-j 14 run all` 6m55s, against the half hour and more the scenarios add
+up to sequentially; `keepalive` alone is a floor of about 6 minutes). The addresses inside
 the jails are the same in every slot, `net.inet.ip.mcast.loop` is the one piece of host state they
 share, and they hold it between them under a lock in `/var/run/pimd-lab-mcastloop`, last one out
 restoring it -- `freebsd-interop.sh` counts in the same place. `shared-lan`,

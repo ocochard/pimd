@@ -45,9 +45,10 @@ which the `rpt-bit` sub-case of `assert-lan` asks for, and the six of
 run is therefore a regression, not an expected result.
 
 Every entry below ends with a `Test:` note saying what reproduces it, and
-all but two of them say `none`: M4's fixed half is covered, and so is the
+all but three of them say `none`: M4's fixed half is covered, so is the
 half of A3 that pimd can be held to, by the `register-filter` scenario of
-`test/freebsd-lab.sh`.  What the fixed entries are asserted by is named
+`test/freebsd-lab.sh`, and so are A4's two caps, by `crafted` and
+`keepalive`.  What the fixed entries are asserted by is named
 where each section says it is fixed, not here.  The point of writing it down is that the gap is
 visible from this list rather than only from grepping the labs.  Where an entry names a
 scenario without asserting anything, it is because that scenario builds the
@@ -69,7 +70,8 @@ a structural change rather than a check: a traffic-driven Keepalive Timer,
 and SSM groups that carry no RP.  A3 and
 A4 are the two that stay open on purpose, one because the kernel decapsulates
 before the daemon is handed anything and the other because sec. 6.4
-describes rather than prescribes.  No parser entry is left.
+describes rather than prescribes; A4 is closed for data from a DR's own
+LAN and for Prune(S,G,rpt), and open for Joins and Hellos.  No parser entry is left.
 
 
 Input validation and trust
@@ -738,7 +740,7 @@ limit the set of neighbors a router accepts Join/Prune, Assert and Hello
 messages from, is kept as of `accept-nbr-from` in `pimd.conf`.  That is all
 five, and what is left here is A3, which is the limit of the third rather
 than a gap in it, and A4, which is what
-sec. 6.4 describes and nothing in pimd bounds.  The first section of this file is the
+sec. 6.4 describes and pimd bounds only in part.  The first section of this file is the
 neighbouring one: it holds the entries where a parser could be walked off the
 end, V1 through V6, and this one holds the entries where a well-formed
 message from the wrong sender is acted on, or an unbounded number of them
@@ -812,46 +814,65 @@ ever filtered before decapsulating fails it and this entry gets rewritten,
 and reads `netstat -sp pim` in the RP's vnet for the count of Registers its
 kernel opened while pimd refused them.*
 
-**A4.  Nothing bounds the state a stranger can make pimd hold.**  Sec. 6.4
-names two attacks, packets to many group addresses and a flood of forged
-Joins, and says authentication prevents some but not all of them.  pimd counts
-nothing and caps nothing: there is no limit on group entries, source entries,
-routing entries, kernel cache entries or neighbors, and the only cap in the
-tree of this kind is `IGMP_MAX_SOURCES`, 256 sources per group, which the
-IGMPv3 parser enforces (`src/igmp_proto.c:695-699`) and which is the model for
-what the rest would look like.
+**A4.  Only part of the state a stranger can make pimd hold is bounded.**
+Sec. 6.4 names two attacks, packets to many group addresses and a flood of
+forged Joins, and says authentication prevents some but not all of them.
+There is no limit on group entries, source entries, routing entries, kernel
+cache entries or neighbors as such.  What pimd has instead is a cap on each
+path by which someone else creates them, and two of those exist:
+`IGMP_MAX_SOURCES`, 256 sources per group, which the IGMPv3 parser enforces
+(`src/igmp_proto.c`), and the two below.
 
 Three ways in, in order of how close the attacker has to be:
 
 - A packet to a group nothing knows about is a cache miss, and on the DR for
   its source that creates a source entry, a group entry, a routing entry and a
-  kernel cache entry (`process_cache_miss()`, `src/route.c:1264-1272`), plus
-  for an SSM group the invented RP of S1.  This is sec. 6.4's first bullet,
-  and the sender needs only to be on a subnet this router is the DR for.
+  kernel cache entry (`process_cache_miss()`, `src/route.c`).  This is
+  sec. 6.4's first bullet, and the sender needs only to be on a subnet this
+  router is the DR for.  It is bounded: `local_sg_entry()` counts the entries
+  it makes and past `local-sg-limit` in `pimd.conf`, default 4096, makes no
+  more, while an entry that already exists is still found and refreshed.  A
+  source refused that way is not registered, so it is not forwarded beyond
+  its LAN, and each of its packets stays a cache miss -- one upcall per
+  packet, the negative cache entry pimd does not install (the TODO in
+  `process_cache_miss()`).  The limit is global rather than per source,
+  because on its own subnet the sender picks the source address too.
 - A Join from a neighbor creates whatever it names, up to 255 group sets in
   one message and as many sources as the message will hold, and each source
   that is new costs an RPF lookup through netlink or the routing socket
   (`set_incoming()`, `src/route.c`) as well as the allocations.  That is
   sec. 6.4's second bullet.  Since V2 the sender has to have sent a Hello
-  first, which on a LAN is not an obstacle.
+  first, which on a LAN is not an obstacle.  One kind of message in this
+  bullet is bounded: a Prune(S,G,rpt) for a source pimd holds no (S,G) for,
+  received or overheard upstream, makes one that lasts as long as the
+  sender's HoldTime, and `rpt_prune_entry()` (`src/pim_proto.c`) stops
+  making them past `rpt-prune-limit`, default 1024.  A Join(S,G) or Join(\*,G)
+  is not.
 - A Hello from an address never seen before allocates a neighbor entry that
   lives for the holdtime, and makes pimd answer with a Hello to the whole LAN,
   a DR election, and -- if it is the DR -- a unicast copy of the entire RP set
-  (`src/pim_proto.c:244-289`).  One small forged packet in, two larger ones
-  out, and an entry held either way.
+  (`src/pim_proto.c`).  One small forged packet in, two larger ones out, and
+  an entry held either way.  Unbounded; `accept-nbr-from` narrows who can,
+  where an operator knows the routers on a link.
 
+Both limits count the entries rather than the senders: an entry records the
+count it was made under (`limit_count` in `mrtentry_t`, `src/mrt.h`) and
+`FREE_MRTENTRY()` gives it back whichever path frees it, a reload included.
 None of this leaks: every entry has a timer, so the growth is bounded by rate
-rather than unbounded in time.  What makes it worth an entry anyway is the
-default build's answer when the allocation finally fails, which is
+rather than unbounded in time.  What makes the rest worth an entry anyway is
+the default build's answer when the allocation finally fails, which is
 `logit(LOG_ERR, ...)` and an `exit(-1)` from `logit()` itself
 (`src/debug.c:641-643`, absent `--disable-exit-on-error`): memory pressure an
 attacker can create does not degrade this daemon, it stops it.
-*Check: sec. 6.4, `doc/rfc7761.txt:7410`.  Effort: medium, and it is a design
-question before it is work -- a cap that refuses new state is a black hole for
-whoever was legitimately using it, which is why sec. 6.4 describes rather than
-prescribes.  Test: none.  A lab could drive the first of the three easily
-enough with `mping` and a loop over group addresses, and the assertion would
-be on `pimctl show mrt` growing without bound rather than on a failure.*
+*Check: sec. 6.4, `doc/rfc7761.txt:7410`.  Effort: medium for each path
+left, and a design question before it is work -- a cap that refuses new
+state is a black hole for whoever was legitimately using it, which is why
+sec. 6.4 describes rather than prescribes, and a Join refused is a receiver
+cut off rather than a source not registered.  Test: the two caps are
+asserted, `rpt-prune-limit` by step 13b of `crafted` in
+`test/freebsd-lab.sh` and `local-sg-limit` by steps 5 and 6 of `keepalive`,
+which flood R1 with groups at the limit and reload it; the Join and Hello
+bullets have none.*
 
 
 Checked, no action

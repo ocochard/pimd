@@ -72,8 +72,14 @@
 #               had outgoing interfaces: every source was aged out a few
 #               seconds after a cache miss had recreated it, so sources
 #               kept appearing and disappearing while they were sending.
-#               Takes about 5 minutes, it has to outlive PIM_DATA_TIMEOUT
-#               (210s).
+#               R1 runs with local-sg-limit set to exactly the number of
+#               groups, so the same wait shows entries at the limit being
+#               refreshed rather than refused; then a second sender floods
+#               more groups, which RFC 7761 sec. 6.4 names first among the
+#               attacks on a router's state, and none of them may take a
+#               slot, and after a reload the count has to have been given
+#               back.  Takes about 6 minutes, it has to outlive
+#               PIM_DATA_TIMEOUT (210s).
 #   rp-lasthop  R3 is BSR and RP *and* the last hop router for the only
 #               receiver, while the source sits behind R1 two hops away,
 #               which is the setup of
@@ -597,11 +603,11 @@
 # a vnet jail having an interface namespace and a forwarding cache of its
 # own.  "-j N run all" does the bookkeeping: N scenarios at a time, each
 # in a slot of its own, longest first, each one's output printed whole
-# when it ends.  Measured on a 16-core host, 4m35s at -j 4 and 4m11s at
-# -j 14, which was the whole list when it was taken, against the half hour
-# they take one after another.  The two are close because keepalive is a floor no job count
-# moves: it has to outlive PIM_DATA_TIMEOUT, so it runs 240s whatever
-# else is happening.
+# when it ends.  Measured on a 16-core host, 6m55s at -j 14, against the
+# half hour and more they take one after another.  More jobs barely help
+# past a handful because keepalive is a floor no job count moves: it has
+# to outlive PIM_DATA_TIMEOUT, so it runs 240s whatever else is happening,
+# and its local-sg-limit steps after that.
 #
 # Two things are worth knowing before turning -j up.  The first is that
 # every assertion here is a poll against a timeout, so a slower lab can
@@ -754,6 +760,10 @@ SCENARIOS_BY_LENGTH="keepalive shared-lan assert-recover shared-lan-spt
 KEEP_GROUP=${KEEP_GROUP:-239.1.1.5}
 KEEP_NUM=${KEEP_NUM:-3}
 KEEP_SECONDS=${KEEP_SECONDS:-240}
+# ... and the groups a second sender floods once those have been shown to
+# stay, none of which local-sg-limit leaves room for
+KEEP_FLOOD_GROUP=${KEEP_FLOOD_GROUP:-239.1.2.1}
+KEEP_FLOOD_NUM=${KEEP_FLOOD_NUM:-64}
 
 # Which RPF backend the tree under test was built with, "routing socket"
 # by default and "netlink" with NETLINK=yes.  The string is what pimctl
@@ -1726,8 +1736,10 @@ restore_mcast_loop() {
 write_configs() {
 	if [ "$SCENARIO" = keepalive ]; then
 		cat <<-EOF > "$WORKDIR/r1.conf"
-		# R1: DR for $SRC_ADDR *and* RP for the groups it sends to
+		# R1: DR for $SRC_ADDR *and* RP for the groups it sends to,
+		# with room for exactly those groups
 		spt-threshold infinity
+		local-sg-limit $KEEP_NUM
 		bsr-candidate ${EP}101b priority 1 interval 10
 		rp-candidate ${EP}101b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
@@ -5533,6 +5545,64 @@ check_keepalive() {
 	else
 		fail "(S,G) entry timer was 0, so the entry was being deleted and recreated, in $dead of $samples samples"
 	fi
+
+	# local-sg-limit: every group a directly connected sender names makes
+	# R1 hold an (S,G), a source and a group entry and a kernel cache
+	# entry, so the number is capped.  Step 4 was the control, the groups
+	# that fit being refreshed for longer than PIM_DATA_TIMEOUT at the
+	# limit; the cache misses logged for the flood are the proof its
+	# packets reached R1 at all.
+	print "5. local-sg-limit $KEEP_NUM keeps a flood of $KEEP_FLOOD_NUM more groups out"
+	m1=$(log_lines r1)
+	${SUDO} daemon -f -p "$WORKDIR/msend-flood.pid" -o "$WORKDIR/msend-flood.log" \
+		jexec "$(jname ed1)" "$MSEND" "$SRC_ADDR" "$KEEP_FLOOD_GROUP" "$KEEP_FLOOD_NUM"
+	if ! wait_for 15 log_since r1 "$m1" "Cache miss, src $SRC_ADDR, dst $KEEP_FLOOD_GROUP,"; then
+		fail "r1 logged no cache miss for $KEEP_FLOOD_GROUP, the flood is not reaching it"
+	else
+		if wait_for 10 log_since r1 "$m1" "Not holding ($SRC_ADDR,$KEEP_FLOOD_GROUP), local-sg-limit $KEEP_NUM reached"; then
+			ok "r1 refused ($SRC_ADDR,$KEEP_FLOOD_GROUP) at local-sg-limit $KEEP_NUM"
+		else
+			fail "r1 did not refuse ($SRC_ADDR,$KEEP_FLOOD_GROUP) with $KEEP_NUM entries held"
+		fi
+		if logged r1 "local-sg-limit $KEEP_NUM reached, no more"; then
+			ok "r1 warned that local-sg-limit was reached"
+		else
+			fail "r1 reached local-sg-limit without the warning"
+		fi
+		# Long enough for every flood group to have missed several times
+		sleep 10
+		held=$(sources | tr '\n' ' ')
+		if [ "$(sources | wc -l)" -eq "$KEEP_NUM" ] && ! sources | grep -q "^${KEEP_FLOOD_GROUP%.*}\."; then
+			ok "r1 still holds exactly its $KEEP_NUM groups under the flood: $held"
+		else
+			fail "r1 holds '$held' under the flood, expected the $KEEP_NUM groups from $KEEP_GROUP"
+		fi
+		if pimctl r1 show status 2>/dev/null | grep -q "^Local (S,G) entries *: $KEEP_NUM of $KEEP_NUM\$"; then
+			ok "r1 reports $KEEP_NUM of $KEEP_NUM local (S,G) entries"
+		else
+			fail "r1 reports '$(pimctl r1 show status 2>/dev/null | grep '^Local (S,G)')'"
+		fi
+	fi
+
+	# The count is given back where an entry is freed, and a reload frees
+	# them all: with the flood still on, the slots have to fill again, by
+	# whichever groups miss first.  A count that leaked would stay at the
+	# limit with nothing behind it and nothing new admitted.
+	print "6. A reload gives the local-sg-limit count back"
+	if ! pimctl r1 restart >/dev/null 2>&1; then
+		fail "r1 did not take pimctl restart"
+	elif wait_for 90 all_sources_up && \
+	     pimctl r1 show status 2>/dev/null | grep -q "^Local (S,G) entries *: $KEEP_NUM of $KEEP_NUM\$"; then
+		sleep 5
+		if [ "$(sources | wc -l)" -eq "$KEEP_NUM" ]; then
+			ok "r1 filled its $KEEP_NUM slots again after the reload and no more: $(sources | tr '\n' ' ')"
+		else
+			fail "r1 holds $(sources | wc -l | tr -d ' ') entries after the reload, of a limit of $KEEP_NUM"
+		fi
+	else
+		fail "r1 holds $(sources | wc -l | tr -d ' ') entries after the reload and reports '$(pimctl r1 show status 2>/dev/null | grep '^Local (S,G)')'"
+	fi
+	${SUDO} pkill -F "$WORKDIR/msend-flood.pid" 2>/dev/null || true
 
 	if [ "$FAILED" -ne 0 ]; then
 		dprint "--- r1: pimctl show mrt detail ---"

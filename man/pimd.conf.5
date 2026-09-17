@@ -155,6 +155,27 @@ warning is logged the first time, and
 reports the entries held.  0 makes no such entries at all.
 .Pp
 Default value: 1024
+.It Cm local-sg-limit Ar <0-1000000>
+The most (S,G) routing entries that data from directly connected sources
+may make
+.Nm pimd
+hold on the interfaces it is the designated router for.  Every packet to
+a group with no entry yet makes one, and a kernel cache entry beside it,
+and a host on the subnet chooses both the group and, within the subnet,
+the source address, so without a limit one host decides how much state
+the router holds.
+.Pp
+Once the limit is reached a source and group
+.Nm pimd
+holds no entry for is not registered with the RP, so its traffic is not
+forwarded beyond its own LAN, and each of its packets stays a kernel
+cache miss.  Entries already held are refreshed as before.  A warning is
+logged the first time, and
+.Cm pimctl show status
+reports the entries held.  Raise it on a designated router for more
+sources and groups than the default.  0 makes no such entries at all.
+.Pp
+Default value: 4096
 .It Cm no phyint
 This setting controls if
 .Nm pimd

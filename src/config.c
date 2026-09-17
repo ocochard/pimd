@@ -70,6 +70,7 @@
 #define CONF_SSM_RANGE                          18
 #define CONF_REGISTER_ACCEPT_FROM               19
 #define CONF_RPT_PRUNE_LIMIT                    20
+#define CONF_LOCAL_SG_LIMIT                     21
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -130,6 +131,7 @@ struct reg_acl {
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
 uint16_t pim_timer_hello_holdtime = PIM_TIMER_HELLO_HOLDTIME;
 uint32_t rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
+uint32_t local_sg_limit = PIM_LOCAL_SG_LIMIT;
 
 /*
  * Forward declarations.
@@ -137,7 +139,7 @@ uint32_t rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
 static char	*next_word	(char **);
 static int       parse_option   (char *s);
 static int	 parse_phyint	(char *s);
-static int	 parse_rpt_prune_limit (char *s);
+static int	 parse_state_limit (char *s, const char *name, uint32_t *limit, uint32_t dflt);
 static uint32_t	 ifname2addr	(char *s);
 
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
@@ -635,6 +637,8 @@ static int parse_option(char *word)
 	return CONF_HELLO_INTERVAL;
     if (EQUAL(word, "rpt-prune-limit"))
 	return CONF_RPT_PRUNE_LIMIT;
+    if (EQUAL(word, "local-sg-limit"))
+	return CONF_LOCAL_SG_LIMIT;
 
     return CONF_UNKNOWN;
 }
@@ -1984,36 +1988,42 @@ static int parse_igmp_query_interval(char *s)
 }
 
 /**
- * parse_rpt_prune_limit - Parse rpt-prune-limit option
+ * parse_state_limit - Parse a cap on the state others can create
  * @s: String token
+ * @name: The keyword, for the warnings
+ * @limit: Where the value goes
+ * @dflt: What it is when @s gives none, or none that is valid
  *
- * How many (S,G) entries neighbors' Prune(S,G,rpt) messages may make this
- * router hold, see rpt_prune_entry() in pim_proto.c.  Zero makes none.
+ * rpt-prune-limit, how many (S,G) entries neighbors' Prune(S,G,rpt) messages
+ * may make this router hold, see rpt_prune_entry() in pim_proto.c, and
+ * local-sg-limit, how many data from directly connected sources may, see
+ * local_sg_entry() in route.c.  Zero makes none.
  *
  * Syntax:
  * rpt-prune-limit <0-1000000>
+ * local-sg-limit <0-1000000>
  *
  * Returns:
  * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
  */
-static int parse_rpt_prune_limit(char *s)
+static int parse_state_limit(char *s, const char *name, uint32_t *limit, uint32_t dflt)
 {
-    uint32_t value = PIM_RPT_PRUNE_LIMIT;
+    uint32_t value = dflt;
     const char *errstr;
     long long num;
     char *w;
 
     if (EQUAL((w = next_word(&s)), "")) {
-	WARN("Missing argument to rpt-prune-limit; defaulting to %u", PIM_RPT_PRUNE_LIMIT);
+	WARN("Missing argument to %s; defaulting to %u", name, dflt);
     } else {
 	num = strtonum(w, 0, 1000000, &errstr);
 	if (errstr)
-	    WARN("Invalid rpt-prune-limit %s, %s; defaulting to %u", w, errstr, PIM_RPT_PRUNE_LIMIT);
+	    WARN("Invalid %s %s, %s; defaulting to %u", name, w, errstr, dflt);
 	else
 	    value = (uint32_t)num;
     }
 
-    rpt_prune_limit = value;
+    *limit = value;
 
     return TRUE;
 }
@@ -2131,6 +2141,7 @@ void config_vifs_from_file(void)
     igmp_query_interval = IGMP_QUERY_INTERVAL;
     igmp_querier_timeout = 0;	/* Derived from the query interval below */
     rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
+    local_sg_limit = PIM_LOCAL_SG_LIMIT;
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -2217,7 +2228,11 @@ void config_vifs_from_file(void)
 		break;
 
 	    case CONF_RPT_PRUNE_LIMIT:
-		parse_rpt_prune_limit(s);
+		parse_state_limit(s, "rpt-prune-limit", &rpt_prune_limit, PIM_RPT_PRUNE_LIMIT);
+		break;
+
+	    case CONF_LOCAL_SG_LIMIT:
+		parse_state_limit(s, "local-sg-limit", &local_sg_limit, PIM_LOCAL_SG_LIMIT);
 		break;
 
 	    default:

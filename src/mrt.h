@@ -57,10 +57,6 @@
 #define MRTF_REG_SUPP		0x0800	/* register suppress	???	    */
 #define MRTF_ASSERTED		0x1000	/* upstream is not that of src ???  */
 #define MRTF_SG			0x2000	/* (S,G) pure, not hanging off of (*,G)*/
-#define MRTF_RPT_LIMITED	0x4000	/* made for a neighbor's Prune(S,G,rpt),
-					 * one of the rpt_prune_entries that
-					 * rpt-prune-limit caps, see
-					 * rpt_prune_entry() in pim_proto.c */
 #define MRTF_MFC_CLONE_SG	0x8000	/* clone (S,G) MFC from (*,G) or (*,*,RP) */
 
 /* Macro to duplicate oif info (oif bits, timers) */
@@ -90,9 +86,9 @@
 	    free((mrtentry_ptr)->rpt_expires);			\
 	if ((mrtentry_ptr)->rpt_pp_expires)			\
 	    free((mrtentry_ptr)->rpt_pp_expires);		\
-	if (((mrtentry_ptr)->flags & MRTF_RPT_LIMITED) &&	\
-	    rpt_prune_entries > 0)				\
-	    rpt_prune_entries--;				\
+	if ((mrtentry_ptr)->limit_count &&			\
+	    *(mrtentry_ptr)->limit_count > 0)			\
+	    (*(mrtentry_ptr)->limit_count)--;			\
 	curr = (mrtentry_ptr)->kernel_cache;			\
 	while (curr) {						\
 	    next = curr->next;					\
@@ -332,6 +328,12 @@ typedef struct mrtentry {
 					 * already due.  See jp_timer_set()
 					 */
     uint16_t		 rs_timer;	/* Register-Suppression Timer	    */
+    uint32_t		*limit_count;	/* The count of the pimd.conf limit
+					 * this entry was made under, given
+					 * back by FREE_MRTENTRY(); NULL for
+					 * an entry no limit applies to, see
+					 * rpt_prune_entry() and
+					 * local_sg_entry()		    */
     struct kernel_cache *kernel_cache;	/* List of the kernel cache entries */
 } mrtentry_t;
 

@@ -71,6 +71,11 @@
  * routers create, not a protocol constant: see rpt_prune_entry().
  */
 #define PIM_RPT_PRUNE_LIMIT            1024
+/* How many (S,G) entries data from directly connected sources may make this
+ * router hold as their DR, local-sg-limit in pimd.conf.  Another cap on state
+ * others create, not a protocol constant: see local_sg_entry().
+ */
+#define PIM_LOCAL_SG_LIMIT             4096
 /* RFC 7761 sec. 4.11 Override_Interval, the range t_override is drawn from.
  * This was RFC 2362's [Random-Delay-Join-Timeout], 4.5, a different quantity.
  */

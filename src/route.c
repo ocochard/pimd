@@ -1446,6 +1446,63 @@ void process_kernel_call(ssize_t recvlen)
 
 
 /*
+ * The (S,G) entries made as the DR for data from directly connected sources,
+ * which local-sg-limit caps.  FREE_MRTENTRY() (src/mrt.h) gives one back
+ * whichever path frees the entry.
+ */
+uint32_t local_sg_entries = 0;
+
+/*
+ * The (S,G) entry for a packet from @source, directly connected on a LAN
+ * this router is the DR for, to @group, or NULL where there is none to be had.
+ *
+ * Every group such a packet names that has no entry yet gets one, along with
+ * a source entry, a group entry, an RPF lookup and a kernel cache entry, and
+ * whoever sends it chooses the group and, on its own subnet, the source:
+ * RFC 7761 sec. 6.4's first attack.  Unbounded, one host on the LAN decides
+ * how much this router holds, and the default build exits when an
+ * allocation finally fails.  So the entries are counted, and past
+ * local_sg_limit no new one is made.  An entry that already exists, for
+ * whatever reason it was made, is always returned.  What a refused source
+ * loses is the Register: it is not forwarded beyond its LAN, and each of its
+ * packets stays a cache miss.
+ */
+static mrtentry_t *local_sg_entry(uint32_t source, uint32_t group)
+{
+    static int warned = FALSE;
+    mrtentry_t *mrt;
+
+    mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
+    if (mrt)
+	return mrt;
+
+    if (local_sg_entries >= local_sg_limit) {
+	if (!warned) {
+	    logit(LOG_WARNING, 0, "local-sg-limit %u reached, no more (S,G) state for local sources",
+		  local_sg_limit);
+	    warned = TRUE;
+	}
+	IF_DEBUG(DEBUG_MRT)
+	    logit(LOG_NOTICE, 0, "Not holding (%s,%s), local-sg-limit %u reached",
+		  inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)), local_sg_limit);
+	return NULL;
+    }
+    warned = FALSE;
+
+    mrt = find_route(source, group, MRTF_SG, CREATE);
+    if (!mrt)
+	return NULL;
+
+    if (mrt->flags & MRTF_NEW) {
+	mrt->flags &= ~MRTF_NEW;
+	mrt->limit_count = &local_sg_entries;
+	local_sg_entries++;
+    }
+
+    return mrt;
+}
+
+/*
  * TODO: when cache miss, check the iif, because probably ASSERTS
  * shoult take place
  */
@@ -1488,11 +1545,9 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
      * to the oifs. */
 
     if ((uvifs[iif].uv_flags & VIFF_DR) && (find_vif_direct_local(source, TRUE) == iif)) {
-	mrt = find_route(source, group, MRTF_SG, CREATE);
+	mrt = local_sg_entry(source, group);
 	if (!mrt)
 	    return;
-
-	mrt->flags &= ~MRTF_NEW;
 
 	/* Set PIMREG_VIF as outgoing interface only where a Register could
 	 * follow: not when I am the RP, and not for a group in the SSM
