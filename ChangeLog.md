@@ -21,7 +21,10 @@ pimd on all routers in the same domain.  See issue #93 for details.
   this differs from the RFC: on FreeBSD a copy of a data Register is a
   Null-Register, the kernel handing pimd only the headers; a copy's TTL is
   one less than the Register's; and the join on a copy ignores
-  `spt-threshold`.  See pimd.conf(5).  Tested by `test/anycast.sh`, the
+  `spt-threshold`.  A member copies at most 256 Registers a second, and at
+  most 64 of them whole, the rest as Null-Registers, since the sender need
+  not be a DR that rate-limits itself.  See pimd.conf(5).  Tested by
+  `test/anycast.sh`, the
   `anycast` and `anycast-dr` scenarios of `test/freebsd-lab.sh`, and in both
   directions against an Arista vEOS 4.36.1F member by the `anycast` scenario
   of `test/freebsd-interop.sh`
@@ -59,6 +62,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   without bound.  Past the limit a Prune addressed to pimd is not applied,
   and one overheard upstream is overridden with an early Join(*,G) instead
   of a Join(S,G,rpt).  `pimctl show status` reports the count
+- New `register-sg-limit` setting in `pimd.conf`, default 4096: how many
+  (S,G) entries PIM Register messages may make pimd hold as an RP.  A
+  Register names a source and group of the sender's choosing and is
+  unicast from anywhere, so one sender could grow the routing table on an
+  RP without bound, and with `anycast-rp` a Register claiming a member's
+  address also makes the member join the source tree.  Past the limit a
+  Register still gets its Register-Stop but makes no state.  `pimctl show
+  status` reports the count.  RFC 7761 sec. 6.4, RFC 4610 sec. 6.1
 - New `local-sg-limit` setting in `pimd.conf`, default 4096: how many
   (S,G) entries data from directly connected sources may make pimd hold as
   their DR.  Every packet to a group with no entry yet made one, with a

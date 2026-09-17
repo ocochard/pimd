@@ -1181,6 +1181,68 @@ static uint32_t register_rp_address(uint32_t reg_src, uint32_t reg_dst, uint32_t
 }
 
 /*
+ * The (S,G) entries made for the sources PIM Registers name, which
+ * register-sg-limit caps.  FREE_MRTENTRY() (src/mrt.h) gives one back
+ * whichever path frees the entry.
+ */
+uint32_t register_sg_entries = 0;
+
+/*
+ * The (S,G) entry for (@source,@group) as named in a Register this router
+ * is the RP for, or NULL where there is none to be had.
+ *
+ * The source and the group are the sender's to choose, the sender need not
+ * be a neighbor, and, being unicast, a Register can claim any source
+ * address: that of a DR, or of another member of an Anycast-RP set, whose
+ * copies make state and joins as well.  Unbounded, whoever can reach an RP
+ * decides how much it holds.  So the entries are counted, and past
+ * register_sg_limit no new one is made; an entry that already exists, for
+ * whatever reason it was made, is always returned.  A refused source loses
+ * the state, and so the Keepalive Timer and the join a copy would have made;
+ * the Register-Stop it is owed is still sent.
+ */
+static mrtentry_t *register_sg_entry(uint32_t source, uint32_t group)
+{
+    static int warned = FALSE;
+    mrtentry_t *mrt;
+
+    mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
+    if (mrt)
+	return mrt;
+
+    if (register_sg_entries >= register_sg_limit) {
+	if (!warned) {
+	    logit(LOG_WARNING, 0, "register-sg-limit %u reached, no more (S,G) state for Registers",
+		  register_sg_limit);
+	    warned = TRUE;
+	}
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_NOTICE, 0, "Not holding (%s,%s) for a Register, register-sg-limit %u reached",
+		  inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)), register_sg_limit);
+	return NULL;
+    }
+    warned = FALSE;
+
+    mrt = find_route(source, group, MRTF_SG, CREATE);
+    if (!mrt)
+	return NULL;
+
+    if (mrt->flags & MRTF_NEW) {
+	mrt->flags &= ~MRTF_NEW;
+	mrt->limit_count = &register_sg_entries;
+	register_sg_entries++;
+	change_interfaces(mrt,
+			  mrt->incoming,
+			  mrt->joined_oifs,
+			  mrt->pruned_oifs,
+			  mrt->leaves,
+			  mrt->asserted_oifs, 0);
+    }
+
+    return mrt;
+}
+
+/*
  * The (S,G) an RP holds for a source it has been sent a Register for, with
  * its Keepalive Timer started when the switch policy would switch, as RFC
  * 7761 sec. 4.4.2 has it.  The caller sends the Register-Stop, if any.
@@ -1189,19 +1251,10 @@ static mrtentry_t *register_sg_state(uint32_t inner_src, uint32_t inner_grp)
 {
     mrtentry_t *mrtentry;
 
-    mrtentry = find_route(inner_src, inner_grp, MRTF_SG, CREATE);
+    mrtentry = register_sg_entry(inner_src, inner_grp);
     if (!mrtentry)
 	return NULL;
 
-    if (mrtentry->flags & MRTF_NEW) {
-	mrtentry->flags &= ~MRTF_NEW;
-	change_interfaces(mrtentry,
-			  mrtentry->incoming,
-			  mrtentry->joined_oifs,
-			  mrtentry->pruned_oifs,
-			  mrtentry->leaves,
-			  mrtentry->asserted_oifs, 0);
-    }
     SET_TIMER(mrtentry->entry_timer, PIM_DATA_TIMEOUT);
 
     if (spt_switch_on_first_packet())
@@ -1236,12 +1289,15 @@ static mrtentry_t *register_sg_state(uint32_t inner_src, uint32_t inner_grp)
 static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl, char *msg, size_t len,
 				 uint32_t inner_src, uint32_t inner_grp, int is_null)
 {
+    static time_t window, last_warned;
+    static size_t sent, sent_data;
     pim_register_t *reg;
     struct ip *ip;
     uint32_t local, member;
-    size_t avail, iplen = 0, i;
+    size_t avail, iplen = 0, i, others = 0;
     int pktlen, whole;
     uint8_t tos = 0;
+    time_t now;
 
     local = anycast_rp_local(anycast);
     if (local == INADDR_ANY_N)
@@ -1264,6 +1320,41 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
 	iplen = ntohs(ip->ip_len);
     whole = !is_null && iplen >= sizeof(struct ip) && iplen <= avail &&
 	iplen <= SEND_BUF_SIZE - sizeof(struct ip) - sizeof(pim_header_t) - sizeof(pim_register_t);
+
+    /* Every Register accepted here goes out once per other member, and the
+     * sender need not be a DR that Register-Stops and rate-limits itself:
+     * RFC 4610 sec. 4 leaves the rate to the DR.  So the copies are budgeted
+     * per second over every set, and the budget is spent per Register, so
+     * that the members of a set all get a copy or none do.  Past the data
+     * budget the copy is a Null-Register, which carries the state that the
+     * members need and not the bytes; past the whole budget there is none. */
+    for (i = 0; (member = anycast_rp_member_at(anycast, i)) != INADDR_ANY_N; i++) {
+	if (member != local)
+	    others++;
+    }
+    if (!others)
+	return;
+
+    now = time(NULL);
+    if (now != window) {
+	window = now;
+	sent = sent_data = 0;
+    }
+    if (sent + others > ANYCAST_RP_COPY_RATE) {
+	if (now - last_warned >= PIM_REGISTER_SUPPRESSION_TIMEOUT) {
+	    last_warned = now;
+	    logit(LOG_WARNING, 0, "Anycast-RP copies over %d per second, not copying PIM Register from %s",
+		  ANYCAST_RP_COPY_RATE, inet_fmt(reg_src, s1, sizeof(s1)));
+	}
+	return;
+    }
+    sent += others;
+    if (whole) {
+	if (sent_data + others > ANYCAST_RP_DATA_COPY_RATE)
+	    whole = FALSE;
+	else
+	    sent_data += others;
+    }
     if (whole)
 	tos = ip->ip_tos;
 
@@ -1510,8 +1601,9 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	 * Register-Stop, and the next Register is decapsulated to whoever has
 	 * joined by then.
 	 */
-	if (!register_sg_state(inner_src, inner_grp))
-	    return TRUE;
+	/* Refused by register-sg-limit or not, the sender is answered: a
+	 * Register-Stop is what quiets it. */
+	register_sg_state(inner_src, inner_grp);
 
 	if (spt_switch_on_first_packet())
 	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
@@ -1644,7 +1736,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	     * case above for why this joins the source tree, data or not.
 	     * The kernel entry above still forwards the packet this copy
 	     * carried, and any that follow before the Join takes effect. */
-	    if (is_copy)
+	    if (is_copy && register_sg_entry(inner_src, inner_grp))
 		switch_shortest_path(inner_src, inner_grp);
 
 	    return TRUE;
@@ -2023,8 +2115,15 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
     /* XXX: not in the spec: check if the PIM_REGISTER_STOP originator is
      * really the RP
      */
+    /* A member's Register-Stop only stops what this router is registering
+     * to the set: an entry with the register vif in its oifs, as the
+     * wildcard case above requires too.  Anything else would let any
+     * member, or anyone sending from its address, arm the
+     * Register-Suppression timer of an entry this router never
+     * registered. */
     if (check_mrtentry_rp(mrtentry, reg_src) == FALSE &&
-	!(mrtentry->group->active_rp_grp && register_stop_from_set(mrtentry->group->rpaddr, reg_src)))
+	!(mrtentry->group->active_rp_grp && PIMD_VIFM_ISSET(PIMREG_VIF, mrtentry->joined_oifs) &&
+	  register_stop_from_set(mrtentry->group->rpaddr, reg_src)))
 	return FALSE;
 
     suppress_register(mrtentry);

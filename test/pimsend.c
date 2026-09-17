@@ -29,7 +29,9 @@
  * family nobody assigned, a holdtime of 0xffff -- and then stop existing,
  * so that what the router does next is the router's own behaviour.
  *
- * That is all this is.  It builds one message, sends it once and exits.
+ * That is all this is.  It builds one message, sends it once and exits --
+ * or -c times in a row, for the rare test about how much of something a
+ * router will take, since a process per packet cannot send fast enough.
  * Nothing here is a PIM implementation: it keeps no state, answers
  * nothing, and never becomes a neighbour of anybody unless you tell it to
  * send a Hello.
@@ -505,6 +507,7 @@ static int usage(int rc)
 		"             entries (S,G,rpt) ones\n"
 		"  -X SOURCE  Add a Prune(S,G,rpt) for SOURCE to the group set, the\n"
 		"             compound Join(*,G) of RFC 7761 sec. 4.5.6, repeatable\n"
+		"  -c COUNT   Send the message COUNT times in a row, default 1\n"
 		"\n"
 		"Fields that exist here to be got wrong:\n"
 		"  -V VER     PIM version, default 2\n"
@@ -538,6 +541,7 @@ int main(int argc, char *argv[])
 	uint16_t sum;
 	size_t len;
 	int sd, c, on = 1, rec_set = 0;
+	unsigned count = 1, n;
 
 	memset(&o, 0, sizeof(o));
 	memset(&ifaddr, 0, sizeof(ifaddr));
@@ -576,13 +580,14 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "0A:BC:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wX:Z")) != -1) {
+	while ((c = getopt(argc, argv, "0A:BC:c:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wX:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
 		case 'F': o.rec_family = num(optarg, "address family"); rec_set |= 2; break;
 		case 'B': o.bidir = 1;					break;
 		case 'C': o.metric = num(optarg, "metric");		break;
+		case 'c': count = num(optarg, "count");		break;
 		case 'd': dest = optarg;				break;
 		case 'e': o.encoding = num(optarg, "encoding type");	break;
 		case 'f': o.family = num(optarg, "address family");	break;
@@ -696,8 +701,10 @@ int main(int argc, char *argv[])
 	dst.sin_family = AF_INET;
 	dst.sin_addr = addr(dest, "destination");
 
-	if (sendto(sd, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
-		err(1, "failed sending to %s", dest);
+	for (n = 0; n < count; n++) {
+		if (sendto(sd, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
+			err(1, "failed sending to %s", dest);
+	}
 
 	close(sd);
 

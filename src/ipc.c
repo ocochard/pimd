@@ -880,6 +880,7 @@ static int show_status(FILE *fp)
 	fprintf(fp, "IGMP querier timeout : %d sec\n", igmp_querier_timeout);
 	fprintf(fp, "RPT Prune entries    : %u of %u\n", rpt_prune_entries, rpt_prune_limit);
 	fprintf(fp, "Local (S,G) entries  : %u of %u\n", local_sg_entries, local_sg_limit);
+	fprintf(fp, "Register (S,G) state : %u of %u\n", register_sg_entries, register_sg_limit);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_anycast_rp(fp);

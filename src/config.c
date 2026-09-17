@@ -72,6 +72,7 @@
 #define CONF_RPT_PRUNE_LIMIT                    20
 #define CONF_LOCAL_SG_LIMIT                     21
 #define CONF_ANYCAST_RP                         22
+#define CONF_REGISTER_SG_LIMIT                  23
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -159,6 +160,7 @@ uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
 uint16_t pim_timer_hello_holdtime = PIM_TIMER_HELLO_HOLDTIME;
 uint32_t rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
 uint32_t local_sg_limit = PIM_LOCAL_SG_LIMIT;
+uint32_t register_sg_limit = PIM_REGISTER_SG_LIMIT;
 
 /*
  * Forward declarations.
@@ -672,6 +674,8 @@ static int parse_option(char *word)
 	return CONF_RPT_PRUNE_LIMIT;
     if (EQUAL(word, "local-sg-limit"))
 	return CONF_LOCAL_SG_LIMIT;
+    if (EQUAL(word, "register-sg-limit"))
+	return CONF_REGISTER_SG_LIMIT;
 
     return CONF_UNKNOWN;
 }
@@ -2523,6 +2527,7 @@ void config_vifs_from_file(void)
     igmp_querier_timeout = 0;	/* Derived from the query interval below */
     rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
     local_sg_limit = PIM_LOCAL_SG_LIMIT;
+    register_sg_limit = PIM_REGISTER_SG_LIMIT;
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -2619,6 +2624,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_LOCAL_SG_LIMIT:
 		parse_state_limit(s, "local-sg-limit", &local_sg_limit, PIM_LOCAL_SG_LIMIT);
+		break;
+
+	    case CONF_REGISTER_SG_LIMIT:
+		parse_state_limit(s, "register-sg-limit", &register_sg_limit, PIM_REGISTER_SG_LIMIT);
 		break;
 
 	    default:

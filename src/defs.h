@@ -288,6 +288,7 @@ extern uint16_t         pim_timer_hello_interval;
 extern uint16_t         pim_timer_hello_holdtime;
 extern uint32_t         rpt_prune_limit;
 extern uint32_t         local_sg_limit;
+extern uint32_t         register_sg_limit;
 
 /* TODO: describe the variables and clean up */
 extern char		*igmp_recv_buf;
@@ -573,6 +574,7 @@ extern void	send_pim_unicast	(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint
 
 /* pim_proto.c */
 extern uint32_t	rpt_prune_entries;
+extern uint32_t	register_sg_entries;
 extern int	receive_pim_hello	(uint32_t src, uint32_t dst, char *msg, size_t len);
 extern int	send_pim_hello		(struct uvif *v, uint16_t holdtime);
 extern void	delete_pim_nbr		(pim_nbr_entry_t *nbr_delete);

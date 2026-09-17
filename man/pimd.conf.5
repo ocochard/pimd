@@ -176,6 +176,26 @@ reports the entries held.  Raise it on a designated router for more
 sources and groups than the default.  0 makes no such entries at all.
 .Pp
 Default value: 4096
+.It Cm register-sg-limit Ar <0-1000000>
+The most (S,G) routing entries that PIM Register messages may make
+.Nm pimd
+hold as a rendezvous point.  Each Register names a source and a group of
+its sender's choosing, is unicast from anywhere that can reach the RP,
+and can claim any source address, including that of another member of an
+.Cm anycast-rp
+set, whose copies make state and join the source tree as well.  Without a
+limit, whoever can reach the RP decides how much state it holds.
+.Pp
+Once the limit is reached a Register for a source and group
+.Nm pimd
+holds no entry for makes none: the Register-Stop it is owed is still sent,
+but no keepalive is kept and no copy leads to a join.  Entries already held
+are refreshed as before.  A warning is logged the first time, and
+.Cm pimctl show status
+reports the entries held.  Raise it on an RP for more active sources than
+the default.  0 makes no such entries at all.
+.Pp
+Default value: 4096
 .It Cm no phyint
 This setting controls if
 .Nm pimd
@@ -396,6 +416,15 @@ every source, with no MSDP between the members.  A member that is itself
 the designated router of a source is sent no Register to copy, and
 registers the source to the other members instead, from its unique
 address, honouring their Register-Stops as a designated router does.
+.Pp
+A member copies at most 256 Registers a second, over all its sets, to the
+other members, and at most 64 of those whole with their data; past 64 a
+copy is a Null-Register, which carries the source to the other members
+without the packet, and past 256 there is no copy and a warning is logged.
+RFC 4610 leaves rate limiting to the designated router, which a sender that
+is not one does not do, so every accepted Register would otherwise be sent
+on once per member.  The state Registers make on a member is capped by
+.Cm register-sg-limit .
 .Pp
 Give one line per member, this router's own unique address included, so
 that the same lines can be used on every member.  At most 8 members per

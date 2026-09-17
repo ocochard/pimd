@@ -59,7 +59,7 @@ runtime `pimctl` dumps.
 `test/pimsend.c` is the PIM-socket counterpart of `test/igmpv3.c`: it builds one PIM
 message of any type, with every field that can be got wrong exposed as an option (version,
 type nibble, checksum, group and source mask lengths, address family and encoding type, the
-B and Z bits, holdtime), sends it once and exits. Most of `doc/rfc7761-compliance.md` cannot
+B and Z bits, holdtime), sends it once (or `-c COUNT` times, for a burst) and exits. Most of `doc/rfc7761-compliance.md` cannot
 be reproduced by a lab of pimds at all -- two pimds share one reading of the wire, so a field
 pimd encodes wrongly it also decodes wrongly and the lab stays green -- and this is the way
 past that. The `crafted` scenario is its first user; write the positive control beside every
@@ -127,8 +127,11 @@ scenario with configured so that every other assertion is a soak test of it -- w
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 `anycast` the only one where two routers are the RP for the same address, an RFC 4610
 Anycast-RP set on `lo0` of R2 and R3 that copy each other Registers (Null-Registers on FreeBSD,
-whose kernel hands pimd only the headers of a data Register), and `anycast-dr` the same set moved
-so that R1 is the RP and the DR of the source at once and has to register it to R3 itself,
+whose kernel hands pimd only the headers of a data Register), which also asserts the copy budget with a
+`pimsend -c` burst (step 10) and `register-sg-limit` refusing Register-made state, given back by a reload
+(step 11), and `anycast-dr` the same set moved so that R1 is the RP and the DR of the source at once and
+has to register it to R3 itself, and must not let a member's Register-Stop arm the suppression timer of
+an entry it is not registering (step 9),
 and `register-filter` the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the

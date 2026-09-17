@@ -550,8 +550,13 @@
 #               than the Register's, R3 holding the (S,G) before anybody
 #               joins and not copying it on, that (S,G) living past its
 #               own timeout on nothing but the copied probes, and at last a
-#               receiver behind R3 reached.  Takes about 5 minutes, most of
-#               it that timeout.
+#               receiver behind R3 reached.  Then two things about what a
+#               member takes from whoever sends it Registers: a burst of
+#               600 copied only up to the per-second budget, data copies
+#               turning into Null-Registers first, and register-sg-limit,
+#               which R2 runs with at 4, holding some of six sources a
+#               Register each names and refusing the rest.  Takes about 5
+#               minutes, most of it that timeout.
 #
 #   anycast-dr  The same set, moved one router upstream: R1 and R3 hold
 #               $ANY_ADDR, and R2 is a plain router whose route to it goes
@@ -565,8 +570,10 @@
 #               Starts without a set as anycast does, then asserts the data
 #               Register from R1 to R3, R1 honouring R3's Register-Stop and
 #               probing it with Null-Registers afterwards, and a receiver
-#               behind R3 reached.  Takes 2 to 3 minutes, depending on when
-#               the probe falls due.
+#               behind R3 reached, and last a member's Register-Stop for an
+#               entry R1 is not registering, which has to leave that
+#               entry's Register-Suppression timer alone.  Takes 2 to 3
+#               minutes, depending on when the probe falls due.
 #
 #   crafted     The rpt topology with nothing forwarded, and the only
 #               scenario whose messages pimd did not build.  Every other
@@ -1044,9 +1051,22 @@ ANY_R3=${ANY_R3:-10.0.23.3}
 ANY_DR=${ANY_DR:-10.0.1.1}
 ANY_GROUP=${ANY_GROUP:-225.1.2.4}
 ANY_REFRESH=${ANY_REFRESH:-240}
+# anycast, the last two steps: the register-sg-limit R2 runs the whole
+# scenario with, low enough for a handful of Registers to reach it; the
+# group and source of the burst the copy budget is tested with, and how
+# many Registers are in it, more than ANYCAST_RP_COPY_RATE (src/pimd.h) in
+# one second; and the group the limit is tested on
+ANY_SG_LIMIT=${ANY_SG_LIMIT:-4}
+ANY_BURST_GROUP=${ANY_BURST_GROUP:-225.1.2.5}
+ANY_BURST_SRC=${ANY_BURST_SRC:-10.0.1.90}
+ANY_BURST=${ANY_BURST:-600}
+ANY_LIMIT_GROUP=${ANY_LIMIT_GROUP:-225.1.2.6}
 # anycast-dr: R1's member address, its end of the R1-R2 link.  R3 is
 # member $ANY_R3 as in anycast.
 ANYDR_R1=${ANYDR_R1:-10.0.12.1}
+# anycast-dr, the last step: the (S,G) R1 holds without registering it
+ANYDR_STOP_GROUP=${ANYDR_STOP_GROUP:-225.1.2.7}
+ANYDR_STOP_SRC=${ANYDR_STOP_SRC:-10.0.3.90}
 
 # crafted: the addresses and the one bad byte that scenario is built on.
 #
@@ -1993,8 +2013,10 @@ write_configs() {
 		EOF
 
 		cat <<-EOF > "$WORKDIR/r2.conf"
-		# R2: holds $ANY_ADDR on lo0, the RP R1's Registers reach
+		# R2: holds $ANY_ADDR on lo0, the RP R1's Registers reach,
+		# with room for few Registers' state, see check_anycast()
 		rp-address $ANY_ADDR
+		register-sg-limit $ANY_SG_LIMIT
 		EOF
 
 		cat <<-EOF > "$WORKDIR/r3.conf"
@@ -3876,6 +3898,71 @@ check_anycast() {
 	kill "$sender" 2>/dev/null || true
 	wait "$sender" 2>/dev/null || true
 
+	# RFC 4610 leaves rate limiting to the DR, and whoever sends Registers
+	# to the anycast address need not be one.  One process sends the whole
+	# burst, pimsend -c: one per packet is far too slow to cross the limit.
+	# A Register whose inner packet is an IP header alone is one FreeBSD
+	# hands pimd whole, so its copies start out as data copies.
+	print "10. A burst of Registers is copied only up to the budget"
+	jrun ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_BURST_GROUP" \
+		-s "$ANY_BURST_SRC" -c "$ANY_BURST" >/dev/null 2>&1 || true
+	sleep 3
+	burst="Copy PIM Register from $SRC_ADDR for ($ANY_BURST_SRC, $ANY_BURST_GROUP) to Anycast-RP member $ANY_R3"
+	data=$(${SUDO} grep -c "$burst, TTL [0-9]*, data" "$WORKDIR/r2.log" 2>/dev/null || true)
+	null=$(${SUDO} grep -c "$burst, TTL [0-9]*, null" "$WORKDIR/r2.log" 2>/dev/null || true)
+	data=${data:-0}
+	null=${null:-0}
+	# The budget is per second and a burst may straddle two, hence twice
+	if [ "$data" -ge 1 ] && [ "$data" -le 128 ] && [ "$null" -ge 1 ]; then
+		ok "r2 copied $data whole and then $null as Null-Registers, the data budget is 64 a second"
+	else
+		fail "r2 copied $data whole and $null as Null-Registers from a burst of $ANY_BURST"
+	fi
+	if [ $((data + null)) -le 512 ] && logged r2 "Anycast-RP copies over 256 per second"; then
+		ok "r2 copied $((data + null)) of $ANY_BURST and said it stopped at 256 a second"
+	else
+		fail "r2 copied $((data + null)) of $ANY_BURST, or never said it hit the copy budget"
+	fi
+
+	# The Registers name sources one at a time, as a Register from anywhere
+	# can.  R2 is full already: the steps above left it an entry for every
+	# source registered to it, ED2 answering among them.  A reload frees
+	# them, which is also the check that the count is given back, and the
+	# probes still arriving can take a slot again before the six do, so what
+	# is asserted is that some of the six fit and some do not.
+	print "11. Registers make no more state than register-sg-limit allows"
+	pimctl r2 restart >/dev/null 2>&1 || die "failed reloading pimd on r2"
+	wait_for 30 anycast_member_is r2 "$ANY_R2" || true
+	# The reload drops the neighbours too, and pimd makes no (S,G) for a
+	# source whose next hop is not a PIM neighbour, limit or none
+	wait_for 60 has_neighbor r2 10.0.12.1 || true
+	count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
+	if [ -n "$count" ] && [ "$count" -lt "$ANY_SG_LIMIT" ]; then
+		ok "r2 counts $count Register (S,G) entries after a reload, the count was given back"
+	else
+		fail "r2 counts '$count' Register (S,G) entries after a reload"
+	fi
+	for i in 101 102 103 104 105 106; do
+		jrun ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_LIMIT_GROUP" \
+			-s "10.0.1.$i" -N >/dev/null 2>&1 || true
+	done
+	sleep 2
+	held=0
+	for i in 101 102 103 104 105 106; do
+		has_sg r2 "10.0.1.$i" "$ANY_LIMIT_GROUP" && held=$((held + 1))
+	done
+	count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
+	if [ "$held" -ge 1 ] && [ "$held" -lt 6 ] && logged r2 "register-sg-limit $ANY_SG_LIMIT reached"; then
+		ok "r2 holds $held of 6 sources, and said it reached register-sg-limit $ANY_SG_LIMIT"
+	else
+		fail "r2 holds $held of 6 sources under register-sg-limit $ANY_SG_LIMIT"
+	fi
+	if [ -n "$count" ] && [ "$count" -le "$ANY_SG_LIMIT" ]; then
+		ok "r2 counts $count Register (S,G) entries of $ANY_SG_LIMIT"
+	else
+		fail "r2 counts '$count' Register (S,G) entries against a limit of $ANY_SG_LIMIT"
+	fi
+
 	result
 }
 
@@ -4036,6 +4123,33 @@ check_anycast_dr() {
 	fi
 	kill "$sender" 2>/dev/null || true
 	wait "$sender" 2>/dev/null || true
+
+	# A member's Register-Stop is taken for the entries R1 registers to the
+	# set, which step 6 is the positive control for, and for no other.  The
+	# entry here R1 holds only because a member's Register made it, and a
+	# Register-Stop acted on would still arm its Register-Suppression timer.
+	print "9. A member's Register-Stop leaves an entry R1 does not register alone"
+	jrun r3 "$PIMSEND" -i "$ANY_R3" register -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
+		-s "$ANYDR_STOP_SRC" -N >/dev/null 2>&1 || true
+	if wait_for 10 has_sg r1 "$ANYDR_STOP_SRC" "$ANYDR_STOP_GROUP"; then
+		ok "r1 holds ($ANYDR_STOP_SRC,$ANYDR_STOP_GROUP) from a member's Register, and registers nothing for it"
+	else
+		fail "r1 holds no ($ANYDR_STOP_SRC,$ANYDR_STOP_GROUP) after a member's Register"
+		return 1
+	fi
+	jrun r3 "$PIMSEND" -i "$ANY_R3" regstop -d "$ANYDR_R1" -g "$ANYDR_STOP_GROUP" \
+		-s "$ANYDR_STOP_SRC" >/dev/null 2>&1 || true
+	if wait_for 10 logged r1 "Received PIM_REGISTER_STOP from RP $ANY_R3 to $ANYDR_R1 for src = $ANYDR_STOP_SRC"; then
+		ok "r1 was sent the Register-Stop"
+	else
+		fail "r1 logged no Register-Stop for ($ANYDR_STOP_SRC,$ANYDR_STOP_GROUP)"
+	fi
+	rs=$(route_timer r1 "$ANYDR_STOP_SRC" "$ANYDR_STOP_GROUP" 3)
+	if [ "${rs:-x}" = 0 ]; then
+		ok "r1's Register-Suppression timer for it stayed at 0"
+	else
+		fail "r1 armed the Register-Suppression timer of an entry it does not register ('$rs')"
+	fi
 
 	result
 }

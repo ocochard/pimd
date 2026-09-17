@@ -76,6 +76,19 @@
  * others create, not a protocol constant: see local_sg_entry().
  */
 #define PIM_LOCAL_SG_LIMIT             4096
+/* How many (S,G) entries PIM Register messages may make this router hold as
+ * an RP, register-sg-limit in pimd.conf.  Each Register names a source and a
+ * group of its sender's choosing: see register_sg_entry().
+ */
+#define PIM_REGISTER_SG_LIMIT          4096
+/* The Registers an Anycast-RP member copies to the rest of its set, per
+ * second over every set: in all, and those copied whole with their data.
+ * Past the second a copy is sent as a Null-Register, past the first it is
+ * not sent.  RFC 4610 leaves rate limiting to the DR, which a sender that
+ * is not a DR does not do; see copy_register_to_set().
+ */
+#define ANYCAST_RP_COPY_RATE           256
+#define ANYCAST_RP_DATA_COPY_RATE      64
 /* RFC 7761 sec. 4.11 Override_Interval, the range t_override is drawn from.
  * This was RFC 2362's [Random-Delay-Join-Timeout], 4.5, a different quantity.
  */
