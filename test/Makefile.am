@@ -1,6 +1,6 @@
 EXTRA_DIST         = README.md anycast.sh igmpv3.c lib.sh mping.c pimsend.c pod.sh rp.sh shared.sh single.sh ssm.sh three.sh two.sh
-# Not in TESTS: needs FreeBSD vnet jails and root, see the script header
-EXTRA_DIST        += freebsd-lab.sh lab-freebsd.sh
+# Not in TESTS: needs root and FreeBSD vnet jails or Linux named netns, see the script header
+EXTRA_DIST        += freebsd-lab.sh lab-freebsd.sh lab-linux.sh
 # Not in TESTS either: needs bhyve and a licensed Arista vEOS image on top
 EXTRA_DIST        += freebsd-interop.sh veos-bhyve.sh
 CLEANFILES         = *~ *.trs *.log

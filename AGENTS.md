@@ -76,7 +76,10 @@ vnet jails, root and `ip_mroute.ko` (plus `if_bridge.ko` for the shared segment 
 `routesock.c` and `kern.c` BSD branches the Linux suite can never reach. Its scenarios reach the host
 only through the functions of `test/lab-freebsd.sh` (jails, epairs, bridges, addresses, routes, and
 the kernel's MFC, vif and membership views), so a check that needs something from the OS gets a
-function there rather than an inline `jexec`/`ifconfig`/`netstat`. `NETLINK=yes` points
+function there rather than an inline `jexec`/`ifconfig`/`netstat`. `test/lab-linux.sh` implements the
+same functions over named netns, veth and Linux bridges, picked by `uname -s`, so the same script runs
+the same scenarios as root on Linux (not under `make check`); a fact the scenarios assert that differs
+by kernel (`LOOPBACK_IF`, `REGISTER_UPCALL`) is a variable there too. `NETLINK=yes` points
 it at a `--enable-netlink` build instead, so the same scenarios run over `netlink.c` on FreeBSD;
 it asks `pimctl show status` which backend the daemon has rather than trust the tree. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,

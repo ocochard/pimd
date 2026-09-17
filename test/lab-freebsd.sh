@@ -34,8 +34,19 @@
 #   kern_vif_addr BOX VIF               local address of one kernel vif
 #   registers_rcvd BOX                  Registers the kernel decapsulated
 #   if_memberships BOX IF               groups the interface is a member of
+#   $LOOPBACK_IF                        the loopback interface's name
+#   $REGISTER_UPCALL                    what of a data Register the kernel
+#                                       hands pimd, "headers" or "whole"
 
 JAIL_PREFIX=pimd${TAG}_
+
+# Where a scenario puts an address the router owns rather than a link
+LOOPBACK_IF=lo0
+
+# pim_input() (sys/netinet/ip_mroute.c) hands pimd only the headers of a
+# data Register, so what pimd copies to another Anycast-RP member is a
+# Null-Register
+REGISTER_UPCALL=headers
 
 # The ifconfig(8) group every interface this lab creates is put in, so a
 # human can find or destroy one lab's links and not another's.  The slot

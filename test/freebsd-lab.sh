@@ -694,6 +694,12 @@
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
 # ./configure && gmake).  With NETLINK=yes, that tree has to be configured
 # --enable-netlink and netlink.ko has to be loadable.
+#
+# On Linux the same scenarios run over named network namespaces, veth pairs
+# and Linux bridges instead: root, iproute2, ethtool, a kernel with
+# CONFIG_IP_MROUTE and CONFIG_IP_PIMSM_V2, and NETLINK is always yes there.
+# Everything that touches the host is in lab-freebsd.sh or lab-linux.sh,
+# picked by uname(1); the name of this file is the system it was written on.
 
 set -eu
 
@@ -770,6 +776,16 @@ fi
 # the same way its lower case twin does.
 EP=epair$TAG
 EPU=Epair$TAG
+
+# The host side of the lab -- the boxes, the links, and what the kernel
+# makes of pimd's requests -- lives in a file per system, see its header.
+# Sourced this early because a backend may set a default the rest of the
+# variables below are derived from, NETLINK on Linux.
+case $(uname -s) in
+FreeBSD) . "$LAB_DIR/lab-freebsd.sh" ;;
+Linux)   . "$LAB_DIR/lab-linux.sh" ;;
+*)       echo "EXIT: no lab backend for $(uname -s)" >&2; exit 1 ;;
+esac
 
 # Set in the environment it is one directory for every slot, which cannot
 # work once more than one of them runs; run_parallel() refuses it.
@@ -1515,9 +1531,9 @@ addrs() {
 	if [ "$SCENARIO" = anycast-dr ]; then
 		case $1 in
 		ed1) echo "${EP}101a 10.0.1.10/24" ;;
-		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24 lo0 $ANY_ADDR/32" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24 $LOOPBACK_IF $ANY_ADDR/32" ;;
 		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
-		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 lo0 $ANY_ADDR/32" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 $LOOPBACK_IF $ANY_ADDR/32" ;;
 		ed2) echo "${EP}203b 10.0.3.10/24" ;;
 		esac
 		return
@@ -1527,8 +1543,8 @@ addrs() {
 		case $1 in
 		ed1) echo "${EP}101a 10.0.1.10/24" ;;
 		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
-		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24 lo0 $ANY_ADDR/32" ;;
-		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 lo0 $ANY_ADDR/32" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24 $LOOPBACK_IF $ANY_ADDR/32" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 $LOOPBACK_IF $ANY_ADDR/32" ;;
 		ed2) echo "${EP}203b 10.0.3.10/24" ;;
 		esac
 		return
@@ -1716,10 +1732,6 @@ route_metrics() {
 		;;
 	esac
 }
-
-# The host side of the lab -- the jails, the links, and what the kernel
-# makes of pimd's requests -- lives in a file of its own, see its header
-. "$LAB_DIR/lab-freebsd.sh"
 
 pimctl() { j=$1; shift; box_run "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
@@ -3519,7 +3531,7 @@ check_anycast() {
 	print "2. Both RPs hold $ANY_ADDR, and R1 has it for its RP"
 	for r in r2 r3; do
 		if pimctl "$r" show interface 2>/dev/null | grep -q "$ANY_ADDR"; then
-			ok "$r has a VIF on $ANY_ADDR, the anycast address on lo0"
+			ok "$r has a VIF on $ANY_ADDR, the anycast address on $LOOPBACK_IF"
 		else
 			fail "$r has no VIF on $ANY_ADDR, it cannot be the RP for it"
 		fi
@@ -3594,14 +3606,22 @@ check_anycast() {
 		kill "$sender" 2>/dev/null || true
 		return 1
 	fi
-	# What FreeBSD's pim_input() hands pimd of a data Register is the
-	# headers, so a copy of one can only be a Null-Register.  A "data"
-	# here would mean the kernel passes the whole packet up now, and the
-	# man page's deviation would want rewriting.
-	if logged r2 "$copy, TTL [0-9]*, null" && ! logged r2 "$copy, TTL [0-9]*, data"; then
-		ok "every copy is a Null-Register, the kernel gave r2 the headers only"
+	# A copy is what the kernel handed pimd of the Register.  FreeBSD's
+	# pim_input() hands up the headers of a data Register, so a copy there
+	# can only be a Null-Register; Linux hands up the whole packet, and the
+	# copy is a data Register.  The other kind here would mean the kernel
+	# changed, and the man page's deviation would want rewriting.
+	if [ "$REGISTER_UPCALL" = headers ]; then
+		want=null
+		other=data
 	else
-		fail "r2 copied a data Register, which FreeBSD should not have handed it whole"
+		want=data
+		other=null
+	fi
+	if logged r2 "$copy, TTL [0-9]*, $want" && ! logged r2 "$copy, TTL [0-9]*, $other"; then
+		ok "every copy is a $want Register, the kernel gave r2 the $REGISTER_UPCALL of it"
+	else
+		fail "r2 copied a $other Register, the kernel was expected to hand it the $REGISTER_UPCALL of one"
 	fi
 	if wait_for 30 has_sg r3 "$SRC_ADDR" "$ANY_GROUP"; then
 		ok "r3 holds ($SRC_ADDR,$ANY_GROUP) with nobody joined, RFC 4610 sec. 3"
@@ -3763,7 +3783,7 @@ check_anycast_dr() {
 	print "2. R1 and R3 hold $ANY_ADDR, and R2 has it for its RP"
 	for r in r1 r3; do
 		if pimctl "$r" show interface 2>/dev/null | grep -q "$ANY_ADDR"; then
-			ok "$r has a VIF on $ANY_ADDR, the anycast address on lo0"
+			ok "$r has a VIF on $ANY_ADDR, the anycast address on $LOOPBACK_IF"
 		else
 			fail "$r has no VIF on $ANY_ADDR, it cannot be the RP for it"
 		fi

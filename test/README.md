@@ -127,8 +127,16 @@ The scenarios never reach the host directly.  Everything that builds a
 box, runs a command in one, changes an interface or a route under it, or
 reads the kernel's multicast state back is a function in
 `test/lab-freebsd.sh`, which `freebsd-lab.sh` sources; its header lists
-them.  That file is the one to write again for the same scenarios to run
-on another system.
+them.  `test/lab-linux.sh` is the same functions over named network
+namespaces, veth pairs and Linux bridges, and the script picks one by
+`uname -s`, so on a Linux host, as root,
+
+    ./test/freebsd-lab.sh -j 19 run all
+
+runs the same nineteen scenarios against the Linux kernel and `netlink.c`.
+It needs iproute2, ethtool and a kernel with `CONFIG_IP_MROUTE` and
+`CONFIG_IP_PIMSM_V2`.  Unlike the automake suite it does not run under an
+unprivileged `unshare`: a box has to outlive the command that built it.
 
 Most scenarios share one topology, a chain of three routers with an end
 device at each end; the ones that do not say so below.  Unicast routing
