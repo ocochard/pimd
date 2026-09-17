@@ -95,13 +95,15 @@ int register_input_handler(int fd, ihfunc_t func)
 
 static void do_randomize(void)
 {
-#define rol32(data,shift) ((data) >> (shift)) | ((data) << (32 - (shift)))
    int fd;
-   unsigned int seed;
+   unsigned int seed, rot;
 
-   /* Set up a fallback seed based on quasi random. */
+   /* Set up a fallback seed based on quasi random: rotated by its own low
+    * five bits, a shift of 32 or more being undefined. */
    seed = time(NULL) ^ gethostid();
-   seed = rol32(seed, seed);
+   rot = seed & 31;
+   if (rot)
+       seed = (seed >> rot) | (seed << (32 - rot));
 
    fd = open("/dev/urandom", O_RDONLY);
    if (fd >= 0) {

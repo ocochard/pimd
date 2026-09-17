@@ -328,11 +328,12 @@ static void find_sockaddrs(struct rt_msghdr *rtm, struct sockaddr **dst, struct 
 {
     char *cp = (char *)(rtm + 1);
     struct sockaddr *sa;
-    int i;
+    unsigned int i;
 
     if (!rtm->rtm_addrs)
 	return;
 
+    /* Unsigned, so the bit walks off the top to 0 rather than overflowing */
     for (i = 1; i; i <<= 1) {
 	if (i & rtm->rtm_addrs) {
 	    sa = (struct sockaddr *)cp;

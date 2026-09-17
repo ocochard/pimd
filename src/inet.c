@@ -250,12 +250,12 @@ static void domask(char *dst, size_t len, uint32_t addr, uint32_t mask)
 
     i = 0;
     for (b = 0; b < 32; b++) {
-        if (mask & (1 << b)) {
+        if (mask & (1U << b)) {
             int bb;
 
             i = b;
             for (bb = b+1; bb < 32; bb++) {
-                if (!(mask & (1 << bb))) {
+                if (!(mask & (1U << bb))) {
                     i = -1; /* noncontig */
                     break;
                 }

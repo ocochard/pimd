@@ -105,9 +105,9 @@ inline static int PIMD_VIFM_LASTHOP_ROUTER(uint8_t *leaves, uint8_t *oifs)
 
 typedef	uint32_t vifbitmap_t;
 
-#define	VIFM_SET(n, m)			((m) |=  (1 << (n)))
-#define	VIFM_CLR(n, m)			((m) &= ~(1 << (n)))
-#define	VIFM_ISSET(n, m)		((m) &   (1 << (n)))
+#define	VIFM_SET(n, m)			((m) |=  (1U << (n)))
+#define	VIFM_CLR(n, m)			((m) &= ~(1U << (n)))
+#define	VIFM_ISSET(n, m)		((m) &   (1U << (n)))
 #define VIFM_CLRALL(m)			((m) = 0x00000000)
 #define VIFM_COPY(mfrom, mto)		((mto) = (mfrom))
 #define VIFM_SAME(m1, m2)		((m1) == (m2))
@@ -118,7 +118,7 @@ typedef	uint32_t vifbitmap_t;
 #if !defined(VIFM_SETALL)
 #define	VIFM_SETALL(m)			((m) = ~0)
 #endif
-#define	VIFM_ISSET_ONLY(n, m)		((m) == (1 << (n)))
+#define	VIFM_ISSET_ONLY(n, m)		((m) == (1U << (n)))
 #define	VIFM_ISEMPTY(m)			((m) == 0)
 #define	VIFM_CLR_MASK(m, mask)		((m) &= ~(mask))
 #define	VIFM_SET_MASK(m, mask)		((m) |= (mask))
@@ -141,12 +141,12 @@ typedef struct {
 } nbrbitmap_t;
 #define	MAXNBRS		2 * NBRBITS
 
-#define	NBRM_SET(n, m)		(((n) < NBRBITS) ? ((m).lo |= (1 << (n))) :  \
-				      ((m).hi |= (1 << (n - NBRBITS))))
-#define	NBRM_CLR(n, m)		(((n) < NBRBITS) ? ((m).lo &= ~(1 << (n))) : \
-				      ((m).hi &= ~(1 << (n - NBRBITS))))
-#define	NBRM_ISSET(n, m)	(((n) < NBRBITS) ? ((m).lo & (1 << (n))) :   \
-				      ((m).hi & (1 << ((n) - NBRBITS))))
+#define	NBRM_SET(n, m)		(((n) < NBRBITS) ? ((m).lo |= (1U << (n))) :  \
+				      ((m).hi |= (1U << (n - NBRBITS))))
+#define	NBRM_CLR(n, m)		(((n) < NBRBITS) ? ((m).lo &= ~(1U << (n))) : \
+				      ((m).hi &= ~(1U << (n - NBRBITS))))
+#define	NBRM_ISSET(n, m)	(((n) < NBRBITS) ? ((m).lo & (1U << (n))) :   \
+				      ((m).hi & (1U << ((n) - NBRBITS))))
 #define	NBRM_CLRALL(m)		((m).lo = (m).hi = 0)
 #define	NBRM_COPY(mfrom, mto)	((mto).lo = (mfrom).lo, (mto).hi = (mfrom).hi)
 #define	NBRM_SAME(m1, m2)	(((m1).lo == (m2).lo) && ((m1).hi == (m2).hi))

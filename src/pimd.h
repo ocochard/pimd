@@ -508,9 +508,9 @@ typedef struct pim_jp_encod_grp_ {
 #define GET_HOSTLONG(val, cp)                   \
         do {                                    \
                 uint32_t Xv;                    \
-                Xv  = (*(cp)++) << 24;          \
-                Xv |= (*(cp)++) << 16;          \
-                Xv |= (*(cp)++) <<  8;          \
+                Xv  = (uint32_t)(*(cp)++) << 24; \
+                Xv |= (uint32_t)(*(cp)++) << 16; \
+                Xv |= (uint32_t)(*(cp)++) <<  8; \
                 Xv |= *(cp)++;                  \
                 (val) = Xv;                     \
         } while (0)
@@ -530,9 +530,9 @@ typedef struct pim_jp_encod_grp_ {
         do {                                    \
                 uint32_t Xv;                    \
                 Xv  = *(cp)++;                  \
-                Xv |= (*(cp)++) <<  8;          \
-                Xv |= (*(cp)++) << 16;          \
-                Xv |= (*(cp)++) << 24;          \
+                Xv |= (uint32_t)(*(cp)++) <<  8; \
+                Xv |= (uint32_t)(*(cp)++) << 16; \
+                Xv |= (uint32_t)(*(cp)++) << 24; \
                 (val) = Xv;                     \
         } while (0)
 

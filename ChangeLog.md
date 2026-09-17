@@ -253,6 +253,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   the one disk image
 
 ### Fixes
+- Remove undefined shifts UndefinedBehaviorSanitizer reported, and the
+  same pattern it had not reached yet.  Reading a 32-bit field out of a
+  PIM message, a Hello's GenID or DR priority, an Assert's metric,
+  shifted a byte of 0x80 or more into the sign bit of an `int`; the
+  fallback random seed was rotated by a shift of up to 2^32; the prefix
+  length of a netmask and the walk over a routing socket reply's address
+  bits shifted a 1 into the sign bit; and the vif and neighbor bitmaps
+  did so for vif 31 and neighbors 31 and 63
 - Fix a use after free on every reload, `SIGHUP` or `pimctl restart`, of a
   router holding (S,G) state.  Rebuilding the routing table freed the head
   of the source list before deleting the groups, and deleting a group
