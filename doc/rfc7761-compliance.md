@@ -397,17 +397,31 @@ pass because the number can now move without pimd doing anything.
 
 The preference is still the configured one, `uv_local_pref`, 101 unless
 `distance` says otherwise.  It is the administrative distance of the routing
-protocol that provided the route, and the two RPF backends cannot both answer
-that question: netlink gives the protocol in `rtm_protocol`, and FreeBSD keeps
-the same RTPROT\_\* value in the nexthop's `nh_origin` but exposes it only over
-its own netlink, never over the PF\_ROUTE socket `routesock.c` reads.  Mapping
-the one that does answer onto the usual distances would have a Linux pimd
-advertise 110 for an OSPF route where a FreeBSD one advertises 101 for the same
-route, and sec. 4.6.3 compares the preference before it ever looks at the
-metric: the election on a mixed LAN would be decided by which operating system
-each router runs.  So the field stays configuration, per interface, and a domain
-whose routers learn the source through different protocols still has to set
-`distance` by hand.
+protocol that provided the route, and what pimd would have to read to derive it
+is there on one of the two RPF backends and not the other.  Netlink carries it
+in `rtm_protocol`, on both systems: FreeBSD fills that field from the nexthop's
+origin, `nl_get_rtm_protocol()` in `sys/netlink/route/rt.c`, in the same
+RTPROT\_\* namespace Linux uses.  The PF\_ROUTE socket `routesock.c` reads does
+not carry it at all -- `rtsock.c` fills `rtm_rmx`, which is where `rmx_metric`
+comes from, and never the origin -- and that is the default build on BSD.
+Nothing reads the field today: there is no RTPROT\_\* anywhere in `src/`.
+
+On Linux it would cost no syscall.  The metric already needs a second lookup
+with `RTM_F_FIB_MATCH`, since the resolved route carries no priority, and that
+reply has `rtm_protocol` in the same header.
+
+What stops it is what sec. 4.6.3 does with the number: it compares the
+preference before it ever looks at the metric.  Deriving it wherever the
+backend knows it would have a netlink pimd advertise 110 for an OSPF route
+where a routing socket pimd advertises 101 for the same route, and on FreeBSD
+that is a `configure` flag rather than a different operating system -- two
+routers on one LAN, same routing table, different build, and the election goes
+to whichever was built which way.  So the field stays configuration, per
+interface, and a domain whose routers learn the source through different
+protocols still has to set `distance` by hand.  A fix that does not carry that
+trap would be opt-in: a setting saying "take the preference from the routing
+protocol where the backend knows it", off by default, so a homogeneous domain
+can have it and a mixed one is not surprised by it.
 
 One thing the metric inherits from the same asymmetry, smaller because it is
 compared second: an ordinary route has priority 0 on Linux and metric 1 on
