@@ -6,7 +6,18 @@ issue of this repository is written out in full.
 [UNRELEASED]
 ------------
 
-Nothing yet: this is where the changes of the next release accumulate.
+### Fixes
+- An interface that has gone no longer holds on to its subnet.  The vif of
+  a removed interface keeps its slot, its address and its subnet, so that
+  the same name comes back to the same vif rather than to a new one; the
+  interface scan took that stale subnet for a claim, and refused a vif to
+  any other interface carrying it: `Ignoring em2, same subnet as em1`,
+  naming an interface the kernel no longer has, with only a restart to
+  clear it.  That is an address failing over to another NIC, or a VLAN
+  rebuilt under another name.  The scan now asks whether the kernel still
+  has an address on the interface, rather than what the vif flags say, so
+  an interface that is merely down keeps its subnet as before.  Tested by
+  the `ifgone` scenario of `test/lab.sh`
 
 
 [v3.1.0][] - 2026-09-18

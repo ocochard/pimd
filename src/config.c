@@ -401,6 +401,39 @@ static int compare_requested_with_kernel(struct ifaddrs *ifaddr, int num)
 
 
 /*
+ * Does the kernel still have an IPv4 address on @ifname?
+ *
+ * A vif whose interface has gone keeps its slot, its address and its
+ * subnet: the slot so that the name can come back to the vif it had (see
+ * rescan_vifs() in src/vif.c), the address so that check_vif_addrs() has
+ * something to compare the kernel's against when it does.  None of that
+ * makes it the owner of its subnet any more, which is what the scan below
+ * would otherwise take it for: it would refuse a vif to the interface the
+ * address has moved to -- a failover, a VLAN rebuilt under another name --
+ * and name an interface the kernel no longer has as the reason.
+ *
+ * Asked of the addresses rather than of the flags, because an interface
+ * that is merely down still owns its subnet and has to keep it, or the
+ * subnet is handed to a second interface while the first is only waiting
+ * to come back up.
+ */
+static int iface_has_inet_addr(struct ifaddrs *ifaddr, const char *ifname)
+{
+    struct ifaddrs *ifa;
+
+    for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
+	if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+	    continue;
+
+	if (!strcmp(ifa->ifa_name, ifname))
+	    return 1;
+    }
+
+    return 0;
+}
+
+
+/*
  * Query the kernel to find network interfaces that are multicast-capable
  * and install them in the uvifs array.
  *
@@ -536,6 +569,12 @@ init_vif_list:
 			  v->uv_name, inet_fmt(addr, s1, sizeof(s1)), netname(subnet, mask), vifi);
 		break;
 	    }
+
+	    /* A vif whose interface has gone owns no subnet any more,
+	     * see iface_has_inet_addr() above */
+	    if (!iface_has_inet_addr(ifaddr, v->uv_name))
+		continue;
+
 	    /* we don't care about point-to-point links in same subnet */
 	    if (is_set(IFF_POINTOPOINT, flags))
 		continue;

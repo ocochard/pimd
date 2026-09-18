@@ -440,8 +440,18 @@
 #               went is what takes the groups off the one that stayed.
 #               k_leave() named the interface by an address the kernel
 #               could no longer place, and in_mcast.c answers that by
-#               matching the group on any interface at all.  Takes about
-#               50s.
+#               matching the group on any interface at all.
+#
+#               The slot R1 keeps for the interface that went is then
+#               asked what it still owns.  It keeps its address and its
+#               subnet, so that the name has a VIF to come back to (see
+#               ifnew), but not the right to refuse the subnet to anybody
+#               else: a second interface carrying it has to get a VIF of
+#               its own, which is that address failing over to another NIC
+#               or the VLAN rebuilt under another name.  Beside it, the
+#               control: an interface taken down rather than destroyed
+#               goes on owning its subnet, since it is only waiting to
+#               come back up.  Takes about 70s.
 #
 #   renumber    The rpt topology again, and the counterpart to ifgone: the
 #               interface stays, its address moves.  R2's address on the
@@ -1397,6 +1407,34 @@ IFGONE_PEER_IF=${IFGONE_PEER_IF:-${EP}101a}
 IFGONE_ADDR=${IFGONE_ADDR:-10.0.1.1}
 IFGONE_KEPT=${IFGONE_KEPT:-10.0.12.1}
 IFGONE_KEPT_IF=${IFGONE_KEPT_IF:-${EP}112a}
+
+# The two interfaces that turn up once $IFGONE_IF is gone, to ask who owns
+# its subnet now.  $IFGONE_NEW_IF carries another address out of
+# $IFGONE_ADDR's subnet, which is that address failing over to a second NIC
+# or the VLAN rebuilt under another name, and it has to get a VIF: the VIF
+# that used to own the subnet belongs to an interface the kernel no longer
+# has.  $IFGONE_DUP_IF is the control beside it, created once $IFGONE_NEW_IF
+# has been taken down rather than destroyed -- the VIF owning the subnet is
+# then out of service too, but its interface is still there, still
+# addressed, and only waiting to come back up, so this one has to be
+# refused.  Both far ends stay on the host, unaddressed: nothing has to
+# answer on either, the question is only which of them pimd gives a VIF.
+IFGONE_NEW_EP=${IFGONE_NEW_EP:-${EP}191}
+IFGONE_NEW_IF=${IFGONE_NEW_IF:-${IFGONE_NEW_EP}a}
+IFGONE_NEW_ADDR=${IFGONE_NEW_ADDR:-10.0.1.9}
+IFGONE_DUP_EP=${IFGONE_DUP_EP:-${EP}192}
+IFGONE_DUP_IF=${IFGONE_DUP_IF:-${IFGONE_DUP_EP}a}
+IFGONE_DUP_ADDR=${IFGONE_DUP_ADDR:-10.0.1.19}
+IFGONE_NEW_PREFIX=${IFGONE_NEW_PREFIX:-24}
+
+# How long pimd may take to act on either, for IFNEW_WAIT's reason: the
+# kernel's notification reaches it in about a second, the periodic rescan
+# every 60s is only the floor under that.
+IFGONE_NEW_WAIT=${IFGONE_NEW_WAIT:-30}
+
+# Both are built by check_ifgone() rather than with the boxes, so stop() is
+# told about them here instead of with the rest.
+ALL_EPAIRS="$ALL_EPAIRS $IFGONE_NEW_EP $IFGONE_DUP_EP"
 
 # renumber: R2's address on the R1 link moves, inside its own subnet, which
 # is what an interface renumbered under a running pimd looks like -- a DHCP
@@ -6398,6 +6436,81 @@ check_ifgone() {
 		fail "r1: ${LOST_GROUPS}- the leave for $IFGONE_IF took them"
 	else
 		ok "r1: $IFGONE_KEPT_IF held $PIM_GROUPS for ${GROUP_WATCH}s after $IFGONE_IF went"
+	fi
+
+	# The other half of keeping the slot.  A VIF that is out of service
+	# holds the address and subnet it had when its interface went, and
+	# scan_vifs_from_kernel() (src/config.c) used to let it go on owning
+	# that subnet: the interface the address had moved to was refused a
+	# VIF, "Ignoring X, same subnet as Y", naming an interface the kernel
+	# no longer has as the reason, and only a restart got it back.
+	print "9. The subnet the interface took with it is free for another one"
+	vifs_before=$(iface_count r1)
+	box_link_add "$IFGONE_NEW_EP" r1 - || die "failed creating $IFGONE_NEW_EP"
+	box_addr_add r1 "$IFGONE_NEW_IF" "$IFGONE_NEW_ADDR/$IFGONE_NEW_PREFIX"
+	box_if_up r1 "$IFGONE_NEW_IF"
+
+	if wait_for "$IFGONE_NEW_WAIT" iface_is r1 "$IFGONE_NEW_IF" "$IFGONE_NEW_ADDR"; then
+		ok "r1: VIF on $IFGONE_NEW_IF ($IFGONE_NEW_ADDR), out of $IFGONE_ADDR's subnet"
+	else
+		fail "r1: no VIF on $IFGONE_NEW_IF after ${IFGONE_NEW_WAIT}s, see $WORKDIR/r1.log"
+	fi
+	if logged r1 "Ignoring $IFGONE_NEW_IF, same subnet as"; then
+		fail "r1: $IFGONE_NEW_IF refused, $IFGONE_IF owns the subnet after going away"
+	else
+		ok "r1: nothing refused $IFGONE_NEW_IF the subnet"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	new_idx=$(vif_index r1 "$IFGONE_NEW_IF")
+	if [ -n "$new_idx" ] && [ "$(kern_vif_addr r1 "$new_idx")" = "$IFGONE_NEW_ADDR" ]; then
+		ok "r1: kernel vif $new_idx is $IFGONE_NEW_ADDR"
+	else
+		fail "r1: kernel vif ${new_idx:-none} reads $(kern_vif_addr r1 "${new_idx:-0}"), expected $IFGONE_NEW_ADDR"
+	fi
+	# A name pimd has never seen takes a slot of its own, beside the one
+	# $IFGONE_IF keeps for its own name to come back to (see ifnew)
+	if has_iface r1 "$IFGONE_IF"; then
+		ok "r1: $IFGONE_IF kept its slot, out of service"
+	else
+		fail "r1: $IFGONE_IF lost its slot to $IFGONE_NEW_IF"
+	fi
+	if [ "$(iface_count r1)" -eq $((vifs_before + 1)) ]; then
+		ok "r1 has one VIF more than before $IFGONE_NEW_IF appeared"
+	else
+		fail "r1 has $(iface_count r1) VIFs, expected $((vifs_before + 1))"
+	fi
+
+	# The control for the assertion above, and the reason it is asked of
+	# the addresses the kernel has rather than of the VIF flags: an
+	# interface that is merely down still owns its subnet, and has to keep
+	# it, or the subnet is handed to a second interface while the first is
+	# only waiting to come back up.
+	print "10. An interface that is only down keeps its subnet"
+	box_if_down r1 "$IFGONE_NEW_IF" || die "failed taking $IFGONE_NEW_IF down on r1"
+	if wait_for "$IFGONE_NEW_WAIT" iface_not_up r1 "$IFGONE_NEW_IF"; then
+		ok "r1: $IFGONE_NEW_IF taken out of service, its interface still there"
+	else
+		fail "r1: $IFGONE_NEW_IF still reads Up after being taken down"
+		return 1
+	fi
+
+	box_link_add "$IFGONE_DUP_EP" r1 - || die "failed creating $IFGONE_DUP_EP"
+	box_addr_add r1 "$IFGONE_DUP_IF" "$IFGONE_DUP_ADDR/$IFGONE_NEW_PREFIX"
+	box_if_up r1 "$IFGONE_DUP_IF"
+
+	# Asked of the log rather than of the clock: the refusal is a line of
+	# its own, so there is no need to wait out a rescan that may already
+	# have run to call the VIF missing.
+	if wait_for "$IFGONE_NEW_WAIT" logged r1 "Ignoring $IFGONE_DUP_IF, same subnet as $IFGONE_NEW_IF"; then
+		ok "r1: refused $IFGONE_DUP_IF the subnet $IFGONE_NEW_IF still owns"
+	else
+		fail "r1: nothing refused $IFGONE_DUP_IF, see $WORKDIR/r1.log"
+	fi
+	if has_iface r1 "$IFGONE_DUP_IF"; then
+		fail "r1: $IFGONE_DUP_IF got a VIF on a subnet $IFGONE_NEW_IF still owns"
+	else
+		ok "r1: no VIF on $IFGONE_DUP_IF"
 	fi
 
 	result

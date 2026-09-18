@@ -166,6 +166,11 @@ box_if_destroy() { box_run "$1" ifconfig "$2" destroy; }
 
 box_if_up() { box_run "$1" ifconfig "$2" up; }
 
+# Down, not destroyed: the interface stays, with its addresses, which is
+# what tells a VIF whose interface is only out of service from one whose
+# interface the kernel no longer has.
+box_if_down() { box_run "$1" ifconfig "$2" down; }
+
 # A link built between two boxes that are already running, which is what
 # create_box() does for the links a scenario starts with but here with the
 # jails in place: $1 is the epair without its end suffix, its "a" end goes

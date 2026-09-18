@@ -89,6 +89,8 @@ box_if_destroy() { box_run "$1" ip link del "$2"; }
 
 box_if_up() { box_run "$1" ip link set "$2" up; }
 
+box_if_down() { box_run "$1" ip link set "$2" down; }
+
 # The same link built under running boxes as lab-freebsd.sh builds, see
 # there.  Checksum offload goes off on each end that lands in a namespace,
 # for create_box()'s reason.
