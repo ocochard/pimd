@@ -3,6 +3,12 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
+[UNRELEASED]
+------------
+
+Nothing yet: this is where the changes of the next release accumulate.
+
+
 [v3.1.0][] - 2026-09-18
 -----------------------
 

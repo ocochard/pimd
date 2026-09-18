@@ -10,7 +10,7 @@ https://github.com/troglobit/pimd, which has none of the work here, so never sen
 report or a support question there, and never cite its issue tracker as this project's.
 Its old issue numbers are still the right citation for a bug that was reported there, spelled
 `troglobit/pimd#NNN` as `src/config.c` and `test/lab.sh` already do.
-IPv4 only. Version 3.1.0 (`configure.ac`).
+IPv4 only. Version 3.2-beta1 (`configure.ac`).
 
 The specs themselves are checked into `doc/`, so check behaviour against them rather than from
 memory: `rfc7761.txt` is the current PIM-SM standard (STD 83) and the one to cite, `rfc4601.txt`
