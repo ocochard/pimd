@@ -3,8 +3,8 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
-[UNRELEASED]
-------------
+[v3.1.0][] - 2026-09-18
+-----------------------
 
 ### Changes
 - Interfaces are rescanned while pimd runs, so one configured after the
@@ -44,6 +44,17 @@ issue of this repository is written out in full.
   are in the package now, and RFC 7761 is the specification the
   description names.  It still ships a SysV init script rather than the
   `pimd.service` this tree has
+- Five checks that were not where the value they guard is used, from a
+  pass over a Coverity report.  None is reachable and none changes what
+  pimd does: the `inet_cksum()` accumulator was a signed `int`, which the
+  most a full IP datagram can put in it clears by 32767 and a larger
+  buffer would not; `logit()` dereferenced `localtime()` without testing
+  it, and now prints the message without its timestamp rather than losing
+  it; `chomp()` in `src/ipc.c` walked off the front of its buffer for a
+  string of nothing but newlines, the bound its twin in `pimctl.c` already
+  carried; `lost_assert()` took a pointer whose NULL test lived in another
+  function; and `k_req_incoming()` read the header of a netlink reply
+  before knowing the reply was that long
 
 
 [v3.0.0][] - 2026-09-18
@@ -2526,7 +2537,8 @@ v2.1.0-alpha1 - 1997-08-26
 First alpha version of the "new, up to date" pimd.  RSRR and Solaris
 support added.  Many functions rewritten and/or modified.
 
-[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.0.0...HEAD
+[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.1.0...HEAD
+[v3.1.0]:     https://github.com/ocochard/pimd/compare/3.0.0...3.1.0
 [v3.0.0]:     https://github.com/ocochard/pimd/compare/2.3.2...3.0.0
 [v2.3.2]:     https://github.com/troglobit/pimd/compare/2.3.1...2.3.2
 [v2.3.1]:     https://github.com/troglobit/pimd/compare/2.3.0...2.3.1
