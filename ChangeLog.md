@@ -7,6 +7,15 @@ issue of this repository is written out in full.
 ------------
 
 ### Fixes
+- Daemonizing leaves the terminal that started pimd.  The BSD branch asked
+  for `TIOCNOTTY`, an ioctl the kernel refuses to anyone but a session
+  leader -- which the child of a `fork()` never is -- and pimd threw the
+  error away, so it kept the controlling terminal and stayed in the process
+  group of whoever started it.  Started from an rc script on a console, it
+  died on the next INTR character typed there.  The Linux branch called
+  `setpgrp()`, which leaves the session and the terminal attached.  Both are
+  replaced by `setsid()`, which is what either meant, and a `fork()` that
+  fails is now reported rather than ignored
 - `redhat/pimd.spec` builds again, and packages the whole daemon.  It was
   written for a branch export of a 2.x tree: it named a version that was
   never released here, unpacked `pimd-master`, and looked for the binary
