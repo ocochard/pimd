@@ -298,12 +298,21 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     IF_DEBUG(DEBUG_RPF)
 	logit(LOG_DEBUG, 0, "k_req_incoming: ask path to %s", inet_fmt(rpf->source.s_addr, s1, sizeof(s1)));
 
+    /* Not just "did the read fail": everything below reads the header the
+     * answer begins with, and the length handed to getmsg() is what is
+     * left after it.  A reply shorter than that header would be read
+     * anyway and would make that length negative (Coverity CID 1678721). */
     l = getroute(rpf->source.s_addr, 0, buf, sizeof(buf));
-    if (l < 0)
+    if (l < (int)sizeof(*n))
 	return FALSE;
 
     if (n->nlmsg_type != RTM_NEWROUTE) {
-	errno = -(*(int*)NLMSG_DATA(n));
+	/* The error is the first int of an NLMSG_ERROR payload, and a reply
+	 * too short to carry one says nothing about errno. */
+	if (l >= (int)NLMSG_LENGTH(sizeof(int)))
+	    errno = -(*(int*)NLMSG_DATA(n));
+	else
+	    errno = 0;
 
 	if (n->nlmsg_type != NLMSG_ERROR)
 	    logit(LOG_WARNING, 0, "Wrong netlink answer type: %d", n->nlmsg_type);
@@ -314,8 +323,9 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	return FALSE;
     }
 
-    /* Cast, so that a reply shorter than the header it announces stays a
-     * negative length here rather than becoming a huge unsigned one */
+    /* Cast, so the subtraction stays signed rather than going through
+     * size_t; the check above is what keeps its result non-negative, and
+     * getmsg() measures the header it reads for itself besides. */
     return getmsg(NLMSG_DATA(n), l - (int)sizeof(*n), rpf);
 }
 

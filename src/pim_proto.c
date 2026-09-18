@@ -4374,7 +4374,13 @@ int lost_assert(mrtentry_t *mrt, vifi_t vifi)
     struct assert_state *as = assert_state(mrt, vifi);
     uint32_t preference, metric;
 
-    if (!assert_lost_on(mrt, vifi))
+    /* assert_lost_on() asks assert_state() for itself and answers FALSE
+     * for an entry that has none, so the first test is what the second
+     * already implies.  Spelled out because every other caller of
+     * assert_state() checks its answer where it takes it, and because the
+     * metric comparison below is the one place that dereferences a pointer
+     * whose NULL check is in another function (Coverity CID 1678722). */
+    if (!as || !assert_lost_on(mrt, vifi))
 	return FALSE;
 
     /* "if RPF_interface(S) == I: return FALSE" */
