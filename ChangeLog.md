@@ -3,8 +3,8 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
-[v3.0.0][UNRELEASED]
---------------------
+[v3.0.0][] - 2026-09-18
+-----------------------
 
 As of this release pimd is not guaranteed to be backwards compatible
 with earlier releases.  It is recommended to run the same version of
@@ -290,6 +290,14 @@ pimd on all routers in the same domain.  See issue #93 for details.
   named where it is the accurate reference -- its 2.x tarballs, its wiki,
   the issue numbers cited in code comments and in the tests -- but it carries
   none of the work here and is no longer given as the place to ask
+- `pimd.conf(5)` is installed and packaged.  `man/Makefile.am` named only
+  `pimd.8` and `pimctl.8`, so the manual page of the configuration file
+  reached neither `make install` nor a release tarball, though `pimd.8`
+  sends a reader to it three times
+- The tag of a release is what the release is named after.  The workflow
+  that publishes one read the whole ref where it wanted the tag, which
+  would have called this release "pimd vrefs/tags/3.0.0", and it ran on
+  actions that have reached their end of life
 - The release tarball carries `doc/` again: the READMEs, the FAQ, the
   install notes, `TODO.org`, `rfc7761-compliance.md` and the security
   review prompt.  v2.3.2 shipped all of these from the top of the tree; the
@@ -2475,7 +2483,7 @@ v2.1.0-alpha1 - 1997-08-26
 First alpha version of the "new, up to date" pimd.  RSRR and Solaris
 support added.  Many functions rewritten and/or modified.
 
-[UNRELEASED]: https://github.com/ocochard/pimd/compare/2.3.2...HEAD
+[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.0.0...HEAD
 [v3.0.0]:     https://github.com/ocochard/pimd/compare/2.3.2...3.0.0
 [v2.3.2]:     https://github.com/troglobit/pimd/compare/2.3.1...2.3.2
 [v2.3.1]:     https://github.com/troglobit/pimd/compare/2.3.0...2.3.1
