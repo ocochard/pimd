@@ -41,9 +41,11 @@ jobs:
           sync: rsync
           copyback: false
           prepare: |
-            # autoconf/automake for autogen.sh, gmake because the build is
-            # GNU autotools and FreeBSD's make(1) is not GNU make.
-            pkg install -y autoconf automake gmake pkgconf
+            # autoconf/automake for autogen.sh.  Nothing else: the build is
+            # GNU autotools, but what automake generates is portable make,
+            # so base system make(1) runs it and no gmake package is needed
+            # here.  GNU make is covered by the Linux workflow.
+            pkg install -y autoconf automake pkgconf
 
           run: |
             set -eux
@@ -51,14 +53,13 @@ jobs:
 
             ./autogen.sh
             ./configure --prefix= --enable-test
-            gmake V=1
+            make V=1
 
-            # `gmake check` is deliberately not run: test/Makefile.am sets
-            # TESTS_ENVIRONMENT to `unshare -mrun` and every script in TESTS
-            # builds its topology out of network namespaces and veth pairs,
-            # none of which exist here.  The FreeBSD counterpart is
-            # test/lab.sh, run by the lab job below.
-            DESTDIR=/tmp/inst gmake install-strip
+            # `make check` is not run because it would run nothing:
+            # test/Makefile.am sets no TESTS at all, every script that was
+            # there being a scenario of test/lab.sh now, which wants real
+            # root and vnet jails and is the lab job below.
+            DESTDIR=/tmp/inst make install-strip
             /tmp/inst/sbin/pimd -h
             /tmp/inst/sbin/pimctl -h
 
@@ -110,7 +111,7 @@ jobs:
           sync: rsync
           copyback: false
           prepare: |
-            pkg install -y autoconf automake gmake pkgconf
+            pkg install -y autoconf automake pkgconf
 
           run: |
             set -eux
@@ -124,7 +125,7 @@ jobs:
 
             ./autogen.sh
             ./configure --prefix= --enable-test
-            gmake V=1
+            make V=1
 
             # Already root in the VM, so the script's sudo wrapper is empty.
             #

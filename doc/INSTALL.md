@@ -17,9 +17,13 @@ followed by:
     ./configure && make
     sudo make install
 
-On FreeBSD, NetBSD and DragonFly the generated Makefiles are GNU make
-ones, so install the `gmake` package and use `gmake` in place of `make`
-in every command here.
+On FreeBSD the base system `make` runs every command here, `make check`,
+`make install` and `make dist` included: the generated Makefiles carry no
+GNU make syntax, and `configure` probes for the one directive the two
+spell differently -- the dependency file `include` -- falling back to the
+BSD spelling, or to no dependency tracking, for a make that has neither.
+The same probe runs on NetBSD, OpenBSD and DragonFly; `gmake` from
+packages is the answer wherever it turns out not to be enough.
 
 By default pimd is installed to the `/usr/local` prefix, except for
 `pimd.conf` which is installed to `/etc`.  If you want to install to

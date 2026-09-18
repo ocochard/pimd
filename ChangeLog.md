@@ -6,6 +6,19 @@ issue of this repository is written out in full.
 [UNRELEASED]
 ------------
 
+### Changes
+- FreeBSD needs no `gmake` to build this.  The tree is GNU autotools, but
+  what automake generates is portable make: no GNU-only syntax in any
+  generated Makefile, and `configure` probes for the one directive the two
+  makes spell differently, the dependency file `include`, falling back to
+  the BSD spelling or to no dependency tracking.  Base system `make` runs
+  the build, `make check`, `make install`, `make dist` and `make
+  distcheck`, the last a VPATH build from a read-only source directory.
+  `README.md` and `doc/INSTALL.md` said otherwise, and the FreeBSD CI
+  workflow installed the `gmake` package and used it, so the build path
+  every FreeBSD user takes was the one never tested; it runs base `make`
+  now, with GNU make covered by the Linux workflow
+
 ### Fixes
 - An interface that has gone no longer holds on to its subnet.  The vif of
   a removed interface keeps its slot, its address and its subnet, so that

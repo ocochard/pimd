@@ -374,9 +374,11 @@ install process.  E.g., to install pimd to `/usr` instead of the default
 	make
     make DESTDIR=/tmp/pimd-3.0 install-strip
 
-On FreeBSD the build is the same, only the tools differ: the Makefiles
-are GNU make ones, so use `gmake` from the `gmake` package instead of
-the base system `make`.
+On FreeBSD the build is the same, base system `make` included: the
+generated Makefiles carry no GNU make syntax, and the one directive the
+two spell differently, the dependency file `include`, is what `configure`
+probes for before it writes them.  `gmake` builds the tree as well, if
+that is what you have.
 
 The RPF lookups PIM depends on go over the routing socket there.  On
 FreeBSD 13.2 and later `--enable-netlink` uses `netlink(4)` for them
@@ -406,8 +408,8 @@ installed on your system.
     ./autogen.sh
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var && make
 
-On FreeBSD, `pkg install autoconf automake gmake pkgconf` first, then
-run `gmake` in place of `make`.
+On FreeBSD, `pkg install autoconf automake pkgconf` first; the rest is
+the same, base system `make` and all.
 
 GIT sources are a moving target and are not recommended for production
 systems, unless you know what you are doing!

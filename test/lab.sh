@@ -742,7 +742,7 @@
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
-# ./configure && gmake).  With NETLINK=yes, that tree has to be configured
+# ./configure && make).  With NETLINK=yes, that tree has to be configured
 # --enable-netlink and netlink.ko has to be loadable.
 #
 # On Linux the same scenarios run over named network namespaces, veth pairs
