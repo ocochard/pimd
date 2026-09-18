@@ -6,7 +6,15 @@ issue of this repository is written out in full.
 [UNRELEASED]
 ------------
 
-Nothing yet: this is where the changes of the next release accumulate.
+### Fixes
+- `redhat/pimd.spec` builds again, and packages the whole daemon.  It was
+  written for a branch export of a 2.x tree: it named a version that was
+  never released here, unpacked `pimd-master`, and looked for the binary
+  and the manual page at the top of the tree, where GNU Configure and
+  Build has not put them since.  `pimctl`, `pimctl(8)` and `pimd.conf(5)`
+  are in the package now, and RFC 7761 is the specification the
+  description names.  It still ships a SysV init script rather than the
+  `pimd.service` this tree has
 
 
 [v3.0.0][] - 2026-09-18
