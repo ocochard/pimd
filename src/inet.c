@@ -164,8 +164,8 @@ uint32_t inet_parse(char *s, int n)
  */
 int inet_cksum(uint16_t *addr, u_int len)
 {
-        int sum = 0;
-        int nleft = (int)len;
+        uint32_t sum = 0;
+        u_int nleft = len;
         uint16_t *w = addr;
         uint16_t answer = 0;
 
@@ -174,6 +174,16 @@ int inet_cksum(uint16_t *addr, u_int len)
          *  we add sequential 16 bit words to it, and at the end, fold
          *  back all the carry bits from the top 16 bits into the lower
          *  16 bits.
+         *
+         *  The accumulator is unsigned because an int one is only just
+         *  wide enough: the most 0xffff words an IP datagram can hold is
+         *  65535/2, and 32768 * 0xffff is 2147450880, which clears INT_MAX
+         *  by 32767.  It is a property of the IP length field rather than
+         *  of anything here, and the buffers this is called on are twice
+         *  as large as that field can describe (RECV_BUF_SIZE, src/defs.h),
+         *  so the day something hands it a buffer length instead of a
+         *  datagram length the overflow would be signed, which is
+         *  undefined, rather than the wraparound this now has.
          */
         while (nleft > 1)  {
                 sum += *w++;

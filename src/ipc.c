@@ -147,8 +147,13 @@ static char *chomp(char *str)
 		return NULL;
 	}
 
+	/* The bound is not decoration: without it a string of nothing but
+	 * newlines walks p off the front of the buffer, writing as it goes.
+	 * Nothing reaches this with one -- strip() skips the leading run of
+	 * " \t\n" before every call -- and the same function in pimctl.c
+	 * carries the same test, so the two say the same thing now. */
 	p = str + strlen(str) - 1;
-        while (*p == '\n')
+        while (p >= str && *p == '\n')
 		*p-- = 0;
 
 	return str;

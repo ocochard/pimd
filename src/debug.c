@@ -608,8 +608,14 @@ void logit(int severity, int syserr, const char *format, ...)
 //	if (!debug)
 	    fprintf(stderr, "%s: ", ident);
 
-	fprintf(stderr, "%02d:%02d:%02d.%03ld %s", thyme->tm_hour, thyme->tm_min,
-		thyme->tm_sec, (long int)(now.tv_usec / 1000), msg);
+	/* localtime() answers NULL for a time it cannot break down, and
+	 * losing the message is the one thing this function may not do:
+	 * print it without the timestamp rather than dereference that. */
+	if (thyme)
+	    fprintf(stderr, "%02d:%02d:%02d.%03ld %s", thyme->tm_hour, thyme->tm_min,
+		    thyme->tm_sec, (long int)(now.tv_usec / 1000), msg);
+	else
+	    fprintf(stderr, "%s", msg);
 
 	if (syserr)
 	    fprintf(stderr, ": %s", strerror(syserr));
