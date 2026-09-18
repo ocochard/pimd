@@ -88,7 +88,7 @@ fails any scenario whose daemons wrote a sanitizer report, which is how the relo
 `c721f76` and the undefined shifts of `8b0c103` were found; leak checking is off unless
 `SAN_ASAN_OPTIONS` asks for it. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
-`shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifgone`,
+`shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `static-rp`, `anycast`, `anycast-dr`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
@@ -114,9 +114,11 @@ forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asser
 the replacement), `alias` the only one where an interface carries more than one address, so the only
 one that reaches the alias branch of `config_vifs_from_kernel()`, the only one whose sender sits
 on a subnet the VIF does not own, and the only one where a next hop is a router's secondary
-address, reached through the Hello Address List of RFC 7761 sec. 4.3.4, `ifgone` and `renumber` the only ones about what pimd does
-when an interface it has a VIF on changes underneath it -- destroyed in the first, given a new
-address in the second -- `crafted` the only one whose messages pimd did not build, driving
+address, reached through the Hello Address List of RFC 7761 sec. 4.3.4, `ifnew`, `ifgone` and
+`renumber` the only ones about what pimd does when the interfaces change underneath it -- one
+appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
+it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the
+second and given a new address in the third -- `crafted` the only one whose messages pimd did not build, driving
 `test/pimsend.c` to assert what the parsers refuse -- the whole packet format section of
 `doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules

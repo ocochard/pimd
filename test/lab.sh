@@ -57,13 +57,14 @@
 # forwards down the shared tree, and with spt-threshold set low the
 # routers then switch to the shortest path tree.
 #
-# Twenty scenarios are built on that topology.  Most differ only in which
+# Twenty-one scenarios are built on that topology.  Most differ only in which
 # pimd.conf each router gets and which assertions run; rp-offpath adds one
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
 # right hand links as bridged segments and hang two more routers off them;
 # alias gives one interface a second address and moves the sender onto it;
-# ifgone and renumber change a link under a pimd that is already running:
+# ifnew, ifgone and renumber change a link under a pimd that is already
+# running:
 #
 #   rpt         R2 is BSR and RP, ED2 joins, traffic has to reach it over
 #               the shared tree.  Takes about 90s.
@@ -372,6 +373,42 @@
 #               secondary address: the RP's (S,G) Join finds R1 only
 #               through the Address List option of R1's Hello, RFC 7761
 #               sec. 4.3.4.  Takes about 2 minutes.
+#   ifnew       The rpt topology again, and the counterpart to ifgone: an
+#               interface that did not exist when pimd started appears
+#               under it.  A second link is created between R1 and R2 and
+#               addressed while both daemons run, which is a VLAN added to
+#               a router in service, a tunnel that comes up, or the ng(4)
+#               link mpd5 builds once PPP has negotiated -- the last is
+#               where this came from, a BSDRP router whose two PPP links
+#               were missing from "pimctl show interface" for the whole
+#               life of the daemon because pimd is started from rc(8) six
+#               seconds before they exist.
+#
+#               init_vifs() (src/vif.c) called config_vifs_from_kernel()
+#               once and nothing called it again, so the vif table was
+#               whatever the kernel had at start-up.  check_vif_state() is
+#               not the missing half: it walks the uvifs that scan built,
+#               so it only ever flips the interfaces it already knows
+#               between up and down.  The only way to a correct table was
+#               a restart, which is what this scenario must not need.
+#
+#               R1 and R2 both get a VIF, so the assertions are not about
+#               one daemon's table: a PIM adjacency has to form over the
+#               new link, which needs the VIF in the kernel, the two
+#               multicast groups joined on it, and Hellos sourced from its
+#               address at both ends.
+#
+#               Two more things only this scenario has.  r1.conf names both
+#               new interfaces in phyint lines written before either
+#               exists, one of them "disable", so the rescan has to consult
+#               pimd.conf and not only the kernel -- the disabled one gets
+#               no VIF while the other does, each the control for the
+#               other.  And the link is then destroyed and built again
+#               under the same name, which has to come back on the vif
+#               index it had: a rescan that appended a slot per flap would
+#               reach MAXVIFS on a router whose links come and go, which is
+#               every router this feature is for.  Takes about 70s.
+#
 #   ifgone      The rpt topology again, but ED1's link is destroyed while
 #               pimd is running and the only question is what R1 does about
 #               the VIF that was sitting on it, which is
@@ -689,8 +726,8 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifgone", "renumber", "register-filter", "crafted", "static-rp", "anycast",
-# "anycast-dr", or "all"
+# "ifnew", "ifgone", "renumber", "register-filter", "crafted", "static-rp",
+# "anycast", "anycast-dr", or "all"
 # for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
@@ -816,10 +853,10 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifgone renumber register-filter crafted static-rp anycast anycast-dr"
+	   ifnew ifgone renumber register-filter crafted static-rp anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias crafted static-rp ssm ifgone
+		     rpt register-filter alias crafted static-rp ssm ifnew ifgone
 		     renumber ssm-range solo"
 
 # keepalive: groups the source blasts at, and how long the entries must
@@ -955,10 +992,42 @@ OFFPATH_R3_ADDR=10.0.13.3
 # R3 is directly connected to both, see write_configs()
 OFFPATH_RP_ADDR=10.0.23.2
 
+# ifnew: the links that appear under a running pimd.  Neither is created
+# with the boxes, check_ifnew() builds them once the daemons are up, so
+# they are here only to be named and to be cleaned up.
+#
+# $IFNEW_EP is a second R1-R2 link, addressed at both ends, and the one an
+# adjacency has to form over.  $IFNEW_OFF_EP appears on R1 alone -- its
+# other end is left on the host, unaddressed, since nothing has to answer
+# on it -- and r1.conf disables it by name, so it is the control beside
+# the other: a rescan that reads only the kernel gives both a VIF.
+#
+# The unit numbers are two no other scenario uses; 212 reads as the second
+# link between R1 and R2 and 219 as a second one from R1 to nowhere.
+IFNEW_EP=${EP}212
+IFNEW_IF=${IFNEW_EP}a
+IFNEW_PEER_IF=${IFNEW_EP}b
+IFNEW_ADDR=10.0.21.1
+IFNEW_PEER_ADDR=10.0.21.2
+IFNEW_PREFIX=24
+IFNEW_OFF_EP=${EP}219
+IFNEW_OFF_IF=${IFNEW_OFF_EP}a
+IFNEW_OFF_ADDR=10.0.29.1
+IFNEW_EPAIRS="$IFNEW_EP $IFNEW_OFF_EP"
+# The link R1 and R2 had all along, which none of this may disturb
+IFNEW_KEPT_ADDR=10.0.12.2
+
+# How long pimd may take to notice.  It acts on the kernel's own
+# notification, which reaches it in about a second; the periodic rescan
+# that is the floor under that runs every 60s (VIF_RESCAN_PERIOD in
+# src/vif.c), so a wait of 30 is generous for the event path and still
+# proves it is the event path being used.
+IFNEW_WAIT=${IFNEW_WAIT:-30}
+
 # Everything any scenario can create, so stop() cleans up without having to
 # be told which one was running.
 ALL_BOXES="ed1 r1 r2 r3 r4 r5 ed2 ed3"
-ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS ${EP}113 ${EP}104"
+ALL_EPAIRS="$EPAIRS $SHARED_EPAIRS ${EP}113 ${EP}104 $IFNEW_EPAIRS"
 
 # Source and RP addresses the assertions expect.  set_scenario() puts
 # SRC_ADDR back from the default, the alias scenario moves it.
@@ -1451,7 +1520,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
+	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2001,6 +2070,40 @@ write_configs() {
 
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: in the domain with nothing to do
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = ifnew ]; then
+		# Both phyint lines name an interface that does not exist
+		# when pimd reads this file, which is the whole point of
+		# them: pimd warns about each once at start-up and has to
+		# apply them anyway once the interfaces turn up.
+		#
+		# "igmpv2" is picked because it is visible from outside
+		# ("pimctl show igmp interface" prints the version per
+		# interface) and because it changes nothing else: the VIF
+		# runs PIM exactly as it would have.  "disable" is the
+		# control beside it.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for $SRC_ADDR, with phyint lines for
+		# two interfaces that appear only once it is running
+		phyint $IFNEW_IF igmpv2
+		phyint $IFNEW_OFF_IF disable
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point for all of
+		# 224.0.0.0/4, and the far end of the link that appears.  It
+		# has no phyint line for it, so its side is what pimd makes
+		# of a new interface with nothing configured.
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router for the receiver LAN
 		EOF
 		return
 	fi
@@ -3309,6 +3412,7 @@ check() {
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
 	alias)      check_alias; return $? ;;
+	ifnew)      check_ifnew; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	renumber)   check_renumber; return $? ;;
 	register-filter) check_register_filter; return $? ;;
@@ -5973,6 +6077,242 @@ check_alias() {
 	return 1
 }
 
+# IGMP version column of one interface in "pimctl show igmp interface",
+# empty if pimd has no VIF by that name.  The table has one row per VIF and
+# every column of it is always filled, so the version is simply the fifth
+# field: Interface State Querier Timeout Version Groups.
+iface_igmp_version() {
+	pimctl "$1" -t show igmp interface 2>/dev/null | \
+		awk -v i="$2" '$1 == i { print $5 }'
+}
+
+# How many VIFs router $1 has, the register vif excluded -- "show
+# interface" leaves that one out, one row per VIF for the rest.  What this
+# is for is telling a VIF that came back on the slot it had from one that
+# was appended beside the stale entry of an interface that went away.
+iface_count() {
+	pimctl "$1" -t show interface 2>/dev/null | awk 'NF { n++ } END { print n + 0 }'
+}
+
+# An interface that appears under a running pimd.  init_vifs()
+# (src/vif.c) used to be the only caller of config_vifs_from_kernel()
+# (src/config.c), so the vif table was whatever the kernel had at
+# start-up: an interface configured afterwards never became a VIF, and
+# the only way back to a correct table was a restart.  The rc(8) ordering
+# that turned this up is in the header, and it is the ordinary case on
+# anything whose links are negotiated -- PPP, L2TP, a tunnel that comes
+# up, a VLAN added to a router in service.
+#
+# The assertions are written against both routers rather than one, and
+# against the kernel as well as against pimd's own table: a VIF that pimd
+# lists but never handed to the kernel forwards nothing, and a VIF that
+# joined no groups hears no Hello, so neither shows up as anything but a
+# missing adjacency later on.
+check_ifnew() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The state every later assertion is compared against: the link R1
+	# and R2 have had all along, and what each router's vif table looked
+	# like before anything was added to it.
+	print "2. R1 and R2 are adjacent over the link they started with"
+	if wait_for 60 has_neighbor r1 "$IFNEW_KEPT_ADDR"; then
+		ok "r1 has R2 ($IFNEW_KEPT_ADDR) as a neighbour"
+	else
+		fail "r1 never saw R2 on the link it started with, nothing to compare against"
+		return 1
+	fi
+	r1_vifs=$(iface_count r1)
+	r2_vifs=$(iface_count r2)
+	dprint "r1 has $r1_vifs VIFs, r2 has $r2_vifs"
+
+	print "3. Neither router has a VIF on an interface that does not exist"
+	for i in "$IFNEW_IF" "$IFNEW_OFF_IF"; do
+		if has_iface r1 "$i"; then
+			fail "r1 already has a VIF on $i, which nothing has created"
+		else
+			ok "r1: no VIF on $i"
+		fi
+	done
+	if has_iface r2 "$IFNEW_PEER_IF"; then
+		fail "r2 already has a VIF on $IFNEW_PEER_IF"
+	else
+		ok "r2: no VIF on $IFNEW_PEER_IF"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. A second R1-R2 link is created and addressed under both daemons"
+	box_link_add "$IFNEW_EP" r1 r2 || die "failed creating $IFNEW_EP"
+	box_addr_add r1 "$IFNEW_IF" "$IFNEW_ADDR/$IFNEW_PREFIX"
+	box_if_up r1 "$IFNEW_IF"
+	box_addr_add r2 "$IFNEW_PEER_IF" "$IFNEW_PEER_ADDR/$IFNEW_PREFIX"
+	box_if_up r2 "$IFNEW_PEER_IF"
+
+	# R1's other new interface, the one r1.conf disables.  Created in the
+	# same breath as the link above so that one wait covers both: the
+	# assertion that it gets no VIF is only worth anything once the
+	# rescan that gave the other one a VIF has run.
+	box_link_add "$IFNEW_OFF_EP" r1 - || die "failed creating $IFNEW_OFF_EP"
+	box_addr_add r1 "$IFNEW_OFF_IF" "$IFNEW_OFF_ADDR/$IFNEW_PREFIX"
+	box_if_up r1 "$IFNEW_OFF_IF"
+
+	print "5. Both routers give the new link a VIF, with no restart"
+	if wait_for "$IFNEW_WAIT" has_iface r1 "$IFNEW_IF"; then
+		ok "r1: VIF on $IFNEW_IF"
+	else
+		fail "r1: no VIF on $IFNEW_IF after ${IFNEW_WAIT}s, see $WORKDIR/r1.log"
+	fi
+	if wait_for "$IFNEW_WAIT" has_iface r2 "$IFNEW_PEER_IF"; then
+		ok "r2: VIF on $IFNEW_PEER_IF"
+	else
+		fail "r2: no VIF on $IFNEW_PEER_IF after ${IFNEW_WAIT}s, see $WORKDIR/r2.log"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	if [ "$(iface_state r1 "$IFNEW_IF")" = Up ] && iface_is r1 "$IFNEW_IF" "$IFNEW_ADDR"; then
+		ok "r1: $IFNEW_IF is Up on $IFNEW_ADDR"
+	else
+		fail "r1: $IFNEW_IF reads $(iface_state r1 "$IFNEW_IF") on $(iface_addr r1 "$IFNEW_IF")"
+	fi
+	if [ "$(iface_state r2 "$IFNEW_PEER_IF")" = Up ] && \
+	   iface_is r2 "$IFNEW_PEER_IF" "$IFNEW_PEER_ADDR"; then
+		ok "r2: $IFNEW_PEER_IF is Up on $IFNEW_PEER_ADDR"
+	else
+		fail "r2: $IFNEW_PEER_IF reads $(iface_state r2 "$IFNEW_PEER_IF") on $(iface_addr r2 "$IFNEW_PEER_IF")"
+	fi
+
+	# A daemon that restarted would have a correct table too, and would
+	# have thrown every adjacency and every route away to get it
+	if logged r1 "restarting"; then
+		fail "r1: pimd restarted, the table was not rescanned"
+	else
+		ok "r1: pimd never restarted"
+	fi
+
+	print "6. The VIF reached the kernel, not just pimd's table"
+	idx=$(vif_index r1 "$IFNEW_IF")
+	if [ -z "$idx" ]; then
+		fail "r1: $IFNEW_IF has no vif index"
+	elif [ "$(kern_vif_addr r1 "$idx")" = "$IFNEW_ADDR" ]; then
+		ok "r1: kernel vif $idx is $IFNEW_ADDR"
+	else
+		fail "r1: kernel vif $idx reads $(kern_vif_addr r1 "$idx"), expected $IFNEW_ADDR"
+	fi
+
+	print "7. The groups pimd joins on a link it runs PIM on were joined"
+	# shellcheck disable=SC2086
+	missing=$(missing_groups r1 "$IFNEW_IF" $PIM_GROUPS)
+	if [ -z "$missing" ]; then
+		ok "r1: $IFNEW_IF is in $PIM_GROUPS"
+	else
+		fail "r1: $IFNEW_IF never joined $missing"
+	fi
+
+	print "8. A PIM adjacency forms over the new link, both ways"
+	if wait_for 60 has_neighbor r1 "$IFNEW_PEER_ADDR"; then
+		ok "r1 has $IFNEW_PEER_ADDR as a neighbour"
+	else
+		fail "r1 never saw R2 on $IFNEW_IF, see $WORKDIR/r1.log"
+	fi
+	if wait_for 60 has_neighbor r2 "$IFNEW_ADDR"; then
+		ok "r2 has $IFNEW_ADDR as a neighbour"
+	else
+		fail "r2 never saw R1 on $IFNEW_PEER_IF, see $WORKDIR/r2.log"
+	fi
+
+	print "9. r1.conf was applied to the interfaces it names"
+	# The negative half: an interface pimd.conf disables gets no VIF,
+	# though the kernel has it and it is addressed like the other one
+	if has_iface r1 "$IFNEW_OFF_IF"; then
+		fail "r1: $IFNEW_OFF_IF got a VIF, 'phyint $IFNEW_OFF_IF disable' was not read"
+	else
+		ok "r1: no VIF on $IFNEW_OFF_IF, the phyint line disabling it was read"
+	fi
+	# ... and the positive one, on the interface the same file configures
+	# rather than disables.  R2 has no phyint line at all for its end, so
+	# it prints what an unconfigured VIF does and tells a version that was
+	# applied from one that is merely the default.
+	if [ "$(iface_igmp_version r1 "$IFNEW_IF")" = 2 ]; then
+		ok "r1: $IFNEW_IF runs IGMPv2, as 'phyint $IFNEW_IF igmpv2' asks"
+	else
+		fail "r1: $IFNEW_IF runs IGMPv$(iface_igmp_version r1 "$IFNEW_IF"), the phyint line was not applied"
+	fi
+	if [ "$(iface_igmp_version r2 "$IFNEW_PEER_IF")" = 3 ]; then
+		ok "r2: $IFNEW_PEER_IF runs IGMPv3, the default for a VIF nothing configures"
+	else
+		fail "r2: $IFNEW_PEER_IF runs IGMPv$(iface_igmp_version r2 "$IFNEW_PEER_IF"), expected the v3 default"
+	fi
+
+	print "10. The link the routers started with was not disturbed"
+	if has_neighbor r1 "$IFNEW_KEPT_ADDR"; then
+		ok "r1 still has R2 ($IFNEW_KEPT_ADDR) on the original link"
+	else
+		fail "r1 lost R2 on the original link while the new one was added"
+	fi
+	# shellcheck disable=SC2086
+	if lost_groups r1 "${EP}101b ${EP}112a"; then
+		fail "r1: ${LOST_GROUPS}- the rescan took a membership off another interface"
+	else
+		ok "r1: the interfaces it started with kept $PIM_GROUPS"
+	fi
+	if [ "$(iface_count r1)" -eq $((r1_vifs + 1)) ]; then
+		ok "r1 has one VIF more than it started with"
+	else
+		fail "r1 has $(iface_count r1) VIFs, expected $((r1_vifs + 1))"
+	fi
+
+	print "11. The same link, destroyed and built again, comes back on its own slot"
+	box_if_destroy r2 "$IFNEW_PEER_IF" || die "failed destroying $IFNEW_PEER_IF on r2"
+	if wait_for "$IFNEW_WAIT" iface_not_up r1 "$IFNEW_IF"; then
+		ok "r1: $IFNEW_IF taken out of service"
+	else
+		fail "r1: $IFNEW_IF still reads Up, the VIF was left in service"
+	fi
+	if ! pimd_is_up r1; then
+		fail "r1: pimd exited when the new link went away, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	box_link_add "$IFNEW_EP" r1 r2 || die "failed recreating $IFNEW_EP"
+	box_addr_add r1 "$IFNEW_IF" "$IFNEW_ADDR/$IFNEW_PREFIX"
+	box_if_up r1 "$IFNEW_IF"
+	box_addr_add r2 "$IFNEW_PEER_IF" "$IFNEW_PEER_ADDR/$IFNEW_PREFIX"
+	box_if_up r2 "$IFNEW_PEER_IF"
+
+	if wait_for "$IFNEW_WAIT" iface_is r1 "$IFNEW_IF" "$IFNEW_ADDR"; then
+		ok "r1: $IFNEW_IF is back on $IFNEW_ADDR"
+	else
+		fail "r1: $IFNEW_IF did not come back, it reads $(iface_state r1 "$IFNEW_IF")"
+	fi
+	# The point of the flap: a rescan that appended a slot instead of
+	# finding the one the name already had would reach MAXVIFS on a
+	# router whose links come and go
+	if [ "$(iface_count r1)" -eq $((r1_vifs + 1)) ]; then
+		ok "r1 still has $((r1_vifs + 1)) VIFs, the slot was reused"
+	else
+		fail "r1 has $(iface_count r1) VIFs after one flap, expected $((r1_vifs + 1))"
+	fi
+	if [ "$(vif_index r1 "$IFNEW_IF")" = "$idx" ]; then
+		ok "r1: $IFNEW_IF came back as vif $idx"
+	else
+		fail "r1: $IFNEW_IF came back as vif $(vif_index r1 "$IFNEW_IF"), was $idx"
+	fi
+	if wait_for 60 has_neighbor r1 "$IFNEW_PEER_ADDR"; then
+		ok "r1 has $IFNEW_PEER_ADDR as a neighbour again"
+	else
+		fail "r1 never saw R2 on $IFNEW_IF again, see $WORKDIR/r1.log"
+	fi
+
+	result
+}
+
 check_ifgone() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
@@ -7404,7 +7744,7 @@ run() {
 	rc=0
 
 	if [ "${1:-}" = all ]; then
-		# The same twenty either way, ordered by how long they
+		# The same twenty-one either way, ordered by how long they
 		# take when a pool is what picks them up
 		if [ "$JOBS" -gt 1 ]; then
 			list=$SCENARIOS_BY_LENGTH

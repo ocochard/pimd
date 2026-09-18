@@ -25,6 +25,9 @@
 #   box_addr_add BOX IF ADDR/LEN        add an address beside the others
 #   box_addr_del BOX IF ADDR            remove one address
 #   box_if_destroy BOX IF               take an interface away
+#   box_if_up BOX IF                    mark an interface up
+#   box_link_add EPAIR BOX BOX          build a link between two running
+#                                       boxes, "-" leaving an end on the host
 #   box_if_show BOX IF                  dump an interface, for a failure
 #   box_route_change BOX DEST GW [METRIC]
 #   route_has_metric                    can a route be given a metric here
@@ -160,6 +163,30 @@ box_addr_add() { box_run "$1" ifconfig "$2" inet "$3" alias; }
 box_addr_del() { box_run "$1" ifconfig "$2" inet "$3" -alias; }
 
 box_if_destroy() { box_run "$1" ifconfig "$2" destroy; }
+
+box_if_up() { box_run "$1" ifconfig "$2" up; }
+
+# A link built between two boxes that are already running, which is what
+# create_box() does for the links a scenario starts with but here with the
+# jails in place: $1 is the epair without its end suffix, its "a" end goes
+# into box $2 and its "b" end into box $3.  Either may be "-", leaving that
+# end on the host, which is how a scenario gets an interface with nothing
+# behind it.  The interface group is the one everything else in the lab
+# carries, so destroy_links() takes this away with the rest.
+box_link_add() {
+	${SUDO} ifconfig "$1" create group "$IFGROUP" >/dev/null || return 1
+
+	for bl_end in a b; do
+		case $bl_end in
+		a) bl_box=$2 ;;
+		b) bl_box=$3 ;;
+		esac
+
+		if [ "$bl_box" != - ]; then
+			${SUDO} ifconfig "$1$bl_end" vnet "$(jname "$bl_box")" || return 1
+		fi
+	done
+}
 
 box_if_show() { box_run "$1" ifconfig "$2"; }
 

@@ -34,10 +34,13 @@
 const char *rpf_backend = "netlink";
 
 int routing_socket = -1;
+int ifevent_socket = -1;
 static uint32_t pid; /* pid_t, but /usr/include/linux/netlink.h says __u32 ... */
 static uint32_t seq;
 
 static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf);
+static int init_ifevent(void);
+static void ifevent_read(int fd);
 static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len);
 static uint32_t fib_metric(uint32_t dst);
 
@@ -111,7 +114,147 @@ int init_routesock(void)
     pid = local.nl_pid;
     seq = time(NULL);
 
+    init_ifevent();
+
     return 0;
+}
+
+/*
+ * A second socket, subscribed to the interface and address groups, for the
+ * kernel to tell us that the set of interfaces has changed.  The one above
+ * cannot do it: k_req_incoming() writes a request to it and reads the
+ * answer back, so a notification arriving in between is read in place of
+ * that answer and thrown away, and the reply it did want is looked for in
+ * a queue it has already left.  bird keeps the two apart for the same
+ * reason (nl_scan and nl_req in sysdep/linux/netlink.c), and so does the
+ * routing socket side of this in src/routesock.c.
+ *
+ * Failing to open it is not fatal: RPF lookups, which is what pimd cannot
+ * run without, go through the other socket.  What is lost is noticing an
+ * interface configured after start-up.
+ */
+static int init_ifevent(void)
+{
+    struct sockaddr_nl local;
+
+    ifevent_socket = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (ifevent_socket < 0) {
+	logit(LOG_WARNING, errno, "Failed creating netlink socket for interface events");
+	return -1;
+    }
+
+    memset(&local, 0, sizeof(local));
+    local.nl_family = AF_NETLINK;
+    local.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR;
+    if (bind(ifevent_socket, (struct sockaddr *)&local, sizeof(local)) < 0) {
+	logit(LOG_WARNING, errno, "Failed subscribing to netlink interface events");
+	close(ifevent_socket);
+	ifevent_socket = -1;
+	return -1;
+    }
+
+    if (register_input_handler(ifevent_socket, ifevent_read) < 0) {
+	logit(LOG_WARNING, 0, "Failed registering netlink interface event handler");
+	close(ifevent_socket);
+	ifevent_socket = -1;
+	return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Drain the notifications and ask for one rescan if any of them was about
+ * an interface or an address.  Nothing here is parsed beyond the message
+ * type: what the kernel has is read back with getifaddrs() by the scan
+ * itself, which is the same view init_vifs() was built from, rather than
+ * pieced together from the messages.
+ */
+static void ifevent_read(int fd)
+{
+    int changed = 0;
+
+    while (1) {
+	union {
+	    struct nlmsghdr nh;	/* what the buffer is read as, and its alignment */
+	    char buf[8192];
+	} m;
+	struct nlmsghdr *nh;
+	ssize_t len;
+	size_t left;
+
+	len = recv(fd, &m, sizeof(m), MSG_DONTWAIT);
+	if (len < 0) {
+	    if (errno == EINTR)
+		continue;
+
+	    if (errno == EAGAIN || errno == EWOULDBLOCK)
+		break;
+
+	    /* The kernel drops notifications it cannot queue, so what we
+	     * hold is no longer the whole story: scan, do not guess. */
+	    if (errno == ENOBUFS) {
+		logit(LOG_WARNING, 0, "Netlink interface events overflowed, rescanning");
+		changed = 1;
+		break;
+	    }
+
+	    logit(LOG_WARNING, errno, "Failed reading netlink interface events");
+	    break;
+	}
+
+	if (!len)
+	    break;
+
+	/*
+	 * Walked by hand rather than with NLMSG_OK()/NLMSG_NEXT(), because
+	 * the two do not mean the same thing on the two systems this file
+	 * is built for.  NLMSG_NEXT() takes NLMSG_ALIGN(nlmsg_len) off the
+	 * length while NLMSG_OK() only ever promised that nlmsg_len itself
+	 * fits, so a final message whose length is not a multiple of four
+	 * leaves it negative; Linux compares that against an (int) and
+	 * stops, FreeBSD's NL_ITEM_OK() compares it against a size_t
+	 * (netlink/netlink.h), where a negative length is a very large one
+	 * and every test passes -- and the next thing read is the
+	 * nlmsg_len of whatever follows the buffer.  The kernel aligns the
+	 * messages it writes, so this is a bound that is never reached
+	 * rather than a bug being fixed, which is the reason to spell it
+	 * out here instead of relying on it.
+	 */
+	left = (size_t)len;
+	nh = &m.nh;
+
+	while (left >= sizeof(*nh)) {
+	    size_t msglen = nh->nlmsg_len;
+
+	    if (msglen < sizeof(*nh) || msglen > left)
+		break;
+
+	    switch (nh->nlmsg_type) {
+		case RTM_NEWLINK:
+		case RTM_DELLINK:
+		case RTM_NEWADDR:
+		case RTM_DELADDR:
+		    IF_DEBUG(DEBUG_IF)
+			logit(LOG_DEBUG, 0, "netlink: interface event %d", nh->nlmsg_type);
+		    changed = 1;
+		    break;
+
+		default:
+		    break;
+	    }
+
+	    msglen = NLMSG_ALIGN(msglen);
+	    if (msglen > left)
+		break;		/* padding the buffer does not hold */
+
+	    left -= msglen;
+	    nh = (struct nlmsghdr *)((char *)nh + msglen);
+	}
+    }
+
+    if (changed)
+	rescan_vifs_request();
 }
 
 void routesock_clean(void)
@@ -119,6 +262,10 @@ void routesock_clean(void)
     if (routing_socket > 0)
 	close(routing_socket);
     routing_socket = 0;
+
+    if (ifevent_socket >= 0)
+	close(ifevent_socket);
+    ifevent_socket = -1;
 }
 
 /* get the rpf neighbor info */

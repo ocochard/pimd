@@ -147,7 +147,22 @@ to and which asks nothing of this daemon; see the entry below.
 ** If the RP for a group changes, the DR should cancel any PIM-register-stop
    timers (XXX: not in the spec, but should be there)
 
-** If a new interface is configured, include it automatically
+** pimd still has to find two enabled phyints at the moment it starts
+
+Done: interfaces are rescanned at runtime now, so one configured after the
+daemon is up becomes a vif of its own -- rescan_vifs() (src/vif.c), off the
+notifications routesock.c and netlink.c read from the event loop, with a
+periodic scan under them.  The ifnew scenario of test/lab.sh covers it.
+
+What is left is the other half of the same rc(8) ordering.  init_vifs()
+ends in "Cannot forward: no enabled vifs" unless at least one phyint is
+enabled when it runs, and that is exit(-1): a router whose only links are
+negotiated -- PPP, L2TP, a tunnel that comes up -- still has to be started
+with -w SEC to wait for them, or -r to retry forever, or after the thing
+that builds them.  Waiting for the first vif to appear instead, and
+starting to forward when it does, would make both knobs unnecessary; it
+needs a daemon that can sit with an empty vif table without the rest of the
+code assuming phys_vif is set.
 
 ** Don't create routing entries for local link scoped groups
 
@@ -178,8 +193,6 @@ this happens)
 very large)
 
 ** Send immediately Join/Prune, instead of relying of Join/Prune timer = 0
-
-** Fix the code allowing interface UP/DOWN without restarting pimd.
 
 ** Do more testings for SPT switch, Join/Prune, asserts, etc...
 

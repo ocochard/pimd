@@ -69,6 +69,27 @@ uint32_t	default_route_metric   = UCAST_DEFAULT_ROUTE_METRIC;
 uint32_t	default_route_distance = UCAST_DEFAULT_ROUTE_DISTANCE;
 
 /*
+ * How long a rescan waits after the kernel said an interface changed, in
+ * milliseconds.  One interface coming up is several notifications, and an
+ * address usually arrives a moment after the link it is on, so this is
+ * what keeps that from being several scans -- and what keeps a scan from
+ * landing between the two and finding an interface with no address, which
+ * is not one a VIF can be built on.
+ */
+#define VIF_RESCAN_DELAY	1000
+
+/*
+ * ... and how long the daemon may go without a scan when no notification
+ * arrives at all, in seconds.  The event socket is what makes a rescan
+ * prompt; this is what keeps a lost notification from being permanent.
+ * The kernel drops them when their queue is full, and on a routing socket
+ * that queue carries every unicast route change on the router, so this is
+ * not a theoretical case on a box that also runs BGP.  Rounded down to a
+ * multiple of TIMER_INTERVAL, which is what it is counted in.
+ */
+#define VIF_RESCAN_PERIOD	60
+
+/*
  * Forward declarations
  */
 static void start_vif      (vifi_t vifi);
@@ -76,6 +97,12 @@ static void stop_vif       (vifi_t vifi);
 static void start_all_vifs (void);
 static int init_reg_vif    (void);
 static int update_reg_vif  (vifi_t register_vifi);
+static void rescan_timeout (void *arg);
+
+/* Pending rescan, see rescan_vifs_request(), and the tick counter of the
+ * periodic one age_vifs() runs, see VIF_RESCAN_PERIOD */
+static int rescan_timer = 0;
+static int rescan_ticks = 0;
 
 
 void init_vifs(void)
@@ -86,6 +113,11 @@ void init_vifs(void)
 
     numvifs   = 1;		 /* First one reserved for PIMREG_VIF */
     vifs_down = FALSE;
+
+    /* restart() takes the timer queue down with everything else, so the
+     * id of a rescan that was pending across it is not ours any more */
+    rescan_timer = 0;
+    rescan_ticks = 0;
 
     /* Configure the vifs based on the interface configuration of the the kernel and
      * the contents of the configuration file.  (Open a UDP socket for ioctl use in
@@ -322,6 +354,28 @@ static void start_vif(vifi_t vifi)
     if (v->uv_flags & VIFF_REGISTER)
 	v->uv_flags = v->uv_flags & ~VIFF_DOWN;
     else {
+	u_int ifindex;
+
+	/*
+	 * An interface that was destroyed and created again under the same
+	 * name is another ifnet, with an index of its own, and the VIF is
+	 * about to be handed to the kernel by that index: k_add_vif() and
+	 * k_join() name the interface with it on Linux.  Read it back here
+	 * rather than at the one place the address changes as well, since
+	 * a link that comes back the way it went carries the same address
+	 * and never reaches renumber_vif().  Zero is what if_nametoindex()
+	 * answers for a name it cannot find, and it is the register VIF's
+	 * index, so an interface that has gone in the meantime keeps the
+	 * stale one and fails in k_add_vif() instead of stealing that.
+	 */
+	ifindex = if_nametoindex(v->uv_name);
+	if (ifindex && (int)ifindex != v->uv_ifindex) {
+	    IF_DEBUG(DEBUG_IF)
+		logit(LOG_DEBUG, 0, "VIF #%u: %s is ifindex %u now, was %d",
+		      vifi, v->uv_name, ifindex, v->uv_ifindex);
+	    v->uv_ifindex = ifindex;
+	}
+
 	v->uv_flags = (v->uv_flags | VIFF_DR | VIFF_NONBRS) & ~VIFF_DOWN;
 
 	/* https://tools.ietf.org/html/draft-ietf-pim-hello-genid-01 */
@@ -556,6 +610,31 @@ static void renumber_vif(vifi_t vifi, uint32_t addr, uint32_t mask)
     }
 
     subnet = addr & mask;
+
+    /*
+     * A VIF that is out of service has nothing to say goodbye with and
+     * nothing to take out of service: this is an interface that was
+     * destroyed and built again under the same name, or one that came back
+     * with another address while it was down.  Only the fields move, and
+     * the VIF is started by the up/down pass that follows, on the address
+     * the kernel has now rather than on the one it had before it went.
+     */
+    if (v->uv_flags & VIFF_DOWN) {
+	logit(LOG_NOTICE, 0, "VIF #%u: interface %s came back on %s, was %s",
+	      vifi, v->uv_name, inet_fmt(addr, s1, sizeof(s1)),
+	      inet_fmt(v->uv_lcl_addr, s2, sizeof(s2)));
+
+	v->uv_lcl_addr   = addr;
+	v->uv_subnet     = subnet;
+	v->uv_subnetmask = mask;
+	if (mask != htonl(0xfffffffe))
+	    v->uv_subnetbcast = subnet | ~mask;
+	else
+	    v->uv_subnetbcast = 0xffffffff;
+
+	return;
+    }
+
     logit(LOG_NOTICE, 0, "VIF #%u: interface %s renumbered from %s to %s",
 	  vifi, v->uv_name, inet_fmt(v->uv_lcl_addr, s1, sizeof(s1)),
 	  inet_fmt(addr, s2, sizeof(s2)));
@@ -622,6 +701,13 @@ u_int vif_secaddrs(struct ifaddrs *ifap, const char *ifname, uint32_t primary, u
  * here, rather than SIOCGIFADDR, to be sure the two agree on an interface
  * carrying several addresses.  Otherwise a VIF whose address merely came
  * second in somebody's list would be restarted on every poll.
+ *
+ * A VIF that is out of service is asked as well, and renumber_vif() then
+ * only moves its fields: an interface that was destroyed and created again
+ * under the same name keeps the VIF it had, and has to be started on the
+ * address the kernel has for it now rather than on the one that went with
+ * the ifnet it used to be.  Which is why this runs before the up/down pass
+ * in check_vif_state() rather than after it.
  */
 static void check_vif_addrs(void)
 {
@@ -639,7 +725,7 @@ static void check_vif_addrs(void)
 	uint32_t prev_addr = v->uv_lcl_addr;
 	u_int nsecaddrs;
 
-	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_TUNNEL))
+	if (v->uv_flags & (VIFF_DISABLED | VIFF_REGISTER | VIFF_TUNNEL))
 	    continue;
 
 	/* A point-to-point link carries a peer address as well, and what a
@@ -666,6 +752,13 @@ static void check_vif_addrs(void)
 	    renumber_vif(vifi, addr, mask);
 	    break;		/* Only the first address of the interface */
 	}
+
+	/* Nothing to announce for a VIF that is out of service, and the
+	 * interface of one that has gone has no addresses left to read.
+	 * The next pass after it is back in service picks the list up, and
+	 * sends the Hello that carries it. */
+	if (v->uv_flags & VIFF_DOWN)
+	    continue;
 
 	/* RFC 7761 sec. 4.3.1: a secondary address that changes is announced
 	 * at once, in a Hello with the new Address List.  A renumbered VIF
@@ -714,6 +807,12 @@ void check_vif_state(void)
     vifs_down = FALSE;
     checking_vifs = 1;
 
+    /* An interface that is still there may have been renumbered, and one
+     * that is coming back may have another address than the one its VIF
+     * was built on.  Before the flags below, so that a VIF is started on
+     * the address the kernel has for it rather than on a stale one. */
+    check_vif_addrs();
+
     /* TODO: Check all potential interfaces!!! */
     /* Check the physical and tunnels only */
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
@@ -757,11 +856,6 @@ void check_vif_state(void)
 	}
     }
 
-    /* An interface that is still up may have been renumbered.  Do this
-     * before the register vif check below, which re-points that vif when
-     * its address matches no phyint any more. */
-    check_vif_addrs();
-
     /* Check the register(s) vif(s) */
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
 	vifi_t vifi2;
@@ -793,6 +887,82 @@ void check_vif_state(void)
     }
 
     checking_vifs = 0;
+}
+
+
+/*
+ * Take the interfaces the kernel has gained since the last look and give
+ * each of them a VIF, then bring the rest of the table up to date the way
+ * the periodic poll does.
+ *
+ * init_vifs() used to be the only caller of config_vifs_from_kernel(), so
+ * the table was whatever the kernel had when pimd started: an interface
+ * configured afterwards never became a VIF, and only a restart could fix
+ * it.  That is the ordinary case on anything whose links are negotiated
+ * rather than configured -- PPP, L2TP, a tunnel that comes up, a VLAN
+ * added to a router in service -- and on a daemon started from an rc
+ * script beside the thing that builds them.
+ *
+ * An interface that is merely back, under a name a VIF already has, is not
+ * new: the scan recognises it by name and check_vif_state() puts that VIF
+ * back in service on whatever address it carries now.  Only a name pimd
+ * has never seen takes a slot of its own, so a link that comes and goes
+ * costs one VIF and not one per flap.
+ */
+void rescan_vifs(void)
+{
+    vifi_t vifi, first;
+    struct uvif *v;
+
+    first = config_vifs_rescan();
+    if (first != numvifs) {
+	/* Whatever pimd.conf has to say about the interfaces that have
+	 * just appeared, which nothing has applied to them yet: the lines
+	 * naming them were read at startup, when there was no VIF of that
+	 * name for parse_phyint() to find. */
+	config_phyints_from_file(first);
+
+	for (vifi = first, v = &uvifs[first]; vifi < numvifs; ++vifi, ++v) {
+	    /* As in init_vifs(), which arms this on every VIF it installs */
+	    SET_TIMER(v->uv_jp_timer, PIM_JOIN_PRUNE_HOLDTIME);
+
+	    if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN)) {
+		logit(LOG_INFO, 0, "Interface %s is %s; VIF #%u out of service",
+		      v->uv_name, v->uv_flags & VIFF_DISABLED ? "DISABLED" : "DOWN", vifi);
+		continue;
+	    }
+
+	    start_vif(vifi);
+	}
+    }
+
+    /* Also for the VIFs that were already there: an interface that has
+     * gone, come back or been renumbered while we were not looking, and
+     * the register vif, which may have nothing to sit on until now. */
+    check_vif_state();
+}
+
+
+/*
+ * Ask for a rescan, from the handler that read the kernel's notification.
+ * One interface coming up is several messages -- the link, then each of
+ * its addresses -- and each of those is worth the same single scan, so
+ * the first schedules one and the rest ride on it.  Short enough not to
+ * be noticed, long enough that an interface which arrives before its
+ * address is scanned once, with the address.
+ */
+void rescan_vifs_request(void)
+{
+    if (rescan_timer)
+	return;
+
+    rescan_timer = timer_set_ms(VIF_RESCAN_DELAY, rescan_timeout, NULL);
+}
+
+static void rescan_timeout(void *arg __attribute__((unused)))
+{
+    rescan_timer = 0;
+    rescan_vifs();
 }
 
 
@@ -978,8 +1148,18 @@ void age_vifs(void)
      * ignored and the Hello leaves by whatever route the kernel picks
      * instead.  Nothing then ever set vifs_down and the VIF stayed in
      * service forever, so poll the interfaces unconditionally.
+     *
+     * Every VIF_RESCAN_PERIOD the whole kernel interface list is read
+     * instead, which also finds the interfaces pimd has no VIF for at
+     * all.  The notifications on the event socket are what make that
+     * prompt; this is the floor under them, see VIF_RESCAN_PERIOD.
      */
-    check_vif_state();
+    if (++rescan_ticks >= VIF_RESCAN_PERIOD / TIMER_INTERVAL) {
+	rescan_ticks = 0;
+	rescan_vifs();
+    } else {
+	check_vif_state();
+    }
 
     /* Age many things */
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {

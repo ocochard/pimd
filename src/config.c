@@ -176,6 +176,16 @@ static uint32_t	 ifname2addr	(char *s);
 
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
 
+/*
+ * Lowest VIF parse_phyint() may apply a line to.  Zero for every ordinary
+ * pass over the file; config_phyints_from_file() raises it so that a
+ * rescan configures the VIFs that have just appeared and touches no
+ * other.  The lists a phyint line appends to -- altnet, scoped,
+ * accept-nbr-from -- would otherwise collect a second copy of every entry
+ * each time an interface turned up somewhere else on the router.
+ */
+static vifi_t phyint_first = 0;
+
 static uint32_t          lineno;
 static struct ssm_range *ssm_list = NULL;
 static struct reg_acl   *reg_acl_list = NULL;
@@ -393,8 +403,17 @@ static int compare_requested_with_kernel(struct ifaddrs *ifaddr, int num)
 /*
  * Query the kernel to find network interfaces that are multicast-capable
  * and install them in the uvifs array.
+ *
+ * Called once from init_vifs() with @rescan false, and again from
+ * rescan_vifs() (src/vif.c) with it true for every interface the kernel
+ * has gained since.  The difference is what may happen to a daemon that
+ * is already running and forwarding: it may not wait for an interface
+ * that is not there yet, and it may not exit because one is missing, both
+ * of which are start-up answers to a start-up question.  The interfaces
+ * it already has a VIF for are recognised by name in the loop below, so a
+ * rescan adds what is new and leaves the rest alone.
  */
-void config_vifs_from_kernel(void)
+static void scan_vifs_from_kernel(int rescan)
 {
     struct uvif *v;
     vifi_t vifi;
@@ -412,11 +431,12 @@ init_vif_list:
     total_interfaces = 0; /* The total number of physical interfaces */
     if (getifaddrs(&ifaddr) == -1) {
 	logit(LOG_ERR, errno, "Failed retrieving interface addresses");
+	tear_iflist();
 	return;
     }
 
     count = compare_requested_with_kernel(ifaddr, phyint_num);
-    if (!do_vifs && count < phyint_num) {
+    if (!rescan && !do_vifs && count < phyint_num) {
 	freeifaddrs(ifaddr);
 
 	if (retry_forever) {
@@ -617,6 +637,62 @@ init_vif_list:
 
     freeifaddrs(ifaddr);
     tear_iflist();
+}
+
+void config_vifs_from_kernel(void)
+{
+    scan_vifs_from_kernel(0);
+}
+
+/*
+ * The same scan against a running daemon: every interface the kernel has
+ * gained since the last one becomes a VIF, appended above the VIFs that
+ * are already there.  Returns the first index it may have used, so the
+ * caller can tell which ones are new -- there is nothing else to tell them
+ * by, a VIF carries no "just added" of its own.
+ */
+vifi_t config_vifs_rescan(void)
+{
+    vifi_t first = numvifs;
+
+    scan_vifs_from_kernel(1);
+
+    return first;
+}
+
+/*
+ * Apply the phyint lines of the configuration file, and only those, to the
+ * VIFs from @first up: what a VIF that appeared after start-up has missed.
+ *
+ * Not config_vifs_from_file(), which is for a (re)start and resets the
+ * candidate RP and BSR state, the SSM ranges, the register filter and the
+ * anycast-RP sets on its way through.  Running that because an interface
+ * turned up would tear down protocol state that has nothing to do with it.
+ */
+void config_phyints_from_file(vifi_t first)
+{
+    char linebuf[LINE_BUFSIZ];
+    char *w, *s;
+    FILE *fp;
+
+    fp = fopen(config_file, "r");
+    if (!fp)
+	return;
+
+    lineno = 0;
+    phyint_first = first;
+
+    while (fgets(linebuf, sizeof(linebuf), fp)) {
+	lineno++;
+	s = linebuf;
+	w = next_word(&s);
+
+	if (parse_option(w) == CONF_PHYINT)
+	    parse_phyint(s);
+    }
+
+    phyint_first = 0;
+    fclose(fp);
 }
 
 /**
@@ -1241,7 +1317,7 @@ static int parse_phyint(char *s)
 	}
     }
 
-    for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
+    for (vifi = phyint_first, v = &uvifs[phyint_first]; vifi < numvifs; ++vifi, ++v) {
 
 	if (local != v->uv_lcl_addr)
 	    continue;

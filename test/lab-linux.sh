@@ -87,6 +87,27 @@ box_addr_del() {
 # A veth goes with its peer, as an epair does
 box_if_destroy() { box_run "$1" ip link del "$2"; }
 
+box_if_up() { box_run "$1" ip link set "$2" up; }
+
+# The same link built under running boxes as lab-freebsd.sh builds, see
+# there.  Checksum offload goes off on each end that lands in a namespace,
+# for create_box()'s reason.
+box_link_add() {
+	${SUDO} ip link add "${1}a" type veth peer name "${1}b" || return 1
+
+	for bl_end in a b; do
+		case $bl_end in
+		a) bl_box=$2 ;;
+		b) bl_box=$3 ;;
+		esac
+
+		if [ "$bl_box" != - ]; then
+			${SUDO} ip link set "$1$bl_end" netns "$(nsname "$bl_box")" || return 1
+			box_run "$bl_box" ethtool -K "$1$bl_end" tx off rx off >/dev/null
+		fi
+	done
+}
+
 box_if_show() { box_run "$1" ip addr show dev "$2"; }
 
 # The metric is part of what names a Linux route, so a route cannot be

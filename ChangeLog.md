@@ -6,6 +6,26 @@ issue of this repository is written out in full.
 [UNRELEASED]
 ------------
 
+### Changes
+- Interfaces are rescanned while pimd runs, so one configured after the
+  daemon started becomes a vif of its own.  The kernel interface list used
+  to be read once, by `init_vifs()`, and the periodic poll only flipped the
+  vifs built from that one reading between up and down: an interface that
+  appeared later never became a vif, and only a restart could give the
+  daemon a correct table.  That is the ordinary case wherever links are
+  negotiated rather than configured -- PPP, L2TP, a tunnel that comes up, a
+  VLAN added to a router in service, and any of them beside a pimd started
+  from an rc script.  A second routing socket (`PF_ROUTE` on BSD,
+  `NETLINK_ROUTE` subscribed to the link and IPv4 address groups on Linux)
+  is read from the event loop, and an interface or address message asks for
+  a scan a second later; a scan every minute is the floor under that, for a
+  notification the kernel had to drop.  The `phyint` lines of `pimd.conf`
+  are applied to the vifs that appear, including the ones naming an
+  interface that did not exist when the file was read.  An interface that
+  comes back under a name pimd already has a vif for keeps that vif, on the
+  address and ifindex it has now, so a link that comes and goes costs one
+  vif and not one per flap.  Tested by the `ifnew` scenario of `test/lab.sh`
+
 ### Fixes
 - Daemonizing leaves the terminal that started pimd.  The BSD branch asked
   for `TIOCNOTTY`, an ioctl the kernel refuses to anyone but a session

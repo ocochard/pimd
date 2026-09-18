@@ -63,6 +63,7 @@ union sockunion {
 typedef union sockunion *sup;
 const char *rpf_backend = "routing socket";
 int routing_socket = -1;
+int ifevent_socket = -1;
 int rtm_addrs;
 static pid_t pid;
 struct rt_metrics rt_metrics;
@@ -77,6 +78,22 @@ struct {
  * Local functions definitions.
  */
 static int getmsg(struct rt_msghdr *, int, struct rpfctl *rpfinfo);
+static int init_ifevent(void);
+static void ifevent_read(int fd);
+
+/*
+ * The head every routing socket message begins with, whichever of
+ * rt_msghdr, if_msghdr, ifa_msghdr and if_announcemsghdr it turns out to
+ * be.  Only the type is read here, and an announcement is a good deal
+ * shorter than a struct rt_msghdr, so this is what a message has to be
+ * long enough for -- asking for the largest of them would drop the
+ * shortest unread.
+ */
+struct ifevent_hdr {
+    u_short	ifh_msglen;
+    u_char	ifh_version;
+    u_char	ifh_type;
+};
 
 /*
  * TODO: check again!
@@ -121,7 +138,146 @@ int init_routesock(void)
     }
 #endif
 
+    init_ifevent();
+
     return 0;
+}
+
+/*
+ * A second routing socket, read from the event loop, for the kernel to
+ * tell us that the set of interfaces has changed.  The one above cannot
+ * do it: k_req_incoming() empties it before every RTM_GET and reads until
+ * it finds the answer to that request, so any notification queued on it
+ * is thrown away unseen -- deliberately, since an unread queue is what
+ * makes the kernel drop the reply it is waiting for.  bird splits the two
+ * the same way (sysdep/bsd/krt-sock.c keeps a socket of its own for the
+ * asynchronous messages), as does the netlink side of this in
+ * src/netlink.c.
+ *
+ * AF_INET narrows it to the messages that carry an IPv4 address, which the
+ * address ones do; RTM_IFINFO and RTM_IFANNOUNCE carry none and reach
+ * every routing socket whatever its protocol.  The IPv6 and link layer
+ * churn that says nothing about our vifs is left in the kernel.
+ *
+ * Failing to open it is not fatal: RPF lookups, which pimd cannot run
+ * without, go through the other socket.  What is lost is noticing an
+ * interface configured after start-up.
+ */
+static int init_ifevent(void)
+{
+    int val;
+
+    ifevent_socket = socket(PF_ROUTE, SOCK_RAW, AF_INET);
+    if (ifevent_socket < 0) {
+	logit(LOG_WARNING, errno, "Failed creating routing socket for interface events");
+	return -1;
+    }
+
+    /* There is no way to ask a routing socket for the four message types
+     * below and no others, so this queue also carries every unicast route
+     * change on the router.  Room for a burst of them, and, where the
+     * kernel can say so, an error on the read when there was not enough:
+     * a notification dropped in silence would leave the vif table wrong
+     * until the periodic rescan in age_vifs() came round. */
+    val = 256 * 1024;
+    if (setsockopt(ifevent_socket, SOL_SOCKET, SO_RCVBUF, &val, sizeof(val)) < 0)
+	logit(LOG_WARNING, errno, "Failed growing the interface event socket receive buffer");
+#ifdef SO_RERROR
+    val = 1;
+    if (setsockopt(ifevent_socket, SOL_SOCKET, SO_RERROR, &val, sizeof(val)) < 0)
+	logit(LOG_WARNING, errno, "Failed asking for interface event overflow errors");
+#endif
+
+    if (fcntl(ifevent_socket, F_SETFL, O_NONBLOCK) == -1) {
+	logit(LOG_WARNING, errno, "Failed setting interface event socket as non-blocking");
+	close(ifevent_socket);
+	ifevent_socket = -1;
+	return -1;
+    }
+
+    if (register_input_handler(ifevent_socket, ifevent_read) < 0) {
+	logit(LOG_WARNING, 0, "Failed registering interface event handler");
+	close(ifevent_socket);
+	ifevent_socket = -1;
+	return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Drain the notifications and ask for one rescan if any of them was about
+ * an interface or an address.  Nothing here is parsed beyond the message
+ * type: what the kernel has is read back with getifaddrs() by the scan
+ * itself, which is the same view init_vifs() was built from, rather than
+ * pieced together from the messages.
+ */
+static void ifevent_read(int fd)
+{
+    int changed = 0;
+
+    while (1) {
+	union {
+	    struct ifevent_hdr ifh;
+	    char buf[2048];
+	} m;
+	ssize_t len;
+
+	/* One message per read on a routing socket, and one that does not
+	 * fit is truncated rather than continued in the next */
+	len = read(fd, &m, sizeof(m));
+	if (len < 0) {
+	    if (errno == EINTR)
+		continue;
+
+	    if (errno == EAGAIN || errno == EWOULDBLOCK)
+		break;
+
+	    /* SO_RERROR above: the kernel dropped notifications it could
+	     * not queue, so what we have read is no longer the whole
+	     * story.  Scan, rather than guess at what was lost. */
+	    if (errno == ENOBUFS) {
+		logit(LOG_WARNING, 0, "Interface events overflowed, rescanning");
+		changed = 1;
+		break;
+	    }
+
+	    logit(LOG_WARNING, errno, "Failed reading interface events");
+	    break;
+	}
+
+	/* Everything below reads the head, and a message too short to hold
+	 * one says nothing we can act on.  Skipped rather than stopped on:
+	 * read() has taken it off the socket either way, and leaving the
+	 * rest of the queue there only brings us straight back here. */
+	if (len < (ssize_t)sizeof(m.ifh))
+	    continue;
+
+	if (m.ifh.ifh_version != RTM_VERSION) {
+	    logit(LOG_WARNING, 0, "Routing socket message version %u, expected %u",
+		  (u_int)m.ifh.ifh_version, (u_int)RTM_VERSION);
+	    continue;
+	}
+
+	switch (m.ifh.ifh_type) {
+#ifdef RTM_IFANNOUNCE
+	    case RTM_IFANNOUNCE:	/* an interface arrived or left */
+#endif
+	    case RTM_IFINFO:		/* ... or changed its flags */
+	    case RTM_NEWADDR:
+	    case RTM_DELADDR:
+		IF_DEBUG(DEBUG_IF)
+		    logit(LOG_DEBUG, 0, "routesock: interface event %u", (u_int)m.ifh.ifh_type);
+		changed = 1;
+		break;
+
+	    default:
+		break;
+	}
+    }
+
+    if (changed)
+	rescan_vifs_request();
 }
 
 void routesock_clean(void)
@@ -129,6 +285,10 @@ void routesock_clean(void)
     if (routing_socket >= 0)
 	close(routing_socket);
     routing_socket = -1;
+
+    if (ifevent_socket >= 0)
+	close(ifevent_socket);
+    ifevent_socket = -1;
 }
 
 /* get the rpf neighbor info */

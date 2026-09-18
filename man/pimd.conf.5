@@ -213,6 +213,15 @@ This setting selects and alters properties of the phyiscal interfaces
 operates on.  Interfaces can be identified using their local IP address
 or their name.
 .Pp
+An interface that does not exist yet may be named here.
+.Nm pimd
+rescans the kernel interface list while it runs, and applies the
+.Cm phyint
+line naming an interface when that interface appears, so a link that is
+negotiated rather than configured, such as a PPP or L2TP link or a tunnel
+that comes up, is configured from this file like any other.  It is
+reported at start-up as an unknown phyint name, once.
+.Pp
 .Sy NOTE: All
 .Cm phyint
 commands must come after the

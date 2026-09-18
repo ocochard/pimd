@@ -480,7 +480,9 @@ extern int	timer_get		(int);
 
 /* config.c */
 extern void	config_vifs_from_kernel	(void);
+extern vifi_t	config_vifs_rescan	(void);
 extern void	config_vifs_from_file	(void);
+extern void	config_phyints_from_file (vifi_t first);
 extern int	is_ssm_group		(uint32_t group);
 extern void	dump_ssm_ranges		(FILE *fp);
 extern int	register_accepted_from	(uint32_t addr);
@@ -638,6 +640,7 @@ extern int	init_routesock		(void);
 extern void     routesock_clean         (void);
 extern int	k_req_incoming		(uint32_t source, struct rpfctl *rpfp);
 extern int	routing_socket;
+extern int	ifevent_socket;
 extern const char *rpf_backend;
 
 /* rp.c */
@@ -680,6 +683,8 @@ extern void	init_vifs		(void);
 extern void	zero_vif		(struct uvif *, int);
 extern void	stop_all_vifs		(void);
 extern void	check_vif_state		(void);
+extern void	rescan_vifs		(void);
+extern void	rescan_vifs_request	(void);
 extern u_int	vif_secaddrs		(struct ifaddrs *ifap, const char *ifname, uint32_t primary, uint32_t *list);
 extern vifi_t	local_address		(uint32_t src);
 extern vifi_t	find_vif		(int ifi);

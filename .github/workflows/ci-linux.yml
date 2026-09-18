@@ -57,7 +57,7 @@ jobs:
       # scenario of test/lab.sh now, which the lab job below runs.
 
   lab:
-    # The network namespace lab: twenty PIM-SM scenarios over real
+    # The network namespace lab: twenty-one PIM-SM scenarios over real
     # namespaces, veth pairs and bridges, asserting on forwarded traffic and
     # on the kernel MFC in each namespace.  The suite above cannot hold them:
     # automake runs it under an unprivileged `unshare`, and a lab box has to
