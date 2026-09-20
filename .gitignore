@@ -29,3 +29,6 @@ install-sh
 missing
 pimd.service
 stamp-h1
+
+# AI working directory: project docs, memory, specs and plans, see AGENTS.md
+aidd_docs/
