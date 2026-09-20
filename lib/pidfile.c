@@ -39,14 +39,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include "pathnames.h"
+#include "defs.h"
 
 static char *pidfile_path = NULL;
 static pid_t pidfile_pid  = 0;
 
 static void pidfile_cleanup(void);
 
-const  char *__pidfile_path = _PATH_PIMD_RUNDIR;
-const  char *__pidfile_name = NULL;
+static const char *pidfile_dir  = _PATH_PIMD_RUNDIR;
+static const char *pidfile_name = NULL;
 
 int
 pidfile(const char *basename)
@@ -72,12 +73,12 @@ pidfile(const char *basename)
 			return (0);
 		free(pidfile_path);
 		pidfile_path = NULL;
-		__pidfile_name = NULL;
+		pidfile_name = NULL;
 		atexit_already = 1;
 	}
 
 	if (basename[0] != '/') {
-		if (asprintf(&pidfile_path, "%s/%s.pid", __pidfile_path, basename) == -1)
+		if (asprintf(&pidfile_path, "%s/%s.pid", pidfile_dir, basename) == -1)
 			return (-1);
 	} else {
 		if (asprintf(&pidfile_path, "%s", basename) == -1)
@@ -102,7 +103,7 @@ pidfile(const char *basename)
 		return (-1);
 	}
 	(void) fclose(f);
-	__pidfile_name = pidfile_path;
+	pidfile_name = pidfile_path;
 
 	/*
 	 * LITE extension, no need to set up another atexit() handler

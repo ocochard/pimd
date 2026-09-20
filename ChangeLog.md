@@ -17,6 +17,18 @@ issue of this repository is written out in full.
   `--enable-werror` turns warnings into errors and is off by default, on in
   both CI workflows.  Probed rather than hardcoded because this builds with
   gcc and with clang on Linux, FreeBSD, NetBSD and DragonFly
+- `-Wshadow`, `-Wmissing-prototypes` and `-Wmissing-variable-declarations`
+  joined that probed set, and what they found is fixed rather than silenced:
+  everything file-local is `static` now -- the `parse_*()` of `config.c`, the
+  `cmds[]` table of `ipc.c`, the timers and the saved route entries of
+  `route.c`, the routing socket scratch of `routesock.c`, the whole of
+  `test/mping.c` -- `curttl` and `g_rp_hold` are declared in `src/defs.h`
+  instead of by an `extern` copied into each user, the `lib/` replacements
+  take their prototypes from the same header their callers do, and the
+  `next` of `FREE_MRTENTRY()` no longer shadows the caller's own.  The dead
+  declarations and variables that `-Wno-unused` had been hiding are gone
+  with them.  Found by building with clang's `-Weverything`, which is not a
+  set to build under, only to read
 - FreeBSD needs no `gmake` to build this.  The tree is GNU autotools, but
   what automake generates is portable make: no GNU-only syntax in any
   generated Makefile, and `configure` probes for the one directive the two

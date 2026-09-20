@@ -74,7 +74,7 @@ enum {
 	IPC_PIM_DUMP
 };
 
-struct ipcmd {
+static struct ipcmd {
 	int   op;
 	char *cmd;
 	char *arg;
@@ -175,7 +175,6 @@ static void strip(char *cmd, size_t len)
 static void check_detail(char *cmd, size_t len)
 {
 	const char *det = "detail";
-	char *ptr;
 
 	strip(cmd, len);
 
@@ -215,10 +214,10 @@ static int ipc_read(int sd, char *cmd, ssize_t len)
 
 	for (size_t i = 0; i < NELEMS(cmds); i++) {
 		struct ipcmd *c = &cmds[i];
-		size_t len = strlen(c->cmd);
+		size_t clen = strlen(c->cmd);
 
-		if (!strncasecmp(cmd, c->cmd, len)) {
-			check_detail(cmd, len);
+		if (!strncasecmp(cmd, c->cmd, clen)) {
+			check_detail(cmd, clen);
 			return c->op;
 		}
 	}
@@ -701,7 +700,6 @@ static int show_pim_mrt(FILE *fp)
 	kernel_cache_t *kc;
 	grpentry_t *g;
 	mrtentry_t *r;
-	cand_rp_t *rp;
 
 	fprintf(fp, "Multicast Routing Table_\n");
 	if (!detail)
@@ -1081,7 +1079,6 @@ static void ipc_help(int sd, char *buf, size_t len)
 static void ipc_handle(int sd)
 {
 	char cmd[768] = { 0 };
-	ssize_t len;
 	int client;
 	int rc = 0;
 

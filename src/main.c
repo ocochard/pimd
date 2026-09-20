@@ -54,9 +54,10 @@ int mrt_table_id = 0;
 
 char *ident       = PACKAGE_NAME;
 char *prognm      = NULL;
-char *pid_file    = NULL;
-char *sock_file   = NULL;
 char *config_file = NULL;
+
+static char *pid_file  = NULL;
+static char *sock_file = NULL;
 
 static int sighandled = 0;
 #define GOT_SIGINT      0x01
@@ -190,7 +191,7 @@ static int usage(int code)
 	ptr = strtok(buf, " ");
 	while (ptr) {
 	    char *sys = ptr;
-	    char buf[20];
+	    char str[20];
 
 	    ptr = strtok(NULL, " ");
 
@@ -201,11 +202,11 @@ static int usage(int code)
 	    }
 
 	    if (ptr)
-		snprintf(buf, sizeof(buf), "%s ", sys);
+		snprintf(str, sizeof(str), "%s ", sys);
 	    else
-		snprintf(buf, sizeof(buf), "%s", sys);
+		snprintf(str, sizeof(str), "%s", sys);
 
-	    strlcat(line, buf, sizeof(line));
+	    strlcat(line, str, sizeof(line));
 	}
 
 	puts(line);
@@ -263,8 +264,6 @@ int main(int argc, char *argv[])
 
     prognm = ident = progname(argv[0]);
     while ((ch = getopt_long(argc, argv, "d:f:hi:l:np:rst:u:vw:", long_options, NULL)) != EOF) {
-	const char *errstr = NULL;
-
 	switch (ch) {
 	    case 'd':
 		rc = debug_parse(optarg);
@@ -315,10 +314,14 @@ int main(int argc, char *argv[])
 #ifndef __linux__
 		errx(1, "-t ID is currently only supported on Linux");
 #else
-		mrt_table_id = strtonum(optarg, 0, 999999999, &errstr);
-		if (errstr) {
-		    fprintf(stderr, "Table ID %s!\n", errstr);
-		    return usage(1);
+		{
+		    const char *errstr = NULL;
+
+		    mrt_table_id = strtonum(optarg, 0, 999999999, &errstr);
+		    if (errstr) {
+			fprintf(stderr, "Table ID %s!\n", errstr);
+			return usage(1);
+		    }
 		}
 #endif
 		break;

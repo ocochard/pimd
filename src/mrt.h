@@ -74,7 +74,7 @@
 #define FREE_MRTENTRY(mrtentry_ptr)				\
     do {							\
 	kernel_cache_t *curr;					\
-	kernel_cache_t *next;					\
+	kernel_cache_t *kc_next;				\
 								\
 	if ((mrtentry_ptr)->vif_timers)				\
 	    free((mrtentry_ptr)->vif_timers);			\
@@ -91,9 +91,9 @@
 	    (*(mrtentry_ptr)->limit_count)--;			\
 	curr = (mrtentry_ptr)->kernel_cache;			\
 	while (curr) {						\
-	    next = curr->next;					\
+	    kc_next = curr->next;				\
 	    free(curr);						\
-	    curr = next;					\
+	    curr = kc_next;					\
 	}							\
 	free(mrtentry_ptr);					\
     } while (0)

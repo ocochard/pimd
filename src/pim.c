@@ -44,10 +44,6 @@ char	*pim_send_buf;		/* output packet buffer  */
 uint32_t	allpimrouters_group;	/* ALL_PIM_ROUTERS address in net order */
 int	pim_socket;		/* socket for PIM control msgs */
 
-#ifdef RAW_OUTPUT_IS_RAW
-extern int curttl;
-#endif /* RAW_OUTPUT_IS_RAW */
-
 /*
  * Local variables.
  */

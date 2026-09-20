@@ -59,7 +59,6 @@ static int SetTimer      (vifi_t vifi, struct listaddr *g, uint32_t source, int 
 static void arm_membership_timer(vifi_t vifi, struct listaddr *g, struct listaddr *s, uint32_t source);
 static int SetVerTimer   (vifi_t vifi, struct listaddr *g);
 static int DeleteTimer   (int id);
-static void send_query   (struct uvif *v, uint32_t group, int interval);
 static void SendQuery    (void *arg);
 static int SetQueryTimer (struct listaddr *g, vifi_t vifi, int to_expire, int q_time, int q_len);
 static uint32_t igmp_group_membership_timeout(void);
@@ -670,7 +669,7 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 /*
  * Loop through and process all sources in a v3 record.
  */
-int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8_t *sources, uint8_t *canary, int num_sources)
+static int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8_t *sources, uint8_t *canary, int num_sources)
 {
     uint8_t *s;
     int j;

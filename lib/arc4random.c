@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "defs.h"
 
 /*
  * The BSDs have had arc4random() for decades, but GLIBC only grew one in

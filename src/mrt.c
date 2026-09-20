@@ -1086,11 +1086,6 @@ void add_kernel_cache(mrtentry_t *mrt, uint32_t source, uint32_t group, uint16_t
 static void move_kernel_cache(mrtentry_t *mrt, uint16_t flags)
 {
     kernel_cache_t *node;
-    kernel_cache_t *insert_node;
-    kernel_cache_t *first_node;
-    kernel_cache_t *last_node;
-    kernel_cache_t *prev_node;
-    mrtentry_t     *mrtentry_pmbr;
     mrtentry_t     *mrtentry_rp;
     uint32_t	    group_h;
     uint32_t	    source_h;

@@ -110,7 +110,6 @@ void k_stop_pim(int socket)
 void k_set_sndbuf(int socket, int bufsize, int minsize)
 {
     int delta = bufsize / 2;
-    int iter = 0;
 
     /*
      * Set the socket buffer.  If we can't set it as large as we
@@ -121,7 +120,6 @@ void k_set_sndbuf(int socket, int bufsize, int minsize)
     if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char *)&bufsize, sizeof(bufsize)) < 0) {
 	bufsize -= delta;
 	while (1) {
-	    iter++;
 	    if (delta > 1)
 		delta /= 2;
 
@@ -139,9 +137,6 @@ void k_set_sndbuf(int socket, int bufsize, int minsize)
 	    /*NOTREACHED*/
 	}
     }
-
-//    IF_DEBUG(DEBUG_KERN)
-//	logit(LOG_DEBUG, 0, "Got %d byte send buffer size in %d iterations", bufsize, iter);
 }
 
 
@@ -152,7 +147,6 @@ void k_set_sndbuf(int socket, int bufsize, int minsize)
 void k_set_rcvbuf(int socket, int bufsize, int minsize)
 {
     int delta = bufsize / 2;
-    int iter = 0;
 
     /*
      * Set the socket buffer.  If we can't set it as large as we
@@ -163,7 +157,6 @@ void k_set_rcvbuf(int socket, int bufsize, int minsize)
     if (setsockopt(socket, SOL_SOCKET, SO_RCVBUF, (char *)&bufsize, sizeof(bufsize)) < 0) {
 	bufsize -= delta;
 	while (1) {
-	    iter++;
 	    if (delta > 1)
 		delta /= 2;
 
@@ -181,9 +174,6 @@ void k_set_rcvbuf(int socket, int bufsize, int minsize)
 	    /*NOTREACHED*/
 	}
     }
-
-//    IF_DEBUG(DEBUG_KERN)
-//	logit(LOG_DEBUG, 0, "Got %d byte recv buffer size in %d iterations", bufsize, iter);
 }
 
 

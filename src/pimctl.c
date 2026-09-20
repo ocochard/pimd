@@ -513,7 +513,7 @@ static int string_match(const char *a, const char *b)
    return !strncasecmp(a, b, min);
 }
 
-struct cmd *match(int argc, char *argv[])
+static struct cmd *match(int argc, char *argv[])
 {
 	struct cmd *c;
 
@@ -531,7 +531,7 @@ struct cmd *match(int argc, char *argv[])
 	return NULL;
 }
 
-char *compose(struct cmd *c, char *buf, size_t len)
+static char *compose(struct cmd *c, char *buf, size_t len)
 {
 	memset(buf, 0, len);
 

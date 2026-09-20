@@ -190,7 +190,6 @@ static uint32_t          lineno;
 static struct ssm_range *ssm_list = NULL;
 static struct reg_acl   *reg_acl_list = NULL;
 static struct anycast_rp *anycast_rp_list = NULL;
-extern struct rp_hold   *g_rp_hold;
 
 
 /*
@@ -201,7 +200,6 @@ static int build_iflist(void)
 {
     char buf[LINE_BUFSIZ], *line;
     int count = 0;
-    int no = 0;
     FILE *fp;
 
     fp = fopen(config_file, "r");
@@ -1682,7 +1680,7 @@ static int parse_phyint(char *s)
  * Returns:
  * %TRUE if the parsing was successful, o.w. %FALSE
  */
-int parse_rp_candidate(char *s)
+static int parse_rp_candidate(char *s)
 {
     u_int time = PIM_DEFAULT_CAND_RP_ADV_PERIOD;
     u_int priority = PIM_DEFAULT_CAND_RP_PRIORITY;
@@ -1775,7 +1773,7 @@ int parse_rp_candidate(char *s)
  * Returns:
  * %TRUE if the parsing was successful, o.w. %FALSE
  */
-int parse_group_prefix(char *s)
+static int parse_group_prefix(char *s)
 {
     char *w;
     uint32_t group_addr;
@@ -2015,7 +2013,7 @@ static int parse_anycast_rp(char *s)
  * Syntax:
  * bsr-candidate [address | ifname] [priority <0-255>] [interval <10-26214>]
  */
-int parse_bsr_candidate(char *s)
+static int parse_bsr_candidate(char *s)
 {
     u_int time = PIM_BOOTSTRAP_PERIOD;
     uint32_t priority = PIM_DEFAULT_BSR_PRIORITY;
@@ -2118,7 +2116,7 @@ int parse_bsr_candidate(char *s)
  * Returns:
  * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
  */
-int parse_rp_address(char *s)
+static int parse_rp_address(char *s)
 {
     char *w;
     uint32_t local = 0xffffff;
@@ -2210,7 +2208,7 @@ int parse_rp_address(char *s)
  * Returns:
  * %TRUE if successful, otherwise %FALSE.
  */
-int parse_hello_interval(char *s)
+static int parse_hello_interval(char *s)
 {
     char *w;
     u_int period;
@@ -2387,7 +2385,7 @@ static int parse_spt_threshold(char *s)
  * Returns:
  * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
  */
-int parse_default_route_metric(char *s)
+static int parse_default_route_metric(char *s)
 {
     char *w;
     u_int value;
@@ -2429,7 +2427,7 @@ int parse_default_route_metric(char *s)
  * Returns:
  * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
  */
-int parse_default_route_distance(char *s)
+static int parse_default_route_distance(char *s)
 {
     char *w;
     u_int value;

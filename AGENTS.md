@@ -309,8 +309,11 @@ conditionally, just use them.
 Old C code with a deliberately preserved style (see `.github/CONTRIBUTING.md`): four spaces for the
 first indent level, tabs beyond that, `case` indented inside `switch`, ~100 column lines, Emacs
 `indent-tabs-mode: t` footer at the bottom of each file. Match the surrounding file rather than
-reformatting. `pimd` builds with `-W -Wall -Wextra -Wno-unused`; `logit()` is `printf`-format
-checked.
+reformatting. The warning set is the one `configure` probes (see Build above); `logit()` is
+`printf`-format checked. Anything file-local is `static`, and what crosses a file is declared in
+`src/defs.h` rather than by an `extern` written out again in each user -- `-Wmissing-prototypes`
+and `-Wmissing-variable-declarations` are in that set and CI builds `--enable-werror`, so a new
+non-static symbol without a header declaration stops the build.
 
 Portability matters: Linux, FreeBSD, NetBSD and DragonFly are all supported targets, so guard
 OS-specific code the way `defs.h` and `src/Makefile.am` already do rather than assuming Linux.

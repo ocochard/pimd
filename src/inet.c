@@ -209,7 +209,7 @@ int inet_cksum(uint16_t *addr, u_int len)
 /*
  * Called by following netname() to create a mask specified network address.
  */
-void trimdomain(char *cp)
+static void trimdomain(char *cp)
 {
     static char domain[MAXHOSTNAMELEN + 1];
     static int first = 1;

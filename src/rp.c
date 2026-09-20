@@ -296,7 +296,7 @@ static grp_mask_t *add_grp_mask(grp_mask_t **used_grp_mask_list, uint32_t group_
  * There MUST however be a minimum of BS_Min_Interval between each time
  * a BSM is sent.
  */
-void update_bootstrap_timer(void)
+static void update_bootstrap_timer(void)
 {
     if (cand_bsr_flag == TRUE && curr_bsr_address == my_bsr_address) {
 	if (pim_bootstrap_timer > PIM_MIN_BOOTSTRAP_PERIOD) {

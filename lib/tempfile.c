@@ -19,6 +19,7 @@
 #include <fcntl.h>		/* O_TMPFILE requires -D_GNU_SOURCE */
 #include <stdio.h>		/* fdopen() */
 #include <sys/stat.h>		/* umask() */
+#include "defs.h"
 
 /**
  * tempfile - A secure tmpfile() replacement

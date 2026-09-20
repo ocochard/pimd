@@ -229,7 +229,8 @@ pimd_probe_CFLAGS=`echo " $CFLAGS " | sed -e 's/ -W[[^ ]]*/ /g'`
 for flag in -W -Wall -Wextra -Wno-unused					\
 	    -Wformat=2 -Wpointer-arith -Wcast-qual -Wstrict-prototypes	\
 	    -Wold-style-definition -Wvla -Walloca -Wundef		\
-	    -Wredundant-decls -Wimplicit-fallthrough; do
+	    -Wredundant-decls -Wimplicit-fallthrough -Wshadow		\
+	    -Wmissing-prototypes -Wmissing-variable-declarations; do
 	PIMD_TRY_CFLAGS([$flag])
 done
 

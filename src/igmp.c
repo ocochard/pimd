@@ -52,10 +52,6 @@ in_addr_t allhosts_group;	/* allhosts  addr in net order       */
 in_addr_t allrouters_group;	/* All-Routers addr in net order     */
 in_addr_t allreports_group;	/* All IGMP routers in net order     */
 
-#ifdef RAW_OUTPUT_IS_RAW
-extern int curttl;
-#endif /* RAW_OUTPUT_IS_RAW */
-
 /*
  * Local functions definitions.
  */

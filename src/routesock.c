@@ -55,7 +55,7 @@
  * authors wanted to merge routesock.c and netlink.c, but I don't know
  * anymore. --Joachim */
 #ifdef HAVE_ROUTING_SOCKETS
-union sockunion {
+static union sockunion {
     struct  sockaddr sa;
     struct  sockaddr_in sin;
     struct  sockaddr_dl sdl;
@@ -64,12 +64,12 @@ typedef union sockunion *sup;
 const char *rpf_backend = "routing socket";
 int routing_socket = -1;
 int ifevent_socket = -1;
-int rtm_addrs;
+static int rtm_addrs;
 static pid_t pid;
-struct rt_metrics rt_metrics;
-uint32_t rtm_inits;
+static struct rt_metrics rt_metrics;
+static uint32_t rtm_inits;
 
-struct {
+static struct {
     struct  rt_msghdr m_rtm;
     char    m_space[512];
 } m_rtmsg;

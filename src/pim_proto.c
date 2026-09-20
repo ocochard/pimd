@@ -1394,7 +1394,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
     uint32_t is_null;
     int is_copy;
     mrtentry_t *mrtentry;
-    mrtentry_t *mrtentry2;
     rpentry_t *rp;
     uint8_t oifs[MAXVIFS];
 
@@ -2331,7 +2330,7 @@ static const char *jp_entry_kind(uint8_t flags)
    |        Pruned Source Address n (Encoded-Source format)        |
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
-void log_pim_join_prune(uint32_t src, uint8_t *data_ptr, int num_groups, char* ifname)
+static void log_pim_join_prune(uint32_t src, uint8_t *data_ptr, int num_groups, char* ifname)
 {
     pim_encod_grp_addr_t encod_group;
     pim_encod_src_addr_t encod_src;
@@ -2703,7 +2702,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     uint32_t jp_value;
     pim_nbr_entry_t *upstream_router;
     int my_action;
-    rp_grp_entry_t *rp_grp;
     uint8_t *data_group_j_start;
     uint8_t *data_group_p_start;
     uint32_t new_join;
@@ -3698,7 +3696,6 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
     uint32_t         addr;
     struct uvif     *v;
     pim_nbr_entry_t *nbr;
-    cand_rp_t       *cand_rp;
 
     /* Walk through all routing entries. The iif must match to include the
      * entry. Check first the (*,G) entry and then all associated (S,G).

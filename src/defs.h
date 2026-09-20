@@ -537,6 +537,9 @@ extern void	k_set_rcvbuf		(int socket, int bufsize, int minsize);
 extern void	k_hdr_include		(int socket, int val);
 extern void	k_set_pktinfo		(int socket, int val);
 extern void	k_set_ttl		(int socket, int t);
+#ifdef RAW_OUTPUT_IS_RAW
+extern int	curttl;
+#endif
 extern void	k_set_loop		(int socket, int l);
 extern void	k_set_if		(int socket, uint32_t ifa);
 extern void	k_set_router_alert	(int socket);
@@ -700,6 +703,8 @@ struct rp_hold {
 	uint32_t	mask;
 	uint8_t		priority;
 };
+
+extern struct rp_hold	*g_rp_hold;
 
 /* compat declarations */
 #ifndef HAVE_ARC4RANDOM

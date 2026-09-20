@@ -85,22 +85,22 @@ spt_threshold_t spt_threshold = {
 /*
  * Local variables
  */
-uint16_t unicast_routing_interval = UCAST_ROUTING_CHECK_INTERVAL;
-uint16_t unicast_routing_timer;   /* Used to check periodically for any
-				   * change in the unicast routing. */
-uint16_t pim_spt_threshold_timer; /* Used for periodic check of spt-threshold
-				   * for the RP or the lasthop router. */
+static uint16_t unicast_routing_interval = UCAST_ROUTING_CHECK_INTERVAL;
+static uint16_t unicast_routing_timer;	/* Used to check periodically for any
+					 * change in the unicast routing. */
+static uint16_t pim_spt_threshold_timer;/* Used for periodic check of spt-threshold
+					 * for the RP or the lasthop router. */
 
 /*
  * TODO: XXX: the timers below are not used. Instead, the data rate timer is used.
  */
-uint16_t kernel_cache_timer;      /* Used to timeout the kernel cache
-				   * entries for idle sources */
-uint16_t kernel_cache_interval;
+static uint16_t kernel_cache_timer;	/* Used to timeout the kernel cache
+					 * entries for idle sources */
+static uint16_t kernel_cache_interval;
 
 /* to request and compare any route changes */
-srcentry_t srcentry_save;
-rpentry_t  rpentry_save;
+static srcentry_t srcentry_save;
+static rpentry_t  rpentry_save;
 
 /*
  * Forward declarations
@@ -1165,11 +1165,7 @@ int change_interfaces(mrtentry_t *mrt,
     uint8_t old_real_oifs[MAXVIFS];
     vifi_t      old_iif;
     vifi_t      vifi;
-    rpentry_t   *rp;
-    cand_rp_t   *cand_rp;
     kernel_cache_t *kc;
-    rp_grp_entry_t *rp_grp;
-    grpentry_t     *grp;
     mrtentry_t     *srcs;
     mrtentry_t     *mwc;
     mrtentry_t     *mrp;

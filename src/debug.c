@@ -763,7 +763,6 @@ void dump_pim_mrt(FILE *fp, int detail)
     mrtentry_t *r;
     u_int number_of_cache_mirrors = 0;
     u_int number_of_groups = 0;
-    cand_rp_t *rp;
     kernel_cache_t *kc;
 
     if (detail)
