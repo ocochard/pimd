@@ -191,7 +191,7 @@ AM_CONDITIONAL(ENABLE_TEST, [test "x$enable_test"                 != "xno"])
 AC_DEFUN([PIMD_TRY_CFLAGS], [
   AC_MSG_CHECKING([whether $CC accepts $1])
   pimd_save_CFLAGS="$CFLAGS"
-  CFLAGS="$CFLAGS -Werror $1"
+  CFLAGS="$pimd_probe_CFLAGS -Werror $1"
   AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[]])],
     [AC_MSG_RESULT([yes])
      PIMD_CFLAGS="$PIMD_CFLAGS $1"],
@@ -212,6 +212,13 @@ AC_DEFUN([PIMD_TRY_LDFLAGS], [
 
 PIMD_CFLAGS=""
 PIMD_LDFLAGS=""
+
+# The probe turns warnings into errors, so a -W option of the user's own
+# CFLAGS that fires on the test program would fail every probe below and
+# drop the whole set without a word -- and the linker probes, which have
+# no -Werror, would keep their half, leaving -pie without -fPIE.  Probe
+# against the user's CFLAGS with their warning options taken out.
+pimd_probe_CFLAGS=`echo " $CFLAGS " | sed -e 's/ -W[[^ ]]*/ /g'`
 
 # The set that is silent on this tree as it stands, so -Werror stays
 # usable.  -Wformat=2 is the one that matters most for a daemon parsing
@@ -252,7 +259,12 @@ AS_IF([test "x$enable_hardening" != "xno"], [
 	AS_CASE(["$PIMD_CFLAGS"], [*_FORTIFY_SOURCE=3*], [],
 		[PIMD_TRY_CFLAGS([-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2])])
 
-	for flag in -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack; do
+	# -pie needs the compiler half: linking PIE objects that were built
+	# without -fPIE gives "relocation R_X86_64_32 cannot be used against
+	# local symbol", so ask for it only if -fPIE was taken.
+	AS_CASE([" $PIMD_CFLAGS "], [*" -fPIE "*], [PIMD_TRY_LDFLAGS([-pie])])
+
+	for flag in -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack; do
 		PIMD_TRY_LDFLAGS([$flag])
 	done
 ])

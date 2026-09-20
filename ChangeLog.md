@@ -30,6 +30,14 @@ issue of this repository is written out in full.
   now, with GNU make covered by the Linux workflow
 
 ### Fixes
+- `configure` no longer drops every hardening flag when the user's own
+  `CFLAGS` carry warning options.  The compiler probe adds `-Werror`, so a
+  `-W` flag of the user's that fires on the probe's own test program failed
+  all of them and left `PIMD_CFLAGS` empty without a word; the linker
+  probes have no `-Werror`, kept their half, and the build then linked
+  `-pie` objects compiled without `-fPIE`: "relocation R_X86_64_32 cannot
+  be used against local symbol".  The probe strips the user's warning flags
+  now, and `-pie` is asked for only when `-fPIE` was taken
 - `mping` no longer skips every interface when no address family is given.
   The `continue` in the `AF_UNSPEC` arm of `ifinfo()` was indented as if
   the `if` above it guarded it, but that `if` had no braces, so the arm
