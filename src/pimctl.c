@@ -67,15 +67,15 @@
 #define MIN(a,b)	(((a) <= (b))? (a) : (b))
 #endif
 
-#ifndef strlcat
+#ifndef HAVE_STRLCAT
 extern size_t strlcat(char *, const char *, size_t);
 #endif
 
-#ifndef strlcat
+#ifndef HAVE_STRLCPY
 extern size_t strlcpy(char *, const char *, size_t);
 #endif
 
-#ifndef tempfile
+#ifndef HAVE_TEMPFILE
 extern FILE *tempfile(void);
 #endif
 

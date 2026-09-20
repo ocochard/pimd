@@ -209,7 +209,7 @@ void k_hdr_include(int socket, int val)
  * For IGMP reports we need to know incoming interface since proxy reporters
  * may use source IP 0.0.0.0, so we cannot rely on find_vif_direct_local().
  */
-void k_set_pktinfo(int socket, int val)
+void k_set_pktinfo(int socket __attribute__((unused)), int val __attribute__((unused)))
 {
 #ifdef IP_PKTINFO
     if (setsockopt(socket, SOL_IP, IP_PKTINFO, &val, sizeof(val)) < 0)

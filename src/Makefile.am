@@ -1,6 +1,8 @@
 # For replacement functions in lib/
 AUTOMAKE_OPTIONS = subdir-objects
 
+AM_CFLAGS        = @PIMD_CFLAGS@
+AM_LDFLAGS       = @PIMD_LDFLAGS@
 AM_CPPFLAGS      = -I$(top_srcdir)/include
 AM_CPPFLAGS     += -DSYSCONFDIR=\"@sysconfdir@\" -DRUNSTATEDIR=\"@runstatedir@\"
 
@@ -14,7 +16,6 @@ pimd_SOURCES     = config.c		debug.c		debug.h			    \
 		   queue.h		route.c		rp.c			    \
 		   timer.c		trace.c		trace.h	    		    \
 		   vif.c		vif.h
-pimd_CFLAGS      = -W -Wall -Wextra -Wno-unused
 pimd_LDADD       = $(LIBS) $(LIBOBJS)
 
 if LINUX

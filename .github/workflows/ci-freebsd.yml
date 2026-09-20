@@ -52,7 +52,9 @@ jobs:
             cd $GITHUB_WORKSPACE
 
             ./autogen.sh
-            ./configure --prefix= --enable-test
+            # --enable-werror in CI only: a release tarball built with
+            # -Werror stops building on the next compiler release.
+            ./configure --prefix= --enable-test --enable-werror
             make V=1
 
             # `make check` is not run because it would run nothing:

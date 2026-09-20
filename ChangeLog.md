@@ -7,6 +7,16 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `configure` probes a set of warning and hardening flags and applies what
+  the compiler takes, to every binary and to the `lib/` replacements rather
+  than to `pimd` alone as the old `pimd_CFLAGS` did.  The warnings are the
+  set this tree is silent under, `-Wformat=2` and `-Wpointer-arith` among
+  them; the hardening is `_FORTIFY_SOURCE`, `-fstack-protector-strong`,
+  `-ftrivial-auto-var-init=zero`, `-fno-strict-aliasing`, PIE and
+  RELRO/BIND_NOW.  `--disable-hardening` drops the second half,
+  `--enable-werror` turns warnings into errors and is off by default, on in
+  both CI workflows.  Probed rather than hardcoded because this builds with
+  gcc and with clang on Linux, FreeBSD, NetBSD and DragonFly
 - FreeBSD needs no `gmake` to build this.  The tree is GNU autotools, but
   what automake generates is portable make: no GNU-only syntax in any
   generated Makefile, and `configure` probes for the one directive the two
@@ -20,6 +30,19 @@ issue of this repository is written out in full.
   now, with GNU make covered by the Linux workflow
 
 ### Fixes
+- `mping` no longer skips every interface when no address family is given.
+  The `continue` in the `AF_UNSPEC` arm of `ifinfo()` was indented as if
+  the `if` above it guarded it, but that `if` had no braces, so the arm
+  skipped the interface whatever its address family was.  Latent rather
+  than live: the only caller asks for `AF_INET`.  Found by
+  `-Wmisleading-indentation`, which arrived with the flag probe above
+- The `lib/` compat declarations are guarded by the `HAVE_*` macros
+  `configure` actually defines.  `src/defs.h` and `src/pimctl.c` guarded
+  them with `#ifndef strlcpy` and friends -- a test for a *macro* of that
+  name, which libc never defines -- so the declarations were unconditional
+  and collided with the system headers' own.  `src/pimctl.c` also tested
+  `strlcat` twice, once while declaring `strlcpy`.  Harmless until
+  `-Wredundant-decls`, which is how they surfaced
 - A multicast traceroute request is measured against the send buffer before
   it is copied into it, rather than after.  `accept_mtrace()` copied the
   whole request into `igmp_send_buf` and only then asked whether there was

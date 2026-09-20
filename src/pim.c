@@ -530,7 +530,8 @@ void send_pim_unicast(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src
  *          It then tries to re-send by splitting the frame in two equal halves,
  *          calling send_frame() recursively until the frame has been sent.
  */
-static int send_frame(char *buf, size_t len, size_t frag, size_t mtu, struct sockaddr *dst, size_t salen)
+static int send_frame(char *buf, size_t len, size_t frag __attribute__((unused)),
+		      size_t mtu __attribute__((unused)), struct sockaddr *dst, size_t salen)
 {
     struct ip *ip = (struct ip *)buf;
     char source[20], dest[20];

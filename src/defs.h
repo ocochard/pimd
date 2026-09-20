@@ -706,23 +706,23 @@ struct rp_hold {
 extern uint32_t	arc4random		(void);
 #endif
 
-#ifndef strlcpy
+#ifndef HAVE_STRLCPY
 extern size_t	strlcpy			(char *, const char *, size_t);
 #endif
 
-#ifndef strlcat
+#ifndef HAVE_STRLCAT
 extern size_t	strlcat			(char *, const char *, size_t);
 #endif
 
-#ifndef strtonum
+#ifndef HAVE_STRTONUM
 extern long long strtonum		(const char *, long long, long long, const char **);
 #endif
 
-#ifndef pidfile
+#ifndef HAVE_PIDFILE
 extern int	pidfile			(const char *);
 #endif
 
-#ifndef tempfile
+#ifndef HAVE_TEMPFILE
 extern FILE 	*tempfile		(void);
 #endif
 

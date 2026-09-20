@@ -33,9 +33,15 @@ jobs:
         # Build in a sub-directory so we can safely set a+w on all
         # directories.  Needed for `make check` since it runs with
         # root dropped and wants to write .trs and .log files.
+        #
+        # --enable-werror here and not in the shipped default: a release
+        # tarball built with -Werror stops building on the next compiler,
+        # on a machine where nobody can edit the Makefile.  The warning
+        # set itself is probed in configure.ac, so gcc and clang each get
+        # what they take.
         run: |
           ./autogen.sh
-          ./configure --prefix= --enable-test
+          ./configure --prefix= --enable-test --enable-werror
       - name: Build
         run: |
           make V=1

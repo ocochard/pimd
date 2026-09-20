@@ -5,6 +5,9 @@ EXTRA_DIST        += lab.sh lab-freebsd.sh lab-linux.sh
 EXTRA_DIST        += freebsd-interop.sh veos-bhyve.sh
 CLEANFILES         = *~ *.trs *.log
 
+AM_CFLAGS          = @PIMD_CFLAGS@
+AM_LDFLAGS         = @PIMD_LDFLAGS@
+
 noinst_PROGRAMS    = mping igmpv3 pimsend
 mping_SOURCES      = mping.c
 igmpv3_SOURCES     = igmpv3.c

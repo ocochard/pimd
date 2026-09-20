@@ -39,13 +39,11 @@
 /*
  * Process an incoming neighbor probe message.
  */
-void
-dvmrp_accept_probe(src, dst, p, datalen, level)
-    uint32_t src __attribute__((unused));
-    uint32_t dst __attribute__((unused));
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
-    uint32_t level __attribute__((unused));
+void dvmrp_accept_probe(uint32_t src __attribute__((unused)),
+                        uint32_t dst __attribute__((unused)),
+                        uint8_t *p __attribute__((unused)),
+                        int datalen __attribute__((unused)),
+                        uint32_t level __attribute__((unused)))
 {
     return;
 }
@@ -55,25 +53,21 @@ dvmrp_accept_probe(src, dst, p, datalen, level)
 /*
  * Process an incoming route report message.
  */
-void
-dvmrp_accept_report(src, dst, p, datalen, level)
-    uint32_t src __attribute__((unused));
-    uint32_t dst __attribute__((unused));
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
-    uint32_t level __attribute__((unused));
+void dvmrp_accept_report(uint32_t src __attribute__((unused)),
+                         uint32_t dst __attribute__((unused)),
+                         uint8_t *p __attribute__((unused)),
+                         int datalen __attribute__((unused)),
+                         uint32_t level __attribute__((unused)))
 {
     return;
 }
 
 
 /* TODO */
-void
-dvmrp_accept_info_request(src, dst, p, datalen)
-    uint32_t src __attribute__((unused));
-    uint32_t dst __attribute__((unused));
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
+void dvmrp_accept_info_request(uint32_t src __attribute__((unused)),
+                               uint32_t dst __attribute__((unused)),
+                               uint8_t *p __attribute__((unused)),
+                               int datalen __attribute__((unused)))
 {
     return;
 }
@@ -82,12 +76,10 @@ dvmrp_accept_info_request(src, dst, p, datalen)
 /*
  * Process an incoming info reply message.
  */
-void
-dvmrp_accept_info_reply(src, dst, p, datalen)
-    uint32_t src;
-    uint32_t dst;
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
+void dvmrp_accept_info_reply(uint32_t src,
+                             uint32_t dst,
+                             uint8_t *p __attribute__((unused)),
+                             int datalen __attribute__((unused)))
 {
     IF_DEBUG(DEBUG_PKT)
         logit(LOG_DEBUG, 0, "ignoring spurious DVMRP info reply from %s to %s",
@@ -98,13 +90,11 @@ dvmrp_accept_info_reply(src, dst, p, datalen)
 /*
  * Process an incoming neighbor-list message.
  */
-void
-dvmrp_accept_neighbors(src, dst, p, datalen, level)
-    uint32_t src;
-    uint32_t dst;
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
-    uint32_t level __attribute__((unused));
+void dvmrp_accept_neighbors(uint32_t src,
+                            uint32_t dst,
+                            uint8_t *p __attribute__((unused)),
+                            int datalen __attribute__((unused)),
+                            uint32_t level __attribute__((unused)))
 {
     logit(LOG_INFO, 0, "ignoring spurious DVMRP neighbor list from %s to %s",
           inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
@@ -114,13 +104,11 @@ dvmrp_accept_neighbors(src, dst, p, datalen, level)
 /*
  * Process an incoming neighbor-list message.
  */
-void
-dvmrp_accept_neighbors2(src, dst, p, datalen, level)
-    uint32_t src;
-    uint32_t dst;
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
-    uint32_t level __attribute__((unused));
+void dvmrp_accept_neighbors2(uint32_t src,
+                             uint32_t dst,
+                             uint8_t *p __attribute__((unused)),
+                             int datalen __attribute__((unused)),
+                             uint32_t level __attribute__((unused)))
 {
     IF_DEBUG(DEBUG_PKT)
         logit(LOG_DEBUG, 0,
@@ -140,12 +128,10 @@ dvmrp_accept_neighbors2(src, dst, p, datalen, level)
  *
  * Determines if a corresponding prune message has to be generated
  */
-void
-dvmrp_accept_prune(src, dst, p, datalen)
-    uint32_t src __attribute__((unused));
-    uint32_t dst __attribute__((unused));
-    uint8_t *p __attribute__((unused));
-    int datalen __attribute__((unused));
+void dvmrp_accept_prune(uint32_t src __attribute__((unused)),
+                        uint32_t dst __attribute__((unused)),
+                        uint8_t *p __attribute__((unused)),
+                        int datalen __attribute__((unused)))
 {
     return;
 }
@@ -164,12 +150,10 @@ dvmrp_accept_prune(src, dst, p, datalen)
  *
  * if no entry exists for this group send ack downstream.
  */
-void
-dvmrp_accept_graft(src, dst, p, datalen)
-    uint32_t     src __attribute__((unused));
-    uint32_t     dst __attribute__((unused));
-    uint8_t     *p __attribute__((unused));
-    int         datalen __attribute__((unused));
+void dvmrp_accept_graft(uint32_t src __attribute__((unused)),
+                        uint32_t dst __attribute__((unused)),
+                        uint8_t *p __attribute__((unused)),
+                        int datalen __attribute__((unused)))
 {
     return;
 }
@@ -184,12 +168,10 @@ dvmrp_accept_graft(src, dst, p, datalen)
  * source, remove the graft timer so that we don't
  * have send a graft again
  */
-void
-dvmrp_accept_g_ack(src, dst, p, datalen)
-    uint32_t     src __attribute__((unused));
-    uint32_t     dst __attribute__((unused));
-    uint8_t     *p __attribute__((unused));
-    int         datalen __attribute__((unused));
+void dvmrp_accept_g_ack(uint32_t src __attribute__((unused)),
+                        uint32_t dst __attribute__((unused)),
+                        uint8_t *p __attribute__((unused)),
+                        int datalen __attribute__((unused)))
 {
     return;
 }

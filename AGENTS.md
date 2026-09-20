@@ -33,6 +33,18 @@ GNU autotools, `configure` and `Makefile.in` are generated, not in git:
 make                                          # `make V=1` for full command lines
 ```
 
+`configure` probes a set of warning and hardening flags rather than hardcoding one, since this
+builds with gcc and clang on four systems: the ones the compiler takes land in `PIMD_CFLAGS` and
+`PIMD_LDFLAGS`, which `src/Makefile.am` and `test/Makefile.am` pick up as `AM_CFLAGS` and
+`AM_LDFLAGS`, so `pimd`, `pimctl`, the `lib/` replacements and the test tools all get them. The
+configure summary prints what was kept. `--disable-hardening` drops the runtime half
+(`_FORTIFY_SOURCE`, stack protector, `-ftrivial-auto-var-init=zero`, PIE, RELRO/BIND_NOW), which a
+packager may want; `-fno-strict-aliasing` is in that half but is not optional in spirit, since
+`pim.c` and `igmp.c` cast the `char *` receive buffers to `struct ip *` and friends on nearly every
+path. `--enable-werror` turns the warnings into errors and is off by default -- a tarball built
+with `-Werror` stops building on the next compiler, on a machine where nobody can edit the
+Makefile -- and the build jobs of both CI workflows pass it.
+
 Useful configure flags: `--enable-test` (build `test/` subdir),
 `--with-max-vifs=NUM` (must match kernel `MAXVIFS`), `--disable-exit-on-error`,
 `--enable-netlink` (RPF lookups over `netlink(4)` rather than the routing socket; implied

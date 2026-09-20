@@ -2833,7 +2833,7 @@ static char *next_word(char **s)
 	    case ' ':
 	    case '\t':
 		(*s)++;
-		/* fallthrough */
+		__attribute__((fallthrough));
 	    case '\n':
 	    case '#':
 	    return token;

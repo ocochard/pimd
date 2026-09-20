@@ -180,6 +180,91 @@ AM_CONDITIONAL(NETLINK,     [test "x$enable_netlink"               = "xyes"])
 AM_CONDITIONAL(SYSTEMD,     [test "x$with_systemd"                != "xno"])
 AM_CONDITIONAL(ENABLE_TEST, [test "x$enable_test"                 != "xno"])
 
+# Warning and hardening flags
+#
+# Every flag is probed rather than assumed.  This tree builds with gcc and
+# with clang, on Linux, FreeBSD, NetBSD and DragonFly, and the oldest of
+# those compilers has none of the hardening options; a flag the compiler
+# will not take is dropped rather than failing the configure.  The probe
+# adds -Werror because clang merely warns about an option it does not know
+# and would otherwise "accept" every one of them.
+AC_DEFUN([PIMD_TRY_CFLAGS], [
+  AC_MSG_CHECKING([whether $CC accepts $1])
+  pimd_save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS -Werror $1"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[]])],
+    [AC_MSG_RESULT([yes])
+     PIMD_CFLAGS="$PIMD_CFLAGS $1"],
+    [AC_MSG_RESULT([no])])
+  CFLAGS="$pimd_save_CFLAGS"
+])
+
+AC_DEFUN([PIMD_TRY_LDFLAGS], [
+  AC_MSG_CHECKING([whether the linker accepts $1])
+  pimd_save_LDFLAGS="$LDFLAGS"
+  LDFLAGS="$LDFLAGS $1"
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],
+    [AC_MSG_RESULT([yes])
+     PIMD_LDFLAGS="$PIMD_LDFLAGS $1"],
+    [AC_MSG_RESULT([no])])
+  LDFLAGS="$pimd_save_LDFLAGS"
+])
+
+PIMD_CFLAGS=""
+PIMD_LDFLAGS=""
+
+# The set that is silent on this tree as it stands, so -Werror stays
+# usable.  -Wformat=2 is the one that matters most for a daemon parsing
+# the network: it subsumes -Wformat-security and -Wformat-nonliteral, the
+# same class rules/security.cocci checks with fmt_printf and friends.
+# -Wno-unused stays, this being old code, but does not cover
+# -Wunused-parameter in clang, which is why that is not listed here.
+for flag in -W -Wall -Wextra -Wno-unused					\
+	    -Wformat=2 -Wpointer-arith -Wcast-qual -Wstrict-prototypes	\
+	    -Wold-style-definition -Wvla -Walloca -Wundef		\
+	    -Wredundant-decls -Wimplicit-fallthrough; do
+	PIMD_TRY_CFLAGS([$flag])
+done
+
+AC_ARG_ENABLE([hardening],
+	AS_HELP_STRING([--disable-hardening], [Do not add compiler and linker hardening flags]),,
+	[enable_hardening=yes])
+
+# -fno-strict-aliasing is not decoration here: pim.c and igmp.c cast the
+# char * receive buffers to struct ip *, pim_register_t * and
+# struct igmpv3_report * on nearly every path, which is undefined at the
+# -O2 the autotools default CFLAGS carry.  -ftrivial-auto-var-init=zero is
+# the one that matters most at runtime: the failure mode of a protocol
+# parser is reading a field a short packet never carried, and it zeroes
+# what would otherwise be stack residue.
+AS_IF([test "x$enable_hardening" != "xno"], [
+	for flag in -fstack-protector-strong -fstack-clash-protection	\
+		    -fcf-protection=full -ftrivial-auto-var-init=zero	\
+		    -fno-strict-aliasing -fno-delete-null-pointer-checks	\
+		    -fPIE; do
+		PIMD_TRY_CFLAGS([$flag])
+	done
+
+	# _FORTIFY_SOURCE needs optimisation, and redefining one the
+	# distribution already set is an error, so undefine first and let
+	# the probe decide.  Falls back to level 2 where 3 is not there.
+	PIMD_TRY_CFLAGS([-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3])
+	AS_CASE(["$PIMD_CFLAGS"], [*_FORTIFY_SOURCE=3*], [],
+		[PIMD_TRY_CFLAGS([-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2])])
+
+	for flag in -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack; do
+		PIMD_TRY_LDFLAGS([$flag])
+	done
+])
+
+AC_ARG_ENABLE([werror],
+	AS_HELP_STRING([--enable-werror], [Turn warnings into errors, for CI]),,
+	[enable_werror=no])
+AS_IF([test "x$enable_werror" = "xyes"], [PIMD_CFLAGS="$PIMD_CFLAGS -Werror"])
+
+AC_SUBST(PIMD_CFLAGS)
+AC_SUBST(PIMD_LDFLAGS)
+
 # Expand $sbindir early, into $SBINDIR, for systemd unit file
 # NOTE: This does *not* take prefix/exec_prefix override at "make
 #       install" into account, unfortunately.
@@ -211,6 +296,8 @@ cat <<EOF
   Sysconfdir............: `eval echo $sysconfdir`
   Runstatedir...........: `eval echo $runstatedir`
   C Compiler............: $CC $CFLAGS $CPPFLAGS $LDFLAGS $LIBS
+  Probed flags..........: $PIMD_CFLAGS
+  Probed link flags.....: $PIMD_LDFLAGS
 
 Optional features:
   RPF backend...........: $rpf_backend
@@ -218,6 +305,8 @@ Optional features:
   Kernel (*,G) support..: $enable_kernel_mfc
   Kernel MAX VIFs.......: $max_vifs
   Memory save...........: $enable_memory_save
+  Hardening.............: $enable_hardening
+  Warnings are errors...: $enable_werror
   Exit on error.........: $enable_exit_on_error
   systemd...............: $with_systemd
   Unit tests............: $enable_test
