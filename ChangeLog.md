@@ -42,12 +42,15 @@ issue of this repository is written out in full.
   now, with GNU make covered by the Linux workflow
 - The sanitizer run of `test/lab.sh` is automated, in
   `.github/workflows/sanitize.yml`: every scenario against a pimd built
-  `-fsanitize=address,undefined`, weekly on Linux and on demand through
-  `workflow_dispatch`, which takes a scenario list and a knob for the leak
-  check.  `SANITIZE=yes` has been in the script since v3.0.0 and found the
-  reload use-after-free of `c721f76` and the undefined shifts of `8b0c103`,
-  but nothing ran it unless someone remembered to, so a regression of either
-  would have reached a release green.  The tree it builds is
+  `-fsanitize=address,undefined`, weekly on Linux and in a FreeBSD VM, and on
+  demand through `workflow_dispatch`, which takes a scenario list and a knob
+  for the leak check.  The FreeBSD job is the only sanitizer coverage
+  `routesock.c` and the `kern.c` BSD branches get, the Linux one compiling
+  `netlink.c` in their place, and it honours no leak knob, LeakSanitizer being
+  Linux only.  `SANITIZE=yes` has been in the script since v3.0.0 and found
+  the reload use-after-free of `c721f76` and the undefined shifts of
+  `8b0c103`, but nothing ran it unless someone remembered to, so a regression
+  of either would have reached a release green.  The tree it builds is
   `--disable-hardening` with `-fno-strict-aliasing` put back by hand:
   `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short
   packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan

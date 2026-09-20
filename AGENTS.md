@@ -98,9 +98,11 @@ it asks `pimctl show status` which backend the daemon has rather than trust the 
 does the same for a tree built `-fsanitize=address,undefined` (asking the binary for the runtime) and
 fails any scenario whose daemons wrote a sanitizer report, which is how the reload use-after-free of
 `c721f76` and the undefined shifts of `8b0c103` were found; leak checking is off unless
-`SAN_ASAN_OPTIONS` asks for it. `.github/workflows/sanitize.yml` is that run automated, weekly on
-Linux and by `workflow_dispatch` for a scenario or two by hand; it configures the tree
-`--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
+`SAN_ASAN_OPTIONS` asks for it, and on Linux alone, LeakSanitizer being Linux only.
+`.github/workflows/sanitize.yml` is that run automated, weekly on Linux and in a FreeBSD VM -- the
+only sanitizer coverage `routesock.c` and the `kern.c` BSD branches get, the Linux job compiling
+`netlink.c` instead -- and by `workflow_dispatch` for a scenario or two by hand.  It configures that
+tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short-packet read would show and
 `_FORTIFY_SOURCE` wraps what ASan interposes, while the aliasing flag is in that set without being
 hardening. `run all` walks its

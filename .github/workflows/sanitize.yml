@@ -149,3 +149,99 @@ jobs:
           name: sanitizer-lab-failures
           path: failed-labs.tar.gz
           if-no-files-found: ignore
+
+  lab-freebsd:
+    # The same scenarios in vnet jails, and the only sanitizer coverage
+    # routesock.c and the kern.c BSD branches ever get: the Linux job above
+    # selects netlink.c through the LINUX/BSD conditionals in
+    # src/Makefile.am, so the RPF lookups every FreeBSD user takes are
+    # compiled there and run nowhere.
+    #
+    # Not a "needs:" of that job.  The two are one question asked of two
+    # kernels, and an answer from one is worth having when the other's VM
+    # never came up.
+    name: ASan + UBSan lab on FreeBSD ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    # Half again on the Linux job: a vnet jail is slower to build than a
+    # named namespace, the whole lab runs inside a VM on the runner, and the
+    # scenarios that hold a group for twenty seconds hold it for twenty
+    # seconds here too.
+    timeout-minutes: 150
+    env:
+      LAB_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "15.1"
+            arch: amd64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and run the lab under the sanitizers in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          usesh: true
+          sync: rsync
+          copyback: false
+          # The scenario list has to cross into the guest; the run script
+          # below is all that does otherwise.
+          envs: 'LAB_SCENARIOS'
+          prepare: |
+            # clang and llvm-symbolizer are in the base system, so the two
+            # sanitizer runtimes and the thing that turns their addresses
+            # into file:line need no package.  autoconf and automake are
+            # for autogen.sh, as in ci-freebsd.yml.
+            pkg install -y autoconf automake pkgconf
+
+          run: |
+            set -eux
+            cd $GITHUB_WORKSPACE
+
+            # A jail cannot load these, so they have to be in place before
+            # any scenario starts; if_bridge is for the shared segment ones.
+            kldload -n ip_mroute
+            kldload -n if_bridge
+
+            # --disable-hardening with -fno-strict-aliasing by hand, for the
+            # reasons the Linux job gives.  CC is left alone: cc is clang
+            # here already, and the base compiler is the one FreeBSD users
+            # build with.
+            ./autogen.sh
+            ./configure --prefix= --disable-hardening			\
+              CFLAGS="-g -O1 -fno-omit-frame-pointer -fno-strict-aliasing	\
+                      -fsanitize=address,undefined"			\
+              LDFLAGS="-fsanitize=address,undefined"
+            make V=1 -j3
+
+            # No leak knob here: LeakSanitizer is Linux only, and asking the
+            # FreeBSD runtime for one gets a complaint rather than a report.
+            # Already root in the VM, so the script's sudo wrapper is empty.
+            set -- $LAB_SCENARIOS
+            [ $# -gt 0 ] || set -- all
+            if [ "$1" = all ] || [ $# -gt 1 ]; then
+                    jobs="-j 2"
+            else
+                    jobs=""
+            fi
+
+            env SANITIZE=yes SUDO= sh test/lab.sh $jobs run "$@" || rc=$?
+
+            # copyback is off and the VM leaves with the job, so a failed
+            # scenario's work directory has to be printed here rather than
+            # uploaded: sanitizer/ first, of which check_sanitizer() prints
+            # only the first forty lines, then a pimd log per router.  The
+            # slot is part of the name, slot 0 being /tmp/pimd-test, so the
+            # glob has to reach past it.
+            for d in /tmp/pimd-test*.*.failed; do
+                    test -d "$d" || continue
+                    for f in "$d"/sanitizer/* "$d"/*.log; do
+                            test -f "$f" || continue
+                            echo "===== $f ====="
+                            tail -n 200 "$f"
+                    done
+            done
+
+            exit ${rc:-0}
