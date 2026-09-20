@@ -38,6 +38,13 @@ issue of this repository is written out in full.
   `-pie` objects compiled without `-fPIE`: "relocation R_X86_64_32 cannot
   be used against local symbol".  The probe strips the user's warning flags
   now, and `-pie` is asked for only when `-fPIE` was taken
+- `mping` no longer writes past the end of the buffer it is given.  Its
+  `strlencpy()` placed the terminating NUL one byte past the end whenever
+  the source filled the destination, two call sites then wrote a second one
+  at the same place, and the `/proc/net/route` scan read a 16 character
+  interface name with `%16s` into a `char[16]`, which is 17 bytes with its
+  NUL.  Found by gcc's `-Warray-bounds` once the file's globals were
+  `static` enough for it to see the sizes
 - `mping` no longer skips every interface when no address family is given.
   The `continue` in the `AF_UNSPEC` arm of `ifinfo()` was indented as if
   the `if` above it guarded it, but that `if` had no braces, so the arm

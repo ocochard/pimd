@@ -63,7 +63,7 @@
 #define INET_ADDRSTR_LEN 64
 typedef struct sockaddr_storage inet_addr_t;
 
-struct mping {
+static struct mping {
 	char            version[4];
 
 	unsigned char   type;
@@ -82,42 +82,42 @@ struct mping {
 #define BANDWIDTH 100.0                 /* bw in bytes/sec for mping */
 
 /* pointer to mping packet buffer */
-struct mping *rcvd_pkt;
+static struct mping *rcvd_pkt;
 
-int   sd;                               /* socket descriptor */
-pid_t pid;                              /* our process id */
+static int   sd;                        /* socket descriptor */
+static pid_t pid;                       /* our process id */
 
-struct sockaddr_in  mcaddr;
-struct ip_mreqn     imr;
+static struct sockaddr_in  mcaddr;
+static struct ip_mreqn     imr;
 
-struct in_addr      myaddr;
+static struct in_addr      myaddr;
 
-struct timeval      start;              /* start time for sender */
+static struct timeval      start;       /* start time for sender */
 
 /* Cleared by signal handler */
-volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t running = 1;
 
 /* counters and statistics variables */
-int packets_sent = 0;
-int packets_rcvd = 0;
+static int packets_sent = 0;
+static int packets_rcvd = 0;
 
-double rtt_total = 0;
-double rtt_max   = 0;
-double rtt_min   = 999999999.0;
+static double rtt_total = 0;
+static double rtt_max   = 0;
+static double rtt_min   = 999999999.0;
 
 /* default command-line arguments */
-char          arg_mcaddr[16] = MC_GROUP_DEFAULT;
-int           arg_mcport     = MC_PORT_DEFAULT;
-int           arg_count      = -1;
-int           arg_timeout    = 5;
-int           arg_deadline   = 0;
-unsigned char arg_ttl        = MC_TTL_DEFAULT;
+static char          arg_mcaddr[16] = MC_GROUP_DEFAULT;
+static int           arg_mcport     = MC_PORT_DEFAULT;
+static int           arg_count      = -1;
+static int           arg_timeout    = 5;
+static int           arg_deadline   = 0;
+static unsigned char arg_ttl        = MC_TTL_DEFAULT;
 
-int debug = 0;
-int quiet = 0;
+static int debug = 0;
+static int quiet = 0;
 
 
-void init_socket(int ifindex)
+static void init_socket(int ifindex)
 {
 	struct sockaddr_in bindaddr;
 	int off = 0;
@@ -181,12 +181,12 @@ static size_t strlencpy(char *dst, const char *src, size_t len)
 	}
 
 	if (num == 0 && len > 0)
-		*dst = 0;
+		dst[-1] = 0;
 
 	return src - p - 1;
 }
 
-const char *inet_address(inet_addr_t *ss, char *buf, size_t len)
+static const char *inet_address(inet_addr_t *ss, char *buf, size_t len)
 {
 	struct sockaddr_in *sin;
 
@@ -227,7 +227,6 @@ static char *ifany(char *iface, size_t len)
 		ifindex = if_nametoindex(ifa->ifa_name);
                 dbg("Found iface %s, ifindex %d", ifa->ifa_name, ifindex);
 		strlencpy(iface, ifa->ifa_name, len);
-		iface[len] = 0;
 		break;
 	}
 	freeifaddrs(ifaddr);
@@ -269,7 +268,7 @@ static char *altdefault(char *iface, size_t len)
 }
 
 /* Find default outbound *LAN* interface, i.e. skipping tunnels */
-char *ifdefault(char *iface, size_t len)
+static char *ifdefault(char *iface, size_t len)
 {
 	uint32_t dest, gw, mask;
 	char buf[256], ifname[17];
@@ -293,7 +292,7 @@ char *ifdefault(char *iface, size_t len)
 		goto end;
 
 	while (fgets(buf, sizeof(buf), fp) != NULL) {
-		rc = sscanf(buf, "%16s %X %X %X %d %d %d %X %d %d %d\n",
+		rc = sscanf(buf, "%15s %X %X %X %d %d %d %X %d %d %d\n",
 			   ifname, &dest, &gw, &flags, &cnt, &use, &metric,
 			   &mask, &mtu, &win, &irtt);
 
@@ -308,7 +307,6 @@ char *ifdefault(char *iface, size_t len)
 				continue;
 
 			strlencpy(iface, ifname, len);
-			iface[len] = 0;
 			best = metric;
 			found = 1;
 
@@ -325,7 +323,7 @@ fallback:
 }
 
 /* Find IP address of default outbound LAN interface */
-int ifinfo(char *iface, inet_addr_t *addr, int family)
+static int ifinfo(char *iface, inet_addr_t *addr, int family)
 {
 	char buf[INET_ADDRSTR_LEN] = { 0 };
 	struct ifaddrs *ifaddr, *ifa;
@@ -389,7 +387,7 @@ int ifinfo(char *iface, inet_addr_t *addr, int family)
 }
 
 /* subtract sub from val and leave result in val */
-void subtract_timeval(struct timeval *val, const struct timeval *sub)
+static void subtract_timeval(struct timeval *val, const struct timeval *sub)
 {
 	val->tv_sec  -= sub->tv_sec;
 	val->tv_usec -= sub->tv_usec;
@@ -400,7 +398,7 @@ void subtract_timeval(struct timeval *val, const struct timeval *sub)
 }
 
 /* return the timeval converted to a number of milliseconds */
-double timeval_to_ms(const struct timeval *val)
+static double timeval_to_ms(const struct timeval *val)
 {
 	return val->tv_sec * 1000.0 + val->tv_usec / 1000.0;
 }
@@ -432,7 +430,7 @@ static void clean_exit(int signo)
 	running = 0;
 }
 
-void send_packet(struct mping *packet)
+static void send_packet(struct mping *packet)
 {
 	int pkt_len = sizeof(struct mping);
 
@@ -442,7 +440,7 @@ void send_packet(struct mping *packet)
         packets_sent++;
 }
 
-void send_mping(int signo)
+static void send_mping(int signo)
 {
 	static int seqno = 0;
 	struct timespec now;
@@ -491,7 +489,7 @@ void send_mping(int signo)
 	alarm(1);
 }
 
-int process_mping(char *packet, int len, unsigned char type)
+static int process_mping(char *packet, int len, unsigned char type)
 {
 	if (len < (int)sizeof(struct mping)) {
 		dbg("Discarding packet: too small (%zu bytes)", strlen(packet));
@@ -540,7 +538,7 @@ int process_mping(char *packet, int len, unsigned char type)
 	return 0;
 }
 
-void sender_listen_loop(void)
+static void sender_listen_loop(void)
 {
 	send_mping(0);
 
@@ -583,7 +581,7 @@ void sender_listen_loop(void)
 	}
 }
 
-void receiver_listen_loop(void)
+static void receiver_listen_loop(void)
 {
 	printf("Listening on %s:%d\n", arg_mcaddr, arg_mcport);
 
@@ -620,7 +618,7 @@ void receiver_listen_loop(void)
 	}
 }
 
-int usage(void)
+static int usage(void)
 {
 	fprintf(stderr,
 		"Usage:\n"
