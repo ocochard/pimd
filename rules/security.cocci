@@ -17,7 +17,31 @@
  * One --dir per run: spatch(1) honours only the last one on its command
  * line and silently drops any earlier one, which is why rules/run.sh walks
  * src/ and lib/ one at a time.
+ *
+ * No alternation in an identifier's =~ constraint.  spatch(1) borrows its
+ * regular expressions from whatever it was built against, and `spatch
+ * --version' says which: PCRE on FreeBSD, Str on Debian and Ubuntu, where
+ * `(' `|' `)' are ordinary characters and "^(memcpy|memmove)$" matches the
+ * name "(memcpy|memmove)" -- nothing, silently, which is exactly what a
+ * clean run looks like.  Eight rules here were dead that way on Ubuntu.
+ * The names a rule cares about are listed below and tested in its script
+ * instead; what =~ still does is anchored prefixes and character classes,
+ * which both engines read the same.
  */
+
+@initialize:python@
+@@
+
+copy_sized = ("memcpy", "memmove", "memset", "memcmp", "bcopy", "bzero",
+	      "strlcpy", "strlcat", "strncpy", "strncat", "snprintf",
+	      "read", "write", "recv", "recvfrom", "send", "sendto")
+copy_unbounded = ("strcpy", "strcat", "sprintf", "vsprintf", "gets", "alloca")
+allocators = ("malloc", "calloc", "realloc", "strdup", "strndup")
+printf_like = ("printf", "vprintf")
+fprintf_like = ("fprintf", "dprintf", "vfprintf", "syslog")
+inet_fmt_like = ("inet_fmt", "inet_fmts", "inet_name")
+vif_lookups = ("find_vif", "find_vif_direct", "find_vif_direct_local",
+	       "find_vif_name", "local_address", "get_iif")
 
 // --------------------------------------------------------------------
 // Copy and buffer hygiene -- CWE-120/121/787, SEI CERT STR31-C
@@ -42,7 +66,7 @@ print("%s:%s: [strncpy_unterminated] strncpy() bounded by sizeof(dst) may leave 
 # points at.  Catches memcpy(p, q, sizeof(p)) and memset(p, 0, sizeof(p)).
 #
 @sizeof_pointer@
-identifier f =~ "^(memcpy|memmove|memset|memcmp|bcopy|bzero|strlcpy|strlcat|strncpy|strncat|snprintf|read|write|recv|recvfrom|send|sendto)$";
+identifier f;
 type T;
 T *ptr;
 position p;
@@ -53,12 +77,13 @@ f@p(..., sizeof(ptr), ...)
 p << sizeof_pointer.p;
 f << sizeof_pointer.f;
 @@
-print("%s:%s: [sizeof_pointer] %s() sized with sizeof(pointer), not sizeof(*pointer)"
-      % (p[0].file, p[0].line, f))
+if f in copy_sized:
+    print("%s:%s: [sizeof_pointer] %s() sized with sizeof(pointer), not sizeof(*pointer)"
+          % (p[0].file, p[0].line, f))
 
 # Unbounded copy primitives.  Use the lib/ wrappers instead.
 @unbounded_copy@
-identifier f =~ "^(strcpy|strcat|sprintf|vsprintf|gets|alloca)$";
+identifier f;
 position p;
 @@
 f@p(...)
@@ -67,8 +92,9 @@ f@p(...)
 p << unbounded_copy.p;
 f << unbounded_copy.f;
 @@
-print("%s:%s: [unbounded_copy] %s() is unbounded, use the lib/ wrapper (strlcpy/strlcat/snprintf)"
-      % (p[0].file, p[0].line, f))
+if f in copy_unbounded:
+    print("%s:%s: [unbounded_copy] %s() is unbounded, use the lib/ wrapper (strlcpy/strlcat/snprintf)"
+          % (p[0].file, p[0].line, f))
 
 # memset(p, sizeof(x), 0): the length and the fill swapped.
 @memset_swapped@
@@ -111,7 +137,7 @@ print("%s:%s: [alloc_sizeof_pointer] allocation sized with sizeof(pointer), not 
 # An allocation dereferenced before anything asked whether it succeeded.
 #
 @unchecked_alloc exists@
-identifier f =~ "^(malloc|calloc|realloc|strdup|strndup)$";
+identifier f;
 identifier x;
 identifier fld;
 type T;
@@ -135,9 +161,11 @@ x = f(...);
 
 @script:python@
 p << unchecked_alloc.p;
+f << unchecked_alloc.f;
 @@
-print("%s:%s: [unchecked_alloc] allocation dereferenced with no NULL test"
-      % (p[0].file, p[0].line))
+if f in allocators:
+    print("%s:%s: [unchecked_alloc] allocation dereferenced with no NULL test"
+          % (p[0].file, p[0].line))
 
 # --------------------------------------------------------------------
 # Format strings -- CWE-134
@@ -152,7 +180,7 @@ print("%s:%s: [unchecked_alloc] allocation dereferenced with no NULL test"
 # argument as one is what separates printf(buf) from printf("%s", buf).
 #
 @fmt_printf@
-identifier f =~ "^(printf|vprintf)$";
+identifier f;
 identifier fmt;
 position p;
 @@
@@ -162,11 +190,12 @@ f@p(fmt)
 p << fmt_printf.p;
 f << fmt_printf.f;
 @@
-print("%s:%s: [fmt_printf] %s() format string is not a literal"
-      % (p[0].file, p[0].line, f))
+if f in printf_like:
+    print("%s:%s: [fmt_printf] %s() format string is not a literal"
+          % (p[0].file, p[0].line, f))
 
 @fmt_fprintf@
-identifier f =~ "^(fprintf|dprintf|vfprintf|syslog)$";
+identifier f;
 identifier fmt;
 expression E;
 position p;
@@ -177,8 +206,9 @@ f@p(E, fmt)
 p << fmt_fprintf.p;
 f << fmt_fprintf.f;
 @@
-print("%s:%s: [fmt_fprintf] %s() format string is not a literal"
-      % (p[0].file, p[0].line, f))
+if f in fprintf_like:
+    print("%s:%s: [fmt_fprintf] %s() format string is not a literal"
+          % (p[0].file, p[0].line, f))
 
 @fmt_sized@
 identifier fmt;
@@ -405,8 +435,8 @@ print("%s:%s: [self_assign] self-assignment" % (p[0].file, p[0].line))
 @inetfmt_alias@
 identifier buf =~ "^s[1-4]$";
 identifier other =~ "^s[1-4]$";
-identifier f =~ "^(inet_fmt|inet_fmts|inet_name)$";
-identifier g =~ "^(inet_fmt|inet_fmts|inet_name)$";
+identifier f;
+identifier g;
 identifier h;
 expression a, b;
 position p;
@@ -417,8 +447,10 @@ h(..., f(a, buf, ...), ..., g(b, other, ...), ...)@p
 p << inetfmt_alias.p;
 buf << inetfmt_alias.buf;
 other << inetfmt_alias.other;
+f << inetfmt_alias.f;
+g << inetfmt_alias.g;
 @@
-if buf == other:
+if buf == other and f in inet_fmt_like and g in inet_fmt_like:
     print("%s:%s: [inetfmt_alias] static buffer %s formatted twice in one call, both read back the same"
           % (p[0].file, p[0].line, buf))
 
@@ -426,7 +458,7 @@ if buf == other:
 @inetfmt_mismatch@
 identifier buf =~ "^s[1-4]$";
 identifier other =~ "^s[1-4]$";
-identifier f =~ "^(inet_fmt|inet_fmts|inet_name)$";
+identifier f;
 expression a;
 position p;
 @@
@@ -436,8 +468,9 @@ f@p(a, buf, sizeof(other))
 p << inetfmt_mismatch.p;
 buf << inetfmt_mismatch.buf;
 other << inetfmt_mismatch.other;
+f << inetfmt_mismatch.f;
 @@
-if buf != other:
+if buf != other and f in inet_fmt_like:
     print("%s:%s: [inetfmt_mismatch] buffer %s sized with sizeof(%s)"
           % (p[0].file, p[0].line, buf, other))
 
@@ -470,7 +503,7 @@ print("%s:%s: [unbounded_handler] %s() never bounds-checks its len argument"
 @unchecked_vif exists@
 identifier v;
 expression numvifs;
-identifier f =~ "^(find_vif|find_vif_direct|find_vif_direct_local|find_vif_name|local_address|get_iif)$";
+identifier f;
 position p;
 @@
 v = f(...);
@@ -479,6 +512,8 @@ v = f(...);
 
 @script:python@
 p << unchecked_vif.p;
+f << unchecked_vif.f;
 @@
-print("%s:%s: [unchecked_vif] uvifs[] subscripted with a lookup result that was not tested against NO_VIF"
-      % (p[0].file, p[0].line))
+if f in vif_lookups:
+    print("%s:%s: [unchecked_vif] uvifs[] subscripted with a lookup result that was not tested against NO_VIF"
+          % (p[0].file, p[0].line))

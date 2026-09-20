@@ -370,7 +370,12 @@ found it in brackets. `rules/run.sh` exits 77, automake's "skipped", when `spatc
 installed, so this is not a build dependency; the `Coccinelle` job of `.github/workflows/ci-linux.yml`
 installs it and runs the script. Note that `spatch` honours only the *last* `--dir` on its command
 line and silently drops any earlier one, which is why the script walks `src/` and `lib/` one at a
-time.
+time. Note also that it borrows its regular expressions from whatever it was built against --
+`spatch --version` prints which, PCRE on FreeBSD and Str on Debian and Ubuntu -- so a `=~` constraint
+must not use alternation: `"^(memcpy|memmove)$"` is a literal name under Str and matches nothing,
+which reads exactly like a clean run. The names a rule cares about are lists in its
+`@initialize:python@` block, tested in the script; `=~` is for anchored prefixes and character
+classes, which both engines read alike.
 
 Four of the rules are about this tree rather than about C, and are the ones worth adding to: a
 `receive_pim_*()` that never compares its `len` argument to anything (the `receive_pim_assert()`
