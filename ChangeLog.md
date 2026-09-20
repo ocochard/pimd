@@ -56,6 +56,48 @@ issue of this repository is written out in full.
   packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan
   interposes on, and the aliasing flag is in that set without being hardening
 
+- New `--enable-fuzz`, and `test/fuzz/`: the pimd.conf parser called
+  in-process with generated input, under the sanitizers.  `fuzz_config`
+  hands bytes to `config_phyints_from_file()` and `config_vifs_from_file()`
+  at tens of thousands of executions a second, and `fuzz_config_replay` is
+  the same harness over files, which `make check` runs across
+  `test/fuzz/corpus/` -- no clang, no root, no network -- so every input a
+  run turns up and every crasher it produces stays asserted once committed.
+  `TESTS` was empty before this and `make check` ran nothing; in a build
+  without `--enable-fuzz` it still does.  The knob implies
+  `--disable-exit-on-error`, `logit(LOG_ERR)` calling `exit(-1)` being a
+  crash as far as a fuzzer is concerned, and it adds
+  `-fsanitize=fuzzer-no-link` to the probed flags so that the daemon's own
+  objects carry the coverage instrumentation: with it a run reaches 730
+  edges of `config.c`, without it 7, at the same speed and looking just as
+  healthy
+- `src/` builds everything but `main.c` into a static convenience library,
+  `libpimd.a`, and `pimd` links that plus `main.c`.  The binary is the same;
+  what this buys is a harness in another directory linking the daemon's own
+  objects rather than a second copy of the source list
+- `pimsend` takes `-x COUNT` to flip that many bytes of a message's body
+  before sending it, `-S SEED` for what those flips are drawn from, and
+  `-b FILE` to send the bytes of a file verbatim.  The checksum is computed
+  after the flips, or every mutant would die at the checksum test that opens
+  most `receive_pim_*()` and none would reach a parser; the first four bytes
+  are left alone, version and type each having an option of their own.
+  Under `-c COUNT` the flips are redrawn per packet, and a seed draws the
+  same packets on FreeBSD as on Linux, so a flood that trips something is a
+  flood somebody can send again
+- New `fuzz` scenario in `test/lab.sh`: crafted's topology and sender, with
+  messages that are wrong in no particular way instead of in one named way
+  -- five hundred mutants of every type `pimsend` can build, at a pimd that
+  has neighbours, an RP set, a kernel MFC and a register vif behind its
+  parsers, which is what an in-process harness has none of.  Under
+  `SANITIZE=yes` the sanitizers are the assertion; without them the scenario
+  asserts that R1 stayed up, stayed the same process, kept its neighbours
+  and its RP set, and still parsed a well-formed Join afterwards -- a daemon
+  that any host on its LAN can silence being a bug of its own.  Which RP it
+  holds afterwards is deliberately not asserted: a mutant Bootstrap that
+  comes out valid is a BSR takeover by a sender that has said Hello, which
+  is RFC 7761 sec. 4.7 working rather than pimd going wrong, and
+  `accept-nbr-from` is the answer to it
+
 ### Fixes
 - `configure` no longer drops every hardening flag when the user's own
   `CFLAGS` carry warning options.  The compiler probe adds `-Werror`, so a
@@ -108,6 +150,11 @@ issue of this repository is written out in full.
   an interface that is merely down keeps its subnet as before.  Tested by
   the `ifgone` scenario of `test/lab.sh`
 
+
+- `logit()` no longer trips `-Wc23-extensions` in a tree configured
+  `--disable-exit-on-error`: with `CONTINUE_ON_ERROR` defined the `done:`
+  label had no statement after it, which is a C23 extension in C17 and an
+  error under `--enable-werror`
 
 [v3.1.0][] - 2026-09-18
 -----------------------

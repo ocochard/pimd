@@ -66,6 +66,32 @@
  *   -X SOURCE  a Prune(S,G,rpt) in the same group set as a (*,G) Join,
  *              the compound message of sec. 4.5.6
  *
+ * And three that are about no field in particular, but about handing a
+ * router bytes nobody wrote on purpose:
+ *
+ *   -x COUNT   flip COUNT bytes of the message before sending it
+ *   -S SEED    what those flips are drawn from, default 1
+ *   -b FILE    send the bytes of FILE as the message, verbatim
+ *
+ * -x is what the fuzz scenario of lab.sh floods a router with.  The message
+ * is built as asked, COUNT bytes of its body are flipped, and the checksum
+ * is computed after the flips rather than before: otherwise every mutant
+ * dies at the checksum test that opens receive_pim_hello() and its kind,
+ * and a flood of thousands never reaches a parser at all.  The first four
+ * bytes are left alone for the same reason -- version, type and checksum
+ * each have an option of their own, and a message pim.c drops at the
+ * version check has tested pim.c, not the parsers behind it.
+ *
+ * With -c the flips are redrawn per packet, so one process sends a thousand
+ * different mutants where a process per packet would send a thousand of the
+ * same one, and the same -S draws the same thousand on any machine: a lab
+ * that fails this way has an input somebody can send again.
+ *
+ * -b is the other direction: a corpus file, or a crasher an in-process
+ * harness found (test/fuzz/), put on the wire as it stands.  Nothing is
+ * checksummed and nothing is built; what the file holds is what is sent,
+ * which is the only way to replay bytes that came from somewhere else.
+ *
  * Examples, each naming what it is for:
  *
  *   # F3: a group range nobody advertised, over the whole RP set
@@ -131,6 +157,10 @@
 #define EGADDR_Z_BIT			0x01
 
 #define BUFSZ				2048
+
+/* The first byte a -x flip may land on: version and type are the byte
+ * before it and the checksum the two after, and each has its own option */
+#define MUTATE_FIRST			4
 #define MAX_SOURCES			64
 
 /*
@@ -191,6 +221,68 @@ static uint16_t cksum(void *data, size_t len)
 	sum += sum >> 16;
 
 	return ~sum;
+}
+
+/*
+ * xorshift32, so that a seed gives the same sequence here as it does on the
+ * other system: random() and arc4random() would each draw something else,
+ * and an input a lab cannot send again is an input nobody can fix a bug
+ * from.  Zero is the one state this cannot start from, and the caller turns
+ * a seed of 0 into 1 rather than looping forever on it.
+ */
+static uint32_t prng(uint32_t *state)
+{
+	uint32_t x = *state;
+
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+
+	return (*state = x);
+}
+
+/*
+ * Flip $count bytes of the $len byte message in $b, none of them in the
+ * header (see MUTATE_FIRST), each by a value that cannot be zero -- a flip
+ * that changes nothing is a packet spent for nothing.
+ */
+static void flip(uint8_t *b, size_t len, unsigned count, uint32_t *state)
+{
+	unsigned i;
+
+	if (len <= MUTATE_FIRST)
+		return;
+
+	for (i = 0; i < count; i++) {
+		size_t off = MUTATE_FIRST + prng(state) % (len - MUTATE_FIRST);
+
+		b[off] ^= (uint8_t)(1 + prng(state) % 255);
+	}
+}
+
+/*
+ * The message, as the bytes of a file.  Refuses a file too large for the
+ * buffer rather than sending the first BUFSZ bytes of it: a test that
+ * quietly truncates its input asserts something nobody wrote down.
+ */
+static size_t load(const char *path, uint8_t *b, size_t size)
+{
+	size_t len;
+	FILE *fp;
+
+	fp = fopen(path, "rb");
+	if (!fp)
+		err(1, "failed opening %s", path);
+
+	len = fread(b, 1, size, fp);
+	if (ferror(fp))
+		err(1, "failed reading %s", path);
+	if (fgetc(fp) != EOF)
+		errx(1, "%s is longer than %d bytes", path, (int)size);
+
+	fclose(fp);
+
+	return len;
 }
 
 static uint8_t *put_byte(uint8_t *p, unsigned val)
@@ -524,9 +616,47 @@ static int usage(int rc)
 		"  -E ENC     Encoding type of those records only\n"
 		"  -B         Set the Bidir bit of the encoded group\n"
 		"  -Z         Set the admin-scope bit of the encoded group\n"
-		"  -H TIME    Holdtime, default per message type\n");
+		"  -H TIME    Holdtime, default per message type\n"
+		"\n"
+		"Bytes nobody wrote on purpose:\n"
+		"  -x COUNT   Flip COUNT bytes of the message body before sending,\n"
+		"             leaving version, type and checksum alone; the checksum\n"
+		"             is computed after the flips, so the mutant reaches a\n"
+		"             parser instead of dying at the checksum test.  With -c\n"
+		"             the flips are redrawn per packet\n"
+		"  -S SEED    What those flips are drawn from, default 1.  The same\n"
+		"             seed draws the same packets on any machine\n"
+		"  -b FILE    Send the bytes of FILE as the message, verbatim: no\n"
+		"             header of ours, no checksum, nothing built.  For a\n"
+		"             corpus file or a crasher from test/fuzz/\n");
 
 	return rc;
+}
+
+/*
+ * The header checksum, in place.  A Register is checksummed over its header
+ * only, RFC 7761 sec. 4.9.3, which is also how pimd verifies one
+ * (src/pim_proto.c).  For that message -K is the inner header's checksum,
+ * applied where that header is built: corrupting this one too would have
+ * pim.c drop the message before receive_pim_register() ever looked at the
+ * dummy header.
+ *
+ * A function rather than four lines in main() because -x computes it again
+ * per packet, once the flips are in.
+ */
+static void setsum(uint8_t *b, size_t len, int type, const struct opts *o)
+{
+	uint16_t sum;
+
+	b[2] = 0;
+	b[3] = 0;
+
+	sum = cksum(b, type == PIM_REGISTER ? 8 : len);
+	if (o->corrupt && type != PIM_REGISTER)
+		sum = ~sum;
+
+	b[2] = sum & 0xff;
+	b[3] = (sum >> 8) & 0xff;
 }
 
 int main(int argc, char *argv[])
@@ -534,14 +664,16 @@ int main(int argc, char *argv[])
 	struct sockaddr_in sin, dst;
 	struct in_addr ifaddr;
 	const char *dest = PIM_ALL_ROUTERS;
+	const char *rawfile = NULL;
 	struct opts o;
 	uint8_t *p;
 	int type, prune = 0;
 	unsigned char ttl = 1;
-	uint16_t sum;
 	size_t len;
 	int sd, c, on = 1, rec_set = 0;
-	unsigned count = 1, n;
+	unsigned count = 1, n, mutate = 0;
+	uint32_t seed = 1;
+	uint8_t orig[BUFSZ];
 
 	memset(&o, 0, sizeof(o));
 	memset(&ifaddr, 0, sizeof(ifaddr));
@@ -580,9 +712,13 @@ int main(int argc, char *argv[])
 	prune = !strcmp(argv[optind], "prune");
 	optind++;
 
-	while ((c = getopt(argc, argv, "0A:BC:c:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:s:T:u:V:wX:Z")) != -1) {
+	while ((c = getopt(argc, argv,
+			  "0A:Bb:C:c:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
+		case 'b': rawfile = optarg;				break;
+		case 'S': seed = num(optarg, "mutation seed");		break;
+		case 'x': mutate = num(optarg, "bytes to flip");	break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;
 		case 'F': o.rec_family = num(optarg, "address family"); rec_set |= 2; break;
 		case 'B': o.bidir = 1;					break;
@@ -643,40 +779,44 @@ int main(int argc, char *argv[])
 	if (!(rec_set & 1))
 		o.rec_encoding = o.encoding;
 
-	/* PIM header: version and type in one byte, then reserved and the
-	 * checksum, which is filled in once the body is built.
-	 */
-	p = buf;
-	p = put_byte(p, ((o.version & 0xf) << 4) |
-		     ((o.type < 0 ? type : o.type) & 0xf));
-	p = put_byte(p, o.no_forward ? PIM_BOOTSTRAP_NO_FORWARD : 0);
-	p = put_short(p, 0);
+	if (rawfile) {
+		/* Verbatim, header and all: the file is the message, and
+		 * -V, -T, -K and the rest have nothing to apply to */
+		len = load(rawfile, buf, sizeof(buf));
+	} else {
+		/* PIM header: version and type in one byte, then reserved
+		 * and the checksum, which is filled in once the body is
+		 * built.
+		 */
+		p = buf;
+		p = put_byte(p, ((o.version & 0xf) << 4) |
+			     ((o.type < 0 ? type : o.type) & 0xf));
+		p = put_byte(p, o.no_forward ? PIM_BOOTSTRAP_NO_FORWARD : 0);
+		p = put_short(p, 0);
 
-	switch (type) {
-	case PIM_HELLO:		p = build_hello(p, &o);			break;
-	case PIM_JOIN_PRUNE:	p = build_join_prune(p, &o, prune);	break;
-	case PIM_BOOTSTRAP:	p = build_bootstrap(p, &o);		break;
-	case PIM_CAND_RP_ADV:	p = build_cand_rp_adv(p, &o);		break;
-	case PIM_REGISTER:	p = build_register(p, &o);		break;
-	case PIM_REGISTER_STOP:	p = build_register_stop(p, &o);		break;
-	case PIM_ASSERT:	p = build_assert(p, &o);		break;
+		switch (type) {
+		case PIM_HELLO:		p = build_hello(p, &o);			break;
+		case PIM_JOIN_PRUNE:	p = build_join_prune(p, &o, prune);	break;
+		case PIM_BOOTSTRAP:	p = build_bootstrap(p, &o);		break;
+		case PIM_CAND_RP_ADV:	p = build_cand_rp_adv(p, &o);		break;
+		case PIM_REGISTER:	p = build_register(p, &o);		break;
+		case PIM_REGISTER_STOP:	p = build_register_stop(p, &o);		break;
+		case PIM_ASSERT:	p = build_assert(p, &o);		break;
+		}
+
+		len = (size_t)(p - buf);
+		setsum(buf, len, type, &o);
 	}
 
-	len = (size_t)(p - buf);
+	/* xorshift32 cannot start from zero, and -S 0 is a seed somebody
+	 * meant rather than one to refuse */
+	if (!seed)
+		seed = 1;
 
-	/* A Register is checksummed over its header only, sec. 4.9.3, which
-	 * is also how pimd verifies one (src/pim_proto.c).
-	 */
-	sum = cksum(buf, type == PIM_REGISTER ? 8 : len);
-
-	/* For a Register, -K is the inner header's checksum, applied above:
-	 * corrupting the outer one too would have pim.c drop the message
-	 * before receive_pim_register() ever looked at the dummy header.
-	 */
-	if (o.corrupt && type != PIM_REGISTER)
-		sum = ~sum;
-	buf[2] = sum & 0xff;
-	buf[3] = (sum >> 8) & 0xff;
+	/* What every mutant is drawn from: the flips apply to the message as
+	 * built, not to the one before it, so -c sends mutants of one
+	 * message rather than a message that decays */
+	memcpy(orig, buf, len);
 
 	sd = socket(AF_INET, SOCK_RAW, IPPROTO_PIM);
 	if (sd < 0)
@@ -702,6 +842,19 @@ int main(int argc, char *argv[])
 	dst.sin_addr = addr(dest, "destination");
 
 	for (n = 0; n < count; n++) {
+		if (mutate) {
+			memcpy(buf, orig, len);
+			flip(buf, len, mutate, &seed);
+
+			/* After the flips, or the mutant dies at the
+			 * checksum test in receive_pim_*() and never
+			 * reaches a parser.  Not for -b: those bytes are
+			 * the file's, checksum included.
+			 */
+			if (!rawfile)
+				setsum(buf, len, type, &o);
+		}
+
 		if (sendto(sd, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
 			err(1, "failed sending to %s", dest);
 	}

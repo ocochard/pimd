@@ -688,6 +688,33 @@
 #               Takes about 4 minutes, most of it the wait for the RP to
 #               age out.
 #
+#   fuzz        The same topology and the same sender, with messages that
+#               are wrong in no particular way rather than in one named way.
+#               pimsend builds one of each type, flips a few bytes of its
+#               body, computes the checksum afterwards -- otherwise the
+#               mutant dies at the checksum test and never reaches a parser
+#               -- and sends five hundred of them, a fresh draw per packet
+#               and the same draw on any machine from the same seed, so an
+#               input that trips something can be sent again.
+#
+#               Where crafted asserts what a parser does with a field, this
+#               is about the combination nobody thought of, and it is the
+#               only test here that puts that to a *running* daemon: the
+#               in-process harnesses of test/fuzz/ explore in a minute what
+#               this sends in an hour, but they call the parsers with a
+#               fabricated vif table and no neighbours, while these arrive
+#               at a pimd that has a neighbour, an RP set, a kernel MFC and
+#               a register vif behind it.
+#
+#               Under SANITIZE=yes the sanitizers are the assertion.
+#               Without them the scenario can only say that pimd stayed up,
+#               kept its neighbours and its RP set and still parsed a
+#               well-formed Join afterwards -- worth asserting, a daemon
+#               any host on its LAN can silence being a bug of its own, but
+#               not the same question.  FUZZ_COUNT, FUZZ_FLIPS and
+#               FUZZ_SEED are the knobs, and a hunt wants a new seed rather
+#               than a longer run of the same one.  Takes under a minute.
+#
 # Scenarios run in parallel, several labs at a time on one host: -s picks
 # a slot, 0 to 31, and every name the lab puts on the host carries it, so
 # slot 3's jails, epairs, bridges and work directory are not slot 0's.
@@ -736,8 +763,8 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
-# "ifnew", "ifgone", "renumber", "register-filter", "crafted", "static-rp",
-# "anycast", "anycast-dr", or "all"
+# "ifnew", "ifgone", "renumber", "register-filter", "crafted", "fuzz",
+# "static-rp", "anycast", "anycast-dr", or "all"
 # for run.
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
@@ -863,10 +890,10 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifnew ifgone renumber register-filter crafted static-rp anycast anycast-dr"
+	   ifnew ifgone renumber register-filter crafted fuzz static-rp anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias crafted static-rp ssm ifnew ifgone
+		     rpt register-filter alias crafted static-rp ssm fuzz ifnew ifgone
 		     renumber ssm-range solo"
 
 # keepalive: groups the source blasts at, and how long the entries must
@@ -1367,6 +1394,26 @@ NOFWD_PRIO=${NOFWD_PRIO:-250}
 # and named by no accept-nbr-from, which is what makes it the one the
 # filter has to refuse
 DENIED_ADDR=${DENIED_ADDR:-10.0.1.88}
+# fuzz: how many mutants of each message type, how many bytes of each are
+# flipped, and what the flips are drawn from.  The seed is fixed rather than
+# random on purpose: a scenario that fails has to be a scenario somebody can
+# run again, and pimsend draws the same packets from the same seed on either
+# system.  Raise FUZZ_COUNT for a hunt (and vary FUZZ_SEED, one run of a
+# fixed seed explores exactly one set of packets however long it is);
+# these defaults are a regression test, seconds long.
+#
+# Every type pimsend can build: the six that go to ALL-PIM-ROUTERS and the
+# two that are unicast to the router.
+FUZZ_COUNT=${FUZZ_COUNT:-500}
+FUZZ_FLIPS=${FUZZ_FLIPS:-3}
+FUZZ_SEED=${FUZZ_SEED:-1}
+FUZZ_TYPES=${FUZZ_TYPES:-"hello join prune assert bootstrap candrp register regstop"}
+# How long R1 is given to learn the RP set before the flood, the bootstrap
+# interval in the generated configs being 10s
+FUZZ_RP_WAIT=${FUZZ_RP_WAIT:-90}
+# The group range R2 advertises an RP for, and the one step 6 reads back
+FUZZ_RP_RANGE=${FUZZ_RP_RANGE:-224.0.0.0/4}
+
 CRAFT_HOLD=${CRAFT_HOLD:-15}
 
 # How long R1's dynamic RP may take to age out once the BSR is killed.  The
@@ -1558,7 +1605,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|static-rp|anycast|anycast-dr)
+	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1607,7 +1654,7 @@ set_scenario() {
 	# Join/Prune period, for the whole run.  pim_hello is here for the
 	# same reason: the line that says a Hello was refused by
 	# accept-nbr-from sits behind IF_DEBUG(DEBUG_PIM_HELLO).
-	if [ "$SCENARIO" = crafted ]; then
+	if [ "$SCENARIO" = crafted ] || [ "$SCENARIO" = fuzz ]; then
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
 	else
 		DEBUG=$DEBUG_DEFAULT
@@ -3455,6 +3502,7 @@ check() {
 	renumber)   check_renumber; return $? ;;
 	register-filter) check_register_filter; return $? ;;
 	crafted)    check_crafted; return $? ;;
+	fuzz)       check_fuzz; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
@@ -5494,6 +5542,235 @@ check_crafted() {
 	else
 		ok "a Hello without the option cleared the list"
 	fi
+
+	result
+}
+
+# The pid of the pimd running in $1, out of the file it wrote
+fz_pimd_pid() {
+	${SUDO} cat "$WORKDIR/$1.pid" 2>/dev/null | tr -d ' \t\n'
+}
+
+# The RP address of router $1's dynamic entry for $FUZZ_RP_RANGE, empty when
+# it holds none.  The static entries config.c installs for the SSM range are
+# not it: those say Forever and Static.
+fz_group_rp() {
+	pimctl "$1" show rp 2>/dev/null | \
+		awk -v r="$FUZZ_RP_RANGE" '$1 == r && $NF == "Dynamic" { print $2 }'
+}
+
+# Has router $1 logged $3 since its first $2 lines?
+fz_logged_since() {
+	log_since "$1" "$2" "$3" >/dev/null 2>&1
+}
+
+# $FUZZ_COUNT mutants of message type $1, drawn from seed $2, sent from ED1
+# at R1.  Each type gets the options it needs to be built at all -- a
+# Join/Prune with no group is a Join/Prune pimsend refuses to write -- and
+# a seed of its own, or every type would flip the same offsets.
+#
+# -x flips bytes of the body only and the checksum is recomputed after the
+# flips, so these arrive as messages R1 will parse rather than as messages
+# pim.c drops on the way in; that is the point of the scenario and it is
+# asserted below by what R1 logged.
+fz_flood() {
+	fzf_type=$1
+	fzf_seed=$2
+	fzf_mutate="-x $FUZZ_FLIPS -S $fzf_seed -c $FUZZ_COUNT"
+
+	case $fzf_type in
+	hello)
+		craft "$SRC_ADDR" hello -H 105 $fzf_mutate ;;
+	join|prune)
+		craft "$SRC_ADDR" "$fzf_type" -u "$R1_LAN_ADDR" -g "$GROUP" \
+		      -s "$CRAFT_SRC" $fzf_mutate ;;
+	assert)
+		craft "$SRC_ADDR" assert -g "$GROUP" -s "$CRAFT_SRC" $fzf_mutate ;;
+	bootstrap)
+		craft "$SRC_ADDR" bootstrap -u "$SRC_ADDR" -g 224.0.0.0 -m 4 \
+		      -r "$SRC_ADDR" -p "$CRAFT_PRIO" $fzf_mutate ;;
+	candrp)
+		craft "$SRC_ADDR" candrp -r "$SRC_ADDR" -g 224.0.0.0 -m 4 $fzf_mutate ;;
+	register)
+		craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -g "$GROUP" \
+		      -s "$CRAFT_SRC" $fzf_mutate ;;
+	regstop)
+		craft "$SRC_ADDR" regstop -d "$R1_LAN_ADDR" -g "$GROUP" \
+		      -s "$CRAFT_SRC" $fzf_mutate ;;
+	*)
+		die "fuzz: no option set for message type $fzf_type" ;;
+	esac
+}
+
+# fuzz: R1 under a flood of PIM messages nobody wrote on purpose.
+#
+# crafted sends messages that are wrong in one named way each, and asserts
+# what the parser does with that field.  This sends messages that are wrong
+# in no particular way: pimsend builds one of each type, flips $FUZZ_FLIPS
+# bytes of its body, computes the checksum afterwards so the mutant reaches
+# a parser instead of dying at the checksum test that opens most of them,
+# and sends $FUZZ_COUNT of them -- a fresh draw per packet, and the same
+# draw on any machine from the same $FUZZ_SEED.  An input that trips
+# something here is an input somebody can send again.
+#
+# What this reaches that crafted cannot is the combination nobody thought
+# of, which is the whole of why fuzzing exists.  What it reaches that the
+# in-process harnesses of test/fuzz/ cannot is a *running* daemon: their
+# parsers are called with a fabricated vif table and no neighbours, while
+# these arrive at a pimd that has a neighbour, an RP set, a kernel MFC and
+# a register vif behind it, from an address it accepted a Hello from.  The
+# two are not substitutes -- the harness explores in a minute what this
+# sends in an hour, and this exercises state the harness has none of.
+#
+# Under SANITIZE=yes the sanitizers are the assertion: a read past the end
+# of a message or an undefined shift is reported where it happens, and
+# check_sanitizer() fails the scenario whatever the steps below said.
+# Without them a mutant that corrupts memory quietly passes every one of
+# them, so run this both ways, and read a green run without sanitizers as
+# "pimd stayed up", nothing more.
+#
+# The liveness steps are not the point, but they are not nothing either: a
+# daemon that stops answering, loses its neighbours or forgets the RP set
+# after four thousand malformed messages has been denied service by anybody
+# on its LAN.  Each of them is asked before the flood as well as after,
+# because an assertion that was already false proves nothing when it fails,
+# and step 4 is there for the same reason -- a flood the kernel dropped on
+# the way in would leave every other step green.
+check_fuzz() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The state the flood has to leave standing"
+	craft "$SRC_ADDR" hello -H 105
+	if wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		ok "r1 took $SRC_ADDR as a neighbour, so pimsend reaches it"
+	else
+		fail "r1 never saw a well-formed Hello, nothing below would mean anything"
+		return 1
+	fi
+
+	# R2's address on the link it shares with R1, which is also the RP
+	if wait_for 60 has_neighbor r1 "$RP_ADDR"; then
+		ok "r1 has r2 ($RP_ADDR) as a neighbour"
+	else
+		fail "r1 and r2 are not neighbours, so losing that below says nothing"
+		return 1
+	fi
+
+	if wait_for "$FUZZ_RP_WAIT" has_dynamic_rp r1 "$RP_ADDR"; then
+		ok "r1 learned $RP_ADDR as the RP from the bootstrap router"
+	else
+		fail "r1 has no RP from the BSR, so forgetting one below says nothing"
+		return 1
+	fi
+
+	fz_pid=$(fz_pimd_pid r1)
+	if [ -n "$fz_pid" ]; then
+		ok "r1: pimd is pid $fz_pid"
+	else
+		fail "r1: no pid file at $WORKDIR/r1.pid"
+		return 1
+	fi
+
+	fz_lines=$(log_lines r1)
+
+	print "3. $FUZZ_COUNT mutants of every message type, $FUZZ_FLIPS bytes flipped in each"
+	fz_seed=$FUZZ_SEED
+	fz_sent=0
+	for fz_type in $FUZZ_TYPES; do
+		fz_flood "$fz_type" "$fz_seed"
+		fz_seed=$((fz_seed + 1))
+		fz_sent=$((fz_sent + FUZZ_COUNT))
+	done
+	ok "$fz_sent mutants sent from $SRC_ADDR, seeds $FUZZ_SEED..$((fz_seed - 1))"
+
+	print "4. They reached pimd, rather than the kernel or the floor"
+	fz_seen=$(log_since r1 "$fz_lines" "$SRC_ADDR" | wc -l | tr -d ' ')
+	if [ "$fz_seen" -gt 0 ]; then
+		ok "r1 logged $fz_seen lines about $SRC_ADDR while the flood ran"
+	else
+		fail "r1 logged nothing about $SRC_ADDR, the flood never got to it"
+		return 1
+	fi
+
+	print "5. It is still the same process"
+	if wait_for 10 pimd_is_up r1; then
+		ok "r1: pimd still answers on its pimctl socket"
+	else
+		fail "r1: pimd stopped answering, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	fz_now=$(fz_pimd_pid r1)
+	if [ "$fz_now" = "$fz_pid" ]; then
+		ok "r1: pid $fz_pid throughout, so it never died and came back"
+	else
+		fail "r1: pid was $fz_pid and is now ${fz_now:-gone}"
+	fi
+
+	print "6. And it still knows what it knew"
+	if has_neighbor r1 "$RP_ADDR"; then
+		ok "r1 still has r2 ($RP_ADDR) as a neighbour"
+	else
+		fail "r1 lost r2 as a neighbour over the flood"
+	fi
+
+	if has_neighbor r1 "$SRC_ADDR"; then
+		ok "r1 still has $SRC_ADDR as a neighbour"
+	else
+		fail "r1 dropped $SRC_ADDR, whose Hello was the only well-formed one"
+	fi
+
+	# *That* it holds an RP is the assertion; which one it holds cannot be.
+	# A mutant Bootstrap that comes out valid is a BSR takeover, and a
+	# router that believes it is PIM working as RFC 7761 sec. 4.7
+	# specifies: the flood comes from an address that has said Hello, and
+	# $CRAFT_PRIO beats the priority R2 advertises, so one draw in five
+	# hundred is enough.  The RP address inside that message is data the
+	# message carries, and a flip lands in it as readily as anywhere else,
+	# so R1 ends up holding an address nothing on the LAN ever claimed --
+	# 10.174.1.10, in the run this was written from, which is the sender's
+	# address with one octet moved.  That is the parser doing its job on a
+	# packet somebody lied in.  accept-nbr-from is the answer to it, and
+	# crafted is where that is asserted; this scenario runs without it so
+	# the parsers see everything.
+	#
+	# What would be the bug is holding no RP at all: the RP set gone, not
+	# replaced, from messages that are refused one after another.
+	fz_rp=$(fz_group_rp r1)
+	if [ -z "$fz_rp" ]; then
+		fail "r1 holds no dynamic RP for $FUZZ_RP_RANGE at all after the flood"
+	elif [ "$fz_rp" = "$RP_ADDR" ]; then
+		ok "r1 still holds r2's RP ($RP_ADDR), no mutant Bootstrap was believed"
+	else
+		ok "r1 holds $fz_rp for $FUZZ_RP_RANGE: a mutant Bootstrap was believed, which is sec. 4.7"
+	fi
+
+	print "7. A well-formed Join is still acted on"
+	fz_lines=$(log_lines r1)
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC"
+	if wait_for 10 fz_logged_since r1 "$fz_lines" \
+		     "Received PIM JOIN/PRUNE from $SRC_ADDR"; then
+		ok "r1 parsed a well-formed Join after the flood"
+	else
+		fail "r1 ignored a well-formed Join after the flood, it is deaf"
+	fi
+
+	print "8. The routers behind it came through as well"
+	for r in r2 r3; do
+		if pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
 
 	result
 }

@@ -644,7 +644,11 @@ void logit(int severity, int syserr, const char *format, ...)
     }
 
   done:
-#ifndef CONTINUE_ON_ERROR
+#ifdef CONTINUE_ON_ERROR
+    return;			/* A label wants a statement after it, and
+				 * with CONTINUE_ON_ERROR the exit below is
+				 * not compiled in */
+#else
     if (severity <= LOG_ERR)
 	exit(-1);		/* Exit status: 255 */
 #endif
