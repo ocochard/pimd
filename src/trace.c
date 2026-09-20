@@ -216,6 +216,22 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 
     /* copy the packet to the sending buffer */
     p = igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN;
+
+    /*
+     * The request has to fit before it can be answered at all.  The test
+     * below is a different one: it asks whether *our own* response record
+     * still fits behind the copy, and relays a TR_NO_SPACE inside it,
+     * which needs the copy to have happened first.  This one bounds the
+     * copy itself.  datalen is the IGMP payload length of a packet off the
+     * socket, so it is whatever the sender's IP total length field said
+     * rather than anything this daemon chose.
+     */
+    if (IP_IGMP_HEADER_LEN + IGMP_MINLEN + (size_t)datalen > SEND_BUF_SIZE) {
+        logit(LOG_WARNING, 0, "Mcast traceroute from %s is %d bytes, too long to answer",
+              inet_fmt(src, s1, sizeof(s1)), datalen);
+        return;
+    }
+
     bcopy(data, p, datalen);
     p += datalen;
 

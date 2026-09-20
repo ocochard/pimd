@@ -20,6 +20,17 @@ issue of this repository is written out in full.
   now, with GNU make covered by the Linux workflow
 
 ### Fixes
+- A multicast traceroute request is measured against the send buffer before
+  it is copied into it, rather than after.  `accept_mtrace()` copied the
+  whole request into `igmp_send_buf` and only then asked whether there was
+  room, a test written for a different question: whether this router's own
+  response record still fits behind the copy, which is what relays a
+  `TR_NO_SPACE` inside it.  Nothing overflowed -- the request arrives on a
+  raw IP socket, so its length is bounded by the sender's IP total length
+  field at about 64 KiB, well under the 128 KiB buffer -- but the copy was
+  the one place in the daemon whose bound came from somewhere other than
+  the code above it.  An oversized request is now dropped with a warning.
+  Found with `rules/security.cocci`
 - An interface that has gone no longer holds on to its subnet.  The vif of
   a removed interface keeps its slot, its address and its subnet, so that
   the same name comes back to the same vif rather than to a new one; the
