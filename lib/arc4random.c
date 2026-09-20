@@ -1,6 +1,6 @@
 /* arc4random() for systems whose C library does not have one
  *
- * Copyright (c) 2026  Olivier Cochard-Labbé <cochard@gmail.com>
+ * Copyright (c) 2026  Olivier Cochard-Labbé <olivier@cochard.me>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above

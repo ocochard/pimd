@@ -68,7 +68,7 @@ chkconfig --add %{name}
 
 
 %changelog
-* Fri Sep 18 2026 cochard@gmail.com - 3.0.0
+* Fri Sep 18 2026 olivier@cochard.me - 3.0.0
   Build from a release tarball rather than a branch export, package pimctl
   and the pimctl(8) and pimd.conf(5) manual pages, and take the binaries
   and manual pages from where GNU Configure and Build leaves them.
