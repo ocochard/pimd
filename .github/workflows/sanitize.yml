@@ -1,0 +1,151 @@
+name: Sanitizers
+
+# The namespace lab again, this time against a pimd built with
+# AddressSanitizer and UndefinedBehaviorSanitizer.  test/lab.sh has had the
+# SANITIZE=yes path for a while, and it is where the reload use-after-free
+# of c721f76 and the undefined shifts of 8b0c103 came from, but nothing ran
+# it unless someone remembered to, so a regression of either would have
+# reached a release green.  This is that run, automated.
+#
+# A workflow of its own rather than a job of ci-linux.yml, and on a schedule
+# rather than on push, for the same reason coverity.yml is: the lab is long
+# on its own and longer with a sanitizer under it, and the per-push jobs
+# should report without waiting for it.  Flip the cron to '0 3 * * *' if a
+# nightly is wanted; nothing here depends on the interval.
+on:
+  schedule:
+    - cron: '0 3 * * 4'
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Scenarios to run, "all" or a space separated list'
+        default: 'all'
+      leaks:
+        description: 'Ask LeakSanitizer for a report at daemon exit'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    name: ASan + UBSan lab on Linux
+    runs-on: ubuntu-26.04
+    # The unsanitized lab is an hour at -j 2 on a four vCPU runner.  ASan
+    # costs the daemon CPU rather than wall clock -- most of what a scenario
+    # waits for is a protocol timer, and keepalive's four minute floor is
+    # PIM_DATA_TIMEOUT either way -- but the margin is worth having, every
+    # assertion here being a poll against a deadline.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
+
+      - name: Build with the sanitizers
+        # clang rather than gcc: both ship the two runtimes, but the LLVM
+        # ones are upstream and llvm-symbolizer comes with the compiler, so
+        # a report is file:line rather than addresses.
+        #
+        # --disable-hardening, and then -fno-strict-aliasing by hand:
+        #
+        #   - _FORTIFY_SOURCE wraps the same calls ASan interposes on, which
+        #     costs findings and can invent them;
+        #   - -ftrivial-auto-var-init=zero is the point of the hardened
+        #     build and the enemy of this one.  Zeroing every automatic is
+        #     exactly what hides a parser reading a field a short packet
+        #     never carried, which is the bug class the lab is here for;
+        #   - -fno-strict-aliasing is in the hardening set but is not
+        #     hardening: pim.c and igmp.c cast the char * receive buffers to
+        #     struct ip * and friends on nearly every path, so dropping it
+        #     leaves the daemon undefined in a way no sanitizer reports and
+        #     the optimiser is free to act on.
+        #
+        # No --enable-test: the lab compiles its own copies of mping, igmpv3
+        # and pimsend when it starts, and they are not what is under test.
+        run: |
+          ./autogen.sh
+          ./configure --prefix= --disable-hardening			\
+            CC=clang							\
+            CFLAGS="-g -O1 -fno-omit-frame-pointer -fno-strict-aliasing	\
+                    -fsanitize=address,undefined"			\
+            LDFLAGS="-fsanitize=address,undefined"
+          make V=1 -j3
+
+      - name: Run the lab under the sanitizers
+        # check_req() asks the binary for its sanitizer runtime before any
+        # of this starts, so a build that quietly lost the flags fails here
+        # rather than passing scenarios that checked nothing.
+        #
+        # The knobs go through env(1) and not through sudo: sudo resets the
+        # environment, and whether it may be told not to depends on the
+        # sudoers of the machine.  lab.sh hands each daemon its own
+        # ASAN_OPTIONS the same way, for the same reason.
+        #
+        # Leak checking stays off unless the run asks for it: what leaks in
+        # a daemon being torn down is a hunt of its own, and a scheduled job
+        # that fails on one every week is a job nobody reads.
+        env:
+          LAB_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+          LAB_LEAKS: ${{ inputs.leaks }}
+        run: |
+          set -u
+          knobs="SANITIZE=yes"
+          if [ "$LAB_LEAKS" = "true" ]; then
+                  knobs="$knobs SAN_ASAN_OPTIONS=detect_leaks=1"
+          fi
+
+          # -j only where there is something to run in parallel: lab.sh
+          # refuses a job count with a single scenario named, which a
+          # dispatch of one by hand would otherwise trip over.
+          set -- $LAB_SCENARIOS
+          [ $# -gt 0 ] || set -- all
+          if [ "$1" = all ] || [ $# -gt 1 ]; then
+                  jobs="-j 2"
+          else
+                  jobs=""
+          fi
+
+          # ASan wants a contiguous shadow mapping, which a kernel
+          # randomising 32 bits of mmap does not always leave it; where the
+          # knob is absent the default is already fine.
+          sudo sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+
+          sudo env $knobs sh test/lab.sh $jobs run "$@" || rc=$?
+
+          # A scenario that tripped keeps its work directory: a pimd log per
+          # router, the traffic captures, and sanitizer/ with the reports,
+          # of which check_sanitizer() prints only the first forty lines.
+          # The runner goes with the job, so print them here or a failed run
+          # leaves nothing but the assertion that tripped.  The slot is part
+          # of the name, slot 0 being /tmp/pimd-test, so the glob has to
+          # reach past it.
+          for d in /tmp/pimd-test*.*.failed; do
+                  test -d "$d" || continue
+                  for f in "$d"/sanitizer/* "$d"/*.log; do
+                          test -f "$f" || continue
+                          echo "===== $f ====="
+                          sudo tail -n 200 "$f"
+                  done
+          done
+
+          # The whole of them as an artifact as well: a truncated ASan
+          # report is often one frame short of the answer.
+          if [ -d "$(echo /tmp/pimd-test*.*.failed | cut -d' ' -f1)" ]; then
+                  sudo tar czf failed-labs.tar.gz /tmp/pimd-test*.*.failed
+                  sudo chown "$(id -u):$(id -g)" failed-labs.tar.gz
+          fi
+
+          exit ${rc:-0}
+
+      - name: Upload the work directories of the scenarios that failed
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanitizer-lab-failures
+          path: failed-labs.tar.gz
+          if-no-files-found: ignore

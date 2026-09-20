@@ -40,6 +40,18 @@ issue of this repository is written out in full.
   workflow installed the `gmake` package and used it, so the build path
   every FreeBSD user takes was the one never tested; it runs base `make`
   now, with GNU make covered by the Linux workflow
+- The sanitizer run of `test/lab.sh` is automated, in
+  `.github/workflows/sanitize.yml`: every scenario against a pimd built
+  `-fsanitize=address,undefined`, weekly on Linux and on demand through
+  `workflow_dispatch`, which takes a scenario list and a knob for the leak
+  check.  `SANITIZE=yes` has been in the script since v3.0.0 and found the
+  reload use-after-free of `c721f76` and the undefined shifts of `8b0c103`,
+  but nothing ran it unless someone remembered to, so a regression of either
+  would have reached a release green.  The tree it builds is
+  `--disable-hardening` with `-fno-strict-aliasing` put back by hand:
+  `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short
+  packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan
+  interposes on, and the aliasing flag is in that set without being hardening
 
 ### Fixes
 - `configure` no longer drops every hardening flag when the user's own
