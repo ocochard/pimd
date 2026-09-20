@@ -56,6 +56,26 @@ jobs:
       # No test step: TESTS is empty, every script that was in it being a
       # scenario of test/lab.sh now, which the lab job below runs.
 
+  cocci:
+    # Coccinelle over src/ and lib/: the machine-decidable part of
+    # doc/security-review-prompt.md, plus the patterns that are about this
+    # tree rather than about C -- a receive_pim_*() that never bounds its
+    # len, an s1..s4 log buffer formatted twice in one call, a uvifs[]
+    # subscript that was never tested against NO_VIF.
+    #
+    # Needs no build, so it does not wait on one, and it is a job of its own
+    # so a hit reports as a hit rather than as a build failure.
+    name: Coccinelle
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install coccinelle
+      - name: Run rules/security.cocci
+        run: ./rules/run.sh
+
   lab:
     # The network namespace lab: twenty-one PIM-SM scenarios over real
     # namespaces, veth pairs and bridges, asserting on forwarded traffic and

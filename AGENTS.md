@@ -343,3 +343,29 @@ Four rules this tree wants at the point of writing, ahead of any wider review:
   introducing new bounded copies, and report through `logit()`.
 - **Remediated code still follows the conventions above.** Keep the surrounding indentation style;
   a security fix is not a licence to reformat.
+
+`rules/security.cocci` is the part of that checklist a machine can decide, as twenty-four semantic
+patches for Coccinelle's `spatch(1)`. Run it with `rules/run.sh`, which makes two passes and needs
+both to hold: every rule has to fire on `rules/control.c`, and `src/` and `lib/` have to stay
+silent. The control pass is the point -- `spatch` prints nothing both when a rule finds nothing and
+when a rule is broken, so a ruleset never proven to fire proves nothing -- and it is why a rule and
+its counter-example go in together, written to look like the code the rule is meant to catch. The
+tree is clean, so a line out of the second pass is a regression; each line names the rule that
+found it in brackets. `rules/run.sh` exits 77, automake's "skipped", when `spatch` is not
+installed, so this is not a build dependency; the `Coccinelle` job of `.github/workflows/ci-linux.yml`
+installs it and runs the script. Note that `spatch` honours only the *last* `--dir` on its command
+line and silently drops any earlier one, which is why the script walks `src/` and `lib/` one at a
+time.
+
+Four of the rules are about this tree rather than about C, and are the ones worth adding to: a
+`receive_pim_*()` that never compares its `len` argument to anything (the `receive_pim_assert()`
+bug above, as a pattern), a `uvifs[]` subscript taking a vif index straight from `find_vif_direct()`
+or `local_address()` without testing it against `NO_VIF` -- which is `MAXVIFS`, one past the end of
+the array -- and the two about the `s1..s4` static buffers of `inet.c`: one call formatting two
+addresses into the same one prints the second twice, and `inet_fmt(a, s1, sizeof(s2))` sizes a
+buffer by another. The rest are the ordinary C classes, grouped by the section of
+`doc/security-review-prompt.md` they come from. The format-string rules went in when nothing in
+the build looked for a `printf()` whose format is not a literal; `configure` probes `-Wformat=2`
+now, which covers the same ground, and they stay because the probe can drop it -- an older
+compiler that will not take the flag still gets the `spatch` pass, which needs no compiler at all.
+The mtrace copy fixed in `src/trace.c` was found this way.
