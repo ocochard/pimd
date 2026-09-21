@@ -20,6 +20,9 @@ pimsend_SOURCES    = pimsend.c
 # tarball can be fuzzed and, more to the point, so the replay test below
 # has something to replay wherever it is unpacked.
 EXTRA_DIST        += fuzz-corpus.sh fuzz/README.md
+# The OSS-Fuzz integration, canonical here rather than in google/oss-fuzz
+EXTRA_DIST        += fuzz/oss-fuzz/build.sh fuzz/oss-fuzz/project.yaml	\
+		     fuzz/oss-fuzz/Dockerfile
 EXTRA_DIST        += fuzz/corpus/config/minimal.conf		\
 		     fuzz/corpus/config/sample.conf		\
 		     fuzz/corpus/config/phyint.conf		\

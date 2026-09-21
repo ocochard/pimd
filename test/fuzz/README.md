@@ -210,3 +210,61 @@ state a message makes has to go back before the next one, or a hunt ends at
 libFuzzer's RSS limit reporting an out-of-memory where nothing leaked.
 Measure that rather than assume it -- run with `-runs=N` and `-runs=4N` and
 compare `peak_rss_mb` under `-print_final_stats=1`.
+
+OSS-Fuzz
+--------
+
+`oss-fuzz/` holds the three files Google's fleet needs, kept here rather than
+only in `google/oss-fuzz` so that a harness added, or a source file moved, is
+fixed in the commit that causes it: `project.yaml` (who is contacted and
+which sanitizers are built), `Dockerfile` (the image, which clones this
+repository), and `build.sh`, which is the whole build. The `build.sh` of
+`projects/pimd/` over there is two lines and no more, so that there is
+nothing to drift:
+
+```sh
+#!/bin/bash -eu
+exec "$SRC/pimd/test/fuzz/oss-fuzz/build.sh"
+```
+
+That script does not use `--enable-fuzz`. The `ENABLE_FUZZ` rules of
+`../Makefile.am` hardcode `-fsanitize=fuzzer`, which is libFuzzer's alone,
+while OSS-Fuzz builds the same harnesses under AFL++, honggfuzz and
+Centipede and says which in `$LIB_FUZZING_ENGINE`; what it configures instead
+is `--disable-exit-on-error` (the half of `--enable-fuzz` that is not
+optional, see above) and `--disable-hardening`, for the reason
+`.github/workflows/sanitize.yml` gives, with `-fno-strict-aliasing` put back
+by hand. The daemon's own objects are still `src/libpimd.a` built by `make`,
+so they carry whatever instrumentation `$CFLAGS` brought.
+
+The build runs without Docker, which is how it was checked here:
+
+```sh
+CC=clang \
+CFLAGS="-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fsanitize=fuzzer-no-link" \
+LIB_FUZZING_ENGINE="-fsanitize=fuzzer" OUT=/tmp/out \
+    test/fuzz/oss-fuzz/build.sh
+```
+
+The verdict is the `INITED` line, not the exit status. Built that way and
+replayed over the committed seeds with `-runs=0`, the three reach 473, 2669
+and 2851 edges, which is the same tree the recipe at the top of this file
+builds (473, 2656, 2836 -- the few edges between them are the hardening flags
+this build drops). A number well below that is a build that lost the
+instrumentation on the daemon's objects and kept it on the harness, which
+runs at full speed and looks healthy; the same `INITED` line is what says so.
+An OSS-Fuzz `address` build alone prints about a third of those, UBSan's
+checks being branches and branches being edges, so compare like with like.
+
+With Docker, the fleet's own path:
+
+```sh
+python3 infra/helper.py build_image pimd
+python3 infra/helper.py build_fuzzers --sanitizer address pimd
+python3 infra/helper.py check_build pimd
+```
+
+MemorySanitizer is deliberately not in `project.yaml` yet: it is item 3 of
+`aidd_docs/plans/improvements-backlog.md`, and the instrumented libc it wants
+is one of the things OSS-Fuzz has and this tree does not, so it is worth a
+change of its own once the project builds there.
