@@ -9,7 +9,7 @@ issue of this repository is written out in full.
 ### Changes
 - pimd separates its privileges.  It runs as two processes now: a small
   privileged parent that owns the descriptors and makes the calls the kernel
-  asks root for, and an unprivileged child, running as `_pimd`, that does
+  asks root for, and an unprivileged child, running as `nobody`, that does
   everything else -- every parser, every timer, every state machine, every
   byte that arrives off the wire.  A helper process rather than a `setuid()`
   once everything is open, because the kernel checks the caller on every call
@@ -19,12 +19,14 @@ issue of this repository is written out in full.
   way, so a child that dropped root could not add a VIF or change an MFC even
   holding the mrouter socket it was handed.  On by default; `--no-privsep`
   gives back the single root process, and `-U USER[:GROUP]` (`--user`) names
-  the user.  `configure --with-privsep-user=NAME` sets the default, and where
-  that user does not exist pimd falls back to `nobody` with a warning rather
-  than refusing to start -- a dedicated user is the better one, `nobody` being
-  shared with whatever else settled for it, but an upgrade must not leave a
-  router down waiting for a packager.  `-p` is still `--pidfile`, and the PID
-  file names the parent, which is the process a SIGHUP has to reach
+  the user.  The default is `nobody`, which every supported system has, so
+  nothing has to be created before pimd will start; `configure
+  --with-privsep-user=NAME` builds with another, which a packager who ships a
+  user of pimd's own should do, two daemons under one user id being able to
+  signal and trace each other.  A user that does not exist is a start-up
+  error naming `--no-privsep` rather than a fallback to somebody else's
+  account.  `-p` is still `--pidfile`, and the PID file names the parent,
+  which is the process a SIGHUP has to reach
 - The unprivileged half runs under a seccomp-bpf filter on Linux, an
   allowlist of the syscalls the event loop makes with
   `SECCOMP_RET_KILL_PROCESS` for everything else and for any architecture

@@ -220,18 +220,21 @@ and as that user's group unless
 is given as well.  The default is set at build time with
 .Cm configure --with-privsep-user ,
 and is
-.Cm _pimd .
-Where that user does not exist on the running system,
+.Cm nobody ,
+which every supported system has.  A user that does not exist on the
+running system is a start-up error naming
+.Fl -no-privsep ,
+not something
 .Nm
-falls back to
-.Cm nobody
-and says so in the log; a user named with this option is not fallen back
-from, since an explicit name that does not exist is a mistake to report
-rather than to work around.  A dedicated user is the better one:
-.Cm nobody
-is shared with whatever else on the machine settled for it, and two daemons
-running under one user id can signal and trace each other, which is much of
-what separating them was for.
+works around: falling back to another account would be choosing one the
+operator did not.
+.Pp
+A user of pimd's own, shared with no other daemon, is stronger than
+.Cm nobody :
+two daemons running under one user id can signal and trace each other,
+which is part of what separating them was for.  A packager who creates one
+should build with
+.Cm configure --with-privsep-user .
 .Pp
 The unprivileged half is also confined with
 .Xr chroot 2

@@ -155,18 +155,23 @@ AC_ARG_WITH([systemd],
      [AS_HELP_STRING([--with-systemd=DIR], [Directory for systemd service files])],,
      [with_systemd=auto])
 
-# The user the unprivileged half of the daemon runs as.  It has to exist on
-# the running system, not on this one, so this is a name and not a probe: a
-# missing user is a start-up error naming --no-privsep, rather than a
-# silent fall back to the root pimd this is here to stop being.
+# The user the unprivileged half of the daemon runs as.  nobody, because it
+# is there on every system this builds for and a daemon that separates by
+# default must not need an account somebody remembered to create first.  It
+# has to exist on the running system rather than on this one, so this is a
+# name and not a probe: a missing user is a start-up error naming
+# --no-privsep, never a silent fall back to the root pimd this exists to
+# stop being.
+#
+# A user of pimd's own, shared with no other daemon, is stronger -- two
+# under one uid can signal and trace each other -- so a packager who
+# creates one should build with it here.
 AC_ARG_WITH([privsep-user],
 	AS_HELP_STRING([--with-privsep-user=USER], [User the unprivileged half runs as,
-		default: _pimd, falling back to nobody where that does not exist]),
-	[privsep_user=$withval], [privsep_user=_pimd])
+		default: nobody]),
+	[privsep_user=$withval], [privsep_user=nobody])
 AC_DEFINE_UNQUOTED([PRIVSEP_USER], ["$privsep_user"],
 	[User the unprivileged half of the daemon runs as.])
-AC_DEFINE([PRIVSEP_FALLBACK_USER], ["nobody"],
-	[User to fall back on when the one above does not exist on the running system.])
 
 # The directory the unprivileged half is confined to.  It needs nothing in
 # it and must have nothing in it: by the time the daemon gets there the

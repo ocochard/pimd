@@ -1356,28 +1356,14 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
     if (group)
 	*group++ = 0;
 
-    pw = getpwnam(name);
-
     /*
-     * A dedicated user is what this wants: nobody is shared with whatever
-     * else on the machine settled for it, and two daemons under one uid
-     * can signal and ptrace each other, which is most of what separating
-     * them was for.  But pimd separates by default, and a daemon that
-     * refuses to start after an upgrade because a packager has not added a
-     * user yet is worse than a weaker uid.  So the compile-time default
-     * falls back, loudly, and a user named with -U does not: an explicit
-     * name that does not exist is a mistake to report, not to paper over.
+     * The default is nobody, which every system this builds for has, so
+     * the usual path finds it.  A name that is not there is a start-up
+     * error rather than something to work around: falling back to another
+     * account would be choosing one the operator did not, and running as
+     * root would give up the whole point.
      */
-    if (!pw && !user) {
-	pw = getpwnam(PRIVSEP_FALLBACK_USER);
-	if (pw) {
-	    logit(LOG_WARNING, 0, "No %s user, separating privileges as %s instead; "
-		  "a dedicated user shared with no other daemon is the better one",
-		  name, PRIVSEP_FALLBACK_USER);
-	    strlcpy(name, PRIVSEP_FALLBACK_USER, sizeof(name));
-	}
-    }
-
+    pw = getpwnam(name);
     if (!pw) {
 	logit(LOG_ERR, 0, "Privilege separation user %s does not exist, "
 	      "create it or start with --no-privsep", name);
