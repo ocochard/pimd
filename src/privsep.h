@@ -76,6 +76,10 @@ struct priv_ifrec {
 /* Records per PRIV_IFSCAN reply, and so the size of the biggest message. */
 #define PRIV_IFREC_MAX		48
 
+/* And the most one scan may describe: the answer is built from as many
+ * messages as it takes, so something has to say when to stop growing. */
+#define PRIV_IFREC_LIMIT	4096
+
 /* A rendered log line, truncated by the child rather than by the parent. */
 #define PRIV_LOG_MAX		512
 

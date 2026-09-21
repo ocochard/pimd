@@ -122,8 +122,11 @@ enum priv_op {
 static int   priv_sock = -1;
 static char  priv_username[64];
 static char  priv_sandbox_name[32] = "none";
-/* Holds PRIVSEP_CHROOT, which is a compile-time constant, or "none". */
-static char  priv_chroot_path[256] = "none";
+/* Holds PRIVSEP_CHROOT, a compile-time constant, or "none": sized from the
+ * constant itself so that what is reported is never a truncation of what
+ * was done. */
+static char  priv_chroot_path[sizeof(PRIVSEP_CHROOT) > 8
+			      ? sizeof(PRIVSEP_CHROOT) : 8] = "none";
 
 /* Parent state.  The paths are fixed here before the fork and are never
  * sent, so that nothing the child says can name a file. */
@@ -208,19 +211,34 @@ static int msg_recv(int sd, void *buf, size_t len, int *fd)
     if (n != (ssize_t)len)
 	return -1;
 
+    /*
+     * Every descriptor in here is already open in this process: the kernel
+     * installed them before recvmsg() returned, so one that is not wanted
+     * has to be closed rather than skipped.  Counting them out of
+     * cmsg_len rather than demanding one exactly is the difference: this
+     * side is the privileged one when the parent reads a request, and a
+     * child that attached two descriptors to every message it sent would
+     * otherwise fill the parent's descriptor table a pair at a time.
+     */
     for (cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
-	int rfd;
+	size_t i, nfds;
 
 	if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS)
 	    continue;
-	if (cm->cmsg_len != CMSG_LEN(sizeof(int)))
-	    continue;
+	if (cm->cmsg_len < CMSG_LEN(0))
+	    continue;	       /* Not a length to subtract from */
 
-	memcpy(&rfd, CMSG_DATA(cm), sizeof(rfd));
-	if (fd && *fd < 0)
-	    *fd = rfd;
-	else
-	    close(rfd);	       /* One is all any reply carries */
+	nfds = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+
+	for (i = 0; i < nfds; i++) {
+	    int rfd;
+
+	    memcpy(&rfd, CMSG_DATA(cm) + i * sizeof(int), sizeof(rfd));
+	    if (fd && *fd < 0)
+		*fd = rfd;     /* One is all any reply is meant to carry */
+	    else
+		close(rfd);
+	}
     }
 
     return 0;
@@ -547,7 +565,7 @@ int priv_getifaddrs(struct ifaddrs **ifap)
 	if (rep.count == 0)
 	    break;
 
-	if (rep.count > PRIV_IFREC_MAX) {
+	if (rep.count > PRIV_IFREC_MAX || used + rep.count > PRIV_IFREC_LIMIT) {
 	    free(list);
 	    errno = EPROTO;
 	    return -1;
@@ -1325,8 +1343,15 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
     gid_t gid;
     int sv[2], i;
 
-    /* "user" or "user:group"; without a group the user's own is used. */
-    strlcpy(name, user ? user : PRIVSEP_USER, sizeof(name));
+    /* "user" or "user:group"; without a group the user's own is used.  A
+     * name too long to hold is refused rather than truncated, since what
+     * is left of one is a different account that may well exist. */
+    if (strlcpy(name, user ? user : PRIVSEP_USER, sizeof(name)) >= sizeof(name)) {
+	logit(LOG_ERR, 0, "Privilege separation user name is longer than %zu characters",
+	      sizeof(name) - 1);
+	return -1;
+    }
+
     group = strchr(name, ':');
     if (group)
 	*group++ = 0;
@@ -1385,6 +1410,11 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
     parent_conf = strdup(conf);
     parent_pid  = pid  ? strdup(pid)  : NULL;
     parent_sock = sock ? strdup(sock) : NULL;
+
+    if (!parent_conf || (pid && !parent_pid) || (sock && !parent_sock)) {
+	logit(LOG_ERR, errno, "Failed allocating memory for the privsep helper");
+	return -1;
+    }
 
     if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) < 0 &&
 	socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) {

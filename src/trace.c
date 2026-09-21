@@ -68,6 +68,18 @@ static int trace_sg_cnt(struct sioc_sg_req *sg_req)
     return priv_enabled() ? priv_sg_cnt(sg_req) : kern_sg_cnt(udp_socket, sg_req);
 }
 
+/*
+ * Only the fields set below are read, by the kernel here and by the
+ * privileged half when there is one, but the whole struct crosses to it
+ * now -- so it is cleared first rather than carrying whatever was on this
+ * stack.  k_get_vif_count() and k_get_sg_cnt() (src/kern.c) do the same.
+ */
+static void trace_vif_req(struct sioc_vif_req *v_req, vifi_t vifi)
+{
+    memset(v_req, 0, sizeof(*v_req));
+    v_req->vifi = vifi;
+}
+
 void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int no, int datalen)
 {
     uint8_t type;
@@ -281,7 +293,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     /*
      * obtain # of packets out on interface
      */
-    v_req.vifi = vifi;
+    trace_vif_req(&v_req, vifi);
     if (vifi != NO_VIF && trace_vif_cnt(&v_req) >= 0)
         resp->tr_vifout  =  htonl(v_req.ocount);
     else
@@ -309,6 +321,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
                 break;
 	}
 
+        memset(&sg_req, 0, sizeof(sg_req));
         sg_req.src.s_addr = qry->tr_src;
         sg_req.grp.s_addr = group;
         if (st && st->st_ctime != 0 && trace_sg_cnt(&sg_req) >= 0)
@@ -345,7 +358,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
         resp->tr_rmtaddr  = 0;
     } else {
         /* get # of packets in on interface */
-        v_req.vifi = mrt->incoming;
+        trace_vif_req(&v_req, mrt->incoming);
         if (trace_vif_cnt(&v_req) >= 0)
             resp->tr_vifin = htonl(v_req.icount);
         else
