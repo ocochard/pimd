@@ -5,3 +5,9 @@
 igmpv3
 mping
 pimsend
+fuzz_config
+fuzz_config_replay
+fuzz_igmp
+fuzz_igmp_replay
+fuzz_pim
+fuzz_pim_replay
