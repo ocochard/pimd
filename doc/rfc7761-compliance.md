@@ -85,6 +85,13 @@ assert.  The section stays, and keeps its numbering, because these are the
 entries where a compliance gap was also a way in, and the next reader should
 know they were looked for rather than wonder.
 
+Every one of them was found by somebody reading the code.  `test/fuzz/` is
+the other way to look now -- `fuzz_pim` and `fuzz_igmp` call `accept_pim()`
+and `accept_igmp()` in process, tens of thousands of times a second, under
+the sanitizers and with the receive buffer poisoned past the end of each
+packet -- and the `Test:` notes below say where that reaches a path the labs
+cannot.
+
 A later audit of the code around the register path added two more, and both
 are fixed as well.  Neither is an RFC deviation: the boundary they sit on is
 the kernel's, not the wire's, so there is no section to measure them against.
@@ -112,9 +119,15 @@ it -- which is V3's rule, arrived at from the other side.
 What keeps it off the wire is the `ip_p == 0` test in `accept_igmp()`: a raw
 IGMP socket sees protocol 2 from a real packet, so only the kernel reaches the
 branch, and both Linux and FreeBSD hand up the whole packet.  Hardening, not a
-repair.  Test: nothing reproduces it, and nothing cheaply could -- it wants a
-kernel that truncates an upcall or lies about `ip_len`.  What the labs give is
-the other half, that the guards refuse nothing a real kernel sends: `rpt`,
+repair.  Test: `test/fuzz/fuzz_igmp.c`, which is the one thing here that can
+say what a kernel would not -- it hands `accept_igmp()` a whole IP packet, so
+an upcall truncated to any length and a `WHOLEPKT` whose inner `ip_len` claims
+anything at all are both inputs it can generate, and the three `upcall-*.bin`
+seeds of `test/fuzz/corpus/igmp/` are where it starts.  What makes an
+over-read visible rather than a read of stale bytes in a 128K buffer is that
+the harness poisons the buffer past the end of each packet; without that this
+deviation would have been invisible to a run of any length.  The labs give the
+other half, that the guards refuse nothing a real kernel sends: `rpt`,
 `keepalive`, `rp-lasthop`, `rp-offpath` and both `gif-tunnel` scenarios of
 `test/lab.sh` register through this path, and `arista-rp` and
 `pimd-rp` of `test/freebsd-interop.sh` have an EOS decapsulate what pimd
@@ -131,9 +144,11 @@ to an interface that exists.  Both refuse an index at or past `numvifs` now.
 The bound is `numvifs` and not `MAXVIFS` deliberately: an entry between the two
 is inside the array but is not an interface either function could act on.
 *Check: no RFC rule; same kernel boundary as V5, found in the same audit and
-with the same caveat -- the kernel writes that field.  Test: nothing
-reproduces it either, for the same reason: an out-of-range `im_vif` needs a
-kernel that invents one.  Every scenario that forwards traffic drives
+with the same caveat -- the kernel writes that field.  Test:
+`test/fuzz/fuzz_igmp.c` again, where `im_vif` is a byte of the input and every
+value of it is one the harness will eventually try; the guard is at the top of
+both functions, so a run that reaches them reaches it.  Every scenario that
+forwards traffic drives
 `process_cache_miss()`, and the ones that move a source onto the shortest
 path tree or run an assert drive `process_wrong_iif()` as well, so both
 guards are walked with a valid index throughout the two FreeBSD suites.*

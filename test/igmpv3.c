@@ -33,6 +33,7 @@
  *   igmpv3 -i IFADDR -g GROUP -t TYPE [SOURCE ...]
  *   igmpv3 -i IFADDR -g GROUP -t allow -n COUNT -b BASE
  *   igmpv3 -i IFADDR -g GROUP -v 2
+ *   igmpv3 -i IFADDR -g GROUP -t TYPE -o FILE
  *
  * TYPE is one of the RFC 3376 sec. 4.2.12 record types: is_in, is_ex,
  * to_in, to_ex, allow, block.  A join of (S,G) is "allow S", dropping
@@ -47,6 +48,16 @@
  * meaning for.  A kernel join cannot be used to ask the question -- it
  * picks the version itself, and follows whatever the querier on the LAN
  * has negotiated.
+ *
+ * "-o FILE" writes the packet instead of sending it, and writes the IP
+ * header with it: -i and the destination this version reports to, twenty
+ * bytes, no options.  That is one packet as the daemon is handed it, which
+ * is what the in-process harness of test/fuzz/fuzz_igmp.c takes as an
+ * input, so a seed for it is built by the same code that builds what goes
+ * on the wire rather than by hand.  No socket is opened, so this needs no
+ * root.  The IGMP checksum is the one computed above; the IP header's is
+ * left zero, the kernel filling that in for a packet that is really sent
+ * and nothing in pimd reading it.
  */
 #include <arpa/inet.h>
 #include <err.h>
@@ -124,6 +135,42 @@ static int rectype(const char *arg)
 	return -1;
 }
 
+/*
+ * The packet as the daemon reads it: an IP header of the smallest kind --
+ * version and length, ToS 0xc0 the way a router's own IGMP goes out, TTL 1,
+ * protocol IGMP, the source and destination this report is between -- and
+ * the message behind it.  ip_len is filled in because a reader may believe
+ * it; ip_sum is left zero because nothing in pimd reads one.
+ */
+static void save(const char *path, struct in_addr src, struct in_addr dst,
+		 const void *msg, size_t len)
+{
+	uint8_t hdr[20];
+	FILE *fp;
+
+	memset(hdr, 0, sizeof(hdr));
+	hdr[0] = (4 << 4) | (sizeof(hdr) >> 2);
+	hdr[1] = 0xc0;				/* Internet Control */
+	hdr[2] = ((sizeof(hdr) + len) >> 8) & 0xff;
+	hdr[3] = (sizeof(hdr) + len) & 0xff;
+	hdr[8] = 1;				/* TTL, one hop */
+	hdr[9] = IPPROTO_IGMP;
+	memcpy(hdr + 12, &src, sizeof(src));
+	memcpy(hdr + 16, &dst, sizeof(dst));
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		err(1, "failed creating %s", path);
+
+	if (fwrite(hdr, 1, sizeof(hdr), fp) != sizeof(hdr))
+		err(1, "failed writing %s", path);
+	if (len && fwrite(msg, 1, len, fp) != len)
+		err(1, "failed writing %s", path);
+
+	if (fclose(fp))
+		err(1, "failed closing %s", path);
+}
+
 static int usage(int rc)
 {
 	fprintf(stderr,
@@ -135,7 +182,10 @@ static int usage(int rc)
 		"  -n COUNT   Generate COUNT consecutive sources from -b instead\n"
 		"  -b BASE    First address of the generated range\n"
 		"  -v VER     IGMP version, 3 (default) or 2; a v2 report has no\n"
-		"             source list, so -t and any sources are ignored\n");
+		"             source list, so -t and any sources are ignored\n"
+		"  -o FILE    Write the packet, IP header and all, instead of\n"
+		"             sending it.  Needs no socket and no root.  For\n"
+		"             seeding the corpus of test/fuzz/fuzz_igmp.c\n");
 
 	return rc;
 }
@@ -146,6 +196,7 @@ int main(int argc, char *argv[])
 	struct sockaddr_in sin, dst;
 	struct in_addr ifaddr, group;
 	const char *base = NULL;
+	const char *outfile = NULL;
 	struct in_addr *dest = NULL;
 	int type = -1, num = 0, version = 3;
 	unsigned char ttl = 1;
@@ -156,7 +207,7 @@ int main(int argc, char *argv[])
 	memset(&ifaddr, 0, sizeof(ifaddr));
 	memset(&group, 0, sizeof(group));
 
-	while ((c = getopt(argc, argv, "b:g:h?i:n:t:v:")) != -1) {
+	while ((c = getopt(argc, argv, "b:g:h?i:n:o:t:v:")) != -1) {
 		switch (c) {
 		case 'b':
 			base = optarg;
@@ -174,6 +225,10 @@ int main(int argc, char *argv[])
 
 		case 'n':
 			num = atoi(optarg);
+			break;
+
+		case 'o':
+			outfile = optarg;
 			break;
 
 		case 't':
@@ -253,6 +308,20 @@ int main(int argc, char *argv[])
 		/* Only the sources actually filled in are sent */
 		len = sizeof(rep) - sizeof(rep.grec_src) + nsrcs * sizeof(rep.grec_src[0]);
 		rep.csum = cksum(&rep, len);
+	}
+
+	if (outfile) {
+		struct in_addr to;
+
+		if (dest) {
+			to = *dest;
+		} else if (inet_pton(AF_INET, IGMPV3_ALL_ROUTERS, &to) != 1) {
+			errx(1, "invalid destination");
+		}
+
+		save(outfile, ifaddr, to, &rep, len);
+
+		return 0;
 	}
 
 	sd = socket(AF_INET, SOCK_RAW, IPPROTO_IGMP);

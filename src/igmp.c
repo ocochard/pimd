@@ -56,7 +56,6 @@ in_addr_t allreports_group;	/* All IGMP routers in net order     */
  * Local functions definitions.
  */
 static void igmp_read   (int sd);
-static void accept_igmp (int ifi, ssize_t recvlen);
 
 
 /*
@@ -176,8 +175,12 @@ static void igmp_read(int sd)
 /*
  * Process a newly received IGMP packet that is sitting in the input
  * packet buffer.
+ *
+ * Declared in defs.h rather than static: the fuzz harness of
+ * test/fuzz/fuzz_igmp.c calls this rather than keep a copy of the checks it
+ * makes before the switch, the kernel upcall among them.
  */
-static void accept_igmp(int ifi, ssize_t recvlen)
+void accept_igmp(int ifi, ssize_t recvlen)
 {
     int ipdatalen, iphdrlen, igmpdatalen;
     uint32_t src, dst, group;

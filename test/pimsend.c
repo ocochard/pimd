@@ -72,6 +72,7 @@
  *   -x COUNT   flip COUNT bytes of the message before sending it
  *   -S SEED    what those flips are drawn from, default 1
  *   -b FILE    send the bytes of FILE as the message, verbatim
+ *   -o FILE    write the message to FILE instead of sending it
  *
  * -x is what the fuzz scenario of lab.sh floods a router with.  The message
  * is built as asked, COUNT bytes of its body are flipped, and the checksum
@@ -91,6 +92,17 @@
  * harness found (test/fuzz/), put on the wire as it stands.  Nothing is
  * checksummed and nothing is built; what the file holds is what is sent,
  * which is the only way to replay bytes that came from somewhere else.
+ *
+ * -o is how such a file comes to exist in the first place: the message is
+ * built exactly as it would have been sent, -x and all, and written out
+ * rather than put on the wire.  No socket is opened, so this one needs
+ * neither root nor an interface -- -i has nothing to apply to and is not
+ * required -- and the file it leaves is a seed for the in-process harness
+ * of test/fuzz/fuzz_pim.c, whose input is one PIM message and nothing
+ * else.  The two halves of the round trip are -o and -b: every message
+ * this tool can build is an input that harness can be handed, and every
+ * input that harness crashes on is a message this tool can put on the wire
+ * against a running daemon.
  *
  * Examples, each naming what it is for:
  *
@@ -283,6 +295,21 @@ static size_t load(const char *path, uint8_t *b, size_t size)
 	fclose(fp);
 
 	return len;
+}
+
+static void save(const char *path, const uint8_t *b, size_t len)
+{
+	FILE *fp;
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		err(1, "failed creating %s", path);
+
+	if (len && fwrite(b, 1, len, fp) != len)
+		err(1, "failed writing %s", path);
+
+	if (fclose(fp))
+		err(1, "failed closing %s", path);
 }
 
 static uint8_t *put_byte(uint8_t *p, unsigned val)
@@ -628,7 +655,10 @@ static int usage(int rc)
 		"             seed draws the same packets on any machine\n"
 		"  -b FILE    Send the bytes of FILE as the message, verbatim: no\n"
 		"             header of ours, no checksum, nothing built.  For a\n"
-		"             corpus file or a crasher from test/fuzz/\n");
+		"             corpus file or a crasher from test/fuzz/\n"
+		"  -o FILE    Write the message to FILE instead of sending it, which\n"
+		"             needs no socket, no root and no -i.  For seeding the\n"
+		"             corpus of test/fuzz/fuzz_pim.c\n");
 
 	return rc;
 }
@@ -665,6 +695,7 @@ int main(int argc, char *argv[])
 	struct in_addr ifaddr;
 	const char *dest = PIM_ALL_ROUTERS;
 	const char *rawfile = NULL;
+	const char *outfile = NULL;
 	struct opts o;
 	uint8_t *p;
 	int type, prune = 0;
@@ -713,7 +744,7 @@ int main(int argc, char *argv[])
 	optind++;
 
 	while ((c = getopt(argc, argv,
-			  "0A:Bb:C:c:d:E:e:F:f:g:H:h?i:KM:m:Nnp:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
+			  "0A:Bb:C:c:d:E:e:F:f:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'b': rawfile = optarg;				break;
@@ -735,6 +766,7 @@ int main(int argc, char *argv[])
 		case 'm': o.gmasklen = num(optarg, "group mask length");	break;
 		case 'N': o.null_register = 1;				break;
 		case 'n': o.no_forward = 1;				break;
+		case 'o': outfile = optarg;				break;
 		case 'P': o.pref = num(optarg, "metric preference");	break;
 		case 'p': o.priority = num(optarg, "priority");		break;
 		case 'R': o.rpt = 1;					break;
@@ -768,7 +800,10 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!ifaddr.s_addr)
+	/* -i is the source address of a message going out, which a file has
+	 * no room for: -o needs no interface and no socket to bind to one.
+	 */
+	if (!ifaddr.s_addr && !outfile)
 		return usage(1);
 
 	/* The record fields follow the message-wide ones unless -F or -E
@@ -817,6 +852,21 @@ int main(int argc, char *argv[])
 	 * built, not to the one before it, so -c sends mutants of one
 	 * message rather than a message that decays */
 	memcpy(orig, buf, len);
+
+	/* Written rather than sent, mutants included: one draw of the flips,
+	 * since a file holds one message and -c has nothing to repeat into.
+	 */
+	if (outfile) {
+		if (mutate) {
+			flip(buf, len, mutate, &seed);
+			if (!rawfile)
+				setsum(buf, len, type, &o);
+		}
+
+		save(outfile, buf, len);
+
+		return 0;
+	}
 
 	sd = socket(AF_INET, SOCK_RAW, IPPROTO_PIM);
 	if (sd < 0)

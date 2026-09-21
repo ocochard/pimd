@@ -71,13 +71,15 @@
  *               -fsanitize=address,undefined"			\
  *       LDFLAGS="-fsanitize=address,undefined"
  *   make
- *   test/fuzz/fuzz_config -max_len=4096 test/fuzz/corpus/config
+ *   mkdir work
+ *   test/fuzz_config -max_len=4096 work test/fuzz/corpus/config
  *
- * The corpus directory is both the seed and where libFuzzer writes what it
- * finds interesting; commit what it adds.  A crash leaves its input in
+ * The scratch directory first: libFuzzer writes what it keeps into the first
+ * corpus directory it is given, and the committed one holds seeds and
+ * crashers rather than a hunt's output.  A crash leaves its input in
  * crash-<sha1>, and
  *
- *   test/fuzz/fuzz_config_replay crash-<sha1>
+ *   test/fuzz_config_replay crash-<sha1>
  *
  * replays that one file through the same code with no fuzzer involved,
  * which is also how `make check` runs the whole corpus as a regression
@@ -164,6 +166,29 @@ static void fuzz_vifs_reset(void)
 	numvifs = 3;
 }
 
+/*
+ * The static RP list, which every rp-address line in the file appends to
+ * and only del_static_rp() in main.c ever frees -- and which grows by an
+ * entry per input even for a file that configures nothing, since
+ * config_vifs_from_file() synthesizes one for each SSM range in effect.
+ * Measured over 600k inputs before this was here and after: peak RSS grew
+ * 39MB, and grows 12MB now, which is the corpus libFuzzer keeps rather than
+ * anything of the parser's.  What the difference bought is a long hunt that
+ * ends when it is told to instead of at libFuzzer's own RSS limit, reporting
+ * an out-of-memory where nothing had leaked.
+ */
+static void fuzz_static_rp_reset(void)
+{
+	struct rp_hold *rph, *next;
+
+	for (rph = g_rp_hold; rph; rph = next) {
+		next = rph->next;
+		free(rph);
+	}
+
+	g_rp_hold = NULL;
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
 	const char *tmp;
@@ -218,6 +243,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	/* Not only for tidiness: what the parse allocated has to go before
 	 * the next call, or a leak reads as unbounded growth */
 	fuzz_vifs_reset();
+	fuzz_static_rp_reset();
 
 	return 0;
 }

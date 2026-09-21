@@ -55,7 +55,6 @@ static uint16_t ip_id = 0;
  * Local function definitions.
  */
 static void pim_read   (int sd);
-static void accept_pim (ssize_t recvlen);
 static int  send_frame (char *buf, size_t len, size_t frag, size_t mtu, struct sockaddr *dst, size_t salen);
 
 /*
@@ -199,7 +198,10 @@ static int pim_dst_ok(int type, uint32_t dst)
     }
 }
 
-static void accept_pim(ssize_t recvlen)
+/* Declared in defs.h: the fuzz harness of test/fuzz/fuzz_pim.c calls this
+ * rather than copy the checks it makes before the switch.
+ */
+void accept_pim(ssize_t recvlen)
 {
     uint32_t src, dst;
     struct ip *ip;

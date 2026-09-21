@@ -8,12 +8,29 @@ header comment of its own file; this is the map.
 | Harness            | Entry point                                          | Corpus              |
 |--------------------|------------------------------------------------------|---------------------|
 | `fuzz_config.c`    | `config_phyints_from_file()`, `config_vifs_from_file()` | `corpus/config/` |
+| `fuzz_pim.c`       | `accept_pim()`, so every `receive_pim_*()` behind it  | `corpus/pim/`       |
+| `fuzz_igmp.c`      | `accept_igmp()`: IGMP, mtrace, and the kernel upcalls | `corpus/igmp/`      |
 
 `stubs.c` supplies what `main.c` would have defined, since a harness brings
 its own `main()`, and `replay.c` is a `main()` of its own for builds without
 libFuzzer: it hands every file it is given to the harness once, which is how
 `make check` turns the corpus into a regression test through
 `../fuzz-corpus.sh`.
+
+`router.c`, `topology.h` and `mrib.c` are the router the packets arrive at,
+shared by `fuzz_pim` and `fuzz_igmp` and by whatever harness comes after
+them: two interfaces, three neighbours, a DR election this router wins on one
+link and loses on the other, an RP set with one range of its own and one a
+neighbour is the RP for, a (\*,G) and an (S,G).  `router.c`'s header says
+which part of the daemon each piece stands in for; `mrib.c` defines
+`k_req_incoming()` itself, which is why neither `netlink.c` nor
+`routesock.c` is linked into those harnesses and why an input gets the same
+answer on every machine.
+
+None of that is decoration.  A parser reached with nothing behind it turns
+back within a few lines: the state is what makes the rest of the function
+exist, and getting it wrong shows up as a coverage number rather than as a
+failure.  The `INITED` line of a hunt is the measurement -- see below.
 
 Building and running
 --------------------
@@ -24,22 +41,30 @@ Building and running
             -fsanitize=address,undefined"				\
     LDFLAGS="-fsanitize=address,undefined"
 make
-test/fuzz_config -max_len=4096 test/fuzz/corpus/config		# hunt
-make check							# replay
+mkdir work
+test/fuzz_config -max_len=4096 work test/fuzz/corpus/config	# hunt
+test/fuzz_pim -max_len=512 work test/fuzz/corpus/pim		# hunt
+test/fuzz_igmp -max_len=512 work test/fuzz/corpus/igmp		# hunt
+make check							# replay all three
 ```
+
+The scratch directory comes first on purpose: libFuzzer writes every new unit
+it keeps into the *first* corpus directory it is given, so naming
+`test/fuzz/corpus/...` alone drops hundreds of files into the source tree.
 
 `--enable-fuzz` implies `--disable-exit-on-error`, because `logit(LOG_ERR)`
 calls `exit(-1)` and a fuzzer reads that as a crash on the first input pimd
 merely refuses. It also implies `--enable-test`, test/ being where this
-lives. Without clang only the replay driver is built; `configure` says which
-in its summary.
+lives. Without clang only the replay drivers are built; `configure` says
+which in its summary.
 
-A find leaves `crash-<sha1>` in the working directory. Replay it with
-`test/fuzz_config_replay crash-<sha1>`, fix the bug, then commit the file
-into `corpus/config/` so it is asserted from then on. Crashers are what this
+A find leaves `crash-<sha1>` in the working directory. Replay it with the
+matching `_replay` driver -- `test/fuzz_igmp_replay crash-<sha1>` and its
+kind -- fix the bug, then commit the file into the matching `corpus/`
+directory so it is asserted from then on. Crashers are what this
 directory is for; a hunt's own corpus is not committed, and does not need to
-be. The seeds here are the readable ones, one per shape of configuration, and
-a full corpus rebuilds from them fast:
+be. The seeds here are the readable ones, one per shape of input, and a full
+corpus rebuilds from them fast:
 
 ```sh
 test/fuzz_config -max_len=4096 -max_total_time=900 work/          # a hunt
@@ -49,8 +74,139 @@ test/fuzz_config -merge=1 -max_len=4096 minimized/ work/          # the useful p
 Measured on this tree: fifteen minutes of one process reached 743 edges of
 `config.c`, and `-merge=1` reduced what it kept to 175 files of 88K. Keep
 that outside the repository unless something in it is worth asserting.
+`fuzz_pim` runs at some ten thousand executions a second under
+`-fsanitize=address,undefined` and `fuzz_igmp` at seven and a half, the
+difference being what a membership report sets in motion (measured over
+60k runs each, poisoning included -- it costs nothing worth naming). Their committed seeds reach 2651
+and 2828 edges on their own -- libFuzzer prints that as the `INITED` line,
+and it is the positive control for a corpus and for the router behind it: a
+harness whose state is wrong, or a seed refused before it is parsed, shows up
+as a number well below that and as nothing else. A minute of mutation from
+them reaches about 3650 and 3700, a quarter of an hour on four workers 3865.
+Most of that is the protocol code; the rest is the `config.c` the per-input
+reset parses again and the routing table underneath.
+
+The PIM corpus
+--------------
+
+An input is one PIM message and nothing else, from the PIM header on, which
+is exactly what `pimsend -b FILE` sends and what `pimsend -o FILE` writes.
+So the seeds are made by the tree's own message builder rather than by hand,
+one per message type and per shape worth starting from:
+
+```sh
+test/pimsend hello -o test/fuzz/corpus/pim/hello.bin
+test/pimsend join -w -g 239.1.1.1 -r 10.0.1.1 -u 10.0.1.1 -o test/fuzz/corpus/pim/join-wc.bin
+test/pimsend register -N -g 239.1.1.1 -s 10.0.1.9 -o test/fuzz/corpus/pim/register-null.bin
+test/pimsend bootstrap -u 192.0.2.5 -r 192.0.2.5 -p 200 -g 224.0.0.0 -m 4	\
+    -o test/fuzz/corpus/pim/bootstrap.bin
+```
+
+The round trip closes the other way, a crasher put on the wire against a
+running daemon in a lab:
+
+```sh
+test/pimsend -i 10.0.1.2 hello -b crash-<sha1>
+```
+
+The addresses to build a seed with are `topology.h`'s: this router and the RP
+of 224.0.0.0/4 are 10.0.1.1, the senders 10.0.1.2, 10.0.1.3 and 10.0.2.2, the
+source 10.0.1.9, and there are two groups -- 239.1.1.1, whose RP is this
+router, and 239.2.3.4, whose RP is the neighbour 10.0.1.2, so that both
+answers to "am I the RP for this" have a group to be asked about. A message
+about anything else is still a useful input -- it is just one the fuzzer has
+to work harder from.
+
+A seed is worth checking rather than assuming, and the Bootstrap is why.
+Built with the default priority and a BSR on one of the harness's own
+subnets it is refused twice over: this router is a BSR candidate of priority
+5 and wins the election, and a directly connected BSR fails the RPF check
+that the message came from the next hop towards it. The parser is reached
+and nothing behind it is. Priority 200 and an address the MRIB routes
+through a neighbor is a seed the fuzzer can work from, which is what the
+`FUZZ_DEBUG=1` run below is for.
+
+Nothing in an input picks the sender except the Reserved byte, which pimd
+ignores: its low two bits choose between the four senders and the next bit
+sends a Bootstrap to this router rather than to ALL-PIM-ROUTERS. The top bit
+of that byte is the one thing in it pimd does read, RFC 5059's No-Forward,
+and the harness leaves it alone. The harness's header comment says why it
+borrows the byte at all, and what that costs.
+
+The IGMP corpus
+---------------
+
+An input is one IP packet, from the IP header on, because that is what the
+daemon is handed and what `accept_igmp()` reads: the protocol byte tells an
+IGMP message from a kernel upcall, and the header length says where the IGMP
+header begins. `igmpv3 -o FILE` writes packets of that shape, header and
+all, so the report seeds are built by the tree's own builder:
+
+```sh
+test/igmpv3 -i 10.0.1.2 -g 239.1.1.1 -t allow -o test/fuzz/corpus/igmp/report-v3-allow.bin 10.0.1.9
+test/igmpv3 -i 10.0.1.2 -g 239.1.1.1 -v 2 -o test/fuzz/corpus/igmp/report-v2.bin
+```
+
+`-o` has to come before the positional sources, `getopt()` stopping at the
+first of them.
+
+The other seeds are not reports and no tool in the tree builds them, so they
+are committed as the bytes they are. Queries, the leave and the mtrace query
+are an IP header and then the IGMP one -- type, code, checksum, group -- with
+a v3 query carrying four more bytes (S/QRV, QQIC, source count) and the
+mtrace query sixteen, a `struct tr_query` of source, destination, response
+address and a word holding the response TTL and the query id.
+
+The three upcall seeds are the interesting ones. A kernel upcall reaches the
+daemon on this same socket with an IP protocol of **zero**, and the twenty
+bytes it carries are a `struct igmpmsg`, laid out the same on Linux and on
+FreeBSD: two unused words, then the message type at offset 8, a zero, the vif
+index at offset 10, its high byte, then the source at 12 and the group at 16.
+Type 1 is IGMPMSG_NOCACHE, 2 is IGMPMSG_WRONGVIF and 3 is IGMPMSG_WHOLEPKT,
+which carries the packet itself behind the header for the RP to encapsulate.
+V5 and V6 of `doc/rfc7761-compliance.md` were both on that path, and it is the
+one place a harness gets to say something the kernel never would.
+
+Did it reach a parser?
+----------------------
+
+`FUZZ_DEBUG=1` in the environment turns the daemon's own logging back on,
+which is the only way to tell a harness whose state is right from one that
+refuses every message at the first test -- both are silent and fast and
+neither crashes:
+
+```sh
+FUZZ_DEBUG=1 test/fuzz_pim_replay test/fuzz/corpus/pim/join-sg.bin
+FUZZ_DEBUG=1 test/fuzz_igmp_replay test/fuzz/corpus/igmp/upcall-wholepkt.bin
+```
+
+should show the prologue building neighbours, a DR and an RP set, and then
+the input being parsed and acted on -- the second one all the way to a
+Register this router builds for a group a neighbour is the RP of, and tries
+to send. Run it over every seed after touching anything in `router.c`,
+`mrib.c` or `topology.h`: a change there can leave a seed reaching its parser
+and nothing beyond, which no test reports.
+
+The end of the packet is a boundary
+----------------------------------
+
+Both receive buffers are 128K and a packet is a few dozen bytes at the front
+of one, so a parser that reads past the message it was handed reads stale
+bytes of the same allocation and ASan sees nothing wrong. That is exactly the
+bug V5 of `doc/rfc7761-compliance.md` was -- a kernel upcall read for more
+than had been delivered -- and it would have been invisible to a hunt of any
+length. So `router.c` poisons the rest of the buffer after each copy
+(`__asan_poison_memory_region()`), which turns an over-read into a
+use-after-poison report naming the function that did it. Nothing in the
+daemon writes into either receive buffer, and `inet_cksum()` mops up an odd
+trailing byte one byte at a time, so there is nothing legitimate to trip
+over; without ASan the poisoning compiles to nothing.
 
 Leak checking is off by default (`ASAN_OPTIONS=detect_leaks=1` asks for it,
 Linux only). The harnesses free what a parse allocates, but pimd itself
 keeps some of its configuration until exit, so a leak report needs reading
-rather than believing.
+rather than believing. What a harness must not do is grow per input: the
+state a message makes has to go back before the next one, or a hunt ends at
+libFuzzer's RSS limit reporting an out-of-memory where nothing leaked.
+Measure that rather than assume it -- run with `-runs=N` and `-runs=4N` and
+compare `peak_rss_mb` under `-print_final_stats=1`.

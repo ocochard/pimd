@@ -71,6 +71,79 @@ issue of this repository is written out in full.
   objects carry the coverage instrumentation: with it a run reaches 730
   edges of `config.c`, without it 7, at the same speed and looking just as
   healthy
+- New `fuzz_pim` harness, the wire parsers in process: libFuzzer hands one
+  PIM message to `accept_pim()` and so to whichever `receive_pim_*()` it
+  dispatches to, some ten thousand times a second under
+  `-fsanitize=address,undefined`, on a router the harness builds first --
+  two interfaces, three neighbours, a DR, an RP set, a BSR candidacy, a
+  (\*,G) and an (S,G) -- and tears down again between inputs.  This is where
+  the assert bug of `receive_pim_assert()` and V1's unbounded
+  `receive_pim_register_stop()` parse were: the only things that put wrong
+  messages in front of those parsers before this were the `crafted`
+  scenario, one named field at a time, and the `fuzz` scenario, five hundred
+  mutants per type over a real network with jails, root and a kernel.  Its
+  input is one message and nothing else, byte for byte what `pimsend -o`
+  writes and `pimsend -b` sends, so a crasher goes on the wire against a
+  live daemon and a mutant that killed one in a lab becomes a corpus entry.
+  The RPF lookups are answered by a small fixed routing table of the
+  harness's own (`test/fuzz/mrib.c` defines `k_req_incoming()`, so neither
+  `netlink.c` nor `routesock.c` is linked), which is what keeps an input's
+  answer the same on every machine.  `make check` replays `corpus/pim/`
+  through `fuzz_pim_replay` the way it already did the config corpus, and
+  `FUZZ_DEBUG=1` puts the daemon's logging back for the one question a
+  silent harness cannot answer: whether the message reached a parser at all
+- New `fuzz_igmp` harness, the other socket: one IP packet to `accept_igmp()`
+  and so to IGMP itself (`igmp_proto.c`, where the v3 report's record and
+  source counts are the sender's to choose and `IGMP_MAX_SOURCES` is enforced
+  in the middle of the walk), to mtrace (`trace.c`, where the copy bound of
+  `0e7e7bc` was), and to the kernel upcall path of `route.c` -- which is the
+  one worth having.  An upcall arrives on that socket with an IP protocol of
+  zero and is read as a `struct igmpmsg`; V5 and V6 of
+  `doc/rfc7761-compliance.md` were both there, an upcall read for more than
+  had been delivered and a vif index out of one used to subscript `uvifs[]`
+  unbounded, and both were found by reading rather than by running anything.
+  The input is the IP packet rather than the message, since the protocol byte
+  and the header length are what accept_igmp() reads first and synthesizing
+  them would put the upcall path out of reach; `igmpv3 -o` writes seeds of
+  that shape and the three upcall seeds are committed as the bytes they are
+- The router the two message harnesses run their parsers inside is shared
+  now, in `test/fuzz/router.c`: two interfaces, three neighbours, a DR
+  election this router wins on one link and loses on the other, an RP set
+  with one range of its own and one a neighbour is the RP for, a (\*,G) and an
+  (S,G), built per input through the daemon's own receive path and torn down
+  again.  Both halves of that are load bearing and were measured rather than
+  assumed: with every neighbour at the default DR priority this router lost
+  both elections, which left `send_pim_register()` and the register side of
+  `process_cache_miss()` unreachable, and with only its own RP range every
+  Register was refused before the state it would create.  The `INITED` line
+  of a hunt is where that shows -- 2651 edges from the PIM seeds and 2828 from
+  the IGMP ones, before a single mutation
+- The fuzz harnesses poison the receive buffer past the end of each packet
+  under ASan, so that a parser reading past the message it was handed is a
+  use-after-poison report rather than a read of stale bytes in the same 128K
+  allocation.  V5 above is that bug, and no hunt of any length would have
+  seen it otherwise
+- `igmpv3` takes `-o FILE`, which writes the packet it would have sent, IP
+  header and all, instead of sending it: no socket, no root, and a seed for
+  `fuzz_igmp` built by the same code that builds what goes on the wire
+- `accept_igmp()` is no longer `static`, for the reason `accept_pim()` is not:
+  it is where the daemon decides whether a packet is a message or a kernel
+  upcall, and a harness that copied that decision would keep a copy of it
+- `accept_pim()` is no longer `static`.  It is the one entry point that does
+  what `src/pim.c` guarantees a parser -- the IP header bounds, the version,
+  the destination table of RFC 7761 sec. 4.9 -- and the harness calls it
+  rather than carrying a copy of those checks that would fall out of step
+- `pimsend` takes `-o FILE`, which writes the message it would have sent
+  instead of sending it.  No socket, so no root and no `-i` either, and `-x`
+  applies first: a corpus seed, or a mutant, built by the same code that
+  builds what goes on the wire
+- `fuzz_config` no longer grows by an entry of the static RP list per input.
+  Every `rp-address` line appends to `g_rp_hold`, which only
+  `del_static_rp()` in `main.c` frees, and `config_vifs_from_file()`
+  synthesizes one for each SSM range in effect, so every input added one
+  whatever the file said: peak RSS grew 39MB over 600k inputs, and a long
+  hunt ended at libFuzzer's own RSS limit reporting an out-of-memory where
+  nothing had leaked
 - `src/` builds everything but `main.c` into a static convenience library,
   `libpimd.a`, and `pimd` links that plus `main.c`.  The binary is the same;
   what this buys is a harness in another directory linking the daemon's own

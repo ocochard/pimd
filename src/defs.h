@@ -508,6 +508,13 @@ extern void	dvmrp_accept_g_ack	(uint32_t src, uint32_t dst, uint8_t *p, int data
 
 /* igmp.c */
 extern void	init_igmp		(void);
+/* The dispatcher, and the one entry point of the daemon a fuzz harness can
+ * hand an IGMP packet to -- or a kernel upcall, which arrives on the same
+ * socket and is told apart by an IP protocol of zero.  igmp_read() has no
+ * other caller, and reproducing what this does before the switch in
+ * test/fuzz/fuzz_igmp.c would be a copy to keep in step with this one.
+ */
+extern void	accept_igmp		(int ifi, ssize_t recvlen);
 extern void	send_igmp		(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32_t group, int datalen);
 
 /* igmp_proto.c */
@@ -574,6 +581,13 @@ extern void	delete_single_kernel_cache_addr (mrtentry_t *mrtentry_ptr, uint32_t 
 extern void	add_kernel_cache	(mrtentry_t *mrtentry_ptr, uint32_t source, uint32_t group, uint16_t flags);
 /* pim.c */
 extern void	init_pim		(void);
+/* The dispatcher, and the one entry point of the daemon a fuzz harness can
+ * hand a PIM message to: pim_read() has no other caller, and reproducing
+ * what this does before the switch -- the header bounds, the version test,
+ * the destination table of RFC 7761 sec. 4.9 -- in test/fuzz/fuzz_pim.c
+ * would be a copy to keep in step with this one.  Nothing else calls it.
+ */
+extern void	accept_pim		(ssize_t recvlen);
 extern void	send_pim		(char *buf, uint32_t src, uint32_t dst, int type, size_t len);
 extern void	send_pim_unicast	(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src, uint32_t dst, int type, size_t len);
 

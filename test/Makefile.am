@@ -26,6 +26,32 @@ EXTRA_DIST        += fuzz/corpus/config/minimal.conf		\
 		     fuzz/corpus/config/anycast-rp.conf		\
 		     fuzz/corpus/config/limits.conf		\
 		     fuzz/corpus/config/ssm-acl.conf
+EXTRA_DIST        += fuzz/corpus/pim/hello.bin			\
+		     fuzz/corpus/pim/hello-addrlist.bin		\
+		     fuzz/corpus/pim/join-wc.bin		\
+		     fuzz/corpus/pim/join-sg.bin		\
+		     fuzz/corpus/pim/prune-sg-rpt.bin		\
+		     fuzz/corpus/pim/assert.bin			\
+		     fuzz/corpus/pim/assert-rpt.bin		\
+		     fuzz/corpus/pim/bootstrap.bin		\
+		     fuzz/corpus/pim/bootstrap-noforward.bin	\
+		     fuzz/corpus/pim/candrp.bin			\
+		     fuzz/corpus/pim/register.bin		\
+		     fuzz/corpus/pim/register-null.bin		\
+		     fuzz/corpus/pim/regstop.bin
+EXTRA_DIST        += fuzz/corpus/igmp/query-v2.bin		\
+		     fuzz/corpus/igmp/query-v3.bin		\
+		     fuzz/corpus/igmp/report-v2.bin		\
+		     fuzz/corpus/igmp/leave-v2.bin		\
+		     fuzz/corpus/igmp/report-v3-allow.bin	\
+		     fuzz/corpus/igmp/report-v3-is-ex.bin	\
+		     fuzz/corpus/igmp/report-v3-to-in.bin	\
+		     fuzz/corpus/igmp/report-v3-many.bin	\
+		     fuzz/corpus/igmp/report-v3-ssm.bin		\
+		     fuzz/corpus/igmp/mtrace.bin		\
+		     fuzz/corpus/igmp/upcall-nocache.bin	\
+		     fuzz/corpus/igmp/upcall-wrongvif.bin	\
+		     fuzz/corpus/igmp/upcall-wholepkt.bin
 
 # The fuzz harnesses, --enable-fuzz.  Two programs out of one harness: the
 # replay driver, which needs no fuzzer and is what `make check` runs over
@@ -39,6 +65,22 @@ noinst_PROGRAMS   += fuzz_config_replay
 fuzz_config_replay_SOURCES = fuzz/fuzz_config.c fuzz/stubs.c fuzz/replay.c
 fuzz_config_replay_LDADD   = $(FUZZ_LDADD)
 
+# The PIM parsers.  fuzz/mrib.c defines k_req_incoming(), so neither
+# netlink.c nor routesock.c is pulled out of libpimd.a and an RPF lookup
+# answers the same on every machine; see its header.
+FUZZ_ROUTER        = fuzz/router.c fuzz/router.h fuzz/mrib.c	\
+		     fuzz/topology.h fuzz/stubs.c
+
+noinst_PROGRAMS   += fuzz_pim_replay
+fuzz_pim_replay_SOURCES = fuzz/fuzz_pim.c $(FUZZ_ROUTER) fuzz/replay.c
+fuzz_pim_replay_LDADD   = $(FUZZ_LDADD)
+
+# The IGMP socket: igmp_proto.c, trace.c, and the kernel upcall path of
+# route.c, which arrives on the same socket with an IP protocol of zero.
+noinst_PROGRAMS   += fuzz_igmp_replay
+fuzz_igmp_replay_SOURCES = fuzz/fuzz_igmp.c $(FUZZ_ROUTER) fuzz/replay.c
+fuzz_igmp_replay_LDADD   = $(FUZZ_LDADD)
+
 # The one test in TESTS, and only in a fuzz build: everything else here
 # wants root and namespaces (see above), while replaying a corpus wants
 # nothing at all.
@@ -50,6 +92,18 @@ fuzz_config_SOURCES = fuzz/fuzz_config.c fuzz/stubs.c
 fuzz_config_CFLAGS  = $(AM_CFLAGS) -fsanitize=fuzzer
 fuzz_config_LDFLAGS = $(AM_LDFLAGS) -fsanitize=fuzzer
 fuzz_config_LDADD   = $(FUZZ_LDADD)
+
+noinst_PROGRAMS   += fuzz_pim
+fuzz_pim_SOURCES    = fuzz/fuzz_pim.c $(FUZZ_ROUTER)
+fuzz_pim_CFLAGS     = $(AM_CFLAGS) -fsanitize=fuzzer
+fuzz_pim_LDFLAGS    = $(AM_LDFLAGS) -fsanitize=fuzzer
+fuzz_pim_LDADD      = $(FUZZ_LDADD)
+
+noinst_PROGRAMS   += fuzz_igmp
+fuzz_igmp_SOURCES   = fuzz/fuzz_igmp.c $(FUZZ_ROUTER)
+fuzz_igmp_CFLAGS    = $(AM_CFLAGS) -fsanitize=fuzzer
+fuzz_igmp_LDFLAGS   = $(AM_LDFLAGS) -fsanitize=fuzzer
+fuzz_igmp_LDADD     = $(FUZZ_LDADD)
 endif
 endif
 
