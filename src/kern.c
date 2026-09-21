@@ -61,29 +61,131 @@ int curttl = 0;
  * Open/init the multicast routing in the kernel and sets the
  * MRT_PIM (aka MRT_ASSERT) flag in the kernel.
  */
-void k_init_pim(int socket)
+/*
+ * The calls the kernel asks root for, with the struct building and the
+ * logging left to the k_*() below: these are what the privileged parent of
+ * src/privsep.c runs on behalf of an unprivileged child, and what the
+ * k_*() call directly when pimd was not separated.  They report through
+ * errno rather than through logit(), the parent having nobody to log to
+ * but the child it is answering, and the ones with several steps answer
+ * with the step that failed so that the caller can keep the message it
+ * always printed for it.
+ */
+int kern_mrt_init(int sd)
 {
     int v = 1;
 
 #ifdef MRT_TABLE /* Currently only available on Linux  */
     if (mrt_table_id != 0) {
-        logit(LOG_INFO, 0, "Initializing multicast routing table id %u", mrt_table_id);
-        if (setsockopt(socket, IPPROTO_IP, MRT_TABLE, &mrt_table_id, sizeof(mrt_table_id)) < 0) {
-            logit(LOG_WARNING, errno, "Cannot set multicast routing table id");
-	    logit(LOG_ERR, 0, "Make sure your kernel has CONFIG_IP_MROUTE_MULTIPLE_TABLES=y");
-	}
+	if (setsockopt(sd, IPPROTO_IP, MRT_TABLE, &mrt_table_id, sizeof(mrt_table_id)) < 0)
+	    return KERN_STEP_TABLE;
     }
 #endif
 
-    if (setsockopt(socket, IPPROTO_IP, MRT_INIT, (char *)&v, sizeof(int)) < 0) {
+    if (setsockopt(sd, IPPROTO_IP, MRT_INIT, (char *)&v, sizeof(int)) < 0)
+	return KERN_STEP_INIT;
+
+    if (setsockopt(sd, IPPROTO_IP, MRT_PIM, (char *)&v, sizeof(int)) < 0)
+	return KERN_STEP_PIM;
+
+    return 0;
+}
+
+int kern_mrt_done(int sd)
+{
+    int v = 0;
+
+    if (setsockopt(sd, IPPROTO_IP, MRT_PIM, (char *)&v, sizeof(int)) < 0)
+	return KERN_STEP_PIM;
+
+    if (setsockopt(sd, IPPROTO_IP, MRT_DONE, (char *)NULL, 0) < 0)
+	return KERN_STEP_INIT;
+
+    return 0;
+}
+
+int kern_add_vif(int sd, struct vifctl *vc)
+{
+    return setsockopt(sd, IPPROTO_IP, MRT_ADD_VIF, (char *)vc, sizeof(*vc));
+}
+
+int kern_del_vif(int sd, vifi_t vifi, struct vifctl *vc)
+{
+    /*
+     * Unfortunately Linux MRT_DEL_VIF API differs a bit from the *BSD one.
+     * It expects to receive a pointer to struct vifctl that corresponds to
+     * the VIF we're going to delete.  *BSD systems on the other hand expect
+     * only the index of that VIF.
+     */
+#ifdef __linux__
+    (void)vifi;
+    return setsockopt(sd, IPPROTO_IP, MRT_DEL_VIF, (char *)vc, sizeof(*vc));
+#else
+    (void)vc;
+    return setsockopt(sd, IPPROTO_IP, MRT_DEL_VIF, (char *)&vifi, sizeof(vifi));
+#endif
+}
+
+int kern_chg_mfc(int sd, struct mfcctl *mc)
+{
+    return setsockopt(sd, IPPROTO_IP, MRT_ADD_MFC, (char *)mc, sizeof(*mc));
+}
+
+int kern_del_mfc(int sd, struct mfcctl *mc)
+{
+    return setsockopt(sd, IPPROTO_IP, MRT_DEL_MFC, (char *)mc, sizeof(*mc));
+}
+
+int kern_vif_cnt(int sd, struct sioc_vif_req *vreq)
+{
+    return ioctl(sd, SIOCGETVIFCNT, (char *)vreq);
+}
+
+int kern_sg_cnt(int sd, struct sioc_sg_req *sgreq)
+{
+    /* XXX: ipmulti-3.5 has a bug in ip_mroute.c, get_sg_cnt(): the return
+     * code is always 0, so this is why we need to check wrong_if too. */
+    if (ioctl(sd, SIOCGETSGCNT, (char *)sgreq) < 0 || sgreq->wrong_if == 0xffffffff)
+	return -1;
+
+    return 0;
+}
+
+
+void k_init_pim(int socket)
+{
+    int step;
+
+#ifdef MRT_TABLE /* Currently only available on Linux  */
+    if (mrt_table_id != 0)
+	logit(LOG_INFO, 0, "Initializing multicast routing table id %u", mrt_table_id);
+#endif
+
+    if (priv_enabled())
+	step = priv_mrt_init();
+    else
+	step = kern_mrt_init(socket);
+
+    switch (step) {
+    case 0:
+	break;
+
+    case KERN_STEP_TABLE:
+	logit(LOG_WARNING, errno, "Cannot set multicast routing table id");
+	logit(LOG_ERR, 0, "Make sure your kernel has CONFIG_IP_MROUTE_MULTIPLE_TABLES=y");
+	break;
+
+    case KERN_STEP_INIT:
 	if (errno == EADDRINUSE)
 	    logit(LOG_ERR, 0, "Another multicast routing application is already running.");
 	else
 	    logit(LOG_ERR, errno, "Cannot enable multicast routing in kernel");
-    }
+	break;
 
-    if (setsockopt(socket, IPPROTO_IP, MRT_PIM, (char *)&v, sizeof(int)) < 0)
+    default:
 	logit(LOG_ERR, errno, "Cannot set PIM flag in kernel");
+	break;
+    }
 }
 
 
@@ -93,12 +195,16 @@ void k_init_pim(int socket)
  */
 void k_stop_pim(int socket)
 {
-    int v = 0;
+    int step;
 
-    if (setsockopt(socket, IPPROTO_IP, MRT_PIM, (char *)&v, sizeof(int)) < 0)
+    if (priv_enabled())
+	step = priv_mrt_done();
+    else
+	step = kern_mrt_done(socket);
+
+    if (step == KERN_STEP_PIM)
 	logit(LOG_ERR, errno, "Cannot reset PIM flag in kernel");
-
-    if (setsockopt(socket, IPPROTO_IP, MRT_DONE, (char *)NULL, 0) < 0)
+    else if (step)
 	logit(LOG_ERR, errno, "Cannot disable multicast routing in kernel");
 }
 
@@ -424,10 +530,17 @@ static void uvif_to_vifctl(struct vifctl *vc, struct uvif *v)
 void k_add_vif(int socket, vifi_t vifi, struct uvif *v)
 {
     struct vifctl vc;
+    int rc;
 
     vc.vifc_vifi = vifi;
     uvif_to_vifctl(&vc, v);
-    if (setsockopt(socket, IPPROTO_IP, MRT_ADD_VIF, (char *)&vc, sizeof(vc)) < 0)
+
+    if (priv_enabled())
+	rc = priv_add_vif(&vc);
+    else
+	rc = kern_add_vif(socket, &vc);
+
+    if (rc < 0)
 	logit(LOG_ERR, errno, "Failed adding VIF %d (MRT_ADD_VIF) for iface %s",
 	      vifi, v->uv_name);
 }
@@ -436,25 +549,25 @@ void k_add_vif(int socket, vifi_t vifi, struct uvif *v)
 /*
  * Delete a virtual interface in the kernel.
  */
-void k_del_vif(int socket, vifi_t vifi, struct uvif *v __attribute__((unused)))
+void k_del_vif(int socket, vifi_t vifi, struct uvif *v)
 {
-    /*
-     * Unfortunately Linux MRT_DEL_VIF API differs a bit from the *BSD one.  It
-     * expects to receive a pointer to struct vifctl that corresponds to the VIF
-     * we're going to delete.  *BSD systems on the other hand exepect only the
-     * index of that VIF.
-     */
-#ifdef __linux__
     struct vifctl vc;
+    int rc;
 
+    /* Which half of this the kernel reads is kern_del_vif()'s business;
+     * the vifctl is built either way, since it is what crosses to the
+     * privileged half and both systems are served by one message. */
+    memset(&vc, 0, sizeof(vc));
     vc.vifc_vifi = vifi;
-    uvif_to_vifctl(&vc, v);	       /* 'v' is used only on Linux systems. */
+    if (v)
+	uvif_to_vifctl(&vc, v);
 
-    if (setsockopt(socket, IPPROTO_IP, MRT_DEL_VIF, (char *)&vc, sizeof(vc)) < 0)
-#else /* *BSD et al. */
-    if (setsockopt(socket, IPPROTO_IP, MRT_DEL_VIF, (char *)&vifi, sizeof(vifi)) < 0)
-#endif /* !__linux__ */
-    {
+    if (priv_enabled())
+	rc = priv_del_vif(vifi, &vc);
+    else
+	rc = kern_del_vif(socket, vifi, &vc);
+
+    if (rc < 0) {
 	if (errno == EADDRNOTAVAIL || errno == EINVAL)
 	    return;
 
@@ -474,7 +587,7 @@ int k_del_mfc(int socket, uint32_t source, uint32_t group)
     mc.mfcc_origin.s_addr   = source;
     mc.mfcc_mcastgrp.s_addr = group;
 
-    if (setsockopt(socket, IPPROTO_IP, MRT_DEL_MFC, (char *)&mc, sizeof(mc)) < 0) {
+    if ((priv_enabled() ? priv_del_mfc(&mc) : kern_del_mfc(socket, &mc)) < 0) {
 	logit(LOG_WARNING, errno, "Failed removing MFC entry src %s, grp %s",
 	      inet_fmt(mc.mfcc_origin.s_addr, s1, sizeof(s1)),
 	      inet_fmt(mc.mfcc_mcastgrp.s_addr, s2, sizeof(s2)));
@@ -525,7 +638,7 @@ int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *
 #ifdef PIM_REG_KERNEL_ENCAP
     mc.mfcc_rp_addr.s_addr = rp_addr;
 #endif
-    if (setsockopt(socket, IPPROTO_IP, MRT_ADD_MFC, (char *)&mc, sizeof(mc)) < 0) {
+    if ((priv_enabled() ? priv_chg_mfc(&mc) : kern_chg_mfc(socket, &mc)) < 0) {
 	logit(LOG_WARNING, errno, "Failed adding MFC entry src %s grp %s from %s to %s",
 	      inet_fmt(mc.mfcc_origin.s_addr, s1, sizeof(s1)),
 	      inet_fmt(mc.mfcc_mcastgrp.s_addr, s2, sizeof(s2)),
@@ -553,7 +666,7 @@ int k_get_vif_count(vifi_t vifi, struct vif_count *retval)
 
     memset(&vreq, 0, sizeof(vreq));
     vreq.vifi = vifi;
-    if (ioctl(udp_socket, SIOCGETVIFCNT, (char *)&vreq) < 0) {
+    if ((priv_enabled() ? priv_vif_cnt(&vreq) : kern_vif_cnt(udp_socket, &vreq)) < 0) {
 	logit(LOG_WARNING, errno, "Failed reading kernel packet count (SIOCGETVIFCNT) on vif %d", vifi);
 
 	retval->icount =
@@ -584,11 +697,7 @@ int k_get_sg_cnt(int socket, uint32_t source, uint32_t group, struct sg_count *r
     memset(&sgreq, 0, sizeof(sgreq));
     sgreq.src.s_addr = source;
     sgreq.grp.s_addr = group;
-    if ((ioctl(socket, SIOCGETSGCNT, (char *)&sgreq) < 0) || (sgreq.wrong_if == 0xffffffff)) {
-	/* XXX: ipmulti-3.5 has bug in ip_mroute.c, get_sg_cnt():
-	 * the return code is always 0, so this is why we need to check
-	 * the wrong_if value.
-	 */
+    if ((priv_enabled() ? priv_sg_cnt(&sgreq) : kern_sg_cnt(socket, &sgreq)) < 0) {
 	logit(LOG_WARNING, errno, "Failed reading kernel count (SIOCGETSGCNT) for (S,G) on (%s, %s)",
 	      inet_fmt(source, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)));
 	retval->pktcnt = retval->bytecnt = retval->wrong_if = ~0;

@@ -7,6 +7,63 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- pimd separates its privileges.  It runs as two processes now: a small
+  privileged parent that owns the descriptors and makes the calls the kernel
+  asks root for, and an unprivileged child, running as `_pimd`, that does
+  everything else -- every parser, every timer, every state machine, every
+  byte that arrives off the wire.  A helper process rather than a `setuid()`
+  once everything is open, because the kernel checks the caller on every call
+  and not once on the socket: FreeBSD runs `priv_check(PRIV_NETINET_MROUTE)`
+  in `rip_ctloutput()` for every `MRT_*` setsockopt and in `X_mrt_ioctl()` for
+  `SIOCGETVIFCNT` and `SIOCGETSGCNT`, and Linux checks `CAP_NET_ADMIN` the same
+  way, so a child that dropped root could not add a VIF or change an MFC even
+  holding the mrouter socket it was handed.  On by default; `--no-privsep`
+  gives back the single root process, and `-U USER[:GROUP]` (`--user`) names
+  the user.  `configure --with-privsep-user=NAME` sets the default, and where
+  that user does not exist pimd falls back to `nobody` with a warning rather
+  than refusing to start -- a dedicated user is the better one, `nobody` being
+  shared with whatever else settled for it, but an upgrade must not leave a
+  router down waiting for a packager.  `-p` is still `--pidfile`, and the PID
+  file names the parent, which is the process a SIGHUP has to reach
+- The unprivileged half runs under a seccomp-bpf filter on Linux, an
+  allowlist of the syscalls the event loop makes with
+  `SECCOMP_RET_KILL_PROCESS` for everything else and for any architecture
+  but the one it was built for, and `PR_SET_NO_NEW_PRIVS` beside it.  There
+  is no sandbox on the BSDs: Capsicum was written for this and taken out
+  again, because `kern_sendit()` refuses every `sendto()` that carries a
+  destination address and `kern_connectat()` every `connect()`, so a daemon
+  that sends to neighbours, RPs and a group at a time cannot transmit from
+  inside capability mode at all -- it comes up, answers `pimctl`, and
+  silently sends nothing.  `pimctl show status` says which sandbox is in
+  force, or that there is none
+- The unprivileged half is also confined to an empty directory with
+  `chroot()`, before it stops being root and can no longer do it.  It costs
+  nothing, because by that point there is no path left for it to want: the
+  configuration reaches it as a descriptor the parent opened, the PID file
+  and the pimctl socket belong to the parent, and `syslog(3)` is a message
+  to it.  What it buys is `open(2)` by path taken away from whatever gets
+  into a parser, which on the BSDs -- where the sandbox above cannot be had
+  -- is the only thing that does.  `/var/empty` by default,
+  `configure --with-privsep-chroot=DIR` to move it and
+  `--without-privsep-chroot` to skip it; the directory is created if it is
+  missing and refused if anyone but root may write to it.  A core dump of
+  the unprivileged half goes with it, `--without-privsep-chroot` or
+  `--no-privsep` being how to get one back
+- Every log line is now written by whichever half owns the log: the
+  unprivileged one renders the message and the privileged one puts it where
+  it goes, `log_emit()` in `src/debug.c`.  That is not tidiness.  A
+  chroot'ed process has no `/etc/localtime`, and glibc retries that open on
+  every `localtime()` call rather than giving up once, so the first line
+  logged after the seccomp filter went up -- where `open` is not on the
+  allowlist -- killed the daemon with `SIGSYS`, and it died before it could
+  say so.  One process stamping every line also means one timezone in the
+  log instead of the parent's local time beside the child's UTC.  The
+  message crosses rendered and is logged with `%s`.  It crosses blocking,
+  which is not a preference: a unix `SOCK_SEQPACKET` socket on FreeBSD is
+  not `PR_ATOMIC`, so a non-blocking send may write part of a record, and
+  the next message landing on the fragment puts the two halves permanently
+  out of step.  A slow log can therefore throttle the daemon -- as it
+  already does in a pimd that writes the line itself
 - `configure` probes a set of warning and hardening flags and applies what
   the compiler takes, to every binary and to the `lib/` replacements rather
   than to `pimd` alone as the old `pimd_CFLAGS` did.  The warnings are the

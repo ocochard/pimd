@@ -50,6 +50,24 @@
  * Traceroute function which returns traceroute replies to the requesting
  * router. Also forwards the request to downstream routers.
  */
+/*
+ * The two counter ioctls the kernel asks root for -- FreeBSD checks
+ * PRIV_NETINET_MROUTE in X_mrt_ioctl(), Linux CAP_NET_ADMIN -- so an
+ * unprivileged half has to ask the privileged one for them, the way
+ * kern.c does.  mtrace is the only caller, and answering it with
+ * 0xffffffff where pimd used to answer with a number would be a
+ * regression nothing reports.
+ */
+static int trace_vif_cnt(struct sioc_vif_req *v_req)
+{
+    return priv_enabled() ? priv_vif_cnt(v_req) : kern_vif_cnt(udp_socket, v_req);
+}
+
+static int trace_sg_cnt(struct sioc_sg_req *sg_req)
+{
+    return priv_enabled() ? priv_sg_cnt(sg_req) : kern_sg_cnt(udp_socket, sg_req);
+}
+
 void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int no, int datalen)
 {
     uint8_t type;
@@ -264,7 +282,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
      * obtain # of packets out on interface
      */
     v_req.vifi = vifi;
-    if (vifi != NO_VIF && ioctl(udp_socket, SIOCGETVIFCNT, (char *)&v_req) >= 0)
+    if (vifi != NO_VIF && trace_vif_cnt(&v_req) >= 0)
         resp->tr_vifout  =  htonl(v_req.ocount);
     else
         resp->tr_vifout  =  0xffffffff;
@@ -293,8 +311,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 
         sg_req.src.s_addr = qry->tr_src;
         sg_req.grp.s_addr = group;
-        if (st && st->st_ctime != 0 &&
-            ioctl(udp_socket, SIOCGETSGCNT, (char *)&sg_req) >= 0)
+        if (st && st->st_ctime != 0 && trace_sg_cnt(&sg_req) >= 0)
             resp->tr_pktcnt = htonl(sg_req.pktcnt + st->st_savpkt);
         else
             resp->tr_pktcnt = htonl(st ? st->st_savpkt : 0xffffffff);
@@ -329,7 +346,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     } else {
         /* get # of packets in on interface */
         v_req.vifi = mrt->incoming;
-        if (ioctl(udp_socket, SIOCGETVIFCNT, (char *)&v_req) >= 0)
+        if (trace_vif_cnt(&v_req) >= 0)
             resp->tr_vifin = htonl(v_req.icount);
         else
             resp->tr_vifin = 0xffffffff;

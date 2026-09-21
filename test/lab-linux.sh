@@ -27,6 +27,32 @@ LOOPBACK_IF=lo
 # pim_rcv() (net/ipv4/ipmr.c) decapsulates, so pimd copies data Registers
 REGISTER_UPCALL=whole
 
+# What the unprivileged half of pimd is kept in here, as "pimctl show
+# status" spells it: seccomp-bpf, an allowlist of the syscalls the event
+# loop makes.  See priv_sandbox_enter() in src/privsep.c.
+SANDBOX_NAME=seccomp
+
+# Who a process runs as, what it has forked, and whether the kernel holds
+# it in a sandbox.  A network namespace shares the host's pid namespace, so
+# these need no nsenter -- and asking the kernel is the point: what pimd
+# says about itself in "pimctl show status" is the claim under test, not
+# the evidence for it.
+proc_user() { ps -o user= -p "$1" 2>/dev/null | tr -d " "; }
+
+proc_children() { pgrep -P "$1" 2>/dev/null; }
+
+# Seccomp: 2 is SECCOMP_MODE_FILTER in proc(5).  NoNewPrivs has to hold as
+# well: without it the kernel would not have taken the filter from an
+# unprivileged process in the first place.
+proc_confined() {
+	[ "$(awk '/^Seccomp:/ { print $2 }' /proc/"$1"/status 2>/dev/null)" = 2 ] && \
+	[ "$(awk '/^NoNewPrivs:/ { print $2 }' /proc/"$1"/status 2>/dev/null)" = 1 ]
+}
+
+# /proc/PID/root is a symlink to what the kernel resolves that process's
+# "/" to, which is where a chroot shows up from outside it.
+proc_root() { ${SUDO} readlink /proc/"$1"/root 2>/dev/null; }
+
 backend_check_req() {
 	[ "$NETLINK" = yes ] || \
 		die "pimd on Linux has no routing socket RPF backend, NETLINK=$NETLINK cannot be run"

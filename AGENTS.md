@@ -177,7 +177,7 @@ tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 hardening. `run all` walks its
 scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
-`renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `anycast`, `anycast-dr`); see the script
+`renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `anycast`, `anycast-dr`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -241,7 +241,18 @@ whose kernel hands pimd only the headers of a data Register), which also asserts
 (step 11), and `anycast-dr` the same set moved so that R1 is the RP and the DR of the source at once and
 has to register it to R3 itself, and must not let a member's Register-Stop arm the suppression timer of
 an entry it is not registering (step 9),
-and `register-filter` the only one about who an RP will accept a Register
+`privsep` the only one about the daemon's own two halves rather than about PIM: that the
+process holding root is not the one parsing the wire, that `pimctl show status` and the kernel
+agree on which user, which sandbox (`seccomp` on Linux, `none` on the BSDs -- Capsicum refuses
+every `sendto()` carrying a destination, so pimd cannot use it) and which `chroot()` -- compared
+against what the kernel resolves the child's `/` to, `proc_root()` in the two OS files -- that a
+SIGHUP to the PID file,
+which names the privileged parent, rebuilds every VIF out of descriptors the parent hands back,
+and, as its control, that `--no-privsep` is one root process that forwards just as well.  It is
+on the three router chain and not on `solo` deliberately: a sandbox that forbids sending leaves a
+lone router electing itself BSR and RP, answering `pimctl` and sending nothing, which is exactly
+how the Capsicum attempt passed `solo` and failed everything with a neighbour in it.
+`register-filter` is the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the
 Register-Stop and the DR's Register-Suppression timer rather than by the RP's table, which holds

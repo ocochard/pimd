@@ -888,13 +888,13 @@ SCENARIO=${SCENARIO:-rpt}
 # started in the written order a pool of four spends its last five minutes
 # running keepalive alone with three slots idle, because the longest
 # scenario in the list was picked up last.
-SCENARIOS="rpt solo keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
+SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
 		     rpt register-filter alias crafted static-rp ssm fuzz ifnew ifgone
-		     renumber ssm-range solo"
+		     renumber ssm-range solo privsep"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -1605,7 +1605,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1659,6 +1659,12 @@ set_scenario() {
 	else
 		DEBUG=$DEBUG_DEFAULT
 	fi
+
+	# Extra arguments for every pimd this scenario starts.  Only privsep
+	# sets it, for the --no-privsep control it ends on, and it is put
+	# back here rather than only there because "run all" without -j walks
+	# every scenario in one shell.
+	PIMD_ARGS=
 
 	# gif-tunnel-staticrp copies the issue down to the addresses: the
 	# KNX/IP group its reporters run, and the 224.0.0.0/16 rp-address
@@ -2689,7 +2695,7 @@ start_pimd() {
 
 	# shellcheck disable=SC2086
 	box_daemon "$r" "$WORKDIR/$r.daemon.pid" "$WORKDIR/$r.log" \
-		"$PIMD" -i "$r" -n $DEBUG \
+		"$PIMD" -i "$r" -n $DEBUG $PIMD_ARGS \
 		-f "$WORKDIR/$r.conf" \
 		-p "$WORKDIR/$r.pid" \
 		-u "$WORKDIR/$r.sock"
@@ -3506,6 +3512,7 @@ check() {
 	static-rp)  check_static_rp; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
+	privsep)    check_privsep; return $? ;;
 	esac
 
 	print "1. pimd is alive on every router"
@@ -7874,6 +7881,216 @@ check_sanitizer() {
 	done
 
 	print "RESULT: FAIL ($# sanitizer report(s), whatever the result above says)"
+	return 1
+}
+
+# privsep: the daemon is two processes, and the one that parses the wire is
+# not the one holding root.  On the default chain rather than on solo's
+# single router, and that is the whole lesson of how this landed: a sandbox
+# that forbids *sending* -- which is what Capsicum turned out to be, see
+# priv_sandbox_enter() in src/privsep.c -- leaves a lone router looking
+# perfectly healthy.  It comes up, answers pimctl, elects itself BSR and RP,
+# builds its VIFs, and nothing it sends ever leaves the host.  "run solo"
+# passed like that.  It takes a neighbour to notice, so the split is
+# asserted here and then the whole protocol is run on top of it.
+#
+# The control is step 7: the same chain with r1 unseparated.  Without it
+# every assertion above would pass just as well on a daemon that separated
+# nothing, since "still forwards multicast" is what pimd did before any of
+# this.
+check_privsep() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. It is two processes, and only one of them is root"
+	ps_parent=$(${SUDO} cat "$WORKDIR/r1.pid" 2>/dev/null)
+	if [ -n "$ps_parent" ] && [ "$(proc_user "$ps_parent")" = root ]; then
+		ok "r1: the PID file names $ps_parent, and it runs as root"
+	else
+		fail "r1: the PID file names '$ps_parent', running as '$(proc_user "$ps_parent")', expected a root process"
+		return 1
+	fi
+
+	ps_child=$(proc_children "$ps_parent" | head -1)
+	ps_user=$(proc_user "$ps_child")
+	if [ -n "$ps_child" ] && [ -n "$ps_user" ] && [ "$ps_user" != root ]; then
+		ok "r1: it forked $ps_child, which runs as $ps_user and not as root"
+	else
+		fail "r1: the root process forked '$ps_child' running as '$ps_user', expected an unprivileged child"
+		return 1
+	fi
+
+	# The PID file has to name the half a SIGHUP can act on.  Step 6 sends
+	# one; this is what makes that meaningful rather than lucky.
+	if [ "$ps_child" != "$ps_parent" ]; then
+		ok "r1: the PID file names the privileged half, which is the one signals must reach"
+	else
+		fail "r1: the PID file names the unprivileged child, a SIGHUP would not reach the sockets"
+	fi
+
+	print "3. pimd says the same about itself, and names this system's sandbox"
+	got=$(pimctl r1 show status | sed -n 's/^Privilege separation *: *//p')
+	want="$ps_user, sandbox $SANDBOX_NAME, chroot "
+	case $got in
+	"$want"*)
+		ok "r1: 'show status' reads '$got'" ;;
+	*)
+		fail "r1: 'show status' reads '$got', expected '$want<dir>'"
+		return 1 ;;
+	esac
+	ps_root=${got##*, chroot }
+
+	print "4. And the kernel agrees, which is the half pimd cannot fake"
+	if [ "$SANDBOX_NAME" = none ]; then
+		ok "no sandbox on this system, the uid drop asserted above stands on its own"
+	elif proc_confined "$ps_child"; then
+		ok "r1: the kernel holds $ps_child in a sandbox"
+	else
+		fail "r1: pimd claims a $SANDBOX_NAME sandbox that the kernel does not hold $ps_child in"
+	fi
+
+	# What the kernel resolves the child's "/" to, against what pimd says
+	# it confined it to.  A chroot pimd claims and did not do, or did
+	# somewhere other than where it says, is what this catches.
+	ps_kroot=$(proc_root "$ps_child")
+	if [ "$ps_root" = none ]; then
+		if [ "$ps_kroot" = / ]; then
+			ok "built --without-privsep-chroot, and the child is rooted at / as pimd says"
+		else
+			fail "r1: pimd claims no chroot and the kernel has $ps_child rooted at '$ps_kroot'"
+		fi
+	elif [ "$ps_kroot" = "$ps_root" ]; then
+		ok "r1: the kernel has $ps_child rooted at $ps_kroot, with no path left for it to open"
+	else
+		fail "r1: pimd claims chroot $ps_root and the kernel has $ps_child rooted at '$ps_kroot'"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. The unprivileged half runs the whole protocol"
+	if wait_for 60 has_neighbor r1 10.0.12.2; then
+		ok "r1 sees r2 (10.0.12.2), so its Hellos leave the host and r2's arrive"
+	else
+		fail "r1 never saw r2, PIM hello is not crossing ${EP}112"
+	fi
+	if wait_for 90 has_rp r3 "$RP_ADDR"; then
+		ok "r3 learned RP $RP_ADDR, three hops of BSR and Cand-RP-Adv"
+	else
+		fail "r3 never learned RP $RP_ADDR (BSR/cand-RP path)"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	privsep_stream "the separated chain" || return 1
+
+	print "6. A SIGHUP to the PID file rebuilds every VIF through the parent"
+	vifs_before=$(pimctl r1 -t show interface 2>/dev/null | grep -c Up)
+	${SUDO} kill -HUP "$ps_parent" 2>/dev/null || \
+		fail "r1: could not signal $ps_parent"
+	if wait_for 30 pimd_is_up r1; then
+		ok "r1: pimd answers again after the SIGHUP"
+	else
+		fail "r1: pimd stopped answering after a SIGHUP to the parent, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	# Every descriptor the child had is gone and a new set has come from
+	# the parent: sockets, the pimd.conf it re-read, and the pimctl socket
+	# the parent bound again.  The VIF count is the cheapest thing that
+	# says all of that worked.
+	vifs_after=$(pimctl r1 -t show interface 2>/dev/null | grep -c Up)
+	if [ "$vifs_after" -gt 0 ] && [ "$vifs_after" = "$vifs_before" ]; then
+		ok "r1 has its $vifs_after interfaces up again, on descriptors the parent handed back"
+	else
+		fail "r1 had $vifs_before interfaces up and has $vifs_after after the reload"
+	fi
+
+	if [ "$ps_parent" = "$(${SUDO} cat "$WORKDIR/r1.pid" 2>/dev/null)" ]; then
+		ok "r1: and the PID file still names $ps_parent, touched by the privileged half"
+	else
+		fail "r1: the PID file names '$(${SUDO} cat "$WORKDIR/r1.pid" 2>/dev/null)' after the reload, was $ps_parent"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	if wait_for 90 has_neighbor r1 10.0.12.2; then
+		ok "r1 found r2 again, so the new PIM socket sends and receives"
+	else
+		fail "r1 never saw r2 again after the reload"
+		return 1
+	fi
+	privsep_stream "the reloaded chain" || return 1
+
+	print "7. Control: --no-privsep is one root process, and forwards just as well"
+	PIMD_ARGS="--no-privsep"
+	restart_pimd r1
+	if wait_for "$PIMD_START_WAIT" pimd_is_up r1; then
+		ok "r1: pimd answers with --no-privsep"
+	else
+		fail "r1: pimd did not come up with --no-privsep, see $WORKDIR/r1.log"
+		PIMD_ARGS=
+		return 1
+	fi
+
+	ns_parent=$(${SUDO} cat "$WORKDIR/r1.pid" 2>/dev/null)
+	ns_kids=$(proc_children "$ns_parent" | wc -l | tr -d " ")
+	if [ "$(proc_user "$ns_parent")" = root ] && [ "$ns_kids" -eq 0 ]; then
+		ok "r1 is a single root process again, $ns_parent with no children"
+	else
+		fail "r1 with --no-privsep runs as '$(proc_user "$ns_parent")' with $ns_kids child process(es), expected root and none"
+	fi
+
+	got=$(pimctl r1 show status | sed -n 's/^Privilege separation *: *//p')
+	if [ "$got" = "none, running as root" ]; then
+		ok "r1: 'show status' reads '$got', so the line above was not a constant"
+	else
+		fail "r1: 'show status' reads '$got' with --no-privsep, expected 'none, running as root'"
+	fi
+
+	if wait_for 90 has_neighbor r1 10.0.12.2 && wait_for 90 has_rp r1 "$RP_ADDR"; then
+		ok "r1 rejoined the chain unseparated, neighbour and RP set back"
+	else
+		fail "r1 never rebuilt its adjacency with --no-privsep, the control says nothing"
+		PIMD_ARGS=
+		return 1
+	fi
+	privsep_stream "the unseparated chain"
+	PIMD_ARGS=
+
+	result || {
+		dprint "--- r1: pimctl show status ---"
+		pimctl r1 show status 2>&1 | tail -30 || true
+		return 1
+	}
+}
+
+# ED1 -> $GROUP -> ED2 across the three routers, named by what is being
+# asked of it.  Three of the steps above end in this: the whole point of
+# separating the daemon is that none of it changes.
+privsep_stream() {
+	ps_what=$1
+
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	ps_receiver=$!
+	sleep 2
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 || true
+	kill "$ps_receiver" 2>/dev/null || true
+	wait "$ps_receiver" 2>/dev/null || true
+
+	ps_replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	ps_replies=${ps_replies:-0}
+	if [ "$ps_replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED1 -> $GROUP -> ED2 over $ps_what, $ps_replies replies"
+		return 0
+	fi
+
+	fail "only $ps_replies replies over $ps_what, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
 	return 1
 }
 

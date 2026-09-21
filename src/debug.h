@@ -121,6 +121,8 @@ extern int      log_str2lvl             (char *level);
 extern const char *log_lvl2str          (int val);
 extern int      log_list                (char *buf, size_t len);
 
+extern void	log_emit	(int severity, int syserr, const char *msg);
+extern void	log_line	(int severity, int syserr, const char *msg);
 extern void	logit			(int severity, int syserr, const char *fmt, ...)
 						__attribute__ ((format (printf, 3, 4)));
 

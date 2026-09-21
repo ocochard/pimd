@@ -275,7 +275,7 @@ static void ipc_show(int sd, int (*cb)(FILE *), char *buf, size_t len)
 {
 	FILE *fp;
 
-	fp = tempfile();
+	fp = priv_tempfile();
 	if (!fp) {
 		logit(LOG_WARNING, errno, "Failed opening temporary file");
 		return;
@@ -876,6 +876,16 @@ static int show_status(FILE *fp)
 	 * else about a running router says which: both answer the same
 	 * lookups. */
 	fprintf(fp, "RPF Backend          : %s\n", rpf_backend);
+
+	/* Whether the half that parses the wire is the one holding root, and
+	 * what keeps it in.  Nothing else about a running router says so, and
+	 * "separated" that quietly stopped being true is exactly the failure
+	 * worth being able to see. */
+	if (priv_enabled())
+		fprintf(fp, "Privilege separation : %s, sandbox %s, chroot %s\n",
+			priv_user(), priv_sandbox(), priv_chroot_dir());
+	else
+		fprintf(fp, "Privilege separation : none, running as root\n");
 	fprintf(fp, "Join/Prune Interval  : %d sec\n", PIM_JOIN_PRUNE_PERIOD);
 	fprintf(fp, "Hello Interval       : %d sec\n", pim_timer_hello_interval);
 	fprintf(fp, "Hello Holdtime       : %d sec\n", pim_timer_hello_holdtime);
@@ -1047,7 +1057,7 @@ static void ipc_help(int sd, char *buf, size_t len)
 {
 	FILE *fp;
 
-	fp = tempfile();
+	fp = priv_tempfile();
 	if (!fp) {
 		int sz;
 
@@ -1190,6 +1200,21 @@ void ipc_init(char *sockfile)
 	mode_t mask;
 	int sd;
 
+	/* Under separation the parent has already created, bound and
+	 * listened on this: the path is in /var/run, which the sandbox puts
+	 * out of reach, and the node has to be owned by root for the same
+	 * reason the mode below is 0700. */
+	if (priv_enabled()) {
+		sd = priv_ipc_socket();
+		if (sd < 0) {
+			logit(LOG_WARNING, errno, "Failed binding IPC socket, client disabled");
+			return;
+		}
+
+		(void)fcntl(sd, F_SETFL, fcntl(sd, F_GETFL) | O_NONBLOCK);
+		goto bound;
+	}
+
 	sd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sd < 0) {
 		logit(LOG_ERR, errno, "Failed creating IPC socket");
@@ -1232,6 +1257,7 @@ void ipc_init(char *sockfile)
 	}
 	umask(mask);
 
+  bound:
 	if (register_input_handler(sd, ipc_handle) < 0)
 		logit(LOG_ERR, 0, "Failed registering IPC handler");
 
@@ -1243,7 +1269,11 @@ void ipc_exit(void)
 	if (ipc_socket > -1)
 		close(ipc_socket);
 
-	unlink(sun.sun_path);
+	if (priv_enabled())
+		priv_ipc_close();
+	else
+		unlink(sun.sun_path);
+
 	ipc_socket = -1;
 }
 

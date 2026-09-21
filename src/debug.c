@@ -584,23 +584,27 @@ int log_list(char *buf, size_t len)
  * according to the severity of the message and the current debug level.
  * For errors of severity LOG_ERR or worse, terminate the program.
  */
-void logit(int severity, int syserr, const char *format, ...)
+/*
+ * Put one rendered line where the log goes: stderr with a timestamp in the
+ * foreground, the system log daemon otherwise.
+ *
+ * Split out of logit() because under privilege separation this runs in the
+ * *privileged* half, on lines the unprivileged one sends over.  One
+ * process then stamps every line, which is not a nicety: the unprivileged
+ * half is chroot'ed, so /etc/localtime is not there for it to read, and
+ * glibc retries that open on every localtime() call rather than giving up
+ * once -- which under the seccomp filter, where open is not on the
+ * allowlist, is a SIGSYS on the first line logged after the sandbox goes
+ * up.  The daemon died there with nothing in its own log to say why.
+ */
+void log_emit(int severity, int syserr, const char *msg)
 {
-    va_list ap;
-    char msg[211];
     struct timeval now;
     struct tm *thyme;
     time_t lt;
 
-    va_start(ap, format);
-    vsnprintf(msg, sizeof(msg), format, ap);
-    va_end(ap);
-
     /* pimd running in foreground */
     if (!log_syslog) {
-	if (!debug && severity > loglevel)
-	    goto done;
-
 	gettimeofday(&now, NULL);
 	lt = now.tv_sec;
 	thyme = localtime(&lt);
@@ -621,27 +625,77 @@ void logit(int severity, int syserr, const char *format, ...)
 	    fprintf(stderr, ": %s", strerror(syserr));
 
 	fprintf(stderr, "\n");
-	goto done;
+	return;
     }
+
+    if (syserr)
+	syslog(severity, "%s: %s", msg, strerror(syserr));
+    else
+	syslog(severity, "%s", msg);
+}
+
+/*
+ * One rendered line to wherever the log is, past every filter: the
+ * privileged half when there is one, this process when there is not.
+ *
+ * Separate from log_emit() because the two are not the same side under
+ * privilege separation, and separate from logit() because resetlogging()
+ * (src/main.c) has to be able to say that the rate limiter has shut the
+ * log up -- a message the limiter would otherwise be the first to drop.
+ */
+void log_line(int severity, int syserr, const char *msg)
+{
+    if (priv_enabled())
+	priv_log(severity, syserr, msg);
+    else
+	log_emit(severity, syserr, msg);
+}
+
+/*
+ * Log errors and other messages to the system log daemon and to stderr,
+ * according to the severity of the message and the current debug level.
+ * For errors of severity LOG_ERR or worse, terminate the program.
+ */
+void logit(int severity, int syserr, const char *format, ...)
+{
+    va_list ap;
+    char msg[211];
+
+    va_start(ap, format);
+    vsnprintf(msg, sizeof(msg), format, ap);
+    va_end(ap);
 
     /*
-     * Always log things that are worse than warnings, no matter what
-     * the log_nmsgs rate limiter says.
-     *
-     * Only count things at the defined loglevel or worse in the rate limiter
-     * and exclude debugging (since if you put daemon.debug in syslog.conf
-     * you probably actually want to log the debugging messages so they
-     * shouldn't be rate-limited)
+     * Filtered on this side whichever half we are, and for the same reason
+     * the rate limiter below is counted here: "pimctl loglevel" changes
+     * loglevel in the unprivileged half and resetlogging() runs its timer
+     * there, so a privileged half deciding either would be working from
+     * the values it was forked with.
      */
-    if ((severity < LOG_WARNING) || (log_nmsgs < LOG_MAX_MSGS)) {
+    if (!log_syslog) {
+	if (!debug && severity > loglevel)
+	    goto done;
+    } else {
+	/*
+	 * Always log things that are worse than warnings, no matter what
+	 * the log_nmsgs rate limiter says.
+	 *
+	 * Only count things at the defined loglevel or worse in the rate
+	 * limiter and exclude debugging (since if you put daemon.debug in
+	 * syslog.conf you probably actually want to log the debugging
+	 * messages so they shouldn't be rate-limited)
+	 */
+	if (severity >= LOG_WARNING && log_nmsgs >= LOG_MAX_MSGS)
+	    goto done;
+
 	if ((severity <= loglevel) && (severity != LOG_DEBUG))
 	    log_nmsgs++;
-
-	if (syserr)
-	    syslog(severity, "%s: %s", msg, strerror(syserr));
-	else
-	    syslog(severity, "%s", msg);
     }
+
+    /* The unprivileged half reaches neither /var/run/log, which syslog(3)
+     * connects to by path, nor /etc/localtime -- hand the line to the
+     * privileged half, which has both. */
+    log_line(severity, syserr, msg);
 
   done:
 #ifdef CONTINUE_ON_ERROR

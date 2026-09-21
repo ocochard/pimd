@@ -20,6 +20,8 @@
 .Op Fl l Ar LEVEL
 .Op Fl t Ar ID
 .Op Fl u Ar FILE
+.Op Fl U Ar USER Ns Op : Ns Ar GROUP
+.Op Fl -no-privsep
 .Op Fl w Ar SEC
 .Sh DESCRIPTION
 .Nm
@@ -156,6 +158,13 @@ Set PID file name and location, defaults to
 derived from
 .Fl -ident Ar NAME ,
 which is strongly recommended to change over this option.
+.Pp
+Unless
+.Fl -no-privsep
+is given, the file names the privileged parent process: that is the one a
+.Dv SIGHUP
+has to reach, and the one that outlives the unprivileged child it forwards
+the signal to.
 .It Fl l, -loglevel Ar LEVEL
 Set log level to one of the following, default
 .Nm notice :
@@ -203,6 +212,50 @@ identity,
 .Fl i Ar NAME .
 On most systems this is
 .Pa /var/run/pimd.sock .
+.It Fl U, -user Ar USER Ns Op : Ns Ar GROUP
+Run the unprivileged half of the daemon as
+.Ar USER ,
+and as that user's group unless
+.Ar GROUP
+is given as well.  The default is set at build time with
+.Cm configure --with-privsep-user ,
+and is
+.Cm _pimd .
+Where that user does not exist on the running system,
+.Nm
+falls back to
+.Cm nobody
+and says so in the log; a user named with this option is not fallen back
+from, since an explicit name that does not exist is a mistake to report
+rather than to work around.  A dedicated user is the better one:
+.Cm nobody
+is shared with whatever else on the machine settled for it, and two daemons
+running under one user id can signal and trace each other, which is much of
+what separating them was for.
+.Pp
+The unprivileged half is also confined with
+.Xr chroot 2
+to an empty directory, by default
+.Pa /var/empty ,
+which is created if it does not exist and refused if anyone but
+.Em root
+may write to it.  It needs nothing there: its configuration arrives as an
+open descriptor, and the PID file, the control socket and
+.Xr syslog 3
+all belong to the privileged half.  Build with
+.Cm configure --with-privsep-chroot=DIR
+to move it, or
+.Cm --without-privsep-chroot
+to skip it.  Note that a core dump of the unprivileged half is lost with
+it, the kernel writing one relative to the process's root.
+.It Fl -no-privsep
+Do not separate privileges: run as a single
+.Em root
+process, as
+.Nm
+did before privilege separation existed.  For a system where the
+unprivileged user cannot be created, or to tell a problem in the separation
+apart from a problem in the daemon.
 .It Fl v, -version
 Show program version and support information.
 .It Fl w, -startup-delay Ar SEC

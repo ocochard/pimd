@@ -54,6 +54,14 @@ PKG_PROG_PKG_CONFIG
 
 AC_HEADER_STDC
 AC_CHECK_HEADERS([fcntl.h ifaddrs.h netinet/pim.h net/if_dl.h sys/time.h sys/ioctl.h linux/netlink.h termios.h])
+# The sandbox the unprivileged half of the daemon enters: seccomp-bpf on
+# Linux, and nothing on the BSDs -- Capsicum refuses every sendto() that
+# carries a destination, which is every packet pimd sends.  The long version
+# is in src/privsep.c, above priv_sandbox_enter().
+AC_CHECK_HEADERS([linux/seccomp.h linux/filter.h linux/audit.h sys/prctl.h])
+# How the unprivileged half asks to be signalled if its parent dies:
+# prctl(PR_SET_PDEATHSIG) on Linux, procctl(PROC_PDEATHSIG_CTL) on FreeBSD.
+AC_CHECK_HEADERS([sys/procctl.h])
 AC_CHECK_HEADERS([netlink/netlink.h netlink/netlink_route.h])
 AC_CHECK_HEADERS([net/if.h], [], [], [
 #include <stdio.h>
@@ -146,6 +154,33 @@ AC_ARG_WITH(max_vifs,
 AC_ARG_WITH([systemd],
      [AS_HELP_STRING([--with-systemd=DIR], [Directory for systemd service files])],,
      [with_systemd=auto])
+
+# The user the unprivileged half of the daemon runs as.  It has to exist on
+# the running system, not on this one, so this is a name and not a probe: a
+# missing user is a start-up error naming --no-privsep, rather than a
+# silent fall back to the root pimd this is here to stop being.
+AC_ARG_WITH([privsep-user],
+	AS_HELP_STRING([--with-privsep-user=USER], [User the unprivileged half runs as,
+		default: _pimd, falling back to nobody where that does not exist]),
+	[privsep_user=$withval], [privsep_user=_pimd])
+AC_DEFINE_UNQUOTED([PRIVSEP_USER], ["$privsep_user"],
+	[User the unprivileged half of the daemon runs as.])
+AC_DEFINE([PRIVSEP_FALLBACK_USER], ["nobody"],
+	[User to fall back on when the one above does not exist on the running system.])
+
+# The directory the unprivileged half is confined to.  It needs nothing in
+# it and must have nothing in it: by the time the daemon gets there the
+# child reads its configuration from a descriptor the parent opened, and
+# the PID file, the pimctl socket and syslog(3) all belong to the parent,
+# so there is no path left for it to want.  /var/empty is the BSD
+# convention and is created if it is not there.
+AC_ARG_WITH([privsep-chroot],
+	AS_HELP_STRING([--with-privsep-chroot=DIR], [Directory the unprivileged half is confined
+		to, default: /var/empty.  --without-privsep-chroot does not chroot at all]),
+	[privsep_chroot=$withval], [privsep_chroot=/var/empty])
+AS_IF([test "x$privsep_chroot" = "xno"], [privsep_chroot=])
+AC_DEFINE_UNQUOTED([PRIVSEP_CHROOT], ["$privsep_chroot"],
+	[Directory the unprivileged half is confined to, empty to not chroot.])
 
 # The harnesses call the parsers in-process, and they live in test/, so
 # --enable-fuzz has to reach two other knobs.  --disable-exit-on-error is
@@ -383,6 +418,8 @@ Optional features:
   Warnings are errors...: $enable_werror
   Exit on error.........: $enable_exit_on_error
   systemd...............: $with_systemd
+  Privsep user..........: $privsep_user
+  Privsep chroot........: ${privsep_chroot:-none}
   Unit tests............: $enable_test
   Fuzz harnesses........: $enable_fuzz (libFuzzer: $have_libfuzzer, coverage: $fuzz_coverage)
 

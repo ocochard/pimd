@@ -65,7 +65,8 @@ void init_pim(void)
     struct ip *ip;
 
     /* Setup the PIM raw socket */
-    pim_socket = socket(AF_INET, SOCK_RAW, IPPROTO_PIM);
+    pim_socket = priv_enabled() ? priv_socket(PRIV_SOCK_PIM)
+				: socket(AF_INET, SOCK_RAW, IPPROTO_PIM);
     if (pim_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating PIM socket");
 	pim_socket = -1;

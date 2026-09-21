@@ -59,6 +59,13 @@ char *config_file = NULL;
 static char *pid_file  = NULL;
 static char *sock_file = NULL;
 
+/* Privilege separation is the default; --no-privsep gives the single root
+ * process pimd was before it, for a system where the user below cannot be
+ * created.  See src/privsep.c for why a helper is needed rather than a
+ * setuid() once everything is open. */
+static char *privsep_user = NULL;	/* NULL: the default, and its fallback */
+static int   do_privsep   = 1;
+
 static int sighandled = 0;
 #define GOT_SIGINT      0x01
 #define GOT_SIGHUP      0x02
@@ -139,6 +146,21 @@ static int compose_paths(void)
     if (!pid_file)
 	pid_file = strdup(ident);
 
+    /* ipc.c would compose this itself, but the privileged parent is what
+     * binds the socket now and it may not be handed a path by the child:
+     * resolve it here, before the fork, where both halves can see it. */
+    if (!sock_file) {
+	size_t len = strlen(RUNSTATEDIR) + strlen(ident) + 8;
+
+	sock_file = malloc(len);
+	if (!sock_file) {
+	    logit(LOG_ERR, errno, "Failed allocating memory, exiting.");
+	    exit(1);
+	}
+
+	snprintf(sock_file, len, _PATH_PIMD_SOCK, ident);
+    }
+
     return 0;
 }
 
@@ -169,6 +191,9 @@ static int usage(int code)
 	   "  -i, --ident=NAME         Identity for syslog, .cfg & .pid file, default: %s\n"
 	   "  -p, --pidfile=FILE       File to store process ID for signaling %s\n"
 	   "                           Default uses ident: %s\n"
+	   "  -U, --user=USER[:GRP]    Run the unprivileged half as USER, default: %s,\n"
+	   "                           falling back to nobody where that does not exist\n"
+	   "      --no-privsep         Do not separate privileges, run as root throughout\n"
 	   "  -r                       Retry (forever) if not all configured interfaces are\n"
 	   "                           available when starting up, e.g. wait for DHCP lease\n"
 	   "      --disable-vifs       Disable all virtual interfaces (phyint) by default\n"
@@ -181,7 +206,7 @@ static int usage(int code)
 	   "  -u, --ipc=FILE           Override UNIX domain socket, default from identity, -i\n"
 	   "  -v, --version            Show %s version and support information\n"
 	   "  -w, --startup-delay=SEC  Initial startup delay before probing interfaces\n"
-	   "\n", prognm, config_file, prognm, prognm, pidfn, prognm);
+	   "\n", prognm, config_file, prognm, prognm, pidfn, PRIVSEP_USER, prognm);
 
     printf("Available subsystems for debug:\n");
     if (!debug_list(DEBUG_ALL, buf, sizeof(buf))) {
@@ -250,6 +275,8 @@ int main(int argc, char *argv[])
 	{ "ident",         1, 0, 'i' },
 	{ "loglevel",      1, 0, 'l' },
 	{ "pidfile",       1, 0, 'p' },
+	{ "user",          1, 0, 'U' },
+	{ "no-privsep",    0, 0, 502 },
 	{ "syslog",        0, 0, 's' },
 #ifdef __linux__
 	{ "table-id",      1, 0, 't' },
@@ -263,7 +290,7 @@ int main(int argc, char *argv[])
     snprintf(versionstring, sizeof(versionstring), "pimd version %s", PACKAGE_VERSION);
 
     prognm = ident = progname(argv[0]);
-    while ((ch = getopt_long(argc, argv, "d:f:hi:l:np:rst:u:vw:", long_options, NULL)) != EOF) {
+    while ((ch = getopt_long(argc, argv, "d:f:hi:l:np:rst:u:U:vw:", long_options, NULL)) != EOF) {
 	switch (ch) {
 	    case 'd':
 		rc = debug_parse(optarg);
@@ -300,6 +327,14 @@ int main(int argc, char *argv[])
 
 	    case 'p':	/* --pidfile=NAME */
 		pid_file = strdup(optarg);
+		break;
+
+	    case 'U':	/* --user=USER[:GROUP] */
+		privsep_user = optarg;
+		break;
+
+	    case 502:	/* --no-privsep */
+		do_privsep = 0;
 		break;
 
 	    case 'r':
@@ -409,7 +444,17 @@ int main(int argc, char *argv[])
     log_init(do_syslog);
     logit(LOG_NOTICE, 0, "%s starting.", versionstring);
 
+    /* Before the sandbox: /dev/urandom is a path, and capability mode has
+     * no paths. */
     do_randomize();
+
+    /*
+     * Split in two.  Everything below this line runs unprivileged, and
+     * reaches the kernel calls that need root, the interface scan and the
+     * three files this daemon owns through src/privsep.c.
+     */
+    if (do_privsep && priv_init(privsep_user, config_file, pid_file, sock_file))
+	logit(LOG_ERR, 0, "Failed setting up privilege separation, exiting.");
 
     timer_init();
     init_igmp();
@@ -448,8 +493,16 @@ int main(int argc, char *argv[])
     /* Open channel to pimctl */
     ipc_init(sock_file);
 
-    /* Everything up and running, create PID file */
-    if (pidfile(pid_file))
+    /*
+     * Nothing below opens a file, creates a socket or reads a sysctl: the
+     * privileged half does all three now, so the door can be shut.
+     */
+    priv_sandbox_enter();
+
+    /* Everything up and running, create PID file.  Under separation it
+     * names the parent: that is the process a SIGHUP has to reach, and the
+     * one that outlives the child it forwards it to. */
+    if (priv_pidfile(pid_file))
 	warn("Cannot create pidfile");
 
     /*
@@ -801,6 +854,12 @@ static void restart(int signo)
     /* Both for Linux netlink and BSD routing socket */
     routesock_clean();
 
+    /* The privileged half holds a copy of every descriptor it handed out,
+     * and does the MRT_* calls on its own: it has to let the old set go
+     * before init_igmp() below asks for a new one, or the MRT_INIT on the
+     * new mrouter socket meets the old one still holding the role. */
+    priv_socket_release();
+
     /* Exit here if called at cleanup() */
     if (!signo)
 	return;
@@ -820,7 +879,7 @@ static void restart(int signo)
     ipc_init(sock_file);
 	
     /* Touch PID file to acknowledge SIGHUP */
-    pidfile(pid_file);
+    priv_pidfile(pid_file);
 
     /* schedule timer interrupts */
     timer_set(TIMER_INTERVAL, timer, NULL);
@@ -852,14 +911,20 @@ static void resetlogging(void *arg)
     (void)arg;
 
     if (!disabled && log_nmsgs >= LOG_MAX_MSGS) {
-	syslog(LOG_WARNING, "logging too fast, shutting up for %d minutes",
-	       LOG_SHUT_UP / 60);
+	char buf[80];
+
+	/* Past logit(), whose rate limiter is what this is about and which
+	 * would drop the message saying so.  log_line() still reaches the
+	 * privileged half when there is one. */
+	snprintf(buf, sizeof(buf), "logging too fast, shutting up for %d minutes",
+		 LOG_SHUT_UP / 60);
+	log_line(LOG_WARNING, 0, buf);
 
 	disabled = 1;
 	nxttime = LOG_SHUT_UP;
     } else {
 	if (disabled) {
-	    syslog(LOG_NOTICE, "logging enabled again after rate limiting");
+	    log_line(LOG_NOTICE, 0, "logging enabled again after rate limiting");
 	    disabled = 0;
 	}
 

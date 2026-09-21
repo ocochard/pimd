@@ -112,6 +112,20 @@ struct ifevent_hdr {
 #define ADVANCE(x, n) (x += ROUNDUP(sizeof(*(n))))  /* XXX: sizeof(struct sockaddr) */
 #endif
 
+/*
+ * The raw socket half of the two below, so that the privileged parent can
+ * create them without knowing which RPF backend was linked in: this file
+ * and src/netlink.c each answer for their own.  Nothing privileged about
+ * it -- rts_attach() has no priv_check() -- but the child gets every
+ * descriptor from the parent, so that it needs socket(2) for nothing.
+ */
+int kern_routesock(int ifevent)
+{
+	/* AF_INET on the event socket narrows it to the messages that carry
+	 * an IPv4 address; see init_ifevent() below. */
+    return socket(PF_ROUTE, SOCK_RAW, ifevent ? AF_INET : 0);
+}
+
 /* Open and initialize the routing socket */
 int init_routesock(void)
 {
@@ -119,7 +133,8 @@ int init_routesock(void)
     int on = 0;
 #endif
 
-    routing_socket = socket(PF_ROUTE, SOCK_RAW, 0);
+    routing_socket = priv_enabled() ? priv_socket(PRIV_SOCK_ROUTE)
+				    : kern_routesock(0);
     if (routing_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating routing socket");
 	return -1;
@@ -167,7 +182,8 @@ static int init_ifevent(void)
 {
     int val;
 
-    ifevent_socket = socket(PF_ROUTE, SOCK_RAW, AF_INET);
+    ifevent_socket = priv_enabled() ? priv_socket(PRIV_SOCK_IFEVENT)
+				    : kern_routesock(1);
     if (ifevent_socket < 0) {
 	logit(LOG_WARNING, errno, "Failed creating routing socket for interface events");
 	return -1;

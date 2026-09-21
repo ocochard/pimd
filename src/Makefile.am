@@ -21,6 +21,7 @@ libpimd_a_SOURCES = config.c		debug.c		debug.h			    \
 		   inet.c		ipc.c		kern.c			    \
 		   mrt.c		mrt.h		    			    \
 		   pathnames.h		pim_proto.c	pim.c		pimd.h	    \
+		   privsep.c		privsep.h				    \
 		   queue.h		route.c		rp.c			    \
 		   timer.c		trace.c		trace.h	    		    \
 		   vif.c		vif.h

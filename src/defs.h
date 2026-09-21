@@ -133,6 +133,7 @@ typedef void (*ihfunc_t) (int);
 #include "vif.h"
 #include "debug.h"
 #include "pathnames.h"
+#include "privsep.h"
 
 /*
  * Miscellaneous constants and macros
@@ -552,6 +553,24 @@ extern void	k_set_if		(int socket, uint32_t ifa);
 extern void	k_set_router_alert	(int socket);
 extern void	k_join			(int socket, uint32_t grp, struct uvif *v);
 extern void	k_leave			(int socket, uint32_t grp, struct uvif *v);
+/*
+ * Which step of a multi-step kernel call failed, so that the caller can
+ * keep the message it has always printed for each.  See kern_mrt_init().
+ */
+#define KERN_STEP_TABLE	1
+#define KERN_STEP_INIT	2
+#define KERN_STEP_PIM	3
+
+extern int	kern_routesock		(int ifevent);
+extern int	kern_mrt_init		(int sd);
+extern int	kern_mrt_done		(int sd);
+extern int	kern_add_vif		(int sd, struct vifctl *vc);
+extern int	kern_del_vif		(int sd, vifi_t vifi, struct vifctl *vc);
+extern int	kern_chg_mfc		(int sd, struct mfcctl *mc);
+extern int	kern_del_mfc		(int sd, struct mfcctl *mc);
+extern int	kern_vif_cnt		(int sd, struct sioc_vif_req *vreq);
+extern int	kern_sg_cnt		(int sd, struct sioc_sg_req *sgreq);
+
 extern void	k_init_pim		(int socket);
 extern void	k_stop_pim		(int socket);
 extern int	k_del_mfc		(int socket, uint32_t source, uint32_t group);

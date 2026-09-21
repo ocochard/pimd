@@ -202,7 +202,7 @@ static int build_iflist(void)
     int count = 0;
     FILE *fp;
 
-    fp = fopen(config_file, "r");
+    fp = priv_fopen_conf();
     if (!fp)
 	return 0;
 
@@ -460,7 +460,7 @@ static void scan_vifs_from_kernel(int rescan)
 
 init_vif_list:
     total_interfaces = 0; /* The total number of physical interfaces */
-    if (getifaddrs(&ifaddr) == -1) {
+    if (priv_getifaddrs(&ifaddr) == -1) {
 	logit(LOG_ERR, errno, "Failed retrieving interface addresses");
 	tear_iflist();
 	return;
@@ -468,7 +468,7 @@ init_vif_list:
 
     count = compare_requested_with_kernel(ifaddr, phyint_num);
     if (!rescan && !do_vifs && count < phyint_num) {
-	freeifaddrs(ifaddr);
+	priv_freeifaddrs(ifaddr);
 
 	if (retry_forever) {
 	    LIST_FOREACH(entry, &il, link)
@@ -646,7 +646,7 @@ init_vif_list:
 	 * no need for an IP address.  Also used for the
 	 * VIF lookup in find_vif()
 	 */
-	v->uv_ifindex = if_nametoindex(v->uv_name);
+	v->uv_ifindex = priv_ifindex(v->uv_name);
 	if (!v->uv_ifindex)
 	    logit(LOG_ERR, errno, "Failed reading ifindex for %s", v->uv_name);
 
@@ -672,7 +672,7 @@ init_vif_list:
 	}
     }
 
-    freeifaddrs(ifaddr);
+    priv_freeifaddrs(ifaddr);
     tear_iflist();
 }
 
@@ -712,7 +712,7 @@ void config_phyints_from_file(vifi_t first)
     char *w, *s;
     FILE *fp;
 
-    fp = fopen(config_file, "r");
+    fp = priv_fopen_conf();
     if (!fp)
 	return;
 
@@ -2649,7 +2649,7 @@ void config_vifs_from_file(void)
     reset_reg_acl();
     reset_anycast_rp();
 
-    fp = fopen(config_file, "r");
+    fp = priv_fopen_conf();
     if (!fp) {
 	if (errno != ENOENT)
 	    logit(LOG_WARNING, errno, "Failed opening %s", config_file);

@@ -81,7 +81,8 @@ void init_igmp(void)
     memset(igmp_recv_buf, 0, RECV_BUF_SIZE);
     memset(igmp_send_buf, 0, SEND_BUF_SIZE);
 
-    igmp_socket = socket(AF_INET, SOCK_RAW, IPPROTO_IGMP);
+    igmp_socket = priv_enabled() ? priv_socket(PRIV_SOCK_IGMP)
+				 : socket(AF_INET, SOCK_RAW, IPPROTO_IGMP);
     if (igmp_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating IGMP socket in init_igmp()");
 	free(igmp_recv_buf);

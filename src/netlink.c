@@ -33,6 +33,20 @@
 
 const char *rpf_backend = "netlink";
 
+/*
+ * The raw socket half of the two init functions below, so that the
+ * privileged parent can create them without knowing which RPF backend was
+ * linked in: this file and src/routesock.c each answer for their own.
+ * Both sockets are the same kind here; the groups they subscribe to are
+ * set by the bind() the child does afterwards.
+ */
+int kern_routesock(int ifevent)
+{
+    (void)ifevent;
+
+    return socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+}
+
 int routing_socket = -1;
 int ifevent_socket = -1;
 static uint32_t pid; /* pid_t, but /usr/include/linux/netlink.h says __u32 ... */
@@ -81,7 +95,8 @@ int init_routesock(void)
     socklen_t addr_len;
     struct sockaddr_nl local;
 
-    routing_socket = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    routing_socket = priv_enabled() ? priv_socket(PRIV_SOCK_ROUTE)
+				    : kern_routesock(0);
     if (routing_socket < 0) {
 	logit(LOG_ERR, errno, "Failed creating netlink socket");
 	return -1;
@@ -137,7 +152,8 @@ static int init_ifevent(void)
 {
     struct sockaddr_nl local;
 
-    ifevent_socket = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    ifevent_socket = priv_enabled() ? priv_socket(PRIV_SOCK_IFEVENT)
+				    : kern_routesock(1);
     if (ifevent_socket < 0) {
 	logit(LOG_WARNING, errno, "Failed creating netlink socket for interface events");
 	return -1;

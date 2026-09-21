@@ -38,9 +38,18 @@
 #   kern_vif_addr BOX VIF               local address of one kernel vif
 #   registers_rcvd BOX                  Registers the kernel decapsulated
 #   if_memberships BOX IF               groups the interface is a member of
+#   proc_user PID                       the user a process runs as
+#   proc_children PID                   the pids a process has forked
+#   proc_confined PID                   does the kernel hold that process
+#                                       in a sandbox
+#   proc_root PID                       the directory the kernel has as
+#                                       that process's root, "/" unchrooted
 #   $LOOPBACK_IF                        the loopback interface's name
 #   $REGISTER_UPCALL                    what of a data Register the kernel
 #                                       hands pimd, "headers" or "whole"
+#   $SANDBOX_NAME                       what pimd's unprivileged half is
+#                                       kept in here, as "pimctl show
+#                                       status" spells it
 
 JAIL_PREFIX=pimd${TAG}_
 
@@ -51,6 +60,34 @@ LOOPBACK_IF=lo0
 # data Register, so what pimd copies to another Anycast-RP member is a
 # Null-Register
 REGISTER_UPCALL=headers
+
+# No sandbox for the unprivileged half here.  Capsicum is the one this
+# system has and pimd cannot use it: kern_sendit() (sys/kern/uipc_syscalls.c)
+# refuses every sendto() that carries a destination address, which is every
+# packet pimd sends.  See priv_sandbox_enter() in src/privsep.c.
+SANDBOX_NAME=none
+
+# Who a process runs as, what it has forked, and whether the kernel holds
+# it in a sandbox.  A jail's processes are the host's, so these need no
+# jexec -- and asking the host is the point: what pimd says about itself in
+# "pimctl show status" is the claim under test, not the evidence.
+proc_user() { ps -o user= -p "$1" 2>/dev/null | tr -d " "; }
+
+proc_children() { pgrep -P "$1" 2>/dev/null; }
+
+# procstat's FLAGS column carries C for a process in capability mode.
+# Nothing here is expected to be, SANDBOX_NAME being none, but the check is
+# the same one either way and is what would catch a Capsicum that came
+# back.
+proc_confined() {
+	[ "$(${SUDO} procstat -h -s "$1" 2>/dev/null | awk '{print $10}')" = C ]
+}
+
+# procstat's descriptor table carries a "root" row per process, which is
+# the path the kernel resolves that process's "/" to.
+proc_root() {
+	${SUDO} procstat -h -f "$1" 2>/dev/null | awk '$3 == "root" { print $NF }'
+}
 
 # The ifconfig(8) group every interface this lab creates is put in, so a
 # human can find or destroy one lab's links and not another's.  The slot

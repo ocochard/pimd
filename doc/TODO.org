@@ -16,17 +16,6 @@ it is not what everybody assumes somebody else did.
 
 
 * pimd 3.1 release:
-** Drop privileges after init, upstream issue #115
-
-An option, -p USER[:GROUP], to leave the daemon running as somebody other
-than root once it is up.  It cannot be a setuid() at the end of main():
-restart() (src/main.c) closes and reopens the IGMP and PIM raw sockets, the
-routing socket and the kernel's MFC on every SIGHUP and every `pimctl
-restart`, and touches the PID file, all of which want the privileges that
-were just given away.  So this wants the split the upstream issue names, a
-privileged parent holding the sockets and a lesser child inheriting them,
-which is a structural change and not a thing to land beside a release.
-
 ** Merge pimd-dense
 ** Add sparse-dense mode, triggered per group
  - Cisco relies on group joins by the router itself

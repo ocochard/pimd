@@ -125,7 +125,9 @@ void init_vifs(void)
 #ifdef IOCTL_OK_ON_RAW_SOCKET
     udp_socket = igmp_socket;
 #else
-    if ((udp_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+    udp_socket = priv_enabled() ? priv_socket(PRIV_SOCK_UDP)
+				: socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket < 0)
 	logit(LOG_ERR, errno, "UDP socket");
 #endif
 
@@ -368,7 +370,7 @@ static void start_vif(vifi_t vifi)
 	 * index, so an interface that has gone in the meantime keeps the
 	 * stale one and fails in k_add_vif() instead of stealing that.
 	 */
-	ifindex = if_nametoindex(v->uv_name);
+	ifindex = priv_ifindex(v->uv_name);
 	if (ifindex && (int)ifindex != v->uv_ifindex) {
 	    IF_DEBUG(DEBUG_IF)
 		logit(LOG_DEBUG, 0, "VIF #%u: %s is ifindex %u now, was %d",
@@ -430,7 +432,7 @@ static void start_vif(vifi_t vifi)
     }
 #ifdef __linux__
     else {
-	v->uv_ifindex = if_nametoindex(v->uv_name);
+	v->uv_ifindex = priv_ifindex(v->uv_name);
 	if (!v->uv_ifindex) {
 	    logit(LOG_ERR, errno, "Failed reading ifindex for %s", v->uv_name);
 	    /* Not reached */
@@ -715,7 +717,7 @@ static void check_vif_addrs(void)
     struct uvif *v;
     vifi_t vifi;
 
-    if (getifaddrs(&ifap) < 0) {
+    if (priv_getifaddrs(&ifap) < 0) {
 	logit(LOG_WARNING, errno, "%s(): getifaddrs()", __func__);
 	return;
     }
@@ -778,7 +780,7 @@ static void check_vif_addrs(void)
 	    send_pim_hello(v, pim_timer_hello_holdtime);
     }
 
-    freeifaddrs(ifap);
+    priv_freeifaddrs(ifap);
 }
 
 
