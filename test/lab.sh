@@ -7988,7 +7988,33 @@ check_privsep() {
 
 	privsep_stream "the separated chain" || return 1
 
-	print "6. A SIGHUP to the PID file rebuilds every VIF through the parent"
+	# Every "pimctl show" has the privileged half open a scratch file and
+	# pass the descriptor over, which is the one path in normal running
+	# where a descriptor crosses and could be left behind.  A leak there
+	# is not a memory error and no sanitizer reports it: the count is the
+	# only thing that does.  The audit of e0612d3 found the version of it
+	# that a compromised child could drive; this is the tripwire for the
+	# ordinary one, which is what a later edit is likely to reintroduce.
+	print "6. Passing descriptors does not leave them behind in the parent"
+	ps_fds_before=$(proc_nfds "$ps_parent")
+	ps_i=0
+	while [ "$ps_i" -lt 40 ]; do
+		pimctl r1 show mrt >/dev/null 2>&1 || true
+		pimctl r1 show igmp groups >/dev/null 2>&1 || true
+		ps_i=$((ps_i + 1))
+	done
+	ps_fds_after=$(proc_nfds "$ps_parent")
+
+	if [ -z "$ps_fds_before" ] || [ -z "$ps_fds_after" ]; then
+		fail "r1: could not count the descriptors of $ps_parent"
+	elif [ "$ps_fds_after" -le "$ps_fds_before" ]; then
+		ok "r1: the parent holds $ps_fds_after descriptors after 80 pimctl commands, $ps_fds_before before"
+	else
+		fail "r1: the parent went from $ps_fds_before descriptors to $ps_fds_after over 80 pimctl commands"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "7. A SIGHUP to the PID file rebuilds every VIF through the parent"
 	vifs_before=$(pimctl r1 -t show interface 2>/dev/null | grep -c Up)
 	${SUDO} kill -HUP "$ps_parent" 2>/dev/null || \
 		fail "r1: could not signal $ps_parent"
@@ -8025,7 +8051,7 @@ check_privsep() {
 	fi
 	privsep_stream "the reloaded chain" || return 1
 
-	print "7. Control: --no-privsep is one root process, and forwards just as well"
+	print "8. Control: --no-privsep is one root process, and forwards just as well"
 	PIMD_ARGS="--no-privsep"
 	restart_pimd r1
 	if wait_for "$PIMD_START_WAIT" pimd_is_up r1; then
