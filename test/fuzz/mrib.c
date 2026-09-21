@@ -25,12 +25,21 @@
  * Join/Prune upstream, the wrong-iif paths -- is unreachable.
  *
  * So this file defines it, and neither netlink.c nor routesock.c is linked:
- * they are members of libpimd.a and k_req_incoming() is the only symbol in
- * either that anything but main.c references, so a definition here is the
- * one the linker takes and the archive member is never pulled in.  Should
- * that stop being true -- a second reference to init_routesock() from
- * outside main.c, say -- the link fails with a duplicate symbol rather than
- * quietly picking one, which is the failure mode to want.
+ * they are members of libpimd.a, and everything outside main.c that
+ * references either of them is defined here instead, so a definition here
+ * is the one the linker takes and the archive member is never pulled in.
+ * Should that stop being true -- a third symbol referenced from outside
+ * main.c -- the link fails with a duplicate symbol rather than quietly
+ * picking one, which is the failure mode to want, and the fix is to add it
+ * below rather than to let the archive member in.
+ *
+ * kern_routesock() is the second such symbol, and it is here for the link
+ * and not for the harness: it is the raw socket half of init_routesock(),
+ * which the privileged half of a separated pimd calls so that the
+ * unprivileged one needs socket(2) for nothing.  src/privsep.c references
+ * it, src/debug.c references src/privsep.c for every log line, and so
+ * privsep.o is always pulled in.  Nothing here ever separates privileges,
+ * so nothing here ever calls this.
  *
  * What it answers is one small fixed routing table, so the same input gives
  * the same answers on every machine and in CI: the harness's two subnets
@@ -45,6 +54,16 @@
 #include "defs.h"
 
 #include "topology.h"
+
+int kern_routesock(int ifevent)
+{
+	(void)ifevent;
+
+	/* Not reached: priv_init() is never called in a harness. */
+	errno = ENOSYS;
+
+	return -1;
+}
 
 int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 {
