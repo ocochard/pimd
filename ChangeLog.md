@@ -274,6 +274,16 @@ issue of this repository is written out in full.
   `accept-nbr-from` is the answer to it
 
 ### Fixes
+- `accept_group_report()` no longer leaks the group it just allocated when
+  the source allocation behind it fails.  In the SSM path the new
+  `struct listaddr` for the group is not on `uv_groups` yet, so the early
+  return on the second `calloc()` was the one way out of that function that
+  had to give it back.  Invisible in an ordinary build, where
+  `logit(LOG_ERR)` calls `exit()` and the question never arises -- and live
+  in a tree configured `--disable-exit-on-error`, which is what the fuzz
+  harnesses and the OSS-Fuzz build are.  Found by `gcc -fanalyzer`
+  (`-Wanalyzer-malloc-leak`), the one thing it had to say about the whole
+  tree
 - A `masklen` that cannot be read is reported and defaulted again.  Three
   keyword parsers in `src/config.c` tested `if (!sscanf(...))`, and
   `sscanf()` answers `EOF`, not zero, when there is nothing to convert --

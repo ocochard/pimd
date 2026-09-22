@@ -502,7 +502,13 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 	if (IN_PIM_SSM_RANGE(group)) {
 	    s = calloc(1, sizeof(struct listaddr));
 	    if (!s) {
+		/* g is not on v->uv_groups yet, so this is the one path
+		 * out of here that has to give it back.  logit(LOG_ERR)
+		 * exits, except in a tree configured
+		 * --disable-exit-on-error -- which is what the fuzz
+		 * harnesses are built as, and there this returns. */
 		logit(LOG_ERR, errno, "%s(): Ran out of memory", __func__);
+		free(g);
 		return;
 	    }
 	    s->al_addr = ssm_src;
