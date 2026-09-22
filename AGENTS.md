@@ -487,6 +487,21 @@ which reads exactly like a clean run. The names a rule cares about are lists in 
 `@initialize:python@` block, tested in the script; `=~` is for anchored prefixes and character
 classes, which both engines read alike.
 
+`scan-build`, clang's static analyser, is deliberately **not** in CI, and the reason is here so
+that nobody re-derives it. Over this tree (`scan-build ./configure && scan-build make`, llvm 19)
+it answers sixteen, and all sixteen are noise or cosmetics: five dead stores that change nothing
+(two of them a `num_groups_tmp` reassigned identically seven lines later); six null dereferences
+that cannot happen -- five in `mrt.c`, where its own path notes take `flags & (MRTF_SG|MRTF_WC)`
+false and then `flags & MRTF_SG` true, and one in `rp.c`, where a defensive `rp->group != NULL` in
+`age_misc()` is the only reason it believes the pointer can be NULL at all, `add_rp_grp_entry()`
+setting it on every entry it links; three `errno`-after-`__builtin_object_size` artifacts of the
+fortified headers; one `setsockopt(sd, IPPROTO_IP, MRT_DONE, NULL, 0)`, which is how that option
+is spelled; and one leak of a block the `cmds` list owns through its `argv`. A job that fails on
+that is a job somebody turns off, and the classes it is good at are already covered by CodeQL and
+`-fanalyzer`. It earned its keep once, on its first run -- `try_connect()` reading `errno` after
+`close()`, fixed -- so re-run it by hand after changing the daemon's error paths, and compare
+against that list.
+
 Four of the rules are about this tree rather than about C, and are the ones worth adding to: a
 `receive_pim_*()` that never compares its `len` argument to anything (the `receive_pim_assert()`
 bug above, as a pattern), a `uvifs[]` subscript taking a vif index straight from `find_vif_direct()`
