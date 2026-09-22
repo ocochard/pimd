@@ -1,0 +1,104 @@
+name: CodeQL
+
+# GitHub's own analyser, over a database built from a real compile of the
+# daemon.  It is here beside Coverity and Coccinelle because the three ask
+# different questions and this tree has already been surprised by each:
+#
+#   - rules/security.cocci matches patterns somebody thought to write down.
+#     It finds the hazards that are about *this* tree -- a receive_pim_*()
+#     that never bounds its len, a uvifs[] subscript never tested against
+#     NO_VIF, the s1..s4 log buffers used twice in one call -- and nothing
+#     nobody wrote a rule for.
+#   - Coverity is interprocedural, and free for open source, but its tier
+#     caps submissions, so coverity.yml runs weekly and off push.
+#   - CodeQL is dataflow and taint over the whole compiled program, and it
+#     runs on every push and every pull request, where a finding lands on
+#     the diff that introduced it rather than in a report read weeks later.
+#     For a daemon whose whole input is attacker-supplied packets, "is
+#     there a path from this recvfrom() to that subscript" is exactly the
+#     question worth asking on a pull request.
+#
+# Two things to know before reading a green run as an answer:
+#
+#   - Only compiled code is analysed, and this builds on Linux, so
+#     netlink.c is in the database and routesock.c is not, along with the
+#     BSD branches of kern.c -- the same blind spot the Linux labs have.
+#     Not for want of a FreeBSD job: ci-freebsd.yml and sanitize.yml both
+#     build that half, in a vmactions/freebsd-vm guest on a Linux runner.
+#     CodeQL is what cannot follow them there.  It builds its database by
+#     tracing the compiler, and the CLI ships for Linux, macOS and Windows
+#     only, so it cannot trace a compile that happens inside the guest --
+#     the analyser would be on the host and the cc(1) it has to wrap in the
+#     VM.  A macos runner would compile the BSD branch of its own accord,
+#     net/if_dl.h and the routing socket being there; whether pimd builds
+#     on Darwin at all is untested, and it is the only lead this leaves.
+#   - Advanced setup, this file, and Default setup in the repository's
+#     code scanning settings are mutually exclusive: with Default setup
+#     enabled the upload below is refused.  Turn it off in Settings ->
+#     Code security if this job reports that it cannot process the SARIF.
+on:
+  push:
+    branches:
+      - '**'
+      - '!dev'
+  pull_request:
+    branches:
+      - '**'
+  schedule:
+    # Weekly as well, and not because the code changed: the query packs
+    # do, so last week's clean run says nothing about this week's queries.
+    - cron: '0 4 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze C
+    runs-on: ubuntu-26.04
+    permissions:
+      # The alerts are the output; without this the analysis runs and its
+      # results go nowhere.
+      security-events: write
+      actions: read
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          # The tree is autotools, and configure is generated, so there is
+          # nothing for autobuild to find until autogen.sh has run.
+          build-mode: manual
+          # security-extended over the default suite: it adds the queries
+          # of lower precision, which is another way of saying the ones
+          # that need a human to decide.  That is the deal being made by
+          # adding a fourth analyser at all -- a finding per release that
+          # nothing else saw is worth a few that have to be dismissed.
+          # Drop back to the default suite if the noise is not paying for
+          # itself; do not silence queries one at a time without a reason
+          # written down.
+          queries: security-extended
+
+      - name: Build
+        # No --enable-test: the lab tools are not what is being analysed,
+        # and every alert in them is an alert to triage for nothing.  The
+        # probed warning and hardening flags stay, being what a release
+        # is built with.
+        run: |
+          ./autogen.sh
+          ./configure --prefix=
+          make V=1 -j3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:c-cpp"

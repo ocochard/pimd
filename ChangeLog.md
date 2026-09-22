@@ -114,6 +114,20 @@ issue of this repository is written out in full.
   `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short
   packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan
   interposes on, and the aliasing flag is in that set without being hardening
+- CodeQL runs on every push and every pull request,
+  `.github/workflows/codeql.yml`, over a database built from a real compile of
+  the daemon and with the `security-extended` suite rather than the default
+  one.  It is a third analyser and not a spare: `rules/security.cocci` matches
+  patterns somebody wrote down, Coverity is interprocedural but runs weekly
+  because its free tier caps submissions, and this is dataflow and taint over
+  the whole program, reported on the diff that introduced it -- which for a
+  daemon whose entire input is packets off the wire is the question worth
+  asking before a merge rather than after one.  It analyses what the Linux
+  build compiles, so `routesock.c` and the BSD branches of `kern.c` are not in
+  it -- not for want of a FreeBSD job, `ci-freebsd.yml` building that half in a
+  VM on a Linux runner, but because CodeQL builds its database by tracing the
+  compiler and has no FreeBSD CLI to do it with inside that guest.  Those files
+  keep the labs and the sanitizer VM as their only coverage
 - New `--enable-coverage`, `test/coverage.sh` and
   `.github/workflows/coverage.yml`: which lines of the daemon the tests reach,
   as a number rather than as a reading of the sources.  The knob puts

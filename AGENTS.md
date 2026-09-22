@@ -499,3 +499,17 @@ the build looked for a `printf()` whose format is not a literal; `configure` pro
 now, which covers the same ground, and they stay because the probe can drop it -- an older
 compiler that will not take the flag still gets the `spatch` pass, which needs no compiler at all.
 The mtrace copy fixed in `src/trace.c` was found this way.
+
+Three analysers run in CI beside those rules, and they are not interchangeable:
+`.github/workflows/codeql.yml` builds a CodeQL database from a real compile and runs the
+`security-extended` suite on every push and pull request, which is dataflow and taint over the
+whole program -- the "is there a path from this `recvfrom()` to that subscript" question, answered
+on the diff that introduced it; `.github/workflows/coverity.yml` is interprocedural too but runs
+weekly, its free tier capping submissions; `rules/run.sh` is the pattern matcher, and the only one
+of the three that knows anything about this tree in particular. All three analyse what the Linux
+build compiles, so `routesock.c` and the BSD branches of `kern.c` are in none of them, and not for
+want of a FreeBSD job: `ci-freebsd.yml` and `sanitize.yml` build that half in a
+`vmactions/freebsd-vm` guest on a Linux runner, but CodeQL builds its database by tracing the
+compiler and its CLI is Linux, macOS and Windows only, so the analyser cannot follow the compile
+into the guest. That half stays the labs' and the sanitizer VM's to cover. A CodeQL finding gets a decision, dismissed in the Security tab with a reason or fixed;
+queries are not silenced one at a time without one written down.

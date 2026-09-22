@@ -1,6 +1,6 @@
 PIM-SM/SSM Multicast Routing for UNIX
 =====================================
-[![License Badge][]][License] [![Linux Status][]][Linux] [![FreeBSD Status][]][FreeBSD] [![Coverity Status][]][Coverity Scan]
+[![License Badge][]][License] [![Linux Status][]][Linux] [![FreeBSD Status][]][FreeBSD] [![CodeQL Status][]][CodeQL] [![Coverity Status][]][Coverity Scan]
 
 Table of Contents
 -----------------
@@ -515,6 +515,8 @@ Stanford Junior University.
 [Linux Status]:    https://github.com/ocochard/pimd/actions/workflows/ci-linux.yml/badge.svg
 [FreeBSD]:         https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml
 [FreeBSD Status]:  https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml/badge.svg
+[CodeQL]:          https://github.com/ocochard/pimd/actions/workflows/codeql.yml
+[CodeQL Status]:   https://github.com/ocochard/pimd/actions/workflows/codeql.yml/badge.svg
 [coverage]:        https://github.com/ocochard/pimd/blob/master/doc/README-coverage.md
 [Coverage]:        https://github.com/ocochard/pimd/actions/workflows/coverage.yml
 [Coverity Scan]:   https://scan.coverity.com/projects/33273
