@@ -487,6 +487,27 @@ which reads exactly like a clean run. The names a rule cares about are lists in 
 `@initialize:python@` block, tested in the script; `=~` is for anchored prefixes and character
 classes, which both engines read alike.
 
+`sparse` is not in CI either, and for different reasons than `scan-build` below. It is not
+packaged on FreeBSD at all (this ran from a source build) and it needs `--disable-hardening` to be
+useful: against glibc's `_FORTIFY_SOURCE=3` headers, sparse 0.6.4 cannot parse
+`__builtin_dynamic_object_size` and answers 67 `undefined identifier` errors, which *mask its real
+findings* -- the one thing it found here appeared only once hardening was off, so a run with the
+tree's default flags is worse than no run. What it leaves on a clean tree is 26 `0` used as a NULL
+pointer, nearly all of them the third member of `getopt_long()`'s `struct option` rows, plus two
+warnings from `/usr/include/.../syslog.h`. Nothing worth gating on.
+
+It is still worth running by hand, because it earned its place once: `(uint16_t)0xffffff` in
+`main.c` and `pim_proto.c`, the static-RP sentinel with an `f` too many, which the cast turned
+back into the `0xffff` of `PIM_HELLO_HOLDTIME_FOREVER` -- right by truncation, and invisible to
+gcc, clang, CodeQL, `-fanalyzer` and `scan-build` alike, an explicit cast being exactly what
+silences the compilers' own conversion warnings. The recipe is `./configure --disable-hardening
+CC=cgcc && REAL_CC=gcc make`.
+
+What sparse is really built for is out of reach here and would be a project rather than a job:
+endianness checking wants the wire types annotated `__bitwise`/`__be32`, and this daemon carries
+raw `uint32_t` through `htonl()` and `ntohl()` by hand.  Annotating them would put a whole class
+of byte-order bug in front of a checker rather than in front of a reviewer.
+
 `scan-build`, clang's static analyser, is deliberately **not** in CI, and the reason is here so
 that nobody re-derives it. Over this tree (`scan-build ./configure && scan-build make`, llvm 19)
 it answers sixteen, and all sixteen are noise or cosmetics: five dead stores that change nothing
