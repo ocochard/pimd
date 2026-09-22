@@ -139,7 +139,10 @@ static int try_connect(struct sockaddr_un *sun)
 
 	sd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (-1 == sd) {
+		int err = errno;	/* warn(3) may set one of its own */
+
 		warn("failed socket()");
+		errno = err;
 		return -1;
 	}
 
@@ -152,15 +155,28 @@ static int try_connect(struct sockaddr_un *sun)
 	sun->sun_family = AF_UNIX;
 
 	if (connect(sd, (struct sockaddr*)sun, sizeof(*sun)) == -1) {
+		/*
+		 * close(2) and warn(3) may both set errno of their own, and
+		 * every caller of this function reads it: ipc_connect()
+		 * retries with a .sock suffix on ENOENT and gives up on
+		 * EACCES, and cmd() turns it into the message the user
+		 * sees.  So the connect(2) failure is saved here and put
+		 * back on the way out, which is this function's contract:
+		 * -1 with errno naming the reason.
+		 */
+		int err = errno;
+
 		close(sd);
-		if (errno == ENOENT) {
-			if (debug)
+		if (debug) {
+			if (err == ENOENT) {
 				warnx("no pimd at %s", sun->sun_path);
-			return -1;
+			} else {
+				errno = err;
+				warn("failed connecting to %s", sun->sun_path);
+			}
 		}
 
-		if (debug)
-			warn("failed connecting to %s", sun->sun_path);
+		errno = err;
 		return -1;
 	}
 

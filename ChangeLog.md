@@ -284,6 +284,16 @@ issue of this repository is written out in full.
   `accept-nbr-from` is the answer to it
 
 ### Fixes
+- `pimctl` no longer decides what went wrong from an `errno` that
+  `close(3)` or `warn(3)` may have overwritten.  `try_connect()` read it
+  after closing the socket, and its callers read it after it returns:
+  `ipc_connect()` retries with a `.sock` suffix on `ENOENT` and gives up on
+  `EACCES`, and `cmd()` turns it into the message the user sees, so a
+  clobbered value is "no pimd running" for a socket that is there, or the
+  reverse.  The connect(2) failure is saved and put back on every way out
+  of that function now, which is the contract the callers were already
+  assuming.  Found by `scan-build` (`unix.Errno`), which had four more of
+  these to say once the first was out of the way
 - `accept_group_report()` no longer leaks the group it just allocated when
   the source allocation behind it fails.  In the SSM path the new
   `struct listaddr` for the group is not on `uv_groups` yet, so the early
