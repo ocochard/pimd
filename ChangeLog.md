@@ -274,6 +274,24 @@ issue of this repository is written out in full.
   `accept-nbr-from` is the answer to it
 
 ### Fixes
+- A `masklen` that cannot be read is reported and defaulted again.  Three
+  keyword parsers in `src/config.c` tested `if (!sscanf(...))`, and
+  `sscanf()` answers `EOF`, not zero, when there is nothing to convert --
+  `group-prefix 224.0.0.0/` with the length left off, or `masklen` as the
+  last word on the line -- so the test was false on exactly the input it
+  was there to catch.  In `parse_prefix_len()` that skipped the warning and
+  the default both, and the caller's length kept whatever it had; the other
+  two sites default at their declaration and so came out right by luck.
+  Every other `sscanf()` in the file already read `!= 1`.  Found by CodeQL
+  (`cpp/incorrectly-checked-scanf`), and reproduced: `group-prefix
+  224.0.0.0/` now logs "Invalid masklen ''" where it logged nothing
+- The PID file is created 0644 rather than 0666 masked by whatever `umask`
+  pimd inherited -- world-writable when that is empty, and the file a
+  SIGHUP is sent by the contents of.  `lib/pidfile.c` used `fopen(path,
+  "w")`; it opens with an explicit mode now, which is the argument
+  `src/ipc.c` already makes for the control socket.  An existing file keeps
+  the mode it has.  This is the fallback `pidfile()` -- glibc has none, so
+  Linux builds it.  Found by CodeQL (`cpp/world-writable-file-creation`)
 - `configure` no longer drops every hardening flag when the user's own
   `CFLAGS` carry warning options.  The compiler probe adds `-Werror`, so a
   `-W` flag of the user's that fires on the probe's own test program failed

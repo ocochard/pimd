@@ -35,6 +35,7 @@
 #include <sys/time.h>		/* utimensat() on *BSD */
 #include <sys/types.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -56,6 +57,7 @@ pidfile(const char *basename)
 	int atexit_already;
 	pid_t pid;
 	FILE *f;
+	int fd;
 
 	pid = getpid();
 	atexit_already = 0;
@@ -85,8 +87,20 @@ pidfile(const char *basename)
 			return (-1);
 	}
 
-	if ((f = fopen(pidfile_path, "w")) == NULL) {
+	/*
+	 * Not fopen(): "w" creates the file 0666 & ~umask, so the mode of
+	 * the PID file is whatever umask pimd was started with, and empty
+	 * is a world-writable file that a SIGHUP is then sent by the
+	 * contents of.  ipc.c makes the same argument about the control
+	 * socket and sets the mode there rather than inheriting one.  An
+	 * existing file keeps the mode it has; this is about the one being
+	 * created.
+	 */
+	fd = open(pidfile_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0 || (f = fdopen(fd, "w")) == NULL) {
 		save_errno = errno;
+		if (fd >= 0)
+			(void) close(fd);
 		free(pidfile_path);
 		pidfile_path = NULL;
 		errno = save_errno;

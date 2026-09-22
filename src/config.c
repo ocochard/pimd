@@ -801,7 +801,14 @@ static void parse_prefix_len(char *token, uint32_t *len)
     if (masklen) {
 	*masklen = 0;
 	masklen++;
-	if (!sscanf(masklen, "%u", len)) {
+	/*
+	 * != 1, not !sscanf(): sscanf() answers EOF, not zero, when the
+	 * string holds nothing to convert -- "224.0.0.0/" with the length
+	 * left off -- so !sscanf() is false on precisely the input this
+	 * has to catch, and both the warning and the default below are
+	 * skipped.  *len then keeps whatever the caller had in it.
+	 */
+	if (sscanf(masklen, "%u", len) != 1) {
 	    WARN("Invalid masklen '%s'", masklen);
 	    *len = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
 	}
@@ -1805,7 +1812,7 @@ static int parse_group_prefix(char *s)
 
     if (EQUAL((w = next_word(&s)), "masklen")) {
 	w = next_word(&s);
-	if (!sscanf(w, "%u", &masklen))
+	if (sscanf(w, "%u", &masklen) != 1)		/* EOF, see parse_prefix_len() */
 	    masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
     }
 
@@ -2152,7 +2159,7 @@ static int parse_rp_address(char *s)
 	while (!EQUAL((w = next_word(&s)), "")) {
 	    if (EQUAL(w, "masklen")) {
 		w = next_word(&s);
-		if (!sscanf(w, "%u", &masklen)) {
+		if (sscanf(w, "%u", &masklen) != 1) {	/* EOF, see parse_prefix_len() */
 		    WARN("Invalid masklen %s. Defaulting to %d)", w, PIM_GROUP_PREFIX_DEFAULT_MASKLEN);
 		    masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
 		}
