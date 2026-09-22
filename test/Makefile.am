@@ -3,6 +3,8 @@ EXTRA_DIST         = README.md igmpv3.c mping.c pimsend.c
 EXTRA_DIST        += lab.sh lab-freebsd.sh lab-linux.sh
 # Not in TESTS either: needs bhyve and a licensed Arista vEOS image on top
 EXTRA_DIST        += freebsd-interop.sh veos-bhyve.sh
+# Reports over a --enable-coverage build, runs nothing itself
+EXTRA_DIST        += coverage.sh
 CLEANFILES         = *~ *.trs *.log
 
 AUTOMAKE_OPTIONS   = subdir-objects

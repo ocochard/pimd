@@ -781,6 +781,10 @@
 # SANITIZE=yes runs the scenarios against a pimd built with
 # -fsanitize=address,undefined and fails any scenario whose daemons
 # reported anything, on either system; see the knob below.
+#
+# COVERAGE=yes runs them against a pimd built --enable-coverage and leaves
+# the counters behind for test/coverage.sh to turn into a table of which
+# lines the suite reaches; see the knob below and doc/README-coverage.md.
 
 set -eu
 
@@ -941,6 +945,30 @@ SANITIZE=${SANITIZE:-no}
 SAN_DIR=$WORKDIR/sanitizer
 SAN_ASAN_OPTIONS=${SAN_ASAN_OPTIONS:-detect_leaks=0}
 SAN_UBSAN_OPTIONS=${SAN_UBSAN_OPTIONS:-print_stacktrace=1}
+
+# COVERAGE=yes runs the scenarios against a pimd built --enable-coverage,
+# so that what they reach can be counted rather than read.  It does not
+# build that pimd either, and check_req() asks the binary rather than the
+# tree, as the two knobs above do.
+#
+# It changes one thing about the run: the daemons are given --no-privsep.
+# A .gcda file is written by the process that exits, at a path fixed when
+# it was compiled and with an open(2) -- and the unprivileged half of a
+# separated pimd can do neither.  The chroot took that path away on every
+# system, and on Linux open(2) is not on the seccomp allowlist, so the
+# half that runs every parser and every state machine would be killed for
+# asking rather than counted.  The privsep scenario is the exception: the
+# split is what it asserts, so it keeps it, and only its privileged half
+# is counted.
+#
+# The other bound is SIGKILL, which no exit handler survives: stop() ends
+# the daemons with SIGTERM, but restart_pimd() cuts one off on purpose --
+# assert-recover, which needs a router that did not say goodbye for the
+# generation ID event to happen at all, and privsep, for the control it
+# ends on -- and that incarnation's counters are gone.  Both bounds are written down in
+# doc/README-coverage.md, because a number nobody knows the edges of is
+# worse than none.
+COVERAGE=${COVERAGE:-no}
 
 # What the daemons are run with, empty unless a knob above asks for
 # something.  The lab wraps every privileged command in sudo(8), which
@@ -1664,7 +1692,16 @@ set_scenario() {
 	# sets it, for the --no-privsep control it ends on, and it is put
 	# back here rather than only there because "run all" without -j walks
 	# every scenario in one shell.
-	PIMD_ARGS=
+	#
+	# Under COVERAGE=yes that default is --no-privsep instead, the
+	# separated child being unable to write a .gcda at all -- except for
+	# the privsep scenario, where the separation is the thing under test
+	# and starting it unseparated would assert nothing.
+	if [ "$COVERAGE" = yes ] && [ "$SCENARIO" != privsep ]; then
+		PIMD_ARGS="--no-privsep"
+	else
+		PIMD_ARGS=
+	fi
 
 	# gif-tunnel-staticrp copies the issue down to the addresses: the
 	# KNX/IP group its reporters run, and the 224.0.0.0/16 rp-address
@@ -2037,6 +2074,13 @@ check_req() {
 	[ -f "$PIMD_SRC/test/mping.c" ] || die "$PIMD_SRC/test/mping.c not found"
 	[ -f "$PIMD_SRC/test/igmpv3.c" ] || die "$PIMD_SRC/test/igmpv3.c not found"
 	[ -f "$PIMD_SRC/test/pimsend.c" ] || die "$PIMD_SRC/test/pimsend.c not found"
+	if [ "$COVERAGE" = yes ]; then
+		# Both compilers leave the same runtime behind, gcc's libgcov
+		# and clang's profiling runtime sharing the __gcov_ names
+		nm "$PIMD" 2>/dev/null | grep -q '__gcov_' || \
+			die "COVERAGE=yes, but $PIMD carries no gcov runtime;" \
+			    "configure that tree --enable-coverage CFLAGS=\"-O0 -g\""
+	fi
 	if [ "$SANITIZE" = yes ]; then
 		# Every sanitizer leaves its runtime's symbols behind, undefined
 		# where it is a library and defined where it is linked in, and

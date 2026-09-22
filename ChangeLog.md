@@ -114,6 +114,35 @@ issue of this repository is written out in full.
   `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short
   packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan
   interposes on, and the aliasing flag is in that set without being hardening
+- New `--enable-coverage`, `test/coverage.sh` and
+  `.github/workflows/coverage.yml`: which lines of the daemon the tests reach,
+  as a number rather than as a reading of the sources.  The knob puts
+  `--coverage` in the probed flags -- fatally rather than silently, a build
+  that lost it running the whole suite and measuring nothing -- and drops the
+  hardening set with it, `_FORTIFY_SOURCE` wanting the optimiser that the
+  `-O0` a line count needs takes away.  The script runs nothing itself: it
+  reads the counters a run left behind and prints a table sorted by unreached
+  lines, with the uncovered ranges per file beside it, which is what tells a
+  file at 40% that is half a parser nobody drives from one that is a large
+  error path.  `COVERAGE=yes` is the lab's side of it.  Two builds and two
+  tables rather than one number, `--enable-fuzz` implying
+  `--disable-exit-on-error`: a daemon that carries on past `logit(LOG_ERR)`
+  is not the daemon `test/lab.sh` asserts against, so the corpus replay of
+  `make check` cannot share its tree.  Nothing fails on a number; what the
+  measurement is for is deciding which test to write next, and it settled
+  three arguments on sight: the lab suite reaches 67.3% of the 11442
+  instrumented lines of `src/` and `lib/` and the corpus replay a third of
+  its own build, `dvmrp_proto.c` is reached by nothing, `trace.c` by the
+  fuzz corpus alone and by no lab scenario, and what `config.c` leaves
+  behind is 526 mostly single lines -- allocation failures, `LOG_ERR` arms
+  and keywords no scenario writes.
+  `doc/README-coverage.md` has the recipe and the three things the number
+  cannot see: the unprivileged half of a separated daemon (a `.gcda` is an
+  `open(2)` the seccomp filter kills and a path the `chroot()` removed, so
+  the scenarios run `--no-privsep` and the `privsep` scenario, which keeps
+  the split, reports only its parent), a daemon SIGKILLed on purpose by
+  `restart_pimd()`, and whichever of `routesock.c` and `netlink.c` the
+  measuring host does not compile
 
 - New `--enable-fuzz`, and `test/fuzz/`: the pimd.conf parser called
   in-process with generated input, under the sanitizers.  `fuzz_config`

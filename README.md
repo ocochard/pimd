@@ -455,6 +455,14 @@ with `-i`, so it too is run by hand:
 
     sh test/freebsd-interop.sh -i ~/vEOS64-lab-4.36.1F.qcow2 run all
 
+How much of pimd any of that reaches is measured rather than argued
+about: configure `--enable-coverage`, run the lab with `COVERAGE=yes` or
+the committed fuzz corpus through `make check`, and `test/coverage.sh
+report` prints the table and the lines nothing reached.
+**[doc/README-coverage.md][coverage]** is the recipe and, more usefully,
+what the number cannot see; the [Coverage][] workflow runs both halves
+weekly.
+
 **[test/README.md][tests]** describes all three: what every scenario
 covers, what only it covers, and what each suite requires.  See also the
 header of each script for its topology, and the [Linux][] and
@@ -507,5 +515,7 @@ Stanford Junior University.
 [Linux Status]:    https://github.com/ocochard/pimd/actions/workflows/ci-linux.yml/badge.svg
 [FreeBSD]:         https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml
 [FreeBSD Status]:  https://github.com/ocochard/pimd/actions/workflows/ci-freebsd.yml/badge.svg
+[coverage]:        https://github.com/ocochard/pimd/blob/master/doc/README-coverage.md
+[Coverage]:        https://github.com/ocochard/pimd/actions/workflows/coverage.yml
 [Coverity Scan]:   https://scan.coverity.com/projects/33273
 [Coverity Status]: https://scan.coverity.com/projects/33273/badge.svg

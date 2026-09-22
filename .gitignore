@@ -30,5 +30,13 @@ missing
 pimd.service
 stamp-h1
 
+# gcov, from a --enable-coverage build: the .gcno is written beside each
+# object at compile time, the .gcda beside it when the program exits, and
+# test/coverage.sh leaves its table and the annotated sources in coverage/
+*.gcno
+*.gcda
+*.gcov
+/coverage/
+
 # AI working directory: project docs, memory, specs and plans, see AGENTS.md
 aidd_docs/

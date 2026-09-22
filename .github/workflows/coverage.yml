@@ -1,0 +1,131 @@
+name: Coverage
+
+# Which lines of pimd the tests reach, measured rather than read.  The
+# suspects were written down long before anything counted them -- legacy
+# stubs, the mtrace path, the error arms of the configuration parser -- and
+# a scenario added to test/lab.sh could only be justified by argument.  This
+# job turns that into two tables a pull request can be compared against.
+#
+# Nothing here fails on a number.  It is a measurement, and the only way it
+# fails is by not producing one: an empty report, or a lab scenario that
+# tripped, both of which mean the tables below describe a run that did not
+# happen the way it was supposed to.
+#
+# A workflow of its own, on a schedule, for the reason sanitize.yml is one:
+# the lab is long, and the per-push jobs should report without waiting for
+# it.  workflow_dispatch is what to use after adding a scenario, which is
+# the question this answers -- did it reach anything the others did not.
+on:
+  schedule:
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Scenarios to run, "all" or a space separated list'
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Line coverage on Linux
+    runs-on: ubuntu-26.04
+    # The lab at -j 2 is most of this, and -O0 with counters under it is
+    # not free; the sanitizer job next door is given two hours for the
+    # same walk.
+    timeout-minutes: 120
+    env:
+      MAKEFLAGS: -j3
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        # gcov comes with gcc, so the report needs nothing of its own.
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
+
+      # Two builds, because --enable-fuzz implies --disable-exit-on-error:
+      # a daemon that carries on past logit(LOG_ERR) is not the daemon the
+      # lab asserts against, so the corpus replay and the lab cannot share
+      # one tree.  The corpus is first because it is minutes, and a broken
+      # coverage build should say so before the lab spends an hour proving
+      # it again.
+      #
+      # -O0: at -O2 a line count is the optimiser's idea of which line the
+      # code came from, and a function inlined into its only caller reports
+      # as never executed.  --enable-coverage drops the hardening flags by
+      # itself, _FORTIFY_SOURCE wanting an optimiser it no longer has.
+      - name: Build for the fuzz corpus replay
+        run: |
+          ./autogen.sh
+          ./configure --enable-coverage --enable-fuzz CFLAGS="-O0 -g"
+          make V=1
+
+      - name: Replay the committed corpus, and count what it reached
+        run: |
+          test/coverage.sh reset
+          make check || rc=$?
+          cat test/test-suite.log test/fuzz-corpus.sh.log 2>/dev/null || true
+          test/coverage.sh -n fuzz report
+          exit ${rc:-0}
+
+      # distclean leaves the .gcno behind, which is harmless: the report
+      # walks the .gcda, every object that matters here is recompiled, and
+      # reset() takes the counters away before the lab starts.
+      - name: Rebuild for the lab
+        run: |
+          make distclean
+          ./configure --prefix= --enable-coverage --enable-test CFLAGS="-O0 -g"
+          make V=1
+
+      - name: Run the lab, and count what it reached
+        # COVERAGE=yes goes through env(1) rather than through sudo, which
+        # resets the environment; lab.sh hands each daemon its knobs the
+        # same way.  What it changes about the run is --no-privsep, the
+        # separated child being unable to write a .gcda at all -- the
+        # reasons are in doc/README-coverage.md and in the knob itself.
+        env:
+          LAB_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+        run: |
+          set -u
+          set -- $LAB_SCENARIOS
+          [ $# -gt 0 ] || set -- all
+          if [ "$1" = all ] || [ $# -gt 1 ]; then
+                  jobs="-j 2"
+          else
+                  jobs=""
+          fi
+
+          test/coverage.sh reset
+          sudo env COVERAGE=yes sh test/lab.sh $jobs run "$@" || rc=$?
+
+          # The daemons ran as root and so did the counters they wrote;
+          # the report reads them as the runner's user.
+          sudo chown -R "$(id -u):$(id -g)" src lib test
+
+          test/coverage.sh -n lab report
+          exit ${rc:-0}
+
+      - name: Put both tables in the job summary
+        if: always()
+        run: |
+          for r in lab fuzz; do
+                  test -f "coverage/$r.txt" || continue
+                  {
+                          echo "## $r"
+                          echo
+                          echo '```'
+                          cat "coverage/$r.txt"
+                          echo '```'
+                  } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: warn

@@ -332,6 +332,21 @@ flash with `debugfs`, `cloudinit` for the vendor `ARISTA_CONFIG_DRIVE` day0 path
 EOS commands over eAPI. Everything belonging to one VM lives in `$WORK/<name>`, `-n` naming it, so
 several guests run at once; sharing one raw disk image, which is what they did before, corrupts it.
 
+Which lines of the daemon any of that reaches is measured rather than read: `--enable-coverage`
+puts `--coverage` in the probed flags (and drops the hardening set, `_FORTIFY_SOURCE` wanting the
+optimiser that the `-O0` a line count needs takes away), `COVERAGE=yes` runs the `lab.sh`
+scenarios against such a build, and `test/coverage.sh reset` / `report` turns the counters into a
+table sorted by unreached lines plus the uncovered ranges per file. Two builds and two tables, not
+one number: `--enable-fuzz` implies `--disable-exit-on-error`, so the corpus replay of `make
+check` cannot share a tree with the labs, which assert against a daemon that exits on
+`logit(LOG_ERR)`. `.github/workflows/coverage.yml` runs both weekly and puts the tables in the job
+summary; nothing fails on a number. Read `doc/README-coverage.md` before quoting one, because
+three things are invisible to it: the unprivileged half of a separated daemon (a `.gcda` is an
+`open(2)` the seccomp filter kills and a path the `chroot()` removed, which is why `COVERAGE=yes`
+runs the scenarios `--no-privsep` and why the `privsep` scenario, which keeps the split, reports
+only its parent), a daemon SIGKILLed on purpose (`restart_pimd()`, for the GenID), and whichever
+of `routesock.c` and `netlink.c` the measuring host does not compile.
+
 ## Running
 
 Needs root and a multicast-capable kernel (`CONFIG_IP_MROUTE`/`CONFIG_IP_PIMSM_V2` on Linux,

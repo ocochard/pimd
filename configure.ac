@@ -145,6 +145,12 @@ AC_ARG_ENABLE(fuzz,
 		for the libFuzzer half; the corpus replay builds with any compiler]),,
 	enable_fuzz=no)
 
+AC_ARG_ENABLE(coverage,
+        AS_HELP_STRING([--enable-coverage], [Instrument for gcov, so that test/coverage.sh can
+		say which lines the tests reach.  Implies --disable-hardening unless
+		hardening is asked for by name]),,
+	enable_coverage=no)
+
 AC_ARG_WITH(max_vifs,
 	AS_HELP_STRING([--with-max-vifs=NUM], [Kernel maximum number of allowed VIFs, default: 32.
 		This must match the kernel built-in MAXVIFS value!
@@ -322,7 +328,18 @@ done
 
 AC_ARG_ENABLE([hardening],
 	AS_HELP_STRING([--disable-hardening], [Do not add compiler and linker hardening flags]),,
-	[enable_hardening=yes])
+	[enable_hardening=auto])
+
+# A coverage build is measured, never shipped, and two of the flags below
+# are in the way of measuring it: _FORTIFY_SOURCE wants an optimiser, which
+# the -O0 that makes a line count mean anything takes away -- glibc then
+# says so from every header, on every file -- and -ftrivial-auto-var-init
+# and PIE are cost with no question to answer here.  So --enable-coverage
+# drops the set unless it was asked for by name, which is what sanitize.yml
+# passes by hand for its own version of the same reason.
+AS_IF([test "x$enable_hardening" = "xauto"],
+	[AS_IF([test "x$enable_coverage" = "xyes"],
+		[enable_hardening=no], [enable_hardening=yes])])
 
 # -fno-strict-aliasing is not decoration here: pim.c and igmp.c cast the
 # char * receive buffers to struct ip *, pim_register_t * and
@@ -355,6 +372,27 @@ AS_IF([test "x$enable_hardening" != "xno"], [
 		PIMD_TRY_LDFLAGS([$flag])
 	done
 ])
+
+# --coverage is the one spelling gcc and clang share for "leave a .gcno
+# beside each object and write a .gcda beside it at exit", and it is needed
+# at the compile and at the link step both.  Probed like everything else
+# here, but an unprobed flag is fatal rather than dropped: a build that
+# silently lost this one runs the whole lab suite and measures nothing,
+# which is the failure mode this file exists to avoid elsewhere too.
+# test/coverage.sh turns what the daemons leave behind into a table,
+# doc/README-coverage.md is the recipe.
+AS_IF([test "x$enable_coverage" = "xyes"], [
+	PIMD_TRY_CFLAGS([--coverage])
+	PIMD_TRY_LDFLAGS([--coverage])
+	AS_CASE([" $PIMD_CFLAGS "], [*" --coverage "*], [],
+		[AC_MSG_ERROR([--enable-coverage given, but $CC does not accept --coverage])])
+
+	# pim.c and igmp.c cast their char * receive buffers to struct ip *
+	# and friends on nearly every path, which is undefined without this.
+	# It sits in the hardening set the knob above may just have turned
+	# off, and it is not hardening.
+	AS_CASE([" $PIMD_CFLAGS "], [*" -fno-strict-aliasing "*], [],
+		[PIMD_TRY_CFLAGS([-fno-strict-aliasing])])])
 
 # The daemon's own objects have to carry the coverage instrumentation, or a
 # fuzzer mutates with no idea what it reached: -fsanitize=fuzzer on the
@@ -420,6 +458,7 @@ Optional features:
   Kernel MAX VIFs.......: $max_vifs
   Memory save...........: $enable_memory_save
   Hardening.............: $enable_hardening
+  Coverage (gcov).......: $enable_coverage
   Warnings are errors...: $enable_werror
   Exit on error.........: $enable_exit_on_error
   systemd...............: $with_systemd

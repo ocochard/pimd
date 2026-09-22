@@ -32,6 +32,7 @@ Table of Contents
 * [The Linux suite, and where it went](#the-linux-suite-and-where-it-went)
 * [The vnet jail and network namespace lab](#the-vnet-jail-and-network-namespace-lab)
 * [The Arista vEOS interoperability lab](#the-arista-veos-interoperability-lab)
+* [What any of it reaches](#what-any-of-it-reaches)
 * [Which suite sees what](#which-suite-sees-what)
 
 
@@ -443,6 +444,32 @@ Provisioning, out of which there are two ways — a `startup-config`
 written onto the guest ext4 with `debugfs`, or the vendor's
 `ARISTA_CONFIG_DRIVE` day0 path, which does work under bhyve once
 `EosCloudInit` is told which platform it is on.
+
+
+What any of it reaches
+----------------------
+
+    ./configure --enable-coverage --enable-test CFLAGS="-O0 -g"
+    make
+    test/coverage.sh reset
+    sudo env COVERAGE=yes sh test/lab.sh -j 4 run all
+    test/coverage.sh -n lab report
+
+`coverage.sh` runs nothing itself: it reads the counters a run left
+behind in a `--enable-coverage` tree and prints a table sorted by
+unreached lines, with the ranges per file beside it, which is what says
+whether a file at 40% is half a parser nobody drives or one large error
+path.  Two runs and two builds — the lab above, and the committed fuzz
+corpus through `make check` — because `--enable-fuzz` implies
+`--disable-exit-on-error` and a daemon that carries on past
+`logit(LOG_ERR)` is not the daemon the lab asserts against.
+
+`doc/README-coverage.md` has the rest, and in particular the three
+things the number cannot see: the unprivileged half of a separated
+daemon (hence `--no-privsep` under `COVERAGE=yes`), a daemon SIGKILLed
+on purpose, and whichever of `routesock.c` and `netlink.c` the measuring
+host does not compile.  `.github/workflows/coverage.yml` is the weekly
+run of both.
 
 
 Which suite sees what
