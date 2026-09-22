@@ -284,6 +284,16 @@ issue of this repository is written out in full.
   `accept-nbr-from` is the answer to it
 
 ### Fixes
+- The "this RP is static" sentinel is spelled `PIM_HELLO_HOLDTIME_FOREVER`
+  in all four places now.  `src/main.c` stored it as `(uint16_t)0xffffff`
+  and `src/pim_proto.c` compared against the same, one `f` too many, which
+  the cast quietly turned back into the `0xffff` that `src/pimd.h` defines
+  and that `src/ipc.c` and `src/debug.c` test for.  Right by truncation, on
+  both sides, so nothing misbehaved -- and a trap for whoever widens
+  `adv_holdtime`, since the two literals would then stop agreeing with the
+  two macros.  No change in behaviour.  Found by `sparse` (`cast truncates
+  bits from constant value`), which is the only checker run over this tree
+  that had anything to say about it
 - `pimctl` no longer decides what went wrong from an `errno` that
   `close(3)` or `warn(3)` may have overwritten.  `try_connect()` read it
   after closing the socket, and its callers read it after it returns:

@@ -764,7 +764,7 @@ static void add_static_rp(void)
 	rp_grp_entry_t *entry;
 
 	entry = add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
-				 rph->address, 1, (uint16_t)0xffffff,
+				 rph->address, 1, PIM_HELLO_HOLDTIME_FOREVER,
 				 rph->group, rph->mask,
 				 curr_bsr_hash_mask, curr_bsr_fragment_tag);
 

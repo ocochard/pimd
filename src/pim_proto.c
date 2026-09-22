@@ -5612,7 +5612,7 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 		rpentry_t *entry = rp->rpentry;
 
 		/* Skip static/configured ones */
-		if (entry->adv_holdtime == (uint16_t)0xffffff)
+		if (entry->adv_holdtime == PIM_HELLO_HOLDTIME_FOREVER)
 		    continue;
 
 		/* Ignore this guy. */
