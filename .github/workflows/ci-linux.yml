@@ -82,6 +82,45 @@ jobs:
       - name: Run rules/security.cocci
         run: ./rules/run.sh
 
+  analyzer:
+    # gcc's own path-sensitive analyser, -fanalyzer, which walks each
+    # function's execution paths rather than pattern matching over its
+    # text.  It is a job of its own and not a flag on the build above for
+    # the same reason the Coccinelle job is one: a finding should report as
+    # a finding rather than as a failed build of something else.
+    #
+    # On every push, because it costs seconds: the whole tree analysed is
+    # under five seconds at -j3 on a 2026 gcc, this being fifteen thousand
+    # lines and gcc 15's analyser being far quicker than the one that
+    # shipped in gcc 12.
+    #
+    # --enable-werror, so that a new finding fails rather than scrolls past
+    # -- this is a CI job and not a tarball build, so a future gcc that
+    # finds something new is a signal and not a packager's problem.
+    # -Wno-analyzer-too-complex is the exception: that one says the
+    # analyser gave up on a function, which is worth knowing and is not a
+    # bug in the daemon, and pim_proto.c is exactly the size that provokes
+    # it.
+    #
+    # gcc only, clang having no -fanalyzer; the clang side of the same
+    # question is scan-build, which is not here yet.
+    name: gcc -fanalyzer
+    runs-on: ubuntu-26.04
+    env:
+      MAKEFLAGS: -j3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev
+      - name: Build with the analyser
+        run: |
+          ./autogen.sh
+          ./configure --prefix= --enable-werror CC=gcc			\
+              CFLAGS="-O2 -g -fanalyzer -Wno-analyzer-too-complex"
+          make V=1
+
   fuzz:
     # The in-process harnesses of test/fuzz/, which is the only job that
     # runs anything out of TESTS: the build above configures --enable-test,

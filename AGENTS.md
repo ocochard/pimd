@@ -500,7 +500,10 @@ now, which covers the same ground, and they stay because the probe can drop it -
 compiler that will not take the flag still gets the `spatch` pass, which needs no compiler at all.
 The mtrace copy fixed in `src/trace.c` was found this way.
 
-Three analysers run in CI beside those rules, and they are not interchangeable:
+Three analysers run in CI beside those rules, and they are not interchangeable (four counting
+`gcc -fanalyzer`, the `analyzer` job of `.github/workflows/ci-linux.yml`, which walks each
+function's paths at compile time and is seconds rather than minutes -- it found the one leak in
+`accept_group_report()` that `logit(LOG_ERR)`'s usual `exit()` had been hiding):
 `.github/workflows/codeql.yml` builds a CodeQL database from a real compile and runs the
 `security-extended` suite on every push and pull request, which is dataflow and taint over the
 whole program -- the "is there a path from this `recvfrom()` to that subscript" question, answered

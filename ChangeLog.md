@@ -114,6 +114,16 @@ issue of this repository is written out in full.
   `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short
   packet read would otherwise show, `_FORTIFY_SOURCE` wraps the calls ASan
   interposes on, and the aliasing flag is in that set without being hardening
+- `gcc -fanalyzer` runs on every push, as the `analyzer` job of
+  `.github/workflows/ci-linux.yml`.  It walks each function's execution paths
+  at compile time rather than matching patterns over its text, and it costs
+  seconds -- the whole tree in under five at `-j3` -- so it is a per-push job
+  and not another scheduled one.  `--enable-werror`, so a new finding fails
+  the job instead of scrolling past; `-Wno-analyzer-too-complex`, that one
+  being the analyser saying it gave up on a function rather than anything
+  about the daemon.  gcc only: clang's side of the same question is
+  `scan-build`, which is not here yet.  It found one leak on its first run,
+  below
 - CodeQL runs on every push and every pull request,
   `.github/workflows/codeql.yml`, over a database built from a real compile of
   the daemon and with the `security-extended` suite rather than the default
