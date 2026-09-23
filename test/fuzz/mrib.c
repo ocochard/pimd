@@ -83,6 +83,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
 	rpf->iif                = NO_VIF;
 	rpf->rpfneighbor.s_addr = INADDR_ANY;
 	rpf->metric             = RPF_METRIC_UNKNOWN;
+	rpf->pref               = RPF_PREF_UNKNOWN;
 
 	/* Nothing is routed to a link-local address, which is what the
 	 * invented RP of every SSM range is; netlink.c and routesock.c

@@ -218,6 +218,40 @@ issue of this repository is written out in full.
   and the header length are what accept_igmp() reads first and synthesizing
   them would put the upcall path out of reach; `igmpv3 -o` writes seeds of
   that shape and the three upcall seeds are committed as the bytes they are
+- New `assert-preference` in `pimd.conf`, which says where the metric
+  preference of a PIM Assert comes from.  RFC 7761 sec. 4.6.3 wants the
+  administrative distance of the routing protocol that provided the route,
+  and `assert-preference rib` is that: the kernel is asked which protocol
+  installed the route -- `rtm_protocol`, which netlink carries on Linux and
+  on FreeBSD and a PF\_ROUTE socket carries nowhere -- and pimd advertises
+  the distance that protocol is conventionally given, 0 connected, 1
+  static, 20 BGP, 90 EIGRP, 110 OSPF, 115 IS-IS, 120 RIP, which are the
+  numbers an Arista or a Cisco on the same LAN advertises for the same
+  route.  A route whose protocol the kernel does not name, a protocol with
+  no conventional distance, and every route at all on a routing socket
+  build, keep the `distance` of the interface as before.  `pimctl show
+  status` says which of the two is in force beside the RPF backend it
+  depends on.  Half of deviation M4 of `doc/rfc7761-compliance.md`, the
+  other half of the assert metric, whose first field this is: sec. 4.6.3
+  compares the preference before it ever looks at the metric, and between
+  two pimds it was 101 on both, so that comparison had never decided
+  anything
+- The default is `configured`, which is what pimd did before, and that is
+  deliberate rather than caution: a router that derives its preference
+  beats one that cannot before either metric is read, and on FreeBSD the
+  difference between the two is a `configure` flag rather than a different
+  operating system.  Two routers on one LAN, same routing table, different
+  build, and the election would go to whichever was built which way.
+  Deriving it is a domain-wide decision, and the keyword is how a pimd.conf
+  makes it
+- Step 13 of the `shared-lan` scenario in `test/lab.sh` asserts it, twice
+  and in both directions, with the metrics left equal: the route to the RP
+  is labelled with the protocol that is to look as if it installed it, the
+  loser of the moment is given a better distance, and the LAN has to change
+  hands -- against the address, which is the only reason the other router
+  held it.  It needs a kernel whose routes carry a protocol and a netlink
+  build to read it, so it skips itself on the BSDs and on a routing socket
+  build and says which
 - New `fuzz_ipc` harness, over the last parser in this tree that had none:
   one pimctl command to `ipc_handle()`, the handler `ipc_init()` registers
   with the event loop, across a UNIX socket of the harness's own with a

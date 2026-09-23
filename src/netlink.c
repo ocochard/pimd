@@ -56,7 +56,7 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf);
 static int init_ifevent(void);
 static void ifevent_read(int fd);
 static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len);
-static uint32_t fib_metric(uint32_t dst);
+static int fib_entry(uint32_t dst, uint32_t *metric, uint8_t *proto);
 
 static int addattr32(struct nlmsghdr *n, size_t maxlen, int type, uint32_t data)
 {
@@ -295,6 +295,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     rpf->iif                = NO_VIF;     /* Initialize, will be changed in kernel */
     rpf->rpfneighbor.s_addr = INADDR_ANY; /* Initialize */
     rpf->metric             = RPF_METRIC_UNKNOWN;
+    rpf->pref               = RPF_PREF_UNKNOWN;
 
     /*
      * Nothing in 169.254/16 is ever routed, RFC 3927 sec. 2.7 forbids
@@ -407,19 +408,19 @@ static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len)
 }
 
 /*
- * The priority of the FIB entry that routes dst, what `ip route` prints as
- * its "metric", or 0 when there is none to be had.
+ * The FIB entry that routes dst: its priority, what `ip route` prints as
+ * the "metric", and the protocol that installed it.  FALSE when the kernel
+ * cannot be asked, which leaves both alone.
  *
  * The ordinary RTM_GETROUTE k_req_incoming() sends is answered on Linux
- * with the route resolved for dst, and that answer never carries
- * RTA_PRIORITY, whatever the metric of the entry it was resolved from:
- * `ip route get` prints no metric, `ip route get fibmatch` does.
- * RTM_F_FIB_MATCH (Linux 4.13) is what asks for the entry itself.  Only
- * the priority is taken from that answer.  The next hop stays the one
- * the ordinary lookup chose, since the entry of a multipath route lists
- * them all.
+ * with the route resolved for dst, and that answer carries neither:
+ * `ip route get` prints no metric and no proto, `ip route get fibmatch`
+ * prints both.  RTM_F_FIB_MATCH (Linux 4.13) is what asks for the entry
+ * itself.  Only these two fields are taken from that answer.  The next hop
+ * stays the one the ordinary lookup chose, since the entry of a multipath
+ * route lists them all.
  */
-static uint32_t fib_metric(uint32_t dst)
+static int fib_entry(uint32_t dst, uint32_t *metric, uint8_t *proto)
 {
 #ifdef RTM_F_FIB_MATCH
     int l;
@@ -430,22 +431,79 @@ static uint32_t fib_metric(uint32_t dst)
 
     l = getroute(dst, RTM_F_FIB_MATCH, buf, sizeof(buf));
     if (l < (int)NLMSG_LENGTH(sizeof(*rtm)) || n->nlmsg_type != RTM_NEWROUTE)
-	return 0;
+	return FALSE;
 
     rtm = NLMSG_DATA(n);
     memset(rta, 0, sizeof(rta));
     parse_rtattr(rta, RTA_MAX, RTM_RTA(rtm), l - (int)NLMSG_LENGTH(sizeof(*rtm)));
 
+    *proto = rtm->rtm_protocol;
     if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))
-	return *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
-#endif
+	*metric = *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
+    else
+	*metric = 0;
 
-    return 0;
+    return TRUE;
+#else
+    (void)dst;
+    (void)metric;
+    (void)proto;
+
+    return FALSE;
+#endif
+}
+
+/*
+ * MRIB.pref of RFC 7761 sec. 4.6.3: the administrative distance of the
+ * routing protocol that provided the route, which is a number the kernel
+ * does not keep -- what it keeps is which protocol that was, and these are
+ * the distances the rest of the industry gives them, the ones an Arista or
+ * a Cisco on the same LAN will be advertising for the same route.  A
+ * protocol nobody has a number for, and the ones that only say "some
+ * daemon put this here" -- RTPROT_ZEBRA, RTPROT_BIRD and their kind -- are
+ * answered with RPF_PREF_UNKNOWN, which leaves the `distance` of pimd.conf
+ * in place rather than inventing a number that would win or lose an
+ * election on nothing.
+ */
+static uint32_t rtprot_pref(uint8_t proto)
+{
+    switch (proto) {
+	case RTPROT_KERNEL:		/* connected, this router's own subnet */
+	    return 0;
+
+	case RTPROT_BOOT:		/* `ip route add` and rc(8) leave this */
+	case RTPROT_STATIC:
+	    return 1;
+
+#ifdef RTPROT_BGP
+	case RTPROT_BGP:		/* eBGP; nothing here says which side */
+	    return 20;
+#endif
+#ifdef RTPROT_EIGRP
+	case RTPROT_EIGRP:
+	    return 90;
+#endif
+#ifdef RTPROT_OSPF
+	case RTPROT_OSPF:
+	    return 110;
+#endif
+#ifdef RTPROT_ISIS
+	case RTPROT_ISIS:
+	    return 115;
+#endif
+#ifdef RTPROT_RIP
+	case RTPROT_RIP:
+	    return 120;
+#endif
+	default:
+	    return RPF_PREF_UNKNOWN;
+    }
 }
 
 static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
 {
-    int ifindex;
+    int ifindex, have;
+    uint8_t proto;
     vifi_t vifi;
     struct uvif *v;
     struct rtattr *rta[RTA_MAX + 1];
@@ -468,6 +526,7 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
     rpf->iif = NO_VIF;
     rpf->rpfneighbor.s_addr = INADDR_ANY;
     rpf->metric = RPF_METRIC_UNKNOWN;
+    rpf->pref = RPF_PREF_UNKNOWN;
 
     /* Only Linux ever says this: FreeBSD's netlink(4) has no RTN_LOCAL
      * ("not supported" in netlink/route/route.h) and answers for one of
@@ -536,7 +595,7 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
 
     /* MRIB.metric, which RFC 7761 sec. 4.6.3 wants in the Assert: on Linux
      * that is the route's priority, what `ip route` prints as "metric".
-     * This answer does not carry it there, see fib_metric(), which asks
+     * This answer does not carry it there, see fib_entry(), which asks
      * for it; zero is what an ordinary route has, so an entry without one
      * is at metric 0 and not a missing answer.
      *
@@ -546,13 +605,39 @@ static int getmsg(struct rtmsg *rtm, int msglen, struct rpfctl *rpf)
      * a routing socket reply there.  Its default is RT_DEFAULT_METRIC, 1,
      * not 0, so the second lookup is never made there.
      */
-    if (rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t))
+    have = rta[RTA_PRIORITY] && RTA_PAYLOAD(rta[RTA_PRIORITY]) >= (int)sizeof(uint32_t);
+    if (have)
 	rpf->metric = *(uint32_t *)RTA_DATA(rta[RTA_PRIORITY]);
-    else
-	rpf->metric = fib_metric(rpf->source.s_addr);
+
+    /* MRIB.pref, sec. 4.6.3 again: rtm_protocol says which routing protocol
+     * installed the route, and rtprot_pref() turns that into the distance
+     * an Assert carries.  FreeBSD fills the field in this answer, from the
+     * nexthop's origin (nl_get_rtm_protocol(), sys/netlink/route/rt.c);
+     * Linux leaves it RTPROT_UNSPEC here, for the same reason it leaves out
+     * the priority, so the one lookup below answers both.
+     */
+    proto = rtm->rtm_protocol;
+    if (!have || proto == RTPROT_UNSPEC) {
+	uint32_t metric = 0;
+	uint8_t entry = RTPROT_UNSPEC;
+
+	if (fib_entry(rpf->source.s_addr, &metric, &entry)) {
+	    if (!have)
+		rpf->metric = metric;
+	    if (proto == RTPROT_UNSPEC)
+		proto = entry;
+	} else if (!have) {
+	    /* Nothing to ask: an entry without a priority is at 0 there,
+	     * which is a metric and not a missing answer */
+	    rpf->metric = 0;
+	}
+    }
+
+    rpf->pref = rtprot_pref(proto);
 
     IF_DEBUG(DEBUG_RPF)
-	logit(LOG_DEBUG, 0, "netlink: metric is %u", rpf->metric);
+	logit(LOG_DEBUG, 0, "netlink: metric is %u, protocol %u, preference %u",
+	      rpf->metric, proto, rpf->pref);
 
     return TRUE;
 }

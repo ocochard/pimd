@@ -335,13 +335,23 @@ int set_incoming(srcentry_t *src, int type)
 	 * table's where the kernel gave us one, so that an Assert says how
 	 * far this router really is from the source and the election lands
 	 * on the router that is closest to it; `metric` in pimd.conf is what
-	 * is left when it does not.  The preference stays configured: it is
-	 * the routing protocol's administrative distance, and neither the
-	 * routing socket nor netlink tells us which protocol the route came
-	 * from in a way the other one also tells us.
+	 * is left when it does not.
+	 *
+	 * The preference is the administrative distance of the routing
+	 * protocol that provided the route, which only netlink can say and
+	 * only `assert-preference rib` asks for, since sec. 4.6.3 compares
+	 * it before the metric and a router deriving it beats one that
+	 * cannot however close the other is: parse_assert_preference() in
+	 * src/config.c has the whole of that argument.  `distance` in
+	 * pimd.conf is the answer everywhere else, and for a route netlink
+	 * gives no protocol for.
 	 */
 	vif = &uvifs[src->incoming];
-	src->preference = vif->uv_local_pref;
+	if (assert_pref_from_rib && rpfc.pref != RPF_PREF_UNKNOWN)
+	    src->preference = rpfc.pref;
+	else
+	    src->preference = vif->uv_local_pref;
+
 	if (rpfc.metric != RPF_METRIC_UNKNOWN)
 	    src->metric = rpfc.metric;
 	else

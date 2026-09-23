@@ -73,6 +73,7 @@
 #define CONF_LOCAL_SG_LIMIT                     21
 #define CONF_ANYCAST_RP                         22
 #define CONF_REGISTER_SG_LIMIT                  23
+#define CONF_ASSERT_PREFERENCE                  24
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -789,6 +790,8 @@ static int parse_option(char *word)
 	return CONF_LOCAL_SG_LIMIT;
     if (EQUAL(word, "register-sg-limit"))
 	return CONF_REGISTER_SG_LIMIT;
+    if (EQUAL(word, "assert-preference"))
+	return CONF_ASSERT_PREFERENCE;
 
     return CONF_UNKNOWN;
 }
@@ -2458,6 +2461,52 @@ static int parse_default_route_distance(char *s)
 }
 
 /**
+ * parse_assert_preference - Parse assert-preference option
+ * @s: String token
+ *
+ * Says where the metric preference of an Assert comes from.  RFC 7761
+ * sec. 4.6.3 wants the administrative distance of the routing protocol
+ * that provided the route, and `rib` is that, where the RPF backend can
+ * say which protocol it was: netlink carries it in rtm_protocol on Linux
+ * and on FreeBSD, a PF_ROUTE socket carries it nowhere.  A route the
+ * backend cannot name, and every route at all on a routing socket build,
+ * keeps the configured distance, which is what `configured` -- the default
+ * -- uses for every route.
+ *
+ * Off by default because sec. 4.6.3 compares the preference before it ever
+ * looks at the metric, so a router deriving one is unanswerable by a router
+ * that is not: two pimds on a LAN with the same routing table, one built
+ * with netlink and one without, would elect on how they were built.  A
+ * domain where every router derives it -- or where none does -- is a
+ * decision for whoever runs it, and this is how it is said.
+ *
+ * Syntax:
+ * assert-preference [configured | rib]
+ *
+ * Returns:
+ * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
+ */
+static int parse_assert_preference(char *s)
+{
+    char *w;
+
+    w = next_word(&s);
+    if (EQUAL(w, "rib") || EQUAL(w, "routing")) {
+	assert_pref_from_rib = TRUE;
+    } else if (EQUAL(w, "configured") || EQUAL(w, "")) {
+	assert_pref_from_rib = FALSE;
+    } else {
+	WARN("Invalid assert-preference '%s', expected 'configured' or 'rib'", w);
+	return FALSE;
+    }
+
+    logit(LOG_INFO, 0, "assert-preference is %s",
+	  assert_pref_from_rib ? "rib" : "configured");
+
+    return TRUE;
+}
+
+/**
  * parse_igmp_query_interval - Parse igmp-query-interval option
  * @s: String token
  *
@@ -2648,6 +2697,7 @@ void config_vifs_from_file(void)
     rpt_prune_limit = PIM_RPT_PRUNE_LIMIT;
     local_sg_limit = PIM_LOCAL_SG_LIMIT;
     register_sg_limit = PIM_REGISTER_SG_LIMIT;
+    assert_pref_from_rib = FALSE;
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -2748,6 +2798,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_REGISTER_SG_LIMIT:
 		parse_state_limit(s, "register-sg-limit", &register_sg_limit, PIM_REGISTER_SG_LIMIT);
+		break;
+
+	    case CONF_ASSERT_PREFERENCE:
+		parse_assert_preference(s);
 		break;
 
 	    default:

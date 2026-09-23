@@ -339,6 +339,7 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     rpf->source.s_addr      = source;
     rpf->rpfneighbor.s_addr = INADDR_ANY_N;
     rpf->metric             = RPF_METRIC_UNKNOWN;
+    rpf->pref               = RPF_PREF_UNKNOWN;
     /*
      * check if local address or directly connected before calling the
      * routing socket
@@ -557,6 +558,15 @@ static int getmsg(struct rt_msghdr *rtm, int msglen __attribute__((unused)), str
     rpf->rpfneighbor.s_addr = INADDR_ANY;
     rpf->metric = RPF_METRIC_UNKNOWN;
 
+    /* MRIB.pref of sec. 4.6.3 is never anything else here: a PF_ROUTE
+     * reply says what the route costs, in rtm_rmx, and never which routing
+     * protocol installed it -- rtsock.c fills the metrics and no origin --
+     * so `assert-preference rib` has nothing to read on this backend and
+     * the `distance` of pimd.conf stands.  netlink.c is the build that can
+     * answer it.
+     */
+    rpf->pref = RPF_PREF_UNKNOWN;
+
     /* MRIB.metric, which RFC 7761 sec. 4.6.3 wants in the Assert.  FreeBSD
      * keeps the per-nexthop metric `route -metric` sets in rt_metrics and
      * fills it into every reply (sys/net/rtsock.c); the routing sockets
@@ -657,8 +667,9 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     }
 
     /* After the call: the kernel side of SIOCGETRPF knows nothing of the
-     * field, so whatever it left there is not an answer. */
+     * two fields, so whatever it left there is not an answer. */
     rpf->metric = RPF_METRIC_UNKNOWN;
+    rpf->pref   = RPF_PREF_UNKNOWN;
 
     return TRUE;
 }

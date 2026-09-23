@@ -45,7 +45,7 @@ which the `rpt-bit` sub-case of `assert-lan` asks for, and the six of
 run is therefore a regression, not an expected result.
 
 Every entry below ends with a `Test:` note saying what reproduces it, and
-all but three of them say `none`: M4's fixed half is covered, so is the
+all but three of them say `none`: both fields of M4 are covered, so is the
 half of A3 that pimd can be held to, by the `register-filter` scenario of
 `test/lab.sh`, and so are A4's two caps, by `crafted` and
 `keepalive`.  What the fixed entries are asserted by is named
@@ -67,11 +67,15 @@ neighbor list and M1's (S,G,rpt) state.
 
 What is left divides in two.  M7 and S1 are state pimd does not keep, each
 a structural change rather than a check: a traffic-driven Keepalive Timer,
-and SSM groups that carry no RP.  A3 and
-A4 are the two that stay open on purpose, one because the kernel decapsulates
-before the daemon is handed anything and the other because sec. 6.4
-describes rather than prescribes; A4 is closed for data from a DR's own
-LAN and for Prune(S,G,rpt), and open for Joins and Hellos.  No parser entry is left.
+and SSM groups that carry no RP.  A3, A4 and the default half of M4
+are the ones that stay open on purpose: the first because the kernel
+decapsulates before the daemon is handed anything, the second because sec. 6.4
+describes rather than prescribes -- A4 is closed for data from a DR's own
+LAN and for Prune(S,G,rpt), and open for Joins and Hellos -- and the third
+because a router that derives its assert preference from the routing table
+beats one that cannot before either metric is read, so deriving it is a
+domain-wide decision and `assert-preference rib` is how a pimd.conf makes
+it.  No parser entry is left.
 
 
 Input validation and trust
@@ -224,8 +228,9 @@ IGMPv3 source-specific membership, a directly connected source, or a
 Keepalive Timer `switch_shortest_path()` started (`MRTF_KAT`) -- so a router
 forwarding off the shared tree keeps SPTbit clear, and `spt-threshold
 infinity` keeps it clear for good.  The metric they carry is the routing
-table's now as well, so what is left around them is the preference beside it,
-M4 below.
+table's now as well, and so is the preference beside it wherever the kernel
+names the protocol that installed a route and a pimd.conf asks for it, M4
+below.
 
 M14 was the last of that family: sec. 4.6.1 gates the NoInfo-to-Loser
 transition of the (S,G) machine on `AssertTrackingDesired(S,G,I)`, which is
@@ -394,8 +399,9 @@ already rather than making one for every Prune(S,G) on the link; and "RPF'(S,G,r
 -> RPF'(\*,G)" has nothing to fire it, RPF'(S,G,rpt) being RPF'(\*,G) here.
 
 
-**M4.  The assert metric preference is a configured constant, not the routing
-protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both say the metric preference and the
+**M4.  The assert metric preference is a configured constant unless a
+pimd.conf asks for the routing protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both
+say the metric preference and the
 metric are the unicast routing protocol's.  The metric is, now: `struct rpfctl`
 (`src/vif.h`) carries MRIB.metric back from every RPF lookup -- the route's
 priority out of the netlink reply (`src/netlink.c`, which on Linux has to ask
@@ -410,52 +416,59 @@ sec. 4.6.1 leaves the Loser state when "my metric becomes better than the assert
 winner's metric", which `age_asserts()` (`src/pim_proto.c`) evaluates once per
 pass because the number can now move without pimd doing anything.
 
-The preference is still the configured one, `uv_local_pref`, 101 unless
-`distance` says otherwise.  It is the administrative distance of the routing
-protocol that provided the route, and what pimd would have to read to derive it
-is there on one of the two RPF backends and not the other.  Netlink carries it
-in `rtm_protocol`, on both systems: FreeBSD fills that field from the nexthop's
+The preference is the configured one, `uv_local_pref`, 101 unless `distance`
+says otherwise -- unless `assert-preference rib` in pimd.conf asks for the
+routing protocol's, which is the opt-in this entry used to ask for and which
+`parse_assert_preference()` (`src/config.c`) now is.  What the kernel keeps is
+not a distance but which protocol installed the route: netlink carries that in
+`rtm_protocol`, on both systems -- FreeBSD fills the field from the nexthop's
 origin, `nl_get_rtm_protocol()` in `sys/netlink/route/rt.c`, in the same
-RTPROT\_\* namespace Linux uses.  The PF\_ROUTE socket `routesock.c` reads does
-not carry it at all -- `rtsock.c` fills `rtm_rmx`, which is where `rmx_metric`
-comes from, and never the origin -- and that is the default build on BSD.
-Nothing reads the field today: there is no RTPROT\_\* anywhere in `src/`.
+RTPROT\_\* namespace Linux uses -- and `rtprot_pref()` (`src/netlink.c`) turns
+it into the distance the industry gives that protocol: 0 connected, 1 static,
+20 BGP, 90 EIGRP, 110 OSPF, 115 IS-IS, 120 RIP, which is what an Arista or a
+Cisco on the same LAN advertises for the same route.  On Linux it costs no
+syscall: the metric already needs the second lookup with `RTM_F_FIB_MATCH`,
+since the resolved route carries no priority, and that reply has
+`rtm_protocol` in the same header.  A protocol nobody has a number for, and
+the ones that only say "some daemon put this here" -- RTPROT\_ZEBRA,
+RTPROT\_BIRD -- are answered with `RPF_PREF_UNKNOWN` and keep the configured
+distance.
 
-On Linux it would cost no syscall.  The metric already needs a second lookup
-with `RTM_F_FIB_MATCH`, since the resolved route carries no priority, and that
-reply has `rtm_protocol` in the same header.
+The PF\_ROUTE socket `routesock.c` reads does not carry the origin at all --
+`rtsock.c` fills `rtm_rmx`, which is where `rmx_metric` comes from, and never
+the origin -- and that is the default build on BSD, so there `rib` reads
+nothing and `distance` stands.
 
-What stops it is what sec. 4.6.3 does with the number: it compares the
-preference before it ever looks at the metric.  Deriving it wherever the
-backend knows it would have a netlink pimd advertise 110 for an OSPF route
-where a routing socket pimd advertises 101 for the same route, and on FreeBSD
-that is a `configure` flag rather than a different operating system -- two
-routers on one LAN, same routing table, different build, and the election goes
-to whichever was built which way.  So the field stays configuration, per
-interface, and a domain whose routers learn the source through different
-protocols still has to set `distance` by hand.  A fix that does not carry that
-trap would be opt-in: a setting saying "take the preference from the routing
-protocol where the backend knows it", off by default, so a homogeneous domain
-can have it and a mixed one is not surprised by it.
+Off by default, and that is the rest of this entry rather than an omission.
+Sec. 4.6.3 compares the preference before it ever looks at the metric, so a
+pimd deriving one is unanswerable by a pimd that cannot: 110 for an OSPF route
+against 101 for the same route, and on FreeBSD the difference between the two
+is a `configure` flag rather than a different operating system.  Two routers
+on one LAN, same routing table, different build, and the election would go to
+whichever was built which way.  A domain where every router derives it, or
+where none does, is a decision for whoever runs it, and the keyword is how it
+is said.
 
 One thing the metric inherits from the same asymmetry, smaller because it is
 compared second: an ordinary route has priority 0 on Linux and metric 1 on
 FreeBSD, so between two routers that agree on everything else the Linux one
 wins.  Both numbers are what their own kernel calls the cost of that route.
 *Check: sec. 4.6.3, `doc/rfc7761.txt:5215` for `spt_assert_metric(S,I)`, and
-sec. 4.9.6, `:6766`, for the two wire fields.  Effort: medium, and it is a
-decision rather than work: an administrative distance has to come from
-somewhere both backends can reach, or from configuration as it does today.
-Test: step 12 of `shared-lan` in `test/lab.sh` covers the half that is
-fixed, in both directions -- the two contenders reach the RP at a metric
-`route change` sets, and the LAN changes hands when either one is bettered,
-which with a constant metric it never did.  It runs against both lookups:
-`routesock.c` by default, `netlink.c` with `NETLINK=yes` on FreeBSD and always
-on Linux, where it is what showed the Linux netlink answer carried no metric at
-all.  The preference half has no assertion:
-between two pimds it is 101 on both, so `assert-lan` in
-`test/freebsd-interop.sh` is where it would be seen, the Arista being the one
-router on that wire that advertises its RIB's own numbers.*
+sec. 4.9.6, `:6766`, for the two wire fields.
+Test: steps 12 and 13 of `shared-lan` in `test/lab.sh`, one field each, both
+in both directions.  Step 12 is the metric: the two contenders reach the RP at
+a metric `route change` sets, and the LAN changes hands when either one is
+bettered, which with a constant metric it never did.  It runs against both
+lookups -- `routesock.c` by default, `netlink.c` with `NETLINK=yes` on FreeBSD
+and always on Linux, where it is what showed the Linux netlink answer carried
+no metric at all.  Step 13 is the preference, with both routers running
+`assert-preference rib` and the route to the RP labelled with the protocol
+that is to look as if it installed it, the metrics left equal: the LAN follows
+the administrative distance, against the address, and follows it back when the
+labels swap.  That one needs a kernel whose routes carry a protocol and a
+netlink build to read it, so it skips itself elsewhere and says which.
+`assert-lan` in `test/freebsd-interop.sh` is the other witness, the Arista
+being a router that derives its preference whatever pimd is configured to do.*
 
 **M7.  The Keepalive Timer is not traffic-driven, and nothing in reach makes
 that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.

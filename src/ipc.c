@@ -877,6 +877,14 @@ static int show_status(FILE *fp)
 	 * lookups. */
 	fprintf(fp, "RPF Backend          : %s\n", rpf_backend);
 
+	/* Where the metric preference of an Assert comes from, which is a
+	 * question about this router's own Asserts that nothing else
+	 * answers: "rib" is only an answer where the backend above can name
+	 * the routing protocol, and a route it cannot name still carries the
+	 * interface's `distance`. */
+	fprintf(fp, "Assert preference    : %s\n",
+		assert_pref_from_rib ? "rib" : "configured");
+
 	/* Whether the half that parses the wire is the one holding root, and
 	 * what keeps it in.  Nothing else about a running router says so, and
 	 * "separated" that quietly stopped being true is exactly the failure

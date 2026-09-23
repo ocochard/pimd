@@ -30,7 +30,10 @@
 #                                       boxes, "-" leaving an end on the host
 #   box_if_show BOX IF                  dump an interface, for a failure
 #   box_route_change BOX DEST GW [METRIC]
+#   box_route_proto BOX DEST GW METRIC PROTO
 #   route_has_metric                    can a route be given a metric here
+#   route_has_proto                     can a route here say which routing
+#                                       protocol installed it
 #   has_mfc BOX GROUP                   the kernel forwards the group
 #   mfc_forwards_on BOX SRC GROUP VIF   ... and out of that vif
 #   mfc_show BOX                        dump the kernel's multicast state,
@@ -253,6 +256,20 @@ route_has_metric() {
 	route -n get -metric 1 127.0.0.1 >/dev/null 2>&1
 }
 
+# Nothing here can say which routing protocol installed a route.  route(8)
+# speaks PF_ROUTE, where there is no such field to set, and the netlink
+# view of the same route derives rtm_protocol from the route flags --
+# RTF_STATIC becomes RTPROT_STATIC for everything this lab adds
+# (nl_get_rtm_protocol(), sys/netlink/route/rt.c).  So every route two
+# routers here hold is of the same origin, they derive the same assert
+# preference from it, and a scenario that needs two different ones says so
+# and skips.
+route_has_proto() { false; }
+
+box_route_proto() {
+	return 1
+}
+
 # shared-lan: the two bridged segments.  Each is a host bridge holding the
 # "a" end of every epair on it while the "b" ends go into the jails, so the
 # boxes really do share one broadcast domain instead of meeting over a mesh
@@ -348,6 +365,15 @@ create_box() {
 	while [ $# -ge 3 ]; do
 		box_run "$box" route -q change "$1" "$2" -metric "$3" >/dev/null
 		shift 3
+	done
+
+	# ... and the protocol that installed it, which nothing here can say,
+	# so route_protos() is empty and this loop never runs.  It is here so
+	# that the two backends answer the same list of functions.
+	set -- $(route_protos "$box")
+	while [ $# -ge 4 ]; do
+		box_route_proto "$box" "$1" "$2" "$3" "$4"
+		shift 4
 	done
 
 	case $box in

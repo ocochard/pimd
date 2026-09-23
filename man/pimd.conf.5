@@ -53,9 +53,12 @@ default value for the unicast routing protocol's administrative
 distance.  It is used in PIM Assert elections to determine upstream
 routers.
 .Nm pimd
-cannot obtain the admin distance from the unicast routing protocols, so
-it is configured here; the metric beside it is read from the kernel
-routing table, see
+does not take the admin distance from the routing table unless
+.Cm assert-preference Cm rib
+says to, and cannot take it there at all on a system whose routing
+socket does not say which protocol installed a route, so it is
+configured here; the metric beside it is read from the kernel routing
+table, see
 .Cm default-route-metric .
 The RFC confusingly refers to this as
 .Em metric prefererence .
@@ -90,6 +93,41 @@ election to be decided by the address.
 Please note that PIM Assert elections are not the same as the DR
 election.  The PIM Assert election determines the active multicast
 forwarder, whereas the DR election determines the active PIM router.
+.It Cm assert-preference Oo Cm configured | Cm rib Oc
+Where the metric preference of a PIM Assert comes from.  RFC 7761
+sec. 4.6.3 says it is the administrative distance of the routing
+protocol that provided the route, and
+.Cm rib
+is that: the kernel is asked which protocol installed the route, and the
+distance that protocol is conventionally given is what
+.Nm pimd
+advertises \(em 0 for a connected route, 1 for a static one, 20 for BGP,
+90 for EIGRP, 110 for OSPF, 115 for IS-IS and 120 for RIP, which are the
+numbers a Cisco or an Arista on the same LAN advertises for the same
+route.  A route whose protocol the kernel does not name, a protocol
+with no conventional distance, and every route at all on a system whose
+RPF lookups go over a routing socket, keep the
+.Cm distance
+of the interface.  Default:
+.Cm configured ,
+which is that number for every route.
+.Pp
+Only a
+.Nm pimd
+built
+.Fl -enable-netlink ,
+which is every Linux build and a FreeBSD one that asked for it, can read
+the protocol;
+.Ic pimctl show status
+prints both the RPF backend and this setting.
+.Pp
+It is off by default because sec. 4.6.3 compares the preference before
+it ever looks at the metric, so a router that derives one cannot be
+answered by a router that cannot: two routers on a LAN with the same
+routing table, one of them built for netlink and one not, would decide
+the election on how they were built rather than on where the traffic
+should go.  Turn it on in a domain where every PIM router derives it, or
+in none.
 .It Cm igmp-query-interval Ar <1-65535>
 This setting controls the interval between IGMP querys (QI).  It is used
 only when acting as the elected IGMP querier on a LAN.  In IGMP the

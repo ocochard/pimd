@@ -369,6 +369,7 @@ extern uint16_t          pim_cand_rp_adv_timer;
 /* route.c */
 extern uint32_t		default_route_metric;
 extern uint32_t		default_route_distance;
+extern int		assert_pref_from_rib;
 
 /* igmp_proto.c */
 extern uint32_t		igmp_query_interval;

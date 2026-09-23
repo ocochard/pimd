@@ -155,6 +155,19 @@ box_route_change() {
 
 route_has_metric() { :; }
 
+# The same route, plus the protocol that is to look as if it installed it:
+# `ip route add ... proto NUM` writes rtm_protocol, which is the only thing
+# a kernel keeps about where a route came from and the one netlink.c turns
+# into the assert preference of RFC 7761 sec. 4.6.3.  Numbers rather than
+# the names of /etc/iproute2/rt_protos, so that an iproute2 whose table is
+# older than the protocol still takes them.
+box_route_proto() {
+	box_run "$1" ip route flush exact "$2" && \
+		box_run "$1" ip route add "$2" via "$3" metric "$4" proto "$5"
+}
+
+route_has_proto() { :; }
+
 # Prefix length of a dotted netmask
 mask_len() {
 	echo "$1" | awk -F. '{
@@ -277,6 +290,14 @@ create_box() {
 	while [ $# -ge 3 ]; do
 		box_route_change "$box" "$1" "$2" "$3"
 		shift 3
+	done
+
+	# ... and the protocol that is to look as if it installed the route,
+	# which only a scenario asserting on the assert preference asks for
+	set -- $(route_protos "$box")
+	while [ $# -ge 4 ]; do
+		box_route_proto "$box" "$1" "$2" "$3" "$4"
+		shift 4
 	done
 
 	case $box in

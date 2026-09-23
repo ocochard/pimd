@@ -142,7 +142,8 @@ one range of its own and one a neighbour is the RP for, a BSR candidacy, a (\*,G
 on every machine -- and `rpf_backend`, the third symbol either of them exports outside `main.c`,
 which `show_status()` prints and `fuzz_ipc` therefore reaches. Every part of that state is there
 because something is unreachable without it, and the way to tell is the `INITED` line of a hunt, the
-edges the committed seeds reach before any mutation: 2651 for `fuzz_pim` and 2828 for `fuzz_igmp`. It was measured, not assumed -- at the
+edges the committed seeds reach before any mutation: 2651 for `fuzz_pim` and 2828 for
+`fuzz_igmp`. It was measured, not assumed -- at the
 default DR priority this router lost both elections, and `send_pim_register()` and the register half
 of `process_cache_miss()` were dead code with nothing reporting it. `FUZZ_DEBUG=1` turns the daemon's
 logging back on, which is the other way to tell a harness whose state is right from one that refuses
@@ -205,8 +206,14 @@ restoring it -- `freebsd-interop.sh` counts in the same place. `shared-lan`,
 `shared-lan-spt` and `assert-recover` are one topology and the only one with several PIM routers on
 a link, so DR election, IGMP querier election and the assert election only ever run there
 (`shared-lan` is also the only one that gives two routers different
-route metrics, with `route change -metric` (FreeBSD 16 and later, step 12 skips itself on older route(8)), so it is the one place an assert election is decided by
-the routing table instead of by the addresses, and `assert-recover` is the only one about how a
+route metrics, with `route change -metric` (FreeBSD 16 and later, step 12 skips itself on older
+route(8)), so it is the one place an assert election is decided by the routing table instead of by
+the addresses -- step 13 beside it is the other field of that comparison, the metric preference
+sec. 4.6.3 reads first: both routers run `assert-preference rib`, the route to the RP is labelled
+with the protocol that is to look as if it installed it (`route_protos()`), and the LAN follows the
+administrative distance netlink derives from that label while the metrics stay equal, which needs a
+kernel whose routes carry a protocol and so runs on Linux and skips itself on the BSDs --, and
+`assert-recover` is the only one about how a
 router *leaves* the assert state rather than how it enters one -- it kills the winner's pimd so the
 loser meets a new GenID, then renumbers the winner's interface downwards),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is

@@ -44,10 +44,12 @@
 # Unicast routing is static on purpose: a static route carries a metric of
 # its own, which `route change -metric` moves and pimd reads back out of
 # the kernel for its Asserts, so bird or frr here would only add a
-# dependency and a second thing to debug.  The administrative distance
-# pimd puts beside that metric does still come from pimd.conf, and no
-# routing daemon would change that either -- see M4 in
-# doc/rfc7761-compliance.md.  The RP is pinned to R1's side of the R1-R2
+# dependency and a second thing to debug.  The administrative distance pimd
+# puts beside that metric is the routing table's too where the kernel can
+# name the protocol that installed a route and a pimd.conf asks for it with
+# `assert-preference rib`, which is netlink only -- step 13 of shared-lan
+# is that, and labels its static routes with a protocol rather than running
+# one, see M4 in doc/rfc7761-compliance.md.  The RP is pinned to R1's side of the R1-R2
 # link (10.0.12.2) so the expected RP address is deterministic instead of
 # "highest active IP".
 #
@@ -210,8 +212,16 @@
 #               the LAN to whichever of them is nearer: pimd takes the
 #               metric it asserts with from the kernel (rmx_metric through
 #               routesock.c), where it used to be a constant out of
-#               pimd.conf that no route change could move.  Takes about 5
-#               minutes.
+#               pimd.conf that no route change could move.  Step 13 is the
+#               other field of the same comparison, the one sec. 4.6.3
+#               looks at first: both routers run `assert-preference rib`,
+#               the route to the RP is labelled with the protocol that is
+#               to look as if it installed it, and the LAN has to follow
+#               the administrative distance that goes with it while the
+#               metrics stay equal.  That one needs a netlink build and a
+#               kernel whose routes carry a protocol, so it skips itself on
+#               a routing socket build and on FreeBSD.  Takes about 5
+#               minutes, and a couple more with step 13 running.
 #   shared-lan-spt
 #               The same LAN and the same two contenders, but R5 is allowed
 #               onto the shortest path tree, so R3 ends up with (S,G)
@@ -1198,6 +1208,26 @@ SL_METRIC_FAR=${SL_METRIC_FAR:-50}
 SL_METRIC_WAIT=${SL_METRIC_WAIT:-120}
 SL_METRIC_PKTS=${SL_METRIC_PKTS:-400}
 
+# ... and the three routing protocols the same route is made to look as if
+# it came from, for step 13, which decides the election on the preference
+# the metric is only compared after.  The numbers are rtm_protocol values,
+# RTPROT_OSPF, RTPROT_BGP and RTPROT_KERNEL, and what netlink.c derives
+# from them is the administrative distance the rest of the industry gives
+# those protocols: 110, 20 and 0.  Nothing here runs BGP or OSPF -- the
+# number is a label on the route, which is all a kernel keeps about where
+# a route came from and all an assert preference is made of.
+#
+# Three of them, and the base one applied at setup, because of how a
+# router leaves the Loser state: sec. 4.6.1 lets it out when its own
+# metric becomes better than the metric the *winner last asserted*, and a
+# winner whose own route got worse says nothing about it until its Assert
+# Timer expires three minutes later.  So each half of step 13 has to
+# better the loser rather than worsen the winner, and a baseline of 110
+# leaves room to do that twice.
+SL_PROTO_BASE=${SL_PROTO_BASE:-188}
+SL_PROTO_BETTER=${SL_PROTO_BETTER:-186}
+SL_PROTO_BEST=${SL_PROTO_BEST:-2}
+
 # Replies the sender must get back before the stream counts as forwarded.
 # The first seconds are always lost while PIM registers the source with
 # the RP and the receiver's join climbs the tree.
@@ -2048,6 +2078,23 @@ route_metrics() {
 	esac
 }
 
+# "destination gateway metric protocol" quadruples, applied after the
+# metrics above and only where a route can say which protocol installed it,
+# which today is Linux alone.  Both contenders start from the same label,
+# so every step before 13 sees the preference it always did -- the same
+# number on both, whatever that number is -- and step 13 has somewhere to
+# move from.  See SL_PROTO_BASE.
+route_protos() {
+	route_has_proto || return 0
+	case $SCENARIO in
+	shared-lan)
+		case $1 in
+		r3|r4) echo "$SL_RP_NET $SL_RP_GW $SL_METRIC_FAR $SL_PROTO_BASE" ;;
+		esac
+		;;
+	esac
+}
+
 pimctl() { j=$1; shift; box_run "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
 # Retry a command until it succeeds or $1 seconds have passed.  PIM is
@@ -2555,16 +2602,28 @@ write_configs() {
 		# the same preference and metric and compare_metrics()
 		# (src/pim_proto.c) falls through to the address, which does
 		# not change between runs.
+		#
+		# Both contenders also take the assert preference from the
+		# routing table rather than from `distance`, which is what
+		# step 13 needs and what nothing else in this file changes:
+		# on a routing socket build the backend cannot name the
+		# protocol that installed a route, so the line is inert and
+		# every step reads as it always did, and where it is not
+		# inert both routers derive the same number from the same
+		# kind of route, so steps 9 to 12 still tie on preference and
+		# are decided by the metric and the address as before.
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: upstream router for R5 on the shared LAN ($SL_R3_ADDR),
 		# neither its DR nor its querier
 		spt-threshold infinity
+		assert-preference rib
 		EOF
 
 		cat <<-EOF > "$WORKDIR/r4.conf"
 		# R4: PIM DR on the shared LAN ($SL_DR_ADDR, highest address),
 		# so ED3's IGMP report is its leaf and nobody else's
 		spt-threshold infinity
+		assert-preference rib
 		EOF
 
 		# R5 is the only router here that may switch to the shortest
@@ -3202,8 +3261,18 @@ sl_lan_is_held_by() {
 	esac
 }
 
+# Move the metric of one router's route to the RP, keeping whatever label
+# route_protos() put on it: on Linux the metric is part of a route's key, so
+# changing it means removing the route and adding it again, and adding it
+# back without the protocol would quietly reset the preference step 13 works
+# from -- to RTPROT_BOOT, which is a better distance than the base label, so
+# step 13 would then be asking a loser to better a number nobody can better.
 sl_set_rp_metric() {
-	box_route_change "$1" "$SL_RP_NET" "$SL_RP_GW" "$2" >/dev/null
+	if route_has_proto; then
+		box_route_proto "$1" "$SL_RP_NET" "$SL_RP_GW" "$2" "$SL_PROTO_BASE" >/dev/null
+	else
+		box_route_change "$1" "$SL_RP_NET" "$SL_RP_GW" "$2" >/dev/null
+	fi
 }
 
 # The assert election decided by the routing table instead of by the
@@ -3270,6 +3339,89 @@ check_assert_metric() {
 	# running afterwards is the one the header describes
 	sl_set_rp_metric r3 "$SL_METRIC_FAR"
 	sl_set_rp_metric r4 "$SL_METRIC_FAR"
+
+	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
+	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
+}
+
+sl_set_rp_proto() {
+	box_route_proto "$1" "$SL_RP_NET" "$SL_RP_GW" "$SL_METRIC_FAR" "$2" >/dev/null
+}
+
+# The other half of the assert metric, and the half that was a configured
+# constant until `assert-preference rib`: RFC 7761 sec. 4.6.3 has the
+# metric preference come from the routing protocol that provided the route,
+# and sec. 4.6.1 compares it before it ever looks at the metric.  Between
+# two pimds it was 101 on both -- the `distance` of pimd.conf -- so the
+# first comparison the spec makes was dead code here and every election in
+# this file is settled by the metric or by the address.
+#
+# So: leave both metrics where step 12 left them, equal, and move the label
+# on one route at a time.  Both start from SL_PROTO_BASE, so the election
+# at the baseline is the address's as ever; R3 then gets a route from a
+# protocol with a better distance and has to take the LAN against the
+# address, and R4 gets one better still and has to take it back.  Each half
+# betters the router that is losing at the time, which is what makes them
+# quick and is the whole reason for a three-level baseline -- see
+# SL_PROTO_BASE.  A router that still asserts with a constant cannot pass
+# either half.
+#
+# Only netlink can answer it: rtm_protocol is the field, a PF_ROUTE socket
+# has no such thing, and `assert-preference rib` is what makes pimd read it
+# (parse_assert_preference(), src/config.c, says why it is off by default).
+# And only a kernel whose route(8) equivalent can *set* the field can set
+# up the halves, which today is Linux; FreeBSD derives RTPROT_STATIC for
+# everything this lab adds, so both routers would derive the same number
+# and there would be nothing to elect on.
+check_assert_preference() {
+	print "13. The assert election follows the routing protocol's preference"
+
+	if [ "$RPF_BACKEND" != netlink ]; then
+		skip "the $RPF_BACKEND backend cannot name the protocol that installed a route, so the preference stays the one in pimd.conf"
+		return 0
+	fi
+	if ! route_has_proto; then
+		skip "no way here to say which protocol installed a route, so both routers derive the same preference"
+		return 0
+	fi
+
+	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/joiner-pref.log" 2>&1 &
+	joiner=$!
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver-pref.log" 2>&1 &
+	receiver=$!
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
+		-w "$SL_METRIC_PKTS" "$GROUP" \
+		>"$WORKDIR/sender-pref.log" 2>&1 &
+	sender=$!
+
+	if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
+		sl_set_rp_proto r3 "$SL_PROTO_BETTER"
+		if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r3; then
+			ok "r3's route to the RP came from protocol $SL_PROTO_BETTER against r4's $SL_PROTO_BASE and it took the LAN, with the lower address and the same metric"
+
+			# Only now: r4 holds the LAN at the baseline, so a
+			# second half run after a first half that changed
+			# nothing would report ok for the LAN never having
+			# moved at all.
+			sl_set_rp_proto r4 "$SL_PROTO_BEST"
+			if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
+				ok "r4 bettered that with protocol $SL_PROTO_BEST and took the LAN back, the preference deciding twice in a row"
+			else
+				fail "r4's route now has the best distance of the two and it is still the assert loser, the Loser state is not left on a preference that got better"
+			fi
+		else
+			fail "r4 keeps the LAN though r3's route now comes from the protocol with the better distance, the Assert carries a preference that is not the routing table's"
+		fi
+	else
+		fail "no assert settled the LAN in ${SL_METRIC_WAIT}s with both preferences equal, the halves below cannot be read"
+	fi
+
+	# Back to the label both of them start from, so that a lab left
+	# running afterwards is the one the header describes
+	sl_set_rp_proto r3 "$SL_PROTO_BASE"
+	sl_set_rp_proto r4 "$SL_PROTO_BASE"
 
 	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
 	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
@@ -7835,6 +7987,7 @@ check_shared_lan() {
 
 	if [ "$SCENARIO" = shared-lan ]; then
 		check_assert_metric
+		check_assert_preference
 	fi
 
 	echo

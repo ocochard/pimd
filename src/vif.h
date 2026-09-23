@@ -339,6 +339,15 @@ struct listaddr {
 #define RPF_METRIC_UNKNOWN	((uint32_t)~0)
 
 /*
+ * MRIB.pref, the administrative distance of the routing protocol that
+ * installed the route, is known to even fewer kernels than the metric:
+ * netlink carries the protocol in rtm_protocol on both systems, a PF_ROUTE
+ * socket carries it nowhere at all.  Same sentinel, same reason -- 0 is the
+ * distance of a connected route, so it cannot also mean "nothing said".
+ */
+#define RPF_PREF_UNKNOWN	((uint32_t)~0)
+
+/*
  * Used to get the RPF neighbor and IIF info
  * for a given source from the unicast routing table. 
  */
@@ -347,6 +356,7 @@ struct rpfctl {
     struct in_addr rpfneighbor;/* next hop towards the source */
     vifi_t iif; /* the incoming interface to reach the next hop */
     uint32_t metric; /* MRIB.metric of that route, RPF_METRIC_UNKNOWN if none */
+    uint32_t pref; /* MRIB.pref of it, RPF_PREF_UNKNOWN if the kernel has none */
 };
 
 /**

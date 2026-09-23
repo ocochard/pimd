@@ -69,6 +69,13 @@ uint32_t	default_route_metric   = UCAST_DEFAULT_ROUTE_METRIC;
 uint32_t	default_route_distance = UCAST_DEFAULT_ROUTE_DISTANCE;
 
 /*
+ * `assert-preference rib`, off unless a pimd.conf asks for it: see
+ * parse_assert_preference() in src/config.c for why a router does not take
+ * the routing protocol's administrative distance unless it is told to.
+ */
+int		assert_pref_from_rib   = FALSE;
+
+/*
  * How long a rescan waits after the kernel said an interface changed, in
  * milliseconds.  One interface coming up is several notifications, and an
  * address usually arrives a moment after the link it is on, so this is
