@@ -158,7 +158,13 @@ static const char fuzz_conf[] =
 	"rp-candidate 10.0.1.1 priority 20 interval 30\n"
 	"rp-address 10.0.1.1 224.0.0.0/4\n"
 	"rp-address 10.0.1.2 239.2.0.0/16\n"
-	"spt-threshold packets 0 interval 100\n";
+	"spt-threshold packets 0 interval 100\n"
+	/* A mapping agent, so that an Auto-RP announcement reaches the half
+	 * of src/autorp.c that caches and resolves one: a router that is not
+	 * an agent refuses type 1 at the first test, and fuzz_autorp would
+	 * be walking one branch of two.  Nothing is ever sent -- the sockets
+	 * of a harness are -1 -- so this costs the parser nothing. */
+	"autorp mapping-agent 10.0.1.1 interval 60 holdtime 180\n";
 
 static char fuzz_conf_path[PATH_MAX];
 static int  fuzz_conf_fd = -1;

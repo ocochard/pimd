@@ -140,6 +140,64 @@ mapping agent, and it does not forward the two well-known groups, so the
 messages have to reach it the way the specification assumes -- flooded by
 the domain, or carried as ordinary sparse-mode groups with an RP
 configured for them.
+.It Cm autorp Cm announce Ar ADDR Oo Cm interval Ar SEC Oc Oo Cm holdtime Ar SEC Oc Oo Cm scope Ar TTL Oc
+Announce this router as a candidate RP over Auto-RP, to the mapping agents
+of the domain, with
+.Ar ADDR
+as the RP address; an interface name is taken as well.  What it is willing
+to serve is said in the
+.Cm autorp group-prefix
+lines below, and an announcement with no prefix is not sent at all.
+Defaults: interval 60 seconds, holdtime three times the interval, scope 15.
+.Pp
+This is the Auto-RP counterpart of
+.Cm rp-candidate ,
+and the two are independent: a router may be a candidate for the bootstrap
+mechanism, for Auto-RP, for both, or for neither.
+.It Cm autorp Cm group-prefix Ar GROUP Oo Cm masklen Ar LEN Oc Oo Cm deny Oc
+One group range the announcement above offers to serve, repeatable.
+.Cm deny
+makes it a
+.Em negative
+prefix, which is the one thing Auto-RP can say that a Bootstrap cannot: an
+RP naming the groups it will
+.Em not
+serve, so that the mapping agent tells the domain those groups have no RP.
+.Pp
+Where nothing is said the range is
+.Ar GROUP Ns /16.
+A prefix that another, shorter prefix of this same router already covers is
+left out of the mapping message by the agent, which is what the
+specification asks for -- so announcing both 239.0.0.0/8 and 239.1.0.0/16
+says what the first one said, while a
+.Cm deny
+inside the /8 says something new and survives.
+.It Cm autorp Cm mapping-agent Ar ADDR Oo Cm interval Ar SEC Oc Oo Cm holdtime Ar SEC Oc Oo Cm scope Ar TTL Oc
+Be the mapping agent of the domain: listen to the candidate RPs on
+224.0.1.39, resolve what they claim, and send the result to 224.0.1.40
+every interval, from
+.Ar ADDR .
+Defaults as above.
+.Pp
+Conflicts are resolved the way the specification asks: prefixes of
+different lengths from different RPs coexist, the same prefix from two RPs
+goes to the higher address, a deny beats a positive prefix of the same
+length, and a prefix one of the same RP's own shorter prefixes covers is
+not sent.
+.Pp
+There is no election beyond one rule: an agent that hears a mapping message
+from a higher address stops sending its own, and speaks again if that agent
+goes quiet for three intervals.  The address it compares is the one the
+datagram came from -- an agent with several interfaces is a different
+address on each, so which one wins depends on the link the other agent is
+on.
+.Pp
+.Sy Note:
+pimd sends both messages out of every PIM interface rather than relying on
+the dense-mode flooding the specification assumes (sec. 3.3), which it does
+not have.  So a domain where the agent is adjacent to the candidate RPs and
+to the routers works as it is; a wider one needs the two well-known groups
+carried some other way.
 .It Cm autorp-limit Ar <0-1000000>
 How many group-to-RP mappings Auto-RP may make this router hold.  Nothing
 authenticates a mapping message and one datagram can name 255 RPs with 255

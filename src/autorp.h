@@ -51,6 +51,14 @@
 /* The shortest message that says anything: a header, one RP, one prefix */
 #define AUTORP_MINLEN		(AUTORP_HDR_LEN + AUTORP_RP_LEN + AUTORP_GRP_LEN)
 
+/*
+ * And the longest one pimd builds.  A datagram this router sends has to
+ * reach every listener without being fragmented, so it stays under the
+ * smallest MTU anything here runs on rather than filling a 64K buffer with
+ * RP blocks a receiver may never reassemble.
+ */
+#define AUTORP_MSG_MAX		1024
+
 #define AUTORP_VERSION_OF(b)	(((b) >> 4) & 0x0f)
 #define AUTORP_TYPE_OF(b)	((b) & 0x0f)
 
@@ -66,6 +74,16 @@
 /* What the draft calls for where nothing is configured, sec. 3.1 */
 #define AUTORP_DEFAULT_INTERVAL	60
 #define AUTORP_DEFAULT_HOLDTIME	(3 * AUTORP_DEFAULT_INTERVAL)
+
+/*
+ * How far an announcement or a mapping travels.  The draft says nothing
+ * about a TTL -- it assumes the two groups are flooded and scoped by
+ * whatever the domain does -- and every implementation since has made it a
+ * "scope" the sender sets.  15 is IOS's default and FRR's is 31; pimd sends
+ * one copy per interface rather than relying on a flooding it does not
+ * have, so a small number is the honest one and this is it.
+ */
+#define AUTORP_DEFAULT_SCOPE	15
 
 #endif /* PIMD_AUTORP_H_ */
 

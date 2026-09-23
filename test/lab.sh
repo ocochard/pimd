@@ -904,10 +904,10 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp anycast anycast-dr"
+	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias crafted static-rp autorp ssm fuzz ifnew ifgone
+		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
 		     renumber ssm-range solo privsep"
 
 # keepalive: groups the source blasts at, and how long the entries must
@@ -1304,6 +1304,32 @@ AUTORP_AGE_WAIT=${AUTORP_AGE_WAIT:-60}
 AUTORP_LIMIT=${AUTORP_LIMIT:-8}
 AUTORP_FLOOD=${AUTORP_FLOOD:-16}
 
+# autorp-agent: the same chain with the roles pimd can play itself -- R1
+# announces, R2 resolves and tells the domain, R3 listens -- and then R3 is
+# made a second agent so that the election of sec. 3.2 has two.
+AA_RP=${AA_RP:-10.0.1.1}		# what R1 announces itself as
+AA_AGENT=${AA_AGENT:-10.0.23.2}		# R2, on the link it shares with R3
+# ... and R2's address on the *other* link, which is the one R1 sees its
+# mappings arrive from: an agent has no router id in Auto-RP, only the
+# source address of the datagram, so which of its addresses wins an election
+# depends on which link the other agent is on.
+AA_AGENT_SEEN=${AA_AGENT_SEEN:-10.0.12.2}
+AA_AGENT2=${AA_AGENT2:-10.0.12.1}	# R1, the lower address of the two
+					# -- and R1 has to be the second
+					# agent rather than R3, since an
+					# agent with no announcements cached
+					# sends nothing and there would be
+					# no election to lose.  R1 hears its
+					# own announcement, which is the
+					# ordinary deployment: IOS puts the
+					# RP and the agent on one router.
+AA_WIDE=${AA_WIDE:-239.0.0.0/8}
+AA_COVERED=${AA_COVERED:-239.1.0.0/16}	# inside it, from the same RP
+AA_DENY=${AA_DENY:-239.9.0.0/16}	# inside it too, and denied
+AA_INTERVAL=${AA_INTERVAL:-10}
+AA_HOLDTIME=${AA_HOLDTIME:-30}
+AA_WAIT=${AA_WAIT:-60}
+
 STATICRP_ADDR=${STATICRP_ADDR:-10.0.23.2}
 STATICRP_WAIT=${STATICRP_WAIT:-180}
 
@@ -1687,7 +1713,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2310,6 +2336,38 @@ write_configs() {
 
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: last hop router for the receiver LAN
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = autorp-agent ]; then
+		# Every Auto-RP role pimd can play, one per router: R1 is a
+		# candidate RP announcing itself, R2 is the mapping agent
+		# resolving what it hears, R3 only listens.  No BSR anywhere,
+		# so an RP in R3's table came the whole way round.
+		#
+		# R1 announces three prefixes on purpose: a /8, a /16 inside
+		# it, and a deny inside it.  Rule 3 of sec. 3.2 has the agent
+		# leave out the /16 -- the /8 says it already -- and keep the
+		# deny, which says something no positive prefix does.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: a candidate RP over Auto-RP, announcing to the agent
+		hello-interval 10
+		autorp announce $AA_RP interval $AA_INTERVAL holdtime $AA_HOLDTIME
+		autorp group-prefix ${AA_WIDE%/*} masklen ${AA_WIDE#*/}
+		autorp group-prefix ${AA_COVERED%/*} masklen ${AA_COVERED#*/}
+		autorp group-prefix ${AA_DENY%/*} masklen ${AA_DENY#*/} deny
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: the mapping agent, between the RP and the listener
+		hello-interval 10
+		autorp mapping-agent $AA_AGENT interval $AA_INTERVAL holdtime $AA_HOLDTIME
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: listening only, until step 7 makes it a second agent
+		hello-interval 10
 		EOF
 		return
 	fi
@@ -3760,6 +3818,7 @@ check() {
 	fuzz)       check_fuzz; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
 	autorp)     check_autorp; return $? ;;
+	autorp-agent) check_autorp_agent; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
 	privsep)    check_privsep; return $? ;;
@@ -4912,6 +4971,133 @@ check_autorp() {
 	result
 }
 
+# Auto-RP with pimd in every role: R1 announces itself as a candidate RP, R2
+# resolves the announcements and tells the domain, R3 only listens.  What
+# the `autorp' scenario asserts with a tool playing the agent, this asserts
+# with pimd playing all three -- which is also the shape that can be wrong
+# in both directions at once and still pass, so the fields the agent rewrites
+# (the resolution rules of sec. 3.2) are asserted on the *listener's* view
+# rather than on the agent's own bookkeeping.
+check_autorp_agent() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The agent hears the candidate RP announce itself"
+	if wait_for "$AA_WAIT" autorp_heard r2 "$AA_RP"; then
+		ok "r2 cached $AA_RP's announcement"
+	else
+		fail "r2 never heard $AA_RP, nothing below can work"
+		dprint "$(pimctl r2 show autorp)"
+		return 1
+	fi
+
+	print "3. And the listener learns the RP from the agent's mapping"
+	if wait_for "$AA_WAIT" has_autorp_rp r3 "$AA_RP"; then
+		ok "r3 holds $AA_RP as an Auto-RP RP, two hops from where it was announced"
+	else
+		fail "r3 never learned $AA_RP, the mapping message is not arriving or not believed"
+		dprint "$(pimctl r3 show autorp)"
+		dprint "$(pimctl r2 show autorp)"
+		return 1
+	fi
+	if wait_for "$AA_WAIT" autorp_knows r1 "$AA_WIDE"; then
+		ok "and so does r1, which announced it -- the round trip closes"
+	else
+		fail "r1 never heard the mapping its own announcement produced"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+
+	# Rule 3 of sec. 3.2, read off the listener: the /8 says what the /16
+	# inside it says, so only the /8 is sent.  A deny inside the same /8
+	# is not redundant and has to survive, which is the half of the rule
+	# that is easy to get wrong in the direction that loses information.
+	print "4. The agent drops a prefix its own shorter one covers"
+	if autorp_knows r3 "${AA_WIDE%/*}"; then
+		ok "r3 has $AA_WIDE, the shorter prefix"
+	else
+		fail "r3 has no mapping for $AA_WIDE"
+		dprint "$(pimctl r3 show autorp)"
+	fi
+	if autorp_forgot r3 "${AA_COVERED%/*}"; then
+		ok "and not $AA_COVERED, which it covers and which the agent left out"
+	else
+		fail "r3 has $AA_COVERED as well, the agent sent a prefix rule 3 forbids"
+		dprint "$(pimctl r3 show autorp)"
+	fi
+	if autorp_denies r3 "${AA_DENY%/*}"; then
+		ok "and keeps the deny for $AA_DENY, which no positive prefix says"
+	else
+		fail "the deny for $AA_DENY was lost on the way, rule 3 applied to a prefix of the other sign"
+		dprint "$(pimctl r3 show autorp)"
+	fi
+
+	print "5. A group under the deny has no RP on the listener"
+	autorp_join_ed2 239.9.9.9
+	sleep 10
+	if no_wc_route r3 239.9.9.9; then
+		ok "r3 built no shared tree for 239.9.9.9, the longest match being the deny"
+	else
+		fail "r3 served a group the RP denied"
+		dprint "$(pimctl r3 show mrt)"
+	fi
+
+	print "6. A group under the positive prefix does"
+	autorp_join_ed2 239.2.2.2
+	if wait_for 30 has_wc_route r3 239.2.2.2; then
+		ok "r3 built one for 239.2.2.2, so step 5 is a deny and not a dead lab"
+	else
+		fail "r3 served nothing at all, step 5 proves nothing"
+		dprint "$(pimctl r3 show mrt)"
+	fi
+
+	# sec. 3.2's election, and the only one Auto-RP has: an agent that
+	# hears a mapping message from a higher address stops sending its own.
+	# R1 is made the second agent -- it is the one with announcements
+	# cached, its own -- and R2's address on the link between them is the
+	# higher, so R1 is the one that has to fall silent while R2 does not.
+	print "7. Two agents, and the lower address falls silent"
+	cat <<-EOF > "$WORKDIR/r1.conf"
+	# R1: the candidate RP of step 2, and now a mapping agent as well,
+	# which is how IOS deploys both -- on one router
+	hello-interval 10
+	autorp announce $AA_RP interval $AA_INTERVAL holdtime $AA_HOLDTIME
+	autorp group-prefix ${AA_WIDE%/*} masklen ${AA_WIDE#*/}
+	autorp group-prefix ${AA_COVERED%/*} masklen ${AA_COVERED#*/}
+	autorp group-prefix ${AA_DENY%/*} masklen ${AA_DENY#*/} deny
+	autorp mapping-agent $AA_AGENT2 interval $AA_INTERVAL holdtime $AA_HOLDTIME
+	EOF
+	pimctl r1 restart >/dev/null 2>&1
+
+	if wait_for "$AA_WAIT" autorp_quiet r1; then
+		ok "r1 stopped sending mappings, $AA_AGENT_SEEN having the higher address"
+	else
+		fail "r1 is still the agent though $AA_AGENT_SEEN is sending mappings too"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	if autorp_knows r1 "$AA_AGENT_SEEN"; then
+		ok "and says which agent it gave way to"
+	else
+		fail "r1 went quiet without saying who for"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	# The other half of an election is that somebody won it
+	if ! autorp_quiet r2; then
+		ok "r2, the higher address, kept sending them"
+	else
+		fail "both agents fell silent, which is a domain with no mappings at all"
+		dprint "$(pimctl r2 show autorp)"
+	fi
+
+	result
+}
+
 check_static_rp() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
@@ -5010,6 +5196,22 @@ has_wc_route() {
 }
 
 no_wc_route() { ! has_wc_route "$1" "$2"; }
+
+# autorp-agent: what an agent has cached, what it has given up on, and a
+# membership from a router's own LAN rather than from ED1's.
+autorp_heard() {
+	pimctl "$1" show autorp 2>/dev/null | grep -q "heard $2"
+}
+
+autorp_quiet() {
+	pimctl "$1" show autorp 2>/dev/null | grep -q "quiet"
+}
+
+# A membership on R3's own LAN, from ED2, which is where the listener has a
+# leaf to build a shared tree for at all
+autorp_join_ed2() {
+	box_run ed2 "$IGMPV3" -i 10.0.3.10 -g "$1" -v 2 >/dev/null 2>&1
+}
 
 # Has router $1 learned $2 from the bootstrap router, i.e. holds it with a
 # holdtime rather than Forever?  The counterpart of has_static_rp().

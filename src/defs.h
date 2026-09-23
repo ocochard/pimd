@@ -552,6 +552,10 @@ extern void	accept_autorp		(uint32_t from, char *buf, size_t len);
 extern void	age_autorp		(void);
 extern int	autorp_denied		(uint32_t group);
 extern int	dump_autorp		(FILE *fp, int detail);
+extern void	autorp_config_reset	(void);
+extern void	autorp_announce_set	(uint32_t addr, int interval, int holdtime, int ttl);
+extern void	autorp_agent_set	(uint32_t addr, int interval, int holdtime, int ttl);
+extern int	autorp_prefix_add	(uint32_t group_addr, uint8_t masklen, int negative);
 
 /* ipc.c */
 extern void	ipc_init		(char *sockfile);

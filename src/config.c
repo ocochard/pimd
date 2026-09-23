@@ -38,6 +38,7 @@
  */
 
 #include "defs.h"
+#include "autorp.h"
 #include "queue.h"
 
 #define WARN(fmt, args...)    logit(LOG_WARNING, 0, "%s:%u - " fmt, config_file, lineno, ##args)
@@ -2535,25 +2536,153 @@ static int parse_autorp(char *s)
     char *w;
 
     w = next_word(&s);
-    if (!EQUAL(w, "discovery")) {
-	WARN("Invalid autorp option '%s', expected 'discovery'", w);
-	return FALSE;
+
+    if (EQUAL(w, "discovery")) {
+	w = next_word(&s);
+	if (EQUAL(w, "disable")) {
+	    autorp_enabled = FALSE;
+	} else if (EQUAL(w, "enable") || EQUAL(w, "")) {
+	    autorp_enabled = TRUE;
+	} else {
+	    WARN("Invalid autorp discovery option '%s', expected 'enable' or 'disable'", w);
+	    return FALSE;
+	}
+
+	logit(LOG_INFO, 0, "Auto-RP discovery is %s",
+	      autorp_enabled ? "enabled" : "disabled");
+
+	return TRUE;
     }
 
-    w = next_word(&s);
-    if (EQUAL(w, "disable")) {
-	autorp_enabled = FALSE;
-    } else if (EQUAL(w, "enable") || EQUAL(w, "")) {
-	autorp_enabled = TRUE;
-    } else {
-	WARN("Invalid autorp discovery option '%s', expected 'enable' or 'disable'", w);
-	return FALSE;
+    /*
+     * The two roles, which take the same three numbers after an address:
+     * how often to speak, how long what was said is worth, and how far it
+     * travels.  An interface name is taken as well as an address, the way
+     * bsr-candidate and rp-candidate do it, since the address of a link is
+     * a thing an operator renumbers and the name is not.
+     */
+    if (EQUAL(w, "announce") || EQUAL(w, "candidate-rp") ||
+	EQUAL(w, "mapping-agent") || EQUAL(w, "send-rp-discovery")) {
+	int agent = !EQUAL(w, "announce") && !EQUAL(w, "candidate-rp");
+	int interval = AUTORP_DEFAULT_INTERVAL;
+	int holdtime = -1;
+	int ttl = AUTORP_DEFAULT_SCOPE;
+	uint32_t addr;
+	char *what = w;
+
+	w = next_word(&s);
+	addr = ifname2addr(w);
+	if (!addr)
+	    addr = inet_parse(w, 4);
+	if (!inet_valid_host(addr)) {
+	    WARN("Invalid autorp %s address '%s'", what, w);
+	    return FALSE;
+	}
+
+	while (!EQUAL((w = next_word(&s)), "")) {
+	    u_int n;
+
+	    if (EQUAL(w, "interval") || EQUAL(w, "time")) {
+		if (sscanf(next_word(&s), "%u", &n) != 1 || n < 1 || n > 65535) {
+		    WARN("Invalid autorp %s interval", what);
+		    return FALSE;
+		}
+		interval = (int)n;
+		continue;
+	    }
+
+	    if (EQUAL(w, "holdtime")) {
+		if (sscanf(next_word(&s), "%u", &n) != 1 || n > 65535) {
+		    WARN("Invalid autorp %s holdtime", what);
+		    return FALSE;
+		}
+		holdtime = (int)n;
+		continue;
+	    }
+
+	    if (EQUAL(w, "scope") || EQUAL(w, "ttl")) {
+		if (sscanf(next_word(&s), "%u", &n) != 1 || n < 1 || n > 255) {
+		    WARN("Invalid autorp %s scope", what);
+		    return FALSE;
+		}
+		ttl = (int)n;
+		continue;
+	    }
+
+	    WARN("Invalid autorp %s option '%s'", what, w);
+	    return FALSE;
+	}
+
+	/* Three times the interval unless told otherwise, which is what
+	 * sec. 3.1 has every sender do */
+	if (holdtime < 0)
+	    holdtime = 3 * interval;
+
+	if (agent) {
+	    autorp_agent_set(addr, interval, holdtime, ttl);
+	    logit(LOG_INFO, 0, "Auto-RP mapping agent %s, interval %d, holdtime %d, scope %d",
+		  inet_fmt(addr, s1, sizeof(s1)), interval, holdtime, ttl);
+	} else {
+	    autorp_announce_set(addr, interval, holdtime, ttl);
+	    logit(LOG_INFO, 0, "Auto-RP announcing %s, interval %d, holdtime %d, scope %d",
+		  inet_fmt(addr, s1, sizeof(s1)), interval, holdtime, ttl);
+	}
+
+	return TRUE;
     }
 
-    logit(LOG_INFO, 0, "Auto-RP discovery is %s",
-	  autorp_enabled ? "enabled" : "disabled");
+    /*
+     * One group range this router announces, `deny' making it the negative
+     * prefix of sec. 4 -- an RP saying which groups it will *not* serve,
+     * which is the one thing Auto-RP can say and a Bootstrap cannot.
+     */
+    if (EQUAL(w, "group-prefix")) {
+	uint32_t group, masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+	int negative = FALSE;
 
-    return TRUE;
+	w = next_word(&s);
+	parse_prefix_len(w, &masklen);
+
+	group = inet_parse(w, 4);
+	if (!IN_MULTICAST(ntohl(group))) {
+	    WARN("Invalid autorp group-prefix '%s'", w);
+	    return FALSE;
+	}
+
+	while (!EQUAL((w = next_word(&s)), "")) {
+	    if (EQUAL(w, "masklen")) {
+		u_int n;
+
+		if (sscanf(next_word(&s), "%u", &n) != 1 || n < PIM_GROUP_PREFIX_MIN_MASKLEN || n > 32) {
+		    WARN("Invalid autorp group-prefix masklen");
+		    return FALSE;
+		}
+		masklen = n;
+		continue;
+	    }
+
+	    if (EQUAL(w, "deny") || EQUAL(w, "negative")) {
+		negative = TRUE;
+		continue;
+	    }
+
+	    WARN("Invalid autorp group-prefix option '%s'", w);
+	    return FALSE;
+	}
+
+	if (!autorp_prefix_add(group, (uint8_t)masklen, negative))
+	    return FALSE;
+
+	logit(LOG_INFO, 0, "Auto-RP announcing %s%s/%u", negative ? "no RP for " : "",
+	      inet_fmt(group, s1, sizeof(s1)), masklen);
+
+	return TRUE;
+    }
+
+    WARN("Invalid autorp option '%s', expected 'discovery', 'announce',"
+	 " 'mapping-agent' or 'group-prefix'", w);
+
+    return FALSE;
 }
 
 /**
@@ -2750,6 +2879,7 @@ void config_vifs_from_file(void)
     assert_pref_from_rib = FALSE;
     autorp_enabled = TRUE;
     autorp_limit = PIM_AUTORP_LIMIT;
+    autorp_config_reset();
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;

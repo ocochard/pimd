@@ -227,12 +227,30 @@ issue of this repository is written out in full.
   for the BSR's, `Auto-RP` -- and `pimctl show autorp` says which agent a
   mapping came from and how long it is still believed.  `autorp discovery
   disable` in `pimd.conf` turns it off
-- This is the listening half only: pimd does not announce itself as a
-  candidate RP over Auto-RP, is not a mapping agent, and does not forward
-  the two well-known groups, which the specification assumes a dense mode
-  does (sec. 3.3).  In a sparse-only domain the messages need an RP
-  configured for those two groups, which is what sec. 8 asks for anyway.
-  The rest is staged in `aidd_docs/plans/autorp.md`
+- pimd plays the other two Auto-RP roles as well.  `autorp announce ADDR`,
+  with an `autorp group-prefix GROUP [masklen LEN] [deny]` line per range,
+  makes it a candidate RP announcing itself to the mapping agents every
+  interval -- and `deny` is the one thing Auto-RP can say that a Bootstrap
+  cannot, an RP naming the groups it will *not* serve.  `autorp
+  mapping-agent ADDR` makes it the agent: it caches what the candidates
+  announce, resolves the conflicts the way sec. 3.2 asks (different lengths
+  coexist, the same prefix goes to the higher address, a deny beats a
+  positive prefix of the same length, and a prefix one of the same RP's own
+  shorter prefixes covers is left out), and sends the result to every
+  router every interval
+- The one election Auto-RP has, sec. 3.2: an agent that hears a mapping
+  message from a higher address stops sending its own, and speaks again
+  three intervals after that agent goes quiet.  The address compared is the
+  one the datagram came from, so an agent with several interfaces is a
+  different address on each and which of them wins depends on the link the
+  other agent is on -- which `pimctl show autorp` says out loud, naming the
+  agent it gave way to
+- What pimd does *not* do is flood the two well-known groups: the
+  specification assumes a dense mode carries them (sec. 3.3) and this
+  daemon has none.  Both messages go out of every PIM interface instead, so
+  a domain whose agent is adjacent to the candidate RPs and to the routers
+  works as it is, and a wider one needs the groups carried some other way.
+  That is the one piece of `aidd_docs/plans/autorp.md` still open
 - A configured `rp-address` beats an Auto-RP mapping for the same groups,
   which sec. 8 needs as well: the two Auto-RP groups themselves must not be
   something a mapping can take away.  And a *negative* prefix -- a deny --
@@ -252,8 +270,17 @@ issue of this repository is written out in full.
   group count that do not match what follows.  `-o FILE` writes the payload
   instead of sending it, which is what seeds the corpus, and `-b FILE`
   sends a file verbatim, which is how a crasher goes back on the wire
-- New `autorp` scenario in `test/lab.sh`: ED1 plays the mapping agent that
-  pimd cannot be yet, and R1 has to learn a mapping, refuse an
+- New `autorp-agent` scenario in `test/lab.sh`, the same protocol with pimd
+  in every role: R1 announces itself, R2 resolves and tells the domain, R3
+  two hops away learns the RP.  The resolution rules are asserted on the
+  listener rather than on the agent's own bookkeeping -- the /16 inside an
+  announced /8 does not arrive, the deny inside that same /8 does, a group
+  under the deny gets no shared tree and one beside it does -- and then a
+  second agent is configured so that the lower address falls silent while
+  the higher one keeps sending
+- New `autorp` scenario in `test/lab.sh`: ED1 plays the mapping agent with
+  `test/autorp`, so that the parser meets messages pimd did not write, and
+  R1 has to learn a mapping, refuse an
   announcement, leave the groups under a deny without an RP while serving
   the ones beside it, keep its configured RP against a mapping for the same
   range, age a mapping out when the agent goes quiet, stop at

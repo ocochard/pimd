@@ -268,10 +268,15 @@ holds afterwards is deliberately not asserted, a mutant Bootstrap that stays val
 takeover and RFC 7761 sec. 4.7 working rather than a bug,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 `autorp` the only one where an RP is learned from neither -- ED1 plays the mapping agent with
-`test/autorp`, since pimd cannot be one yet, and R1 has to learn a mapping, refuse an
+`test/autorp`, so that the parser meets messages pimd did not write, and R1 has to learn a mapping, refuse an
 announcement, leave the groups under a negative prefix without an RP, keep its configured RP
 against a mapping for the same range, age a mapping out, stop at `autorp-limit` and forget the lot
-across a reload; the messages reach R1 alone, nothing flooding the two well-known groups,
+across a reload; the messages reach R1 alone, nothing flooding the two well-known groups --
+`autorp-agent` beside it is the same protocol with pimd in every role, R1 announcing itself, R2
+resolving and telling the domain, R3 two hops away learning the RP, and the sec. 3.2 rules read
+off the *listener* rather than off the agent's own bookkeeping: a prefix a shorter one of the same
+RP covers is dropped, a deny inside that same shorter prefix is not, and a second agent on the
+lower address falls silent,
 `anycast` the only one where two routers are the RP for the same address, an RFC 4610
 Anycast-RP set on `lo0` of R2 and R3 that copy each other Registers (Null-Registers on FreeBSD,
 whose kernel hands pimd only the headers of a data Register), which also asserts the copy budget with a
@@ -402,9 +407,16 @@ sudo ./src/pimctl show pim            # or: show mrt / show rp / show interface 
 
 pimd learns an RP three ways now: `rp-address` in `pimd.conf`, the PIM bootstrap mechanism, and
 Auto-RP (`doc/pim-autorp-spec01.txt`), whose mapping messages it listens for on 224.0.1.40, UDP
-port 496, unless `autorp discovery disable` says not to. The listening half only -- it neither
-announces itself nor acts as a mapping agent, and does not flood the two well-known groups, which
-are stages 2 and 3 of `aidd_docs/plans/autorp.md`. A configured RP wins over a learned one, a
+port 496, unless `autorp discovery disable` says not to. It plays the other two roles as well:
+`autorp announce ADDR` with an `autorp group-prefix` line per range makes it a candidate RP over
+Auto-RP (`deny` on a prefix being the one thing Auto-RP says that a Bootstrap cannot), and
+`autorp mapping-agent ADDR` makes it the agent that resolves what the candidates claim -- the
+three rules of sec. 3.2 and the one election there is, an agent falling silent for a higher
+address on the link it heard it from. What is *not* here is the flooding the draft assumes
+(sec. 3.3): pimd sends both messages out of every PIM interface instead, so a domain whose agent
+is adjacent to the RPs and to the routers works and a wider one needs the groups carried some
+other way, which is the listener of `aidd_docs/plans/autorp.md`. A configured RP wins over a
+learned one, a
 negative prefix means "no RP for these groups" in a daemon with no dense mode, `autorp-limit` caps
 what an unauthenticated domain can make this router hold, and `pimctl show autorp` says what was
 heard and from which agent. The `Type` column of `show rp` is what says which of the three a row
