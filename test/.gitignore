@@ -11,3 +11,5 @@ fuzz_igmp
 fuzz_igmp_replay
 fuzz_pim
 fuzz_pim_replay
+fuzz_ipc
+fuzz_ipc_replay

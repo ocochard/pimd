@@ -44,6 +44,22 @@ EXTRA_DIST        += fuzz/corpus/pim/hello.bin			\
 		     fuzz/corpus/pim/register.bin		\
 		     fuzz/corpus/pim/register-null.bin		\
 		     fuzz/corpus/pim/regstop.bin
+EXTRA_DIST        += fuzz/corpus/ipc/show-pim-detail.txt	\
+		     fuzz/corpus/ipc/show-mrt-detail.txt	\
+		     fuzz/corpus/ipc/show-status.txt		\
+		     fuzz/corpus/ipc/show-rp.txt		\
+		     fuzz/corpus/ipc/show-igmp-groups.txt	\
+		     fuzz/corpus/ipc/show-neighbor.txt		\
+		     fuzz/corpus/ipc/show-mfc.txt		\
+		     fuzz/corpus/ipc/show-compat-detail.txt	\
+		     fuzz/corpus/ipc/show-alias.txt		\
+		     fuzz/corpus/ipc/help.txt			\
+		     fuzz/corpus/ipc/version.txt		\
+		     fuzz/corpus/ipc/debug-list.txt		\
+		     fuzz/corpus/ipc/debug-query.txt		\
+		     fuzz/corpus/ipc/log-level.txt		\
+		     fuzz/corpus/ipc/restart.txt		\
+		     fuzz/corpus/ipc/nonsense.txt
 EXTRA_DIST        += fuzz/corpus/igmp/query-v2.bin		\
 		     fuzz/corpus/igmp/query-v3.bin		\
 		     fuzz/corpus/igmp/report-v2.bin		\
@@ -86,6 +102,12 @@ noinst_PROGRAMS   += fuzz_igmp_replay
 fuzz_igmp_replay_SOURCES = fuzz/fuzz_igmp.c $(FUZZ_ROUTER) fuzz/replay.c
 fuzz_igmp_replay_LDADD   = $(FUZZ_LDADD)
 
+# The pimctl socket: ipc.c's command parser and the show_*() it dispatches
+# to, which need the same router to have something to print.
+noinst_PROGRAMS   += fuzz_ipc_replay
+fuzz_ipc_replay_SOURCES = fuzz/fuzz_ipc.c $(FUZZ_ROUTER) fuzz/replay.c
+fuzz_ipc_replay_LDADD   = $(FUZZ_LDADD)
+
 # The one test in TESTS, and only in a fuzz build: everything else here
 # wants root and namespaces (see above), while replaying a corpus wants
 # nothing at all.
@@ -109,6 +131,12 @@ fuzz_igmp_SOURCES   = fuzz/fuzz_igmp.c $(FUZZ_ROUTER)
 fuzz_igmp_CFLAGS    = $(AM_CFLAGS) -fsanitize=fuzzer
 fuzz_igmp_LDFLAGS   = $(AM_LDFLAGS) -fsanitize=fuzzer
 fuzz_igmp_LDADD     = $(FUZZ_LDADD)
+
+noinst_PROGRAMS   += fuzz_ipc
+fuzz_ipc_SOURCES    = fuzz/fuzz_ipc.c $(FUZZ_ROUTER)
+fuzz_ipc_CFLAGS     = $(AM_CFLAGS) -fsanitize=fuzzer
+fuzz_ipc_LDFLAGS    = $(AM_LDFLAGS) -fsanitize=fuzzer
+fuzz_ipc_LDADD      = $(FUZZ_LDADD)
 endif
 endif
 

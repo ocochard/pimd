@@ -10,6 +10,7 @@ header comment of its own file; this is the map.
 | `fuzz_config.c`    | `config_phyints_from_file()`, `config_vifs_from_file()` | `corpus/config/` |
 | `fuzz_pim.c`       | `accept_pim()`, so every `receive_pim_*()` behind it  | `corpus/pim/`       |
 | `fuzz_igmp.c`      | `accept_igmp()`: IGMP, mtrace, and the kernel upcalls | `corpus/igmp/`      |
+| `fuzz_ipc.c`       | `ipc_handle()`: the pimctl command parser and `show_*()` | `corpus/ipc/`     |
 
 `stubs.c` supplies what `main.c` would have defined, since a harness brings
 its own `main()`, and `replay.c` is a `main()` of its own for builds without
@@ -18,10 +19,10 @@ libFuzzer: it hands every file it is given to the harness once, which is how
 `../fuzz-corpus.sh`.
 
 `router.c`, `topology.h` and `mrib.c` are the router the packets arrive at,
-shared by `fuzz_pim` and `fuzz_igmp` and by whatever harness comes after
-them: two interfaces, three neighbours, a DR election this router wins on one
-link and loses on the other, an RP set with one range of its own and one a
-neighbour is the RP for, a (\*,G) and an (S,G).  `router.c`'s header says
+shared by `fuzz_pim`, `fuzz_igmp` and `fuzz_ipc`: two interfaces, three
+neighbours, a DR election this router wins on one link and loses on the
+other, an RP set with one range of its own and one a neighbour is the RP
+for, a (\*,G) and an (S,G).  `router.c`'s header says
 which part of the daemon each piece stands in for; `mrib.c` defines
 `k_req_incoming()` itself, which is why neither `netlink.c` nor
 `routesock.c` is linked into those harnesses and why an input gets the same
@@ -45,7 +46,8 @@ mkdir work
 test/fuzz_config -max_len=4096 work test/fuzz/corpus/config	# hunt
 test/fuzz_pim -max_len=512 work test/fuzz/corpus/pim		# hunt
 test/fuzz_igmp -max_len=512 work test/fuzz/corpus/igmp		# hunt
-make check							# replay all three
+test/fuzz_ipc -max_len=1024 work test/fuzz/corpus/ipc		# hunt
+make check							# replay all four
 ```
 
 The scratch directory comes first on purpose: libFuzzer writes every new unit
@@ -85,6 +87,13 @@ as a number well below that and as nothing else. A minute of mutation from
 them reaches about 3650 and 3700, a quarter of an hour on four workers 3865.
 Most of that is the protocol code; the rest is the `config.c` the per-input
 reset parses again and the routing table underneath.
+
+`fuzz_ipc` runs at some fifty thousand executions a second, a connected
+socket and a reply per input included, and its `INITED` number is not
+comparable with the two above: it builds the router once, in
+`LLVMFuzzerInitialize()`, and libFuzzer resets the counters before the first
+input, so the 702 edges its seeds reach are `ipc.c` and the `show_*()`
+behind it and nothing else. A minute of mutation from them reaches 776.
 
 The PIM corpus
 --------------
@@ -167,6 +176,32 @@ which carries the packet itself behind the header for the RP to encapsulate.
 V5 and V6 of `doc/rfc7761-compliance.md` were both on that path, and it is the
 one place a harness gets to say something the kernel never would.
 
+The IPC corpus
+--------------
+
+An input is the bytes a client writes to the pimctl socket: one command, no
+trailing newline, which is exactly what `src/pimctl.c` sends. So the seeds
+are text files and a crasher is readable, one per shape the parser treats
+differently -- a `show` with a `detail` argument, an alias row (`show if`),
+the two commands that take an argument of their own (`debug`, `log`) and
+their `?` form, the ones that answer out of a table (`help`, `version`), one
+that reaches `ipc_wrap()` (`restart`), and one that matches nothing:
+
+```sh
+printf 'show mrt detail' > test/fuzz/corpus/ipc/show-mrt-detail.txt
+printf 'debug pim_jp,igmp' > test/fuzz/corpus/ipc/debug-list.txt
+```
+
+The round trip closes with any raw client, a crasher put back in front of a
+running daemon:
+
+```sh
+nc -U /var/run/pimd.sock < crash-<sha1>
+```
+
+`pimctl` itself is no use for that: it translates what the user types into
+the exact command the daemon matches, which is the half a crasher is not.
+
 Did it reach a parser?
 ----------------------
 
@@ -178,12 +213,17 @@ neither crashes:
 ```sh
 FUZZ_DEBUG=1 test/fuzz_pim_replay test/fuzz/corpus/pim/join-sg.bin
 FUZZ_DEBUG=1 test/fuzz_igmp_replay test/fuzz/corpus/igmp/upcall-wholepkt.bin
+FUZZ_DEBUG=1 test/fuzz_ipc_replay test/fuzz/corpus/ipc/show-rp.txt
 ```
 
 should show the prologue building neighbours, a DR and an RP set, and then
 the input being parsed and acted on -- the second one all the way to a
 Register this router builds for a group a neighbour is the RP of, and tries
-to send. Run it over every seed after touching anything in `router.c`,
+to send. The third prints something else: `ipc.c` logs nothing at all, its
+two `logit(LOG_DEBUG)` lines being commented out, so `FUZZ_DEBUG=1` makes
+`fuzz_ipc` print the *reply* instead. A command that matched no row of
+`cmds[]` answers "No such command", which is what a corpus of seeds nobody
+checked looks like. Run it over every seed after touching anything in `router.c`,
 `mrib.c` or `topology.h`: a change there can leave a seed reaching its parser
 and nothing beyond, which no test reports.
 
@@ -247,10 +287,10 @@ LIB_FUZZING_ENGINE="-fsanitize=fuzzer" OUT=/tmp/out \
 ```
 
 The verdict is the `INITED` line, not the exit status. Built that way and
-replayed over the committed seeds with `-runs=0`, the three reach 473, 2669
-and 2851 edges, which is the same tree the recipe at the top of this file
-builds (473, 2656, 2836 -- the few edges between them are the hardening flags
-this build drops). A number well below that is a build that lost the
+replayed over the committed seeds with `-runs=0`, the four reach 473, 2648,
+2828 and 702 edges, which is the same tree the recipe at the top of this file
+builds (473, 2656, 2836, 702 -- the few edges between them are the hardening
+flags this build drops). A number well below that is a build that lost the
 instrumentation on the daemon's objects and kept it on the harness, which
 runs at full speed and looks healthy; the same `INITED` line is what says so.
 An OSS-Fuzz `address` build alone prints about a third of those, UBSan's

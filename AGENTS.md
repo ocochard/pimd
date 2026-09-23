@@ -97,7 +97,7 @@ past that. The `crafted` scenario is its first user; write the positive control 
 "was it refused?" assertion, since a parser that refuses everything passes all of them.
 
 `test/fuzz/` is the in-process half of the same idea, and needs no network, no root and no kernel:
-`--enable-fuzz` builds three harnesses, each with a `_replay` twin driven by a `main()` of its own over
+`--enable-fuzz` builds four harnesses, each with a `_replay` twin driven by a `main()` of its own over
 files -- which is what `make check` runs over `test/fuzz/corpus/`, so every input a fuzzer found and
 every crasher it produced stays asserted everywhere, with no clang and no privileges. The sanitizers
 are the verdict: build the tree `-fsanitize=address,undefined` or a run only proves the parsers do
@@ -117,18 +117,32 @@ igmpmsg` -- deviations V5 and V6 both lived there and both were found by reading
 argument for fuzzing it. Its input is the whole IP packet rather than the message, the protocol byte
 and the header length being what `accept_igmp()` reads first; `igmpv3 -o FILE` writes seeds of that
 shape and the three upcall seeds are committed as bytes, their layout written down in
-`test/fuzz/README.md`.
+`test/fuzz/README.md`. `fuzz_ipc` hands one pimctl command to `ipc_handle()`, the handler
+`ipc_init()` registers with the event loop, over a UNIX socket of the harness's own and a connected
+client per input, some fifty thousand a second: an input is the bytes a client writes and nothing
+else, so the corpus is text and a crasher goes back at a live daemon with `nc -U`. Its severity is
+the lowest of the four -- the socket is bound under `umask(0077)`, so the peer is already root --
+and its subject is the hand-written pointer work that reads that text, the prefix match of
+`ipc_read()` against `cmds[]`, `strip()`'s `memmove()` and the backwards walk in `chomp()` whose
+bound exists because without it a command of newlines writes its way off the front of the buffer.
+It is the one harness that builds the router once rather than per input, which is legitimate only
+while no command adds protocol state: the `show_*()` are readers, `debug` and `log` move two
+globals it puts back, and `restart` and `kill` are `main.c`'s and stubbed. Its `INITED` number is
+therefore not comparable with the other three -- the build happens before libFuzzer resets the
+counters, so its 702 edges are `ipc.c` and the `show_*()` alone -- and `FUZZ_DEBUG=1` prints the
+*reply* rather than a log, `ipc.c` logging nothing.
 
 The router all of them run the parsers inside is `test/fuzz/router.c`, over the addresses of
-`test/fuzz/topology.h`, built per input and torn down again: two interfaces, three neighbours, a DR
-election this router wins on one link and loses on the other, an RP set with one range of its own and
-one a neighbour is the RP for, a BSR candidacy, a (\*,G) and an (S,G), all from a `pimd.conf`
+`test/fuzz/topology.h`, built per input and torn down again (once, for `fuzz_ipc`): two interfaces,
+three neighbours, a DR election this router wins on one link and loses on the other, an RP set with
+one range of its own and one a neighbour is the RP for, a BSR candidacy, a (\*,G) and an (S,G), all from a `pimd.conf`
 `config.c` itself parses and a prologue of Hellos and Joins the daemon's own receive path handles.
 `test/fuzz/mrib.c` answers the RPF lookups from a fixed table of its own -- it defines
 `k_req_incoming()`, so neither `netlink.c` nor `routesock.c` is linked and an input answers the same
-on every machine. Every part of that state is there because something is unreachable without it, and
-the way to tell is the `INITED` line of a hunt, the edges the committed seeds reach before any
-mutation: 2651 for `fuzz_pim` and 2828 for `fuzz_igmp`. It was measured, not assumed -- at the
+on every machine -- and `rpf_backend`, the third symbol either of them exports outside `main.c`,
+which `show_status()` prints and `fuzz_ipc` therefore reaches. Every part of that state is there
+because something is unreachable without it, and the way to tell is the `INITED` line of a hunt, the
+edges the committed seeds reach before any mutation: 2651 for `fuzz_pim` and 2828 for `fuzz_igmp`. It was measured, not assumed -- at the
 default DR priority this router lost both elections, and `send_pim_register()` and the register half
 of `process_cache_miss()` were dead code with nothing reporting it. `FUZZ_DEBUG=1` turns the daemon's
 logging back on, which is the other way to tell a harness whose state is right from one that refuses

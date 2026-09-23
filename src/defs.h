@@ -537,6 +537,13 @@ extern uint32_t	inet_parse		(char *s, int n);
 
 /* ipc.c */
 extern void	ipc_init		(char *sockfile);
+/* The handler ipc_init() registers with the event loop, and the one entry
+ * point of the daemon a fuzz harness can hand a pimctl command to: it is
+ * where the prefix match against cmds[], the detail argument, the dispatch
+ * table and the reply live, and reproducing any of that in
+ * test/fuzz/fuzz_ipc.c would be a copy to keep in step with this one.
+ */
+extern void	ipc_handle		(int sd);
 extern void	ipc_exit		(void);
 
 /* kern.c */

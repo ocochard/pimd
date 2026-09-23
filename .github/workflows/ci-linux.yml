@@ -138,7 +138,7 @@ jobs:
     # minutes, so this is a job of its own and does not hold up the build.
     #
     # LeakSanitizer is left off, although Linux is where it would work: the
-    # harnesses give back what an input allocated, but both of them keep
+    # harnesses give back what an input allocated, but each of them keeps
     # buffers and a configuration from start-up to exit the way pimd does,
     # so what LSan reports at exit needs a human to read rather than a job
     # to fail on.  ASAN_OPTIONS=detect_leaks=1 by hand is how to look.
@@ -171,13 +171,15 @@ jobs:
 
       - name: Hunt for a minute per harness
         run: |
-          mkdir -p work/config work/pim work/igmp
+          mkdir -p work/config work/pim work/igmp work/ipc
           test/fuzz_config -max_len=4096 -max_total_time=60 -seed=1	\
               -artifact_prefix=$PWD/ work/config test/fuzz/corpus/config
           test/fuzz_pim -max_len=512 -max_total_time=60 -seed=1		\
               -artifact_prefix=$PWD/ work/pim test/fuzz/corpus/pim
           test/fuzz_igmp -max_len=512 -max_total_time=60 -seed=1		\
               -artifact_prefix=$PWD/ work/igmp test/fuzz/corpus/igmp
+          test/fuzz_ipc -max_len=1024 -max_total_time=60 -seed=1		\
+              -artifact_prefix=$PWD/ work/ipc test/fuzz/corpus/ipc
 
       - name: Keep whatever it found
         if: failure()

@@ -1086,7 +1086,10 @@ static void ipc_help(int sd, char *buf, size_t len)
 	fclose(fp);
 }
 
-static void ipc_handle(int sd)
+/* Declared in defs.h: the event loop calls this through the registration
+ * below, and test/fuzz/fuzz_ipc.c calls it directly.
+ */
+void ipc_handle(int sd)
 {
 	char cmd[768] = { 0 };
 	int client;

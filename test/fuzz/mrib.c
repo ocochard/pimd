@@ -28,7 +28,7 @@
  * they are members of libpimd.a, and everything outside main.c that
  * references either of them is defined here instead, so a definition here
  * is the one the linker takes and the archive member is never pulled in.
- * Should that stop being true -- a third symbol referenced from outside
+ * Should that stop being true -- another symbol referenced from outside
  * main.c -- the link fails with a duplicate symbol rather than quietly
  * picking one, which is the failure mode to want, and the fix is to add it
  * below rather than to let the archive member in.
@@ -40,6 +40,13 @@
  * it, src/debug.c references src/privsep.c for every log line, and so
  * privsep.o is always pulled in.  Nothing here ever separates privileges,
  * so nothing here ever calls this.
+ *
+ * rpf_backend is the third, and the one an input can see: show_status()
+ * prints it, so it arrives with fuzz_ipc and the pimctl parser.  What it
+ * names is this table rather than either of the daemon's two backends,
+ * since neither of them is linked -- a run that printed "netlink" or
+ * "routing socket" here would be one where the archive member got in after
+ * all.
  *
  * What it answers is one small fixed routing table, so the same input gives
  * the same answers on every machine and in CI: the harness's two subnets
@@ -54,6 +61,9 @@
 #include "defs.h"
 
 #include "topology.h"
+
+/* What show_status() prints for the RPF lookups, which are this file's */
+const char *rpf_backend = "fuzz MRIB";
 
 int kern_routesock(int ifevent)
 {

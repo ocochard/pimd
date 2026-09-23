@@ -218,6 +218,26 @@ issue of this repository is written out in full.
   and the header length are what accept_igmp() reads first and synthesizing
   them would put the upcall path out of reach; `igmpv3 -o` writes seeds of
   that shape and the three upcall seeds are committed as the bytes they are
+- New `fuzz_ipc` harness, over the last parser in this tree that had none:
+  one pimctl command to `ipc_handle()`, the handler `ipc_init()` registers
+  with the event loop, across a UNIX socket of the harness's own with a
+  connected client per input, some fifty thousand a second under
+  `-fsanitize=address,undefined`.  It is the least dangerous of the four --
+  the socket is bound under `umask(0077)`, so the peer is already root --
+  and the dispatch is the least of it: what reads the command is
+  hand-written pointer work, the prefix match of `ipc_read()` against
+  `cmds[]`, the `memmove()` in `strip()` and the backwards walk in
+  `chomp()`, whose bound is there because without it a command of nothing
+  but newlines writes its way off the front of the buffer.  An input is the
+  bytes a client writes and nothing else, so the corpus is text a person can
+  read and a crasher goes back at a running daemon with `nc -U`.  The router
+  the `show_*()` print is built once rather than per input, which holds only
+  while no command adds protocol state, and `FUZZ_DEBUG=1` prints the reply
+  rather than a log, `ipc.c` logging nothing at all
+- `ipc_handle()` is no longer `static`, for the reason `accept_pim()` and
+  `accept_igmp()` are not: it is where a command meets the table it is
+  matched against, and a harness reaching past it would keep a copy of that
+  match, of the `detail` argument and of the dispatch
 - The router the two message harnesses run their parsers inside is shared
   now, in `test/fuzz/router.c`: two interfaces, three neighbours, a DR
   election this router wins on one link and loses on the other, an RP set
