@@ -467,8 +467,13 @@ that is to look as if it installed it, the metrics left equal: the LAN follows
 the administrative distance, against the address, and follows it back when the
 labels swap.  That one needs a kernel whose routes carry a protocol and a
 netlink build to read it, so it skips itself elsewhere and says which.
-`assert-lan` in `test/freebsd-interop.sh` is the other witness, the Arista
-being a router that derives its preference whatever pimd is configured to do.*
+The other witness is the `rib` sub-case of `assert-lan` in
+`test/freebsd-interop.sh`, which is the only place a *derived* pimd preference
+meets a foreign implementation's: R3 reaches the source over a static route and
+derives 1 against the Arista's 100, while `default-route-distance` in its own
+pimd.conf says 150 -- the number the `arista-wins` sub-case beside it shows
+pimd losing with, which is this one's control.  It needs a netlink build and
+skips itself on a routing socket one, saying so.*
 
 **M7.  The Keepalive Timer is not traffic-driven, and nothing in reach makes
 that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.

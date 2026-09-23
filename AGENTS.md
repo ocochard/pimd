@@ -314,15 +314,20 @@ same way as its encoder passes one and fails the other:
   pimd's R3 and the Arista contending on it. Written to compare *unequal* assert metrics, which no
   other test could then -- pimd advertised two configured constants rather than the MRIB's numbers
   (deviation M4), so between two pimds they always tied and the address decided, leaving the two
-  comparisons RFC 7761 4.6.1 makes first as dead code. Half of that is fixed: the metric is the
-  routing table's now, and `shared-lan` moves it, but the preference is still `distance` from
-  `pimd.conf` and the Arista is the only router here that derives one. Getting that far took fixing deviation M10, which this
+  comparisons RFC 7761 4.6.1 makes first as dead code. Both are fixed now: the metric is the
+  routing table's and `shared-lan` moves it, and the preference is too where a `pimd.conf` says
+  `assert-preference rib` and the build can read the protocol that installed a route, which is the
+  `rib` sub-case here -- the only place in this tree where a *derived* pimd preference meets a
+  foreign implementation's, R3 deriving 1 from its static route against the Arista's 100 while the
+  `default-route-distance 150` in its own config would lose, which is what `arista-wins` beside it
+  shows with that same number and no keyword. It needs a netlink build and skips itself on a
+  routing socket one. Getting that far took fixing deviation M10, which this
   scenario turned up: pimd evaluated SPTbit only when an upcall reached `update_sptbit()` rather
   than per packet as sec. 4.2 asks, so R3 asserted from `(*,G)` with the RPT bit set and its metric
   was never reached. The assertion that reported it stays as a tripwire. What the scenario asserts
   is DR and IGMP querier election against a foreign implementation, the RP set learned through it,
-  all four sub-cases of the election -- the three metric ones and `rpt-bit`, where the Arista must
-  win on the bit despite pimd holding the better preference -- and the two halves of M3, an
+  all five sub-cases of the election -- the three metric ones, `rib`, and `rpt-bit`, where the
+  Arista must win on the bit despite pimd holding the better preference -- and the two halves of M3, an
   AssertCancel from the Arista and pimd holding the LAN past Assert_Time, both of which now report
   `ok` and stay as tripwires. `AL_SKIP_RESEND=yes` skips the 180s case, which also times pimd's
   resend against the 177 seconds of RFC 7761 sec. 4.6.1.

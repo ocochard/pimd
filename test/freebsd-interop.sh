@@ -116,16 +116,28 @@
 #               not the same thing, so both are here.
 #
 #               It was written for the assert metric.  pimd's metric
-#               preference is a configured constant rather than the
+#               preference was a configured constant rather than the
 #               distance of the protocol the route came from (deviation M4
 #               in doc/rfc7761-compliance.md), so between two pimds every
-#               router on a LAN advertises the same one; the metric beside
+#               router on a LAN advertised the same one; the metric beside
 #               it is the routing table's, and shared-lan in
 #               lab.sh moves it with route(8), but that is the
 #               second field compared and only after this scenario had
 #               been written.  EOS fills both from its own RIB, so this is
 #               the LAN where the preference comparison sec. 4.6.1 runs
 #               before the metric one is anything but dead code.
+#
+#               It is a constant no longer, where a pimd.conf asks for
+#               `assert-preference rib` and the build can read the
+#               protocol that installed a route, which is netlink's field
+#               alone.  The rib sub-case is that, and it is the only place
+#               in this tree where a *derived* pimd preference meets a
+#               foreign implementation's: R3 reaches the source over a
+#               static route, derives the distance every implementation
+#               gives one, and has to win -- while the number in its own
+#               pimd.conf, which the arista-wins sub-case shows it losing
+#               with, says otherwise.  It skips itself on a routing socket
+#               build, which cannot answer the question at all.
 #
 #               They did not at first, and that was the finding.  pimd
 #               evaluated SPTbit only when an upcall reached
@@ -142,17 +154,17 @@
 #               So what it asserts: DR and IGMP querier election on a
 #               segment shared with a foreign implementation, decided by
 #               different routers and agreed by both ends; the RP set
-#               learned through it; all four sub-cases of the election,
+#               learned through it; all five sub-cases of the election,
 #               including rpt-bit, the one that wants pimd held off the
 #               SPT, where the Arista must win on the RPT bit despite pimd
-#               holding the better preference; and the two halves of the
+#               holding the better preference, and rib above; and the two halves of the
 #               assert state machine no pimd-only lab can reach, a received
 #               AssertCancel and the winner's resend at Assert_Time -
 #               Assert_Override_Interval.  Those two were deviation M3 and
 #               are fixed; their reports stay as tripwires.
 #
-#               Takes about 12 minutes, most of it the last sub-case,
-#               which has to outlive Assert_Time (180s).
+#               Takes about 14 minutes, most of it the last step, which
+#               has to outlive Assert_Time (180s).
 #
 #   rpt-override
 #               Whether the Arista honours the Join(S,G,rpt) pimd sends to
@@ -551,13 +563,19 @@ AL_JOIN_PORT6=${AL_JOIN_PORT6:-4323}
 # {0,100,500} that loses on rpt_bit before any metric is read, in every
 # sub-case, which is correct behaviour by both ends and no test at all.
 # What fixes it is not a knob on R3: see write_case_confs().
-AL_CASES=${AL_CASES:-"pimd-wins arista-wins tiebreak rpt-bit"}
+AL_CASES=${AL_CASES:-"pimd-wins arista-wins rib tiebreak rpt-bit"}
 # Carried twice: onto R3's route to the source by route_metrics(), which is
 # where pimd reads the metric it asserts with, and into default-route-metric
 # for a kernel that reports none
 AL_PIMD_METRIC=$AL_EOS_METRIC
 AL_PREF_BETTER=$((AL_EOS_PREF - 50))
 AL_PREF_WORSE=$((AL_EOS_PREF + 50))
+
+# What the `rib` sub-case expects pimd to derive rather than read out of
+# its pimd.conf: R3 reaches the source over a static route, which netlink
+# reports as RTPROT_STATIC and rtprot_pref() (src/netlink.c) gives the
+# distance every other implementation gives a static route.
+AL_RIB_PREF=${AL_RIB_PREF:-1}
 
 # The short stream run after the election has settled, to show the LAN is
 # still carrying traffic, and how much of it has to come back
@@ -703,6 +721,11 @@ FAILED=0
 XFAILED=0
 ok()   { printf "  \033[32mok\033[0m    %s\n" "$1"; }
 fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
+
+# A case this build of pimd cannot be asked, rather than one it answered
+# wrongly: the same convention as lab.sh, printed on every run so that a
+# sub-case nobody has run for months is visible rather than absent.
+skip() { printf "  \033[33mSKIP\033[0m  %s\n" "$1"; }
 
 # A behaviour that is wrong but known to be wrong: pimd deviates from the
 # spec here, the assertion reproduces it on purpose, and the run is not
@@ -1029,6 +1052,7 @@ restore_mcast_loop() {
 # first.  A sub-case about metric_preference must not be decided by the
 # order two packets happened to land in.
 write_case_confs() {
+	rib=
 	case $1 in
 	pimd-wins)   pref=$AL_PREF_BETTER; spt="spt-threshold packets 0 interval 10" ;;
 	arista-wins) pref=$AL_PREF_WORSE;  spt="spt-threshold packets 0 interval 10" ;;
@@ -1038,6 +1062,21 @@ write_case_confs() {
 	# first.  Both routers are pinned, since either one switching would
 	# give R3 (S,G) state and take the bit away.
 	rpt-bit)     pref=$AL_PREF_BETTER; spt="spt-threshold infinity" ;;
+	# The preference taken from the routing table instead of from this
+	# file, which is the other half of M4 and the one thing on this LAN
+	# that no second pimd could ever check: R3 reaches the source over a
+	# static route, netlink reports RTPROT_STATIC, and rtprot_pref()
+	# (src/netlink.c) makes that the distance 1 -- against the Arista's
+	# 100, so pimd has to win.
+	#
+	# And the configured number is set to the one that loses, which is
+	# what makes this a test rather than a coincidence: a pimd that
+	# ignored the routing table would assert $AL_PREF_WORSE and hand the
+	# LAN to the Arista, which is exactly what the arista-wins sub-case
+	# above shows it doing with the same number and no
+	# assert-preference line.  That sub-case is this one's control.
+	rib)         pref=$AL_PREF_WORSE;  spt="spt-threshold packets 0 interval 10"
+		     rib="assert-preference rib" ;;
 	esac
 
 	cat <<-EOF > "$WORKDIR/r3.conf"
@@ -1048,6 +1087,7 @@ write_case_confs() {
 	default-route-distance $pref
 	default-route-metric $AL_PIMD_METRIC
 	$spt
+	$rib
 	EOF
 
 	cat <<-EOF > "$WORKDIR/r5.conf"
@@ -2221,6 +2261,17 @@ assert_case() {
 	AL_IN_SUBCASE=
 	[ $rc -eq 0 ] || return 1
 
+	assert_case_result "$case_name" "$winner"
+}
+
+# The verdict half of assert_case(), apart from it so that a sub-case with
+# something of its own to ask -- rib, which asks the daemon where its
+# preference came from -- can put that question between the election and
+# the reading of it.
+assert_case_result() {
+	case_name=$1
+	winner=$2
+
 	kill "$sender" 2>/dev/null
 	wait "$sender" 2>/dev/null
 
@@ -2376,6 +2427,41 @@ check_assert_lan() {
 		rpt-bit)
 			assert_case rpt-bit arista \
 				"pimd is off the SPT, so RFC 7761 4.6.1 decides on the RPT bit before the metric" ;;
+		rib)
+			# The only sub-case with a build requirement: the
+			# protocol that installed a route is a netlink field,
+			# and a routing socket pimd would assert the
+			# configured $AL_PREF_WORSE and lose -- correctly, and
+			# indistinguishably from the bug this is here to
+			# catch.  So ask the running daemon, whose backend is
+			# the same whatever sub-case it is in, and say so
+			# rather than fail.
+			print "Sub-case rib: pimd's derived distance $AL_RIB_PREF beats the Arista's $AL_EOS_PREF, where the $AL_PREF_WORSE in its own pimd.conf would lose"
+			backend=$(pimd_rpf_backend r3)
+			if [ "$backend" != netlink ]; then
+				skip "rib: this pimd has the \"$backend\" RPF backend, which cannot name the protocol that installed a route (configure --enable-netlink)"
+				continue
+			fi
+
+			AL_IN_SUBCASE=yes
+			establish_election rib
+			rc=$?
+			AL_IN_SUBCASE=
+			[ $rc -eq 0 ] || return 1
+
+			# The keyword took, before anything is read into the
+			# election it decided: a pimd.conf line that was
+			# ignored would leave R3 asserting the configured
+			# number and losing, which is the control's result and
+			# not this one's.
+			got_pref=$(pimd_assert_pref r3)
+			if [ "$got_pref" = rib ]; then
+				ok "rib: R3 says its assert preference comes from the routing table"
+			else
+				fail "rib: R3 says its assert preference is \"$got_pref\", the pimd.conf line did not take"
+			fi
+
+			assert_case_result rib pimd ;;
 		esac
 		[ "$FAILED" -eq 0 ] || return 1
 	done
@@ -2960,6 +3046,19 @@ an_pimsend() {
 	sleep 5
 	kill "$an_join" 2>/dev/null
 	wait "$an_join" 2>/dev/null
+}
+
+# assert-lan: which RPF backend this pimd was built with, and where it takes
+# the assert preference from.  Both come out of "show status" rather than
+# out of the tree, for the reason lab.sh asks the daemon too: a build that
+# quietly has the other backend answers every other assertion here exactly
+# the same way.
+pimd_rpf_backend() {
+	pimctl "$1" show status 2>/dev/null | sed -n 's/^RPF Backend *: *//p'
+}
+
+pimd_assert_pref() {
+	pimctl "$1" show status 2>/dev/null | sed -n 's/^Assert preference *: *//p'
 }
 
 # anycast: is $2 router $1's own member in the set its "show status" lists?

@@ -252,6 +252,16 @@ issue of this repository is written out in full.
   held it.  It needs a kernel whose routes carry a protocol and a netlink
   build to read it, so it skips itself on the BSDs and on a routing socket
   build and says which
+- The `rib` sub-case of `assert-lan` in `test/freebsd-interop.sh` puts the
+  same number in front of an Arista vEOS, which is the only implementation
+  on any wire in this tree that derives its own: R3 reaches the source over
+  a static route and derives 1 against the Arista's 100, while the
+  `default-route-distance 150` in its own pimd.conf says otherwise -- and
+  the `arista-wins` sub-case beside it is the control, the same 150 with no
+  `assert-preference` line, where the Arista takes the LAN.  It asks
+  `pimctl show status` whether the keyword took before it reads the
+  election, and skips itself on a build whose RPF backend cannot name the
+  protocol that installed a route
 - New `fuzz_ipc` harness, over the last parser in this tree that had none:
   one pimctl command to `ipc_handle()`, the handler `ipc_init()` registers
   with the event loop, across a UNIX socket of the harness's own with a
