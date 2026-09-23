@@ -60,7 +60,7 @@ void fuzz_pim_feed(uint32_t src, uint32_t dst, const uint8_t *msg, size_t len);
  * sanitizer will enforce: the rest of the buffer is poisoned, so a parser
  * that reads past the message it was handed is caught rather than reading
  * stale bytes of a 128K allocation.  router.c says why that matters.
- * Without ASan it is a memcpy().
+ * Without a sanitizer that has a shadow to write into it is a memcpy().
  */
 void fuzz_buf_load(char *buf, const void *pkt, size_t len);
 

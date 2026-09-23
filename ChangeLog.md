@@ -218,6 +218,21 @@ issue of this repository is written out in full.
   and the header length are what accept_igmp() reads first and synthesizing
   them would put the upcall path out of reach; `igmpv3 -o` writes seeds of
   that shape and the three upcall seeds are committed as the bytes they are
+- The fuzz harnesses run under MemorySanitizer as well, in a `msan` job of
+  `ci-linux.yml`: every corpus replayed and a minute of hunting each, on
+  every push.  MSan answers a question no other checker in this tree does
+  -- "was this value ever written?" rather than "did this read something it
+  should not have" -- which is the shape deviations V5 and V6 of
+  `doc/rfc7761-compliance.md` had and which ASan is happy with, the bytes
+  being inside a live allocation.  A build is one sanitizer or the other,
+  so it is a job of its own, Linux and clang only.  The instrumented libc
+  MSan usually wants is not needed here: the harnesses reach glibc through
+  the interceptors its runtime ships and call nothing that has none
+- `test/fuzz/router.c` poisons the tail of each receive buffer for MSan the
+  way it already did for ASan, through one `fuzz_poison()`.  Without it the
+  boundary would not exist in an MSan run at all -- the buffers are
+  `calloc()`ed, so every byte past the packet is a defined zero and a
+  parser reading past a short message reads zeroes nobody objects to
 - New `assert-preference` in `pimd.conf`, which says where the metric
   preference of a PIM Assert comes from.  RFC 7761 sec. 4.6.3 wants the
   administrative distance of the routing protocol that provided the route,

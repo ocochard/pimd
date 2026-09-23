@@ -155,7 +155,15 @@ deviation V5, and would have been invisible to a hunt of any length. `--enable-f
 `-fsanitize=fuzzer-no-link` in the probed flags so the *daemon's* objects carry the coverage
 instrumentation -- without that the harness alone is instrumented and the run explores 7 edges of
 `config.c` instead of 730, at full speed, looking healthy. `test/fuzz/README.md` has the recipes;
-`test/fuzz/stubs.c` supplies what `main.c` would have defined. Commit crashers into the corpus, not a
+`test/fuzz/stubs.c` supplies what `main.c` would have defined.  A second sanitizer runs over the
+same four, in the `msan` job of `ci-linux.yml`: MemorySanitizer answers "was this value ever
+written?" rather than "did this read something it should not have", which is the shape deviations
+V5 and V6 had and which ASan is happy with, a live allocation being a live allocation.  A build is
+one sanitizer or the other, so it is a job of its own, Linux and clang only; the instrumented libc
+MSan usually wants turns out not to be needed here, glibc being reached through the runtime's own
+interceptors.  `router.c` poisons the tail of a receive buffer for it too (`fuzz_poison()`), or the
+`calloc()`ed buffers would make every byte past a packet a defined zero and the boundary would not
+exist under MSan at all. Commit crashers into the corpus, not a
 hunt's own corpus: the seeds there are the readable ones, one per shape of input, and a full one
 rebuilds from them in a quarter of an hour (743 edges of `config.c`, 175 files after `-merge=1`,
 measured). A harness must not grow per input either -- the state one input makes goes back before the

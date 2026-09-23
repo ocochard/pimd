@@ -193,6 +193,80 @@ jobs:
             oom-*
           if-no-files-found: ignore
 
+  msan:
+    # The same harnesses under MemorySanitizer, which the job above cannot
+    # also be: a build is one sanitizer or the other, ASan and MSan use the
+    # same shadow, and neither of them sees what the other is for.  What
+    # this one sees is a value that was never written -- a struct field an
+    # allocation left alone, a stack variable a parser reads before it has
+    # set it -- which is the shape deviations V5 and V6 of
+    # doc/rfc7761-compliance.md had, and which ASan is happy with because
+    # the bytes are inside a live allocation.
+    #
+    # Linux only, and clang only: MSan wants every line that runs
+    # instrumented, which for these harnesses means the daemon's objects and
+    # nothing else -- glibc is reached through the interceptors the runtime
+    # ships, and this tree calls nothing that has none.  It was tried before
+    # it was written down: the four corpora replay clean and an hour of
+    # hunting found nothing, and a byte read past a packet on purpose was
+    # reported by file and line, which is the control that says the run
+    # means something.
+    #
+    # The harness poisons the tail of each receive buffer for MSan as it
+    # already did for ASan (fuzz_poison(), test/fuzz/router.c).  Without
+    # that, the buffers being calloc()ed, every byte past the packet is a
+    # defined zero and an over-read is invisible here.
+    name: Fuzz harnesses under MSan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    env:
+      MAKEFLAGS: -j3
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev clang
+
+      - name: Build
+        run: |
+          ./autogen.sh
+          ./configure --enable-fuzz --enable-werror CC=clang		\
+              CFLAGS="-g -O1 -fno-omit-frame-pointer -fno-strict-aliasing -fsanitize=memory -fsanitize-memory-track-origins=2" \
+              LDFLAGS="-fsanitize=memory"
+          make V=1
+
+      - name: Replay the committed corpus
+        run: |
+          make check || rc=$?
+          cat test/test-suite.log test/fuzz-corpus.sh.log 2>/dev/null
+          exit ${rc:-0}
+
+      - name: Hunt for a minute per harness
+        run: |
+          mkdir -p work/config work/pim work/igmp work/ipc
+          test/fuzz_config -max_len=4096 -max_total_time=60 -seed=1	\
+              -artifact_prefix=$PWD/ work/config test/fuzz/corpus/config
+          test/fuzz_pim -max_len=512 -max_total_time=60 -seed=1		\
+              -artifact_prefix=$PWD/ work/pim test/fuzz/corpus/pim
+          test/fuzz_igmp -max_len=512 -max_total_time=60 -seed=1		\
+              -artifact_prefix=$PWD/ work/igmp test/fuzz/corpus/igmp
+          test/fuzz_ipc -max_len=1024 -max_total_time=60 -seed=1		\
+              -artifact_prefix=$PWD/ work/ipc test/fuzz/corpus/ipc
+
+      - name: Keep whatever it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-msan-artifacts
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore
+
   lab:
     # The network namespace lab: twenty-one PIM-SM scenarios over real
     # namespaces, veth pairs and bridges, asserting on forwarded traffic and

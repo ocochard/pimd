@@ -227,6 +227,59 @@ checked looks like. Run it over every seed after touching anything in `router.c`
 `mrib.c` or `topology.h`: a change there can leave a seed reaching its parser
 and nothing beyond, which no test reports.
 
+MemorySanitizer
+---------------
+
+ASan and UBSan answer "did this read something it should not have?".  MSan
+answers a different question -- "was this value ever written?" -- and nothing
+else in this tree asks it.  A struct field an allocation left alone, a stack
+variable a parser reads before it has set it, a short message read as if it
+were a long one: all of that is inside a live allocation, so ASan is happy with
+it, and deviations V5 and V6 of `doc/rfc7761-compliance.md` were both of that
+shape.  A build is one sanitizer or the other, so this is a run of its own and
+a CI job of its own (`msan` in `ci-linux.yml`).
+
+```sh
+./configure --enable-fuzz CC=clang					\
+    CFLAGS="-g -O1 -fno-omit-frame-pointer -fno-strict-aliasing		\
+            -fsanitize=memory -fsanitize-memory-track-origins=2"	\
+    LDFLAGS="-fsanitize=memory"
+make
+make check                          # the four corpora
+test/fuzz_pim -max_len=512 work test/fuzz/corpus/pim
+```
+
+Linux and clang only, and the instrumented libc MSan usually wants is not one
+of the things this needs: the harnesses reach glibc through the interceptors
+the MSan runtime ships, and nothing here calls a function that has none.  That
+was the doubt worth settling before any of this was written down, and settling
+it took one build.
+
+`router.c` poisons the tail of each receive buffer for MSan as it does for
+ASan, through the same `fuzz_poison()`.  Without it the boundary would not
+exist here at all: the buffers are `calloc()`ed, so every byte past the packet
+is a defined zero and a parser reading past a short message reads zeroes MSan
+has nothing to say about.
+
+Numbers, on this tree and with nothing found: the four corpora replay clean,
+and fifteen minutes on four workers per harness found nothing either.  The
+`INITED` counts are lower than the ASan/UBSan ones above -- 245, 753, 774 and
+294 against 473, 2656, 2836 and 702 -- and that is UBSan rather than anything
+missing: its checks are branches and branches are edges, so compare a
+sanitizer's numbers with its own.
+
+The control, because a checker that has never fired proves nothing: put a read
+of one byte past the packet into `accept_pim()` --
+
+```c
+    if (recvlen > 0 && ((unsigned char *)pim_recv_buf)[recvlen + 1] == 0x5a)
+	logit(LOG_DEBUG, 0, "probe");
+```
+
+-- rebuild, and `fuzz_pim_replay` over the corpus stops at
+`use-of-uninitialized-value` in `accept_pim`, naming the file and the line.
+Take it out again afterwards.
+
 The end of the packet is a boundary
 ----------------------------------
 
@@ -240,7 +293,8 @@ length. So `router.c` poisons the rest of the buffer after each copy
 use-after-poison report naming the function that did it. Nothing in the
 daemon writes into either receive buffer, and `inet_cksum()` mops up an odd
 trailing byte one byte at a time, so there is nothing legitimate to trip
-over; without ASan the poisoning compiles to nothing.
+over; without a sanitizer to write a shadow the poisoning compiles to nothing.
+Under MSan it is `__msan_poison()` instead, for the reason that section gives.
 
 Leak checking is off by default (`ASAN_OPTIONS=detect_leaks=1` asks for it,
 Linux only). The harnesses free what a parse allocates, but pimd itself
@@ -304,7 +358,9 @@ python3 infra/helper.py build_fuzzers --sanitizer address pimd
 python3 infra/helper.py check_build pimd
 ```
 
-MemorySanitizer is deliberately not in `project.yaml` yet: it is item 3 of
-`aidd_docs/plans/improvements-backlog.md`, and the instrumented libc it wants
-is one of the things OSS-Fuzz has and this tree does not, so it is worth a
-change of its own once the project builds there.
+MemorySanitizer is not in `project.yaml` yet, and no longer for the reason it
+was: the harnesses run clean under it here, and a `msan` job of
+`ci-linux.yml` keeps them that way (see above).  What is left is the fleet's
+side of it, which is a line in that file and a build nobody here can try --
+OSS-Fuzz builds MSan against a sysroot of its own -- so it goes in the same
+change as the `projects/pimd/` pull request rather than ahead of it.

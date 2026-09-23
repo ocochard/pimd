@@ -94,11 +94,21 @@
  * trip over, and inet_cksum() mops up an odd trailing byte one byte at a
  * time rather than reading a short past the end (src/inet.c).
  *
- * Without ASan this is nothing at all, and the harness still works.
+ * MemorySanitizer needs the same thing said its way, and needs it more: the
+ * buffers are calloc()ed, so every byte past the packet is a defined zero as
+ * far as MSan is concerned and an over-read is a read of zeroes it has
+ * nothing to say about.  Poisoning the tail is what turns it back into "use
+ * of uninitialised value".  The two sanitizers cannot be built together, so
+ * whichever one this is compiled with is the one the macros below reach.
+ *
+ * Without either of them this is nothing at all, and the harness still works.
  */
 #if defined(__has_feature)
 # if __has_feature(address_sanitizer)
 #  define FUZZ_HAVE_ASAN 1
+# endif
+# if __has_feature(memory_sanitizer)
+#  define FUZZ_HAVE_MSAN 1
 # endif
 #elif defined(__SANITIZE_ADDRESS__)
 # define FUZZ_HAVE_ASAN 1
@@ -106,9 +116,15 @@
 
 #ifdef FUZZ_HAVE_ASAN
 #include <sanitizer/asan_interface.h>
+#define fuzz_poison(p, n)	__asan_poison_memory_region(p, n)
+#define fuzz_unpoison(p, n)	__asan_unpoison_memory_region(p, n)
+#elif defined(FUZZ_HAVE_MSAN)
+#include <sanitizer/msan_interface.h>
+#define fuzz_poison(p, n)	__msan_poison(p, n)
+#define fuzz_unpoison(p, n)	__msan_unpoison(p, n)
 #else
-#define __asan_poison_memory_region(p, n)	((void)(p), (void)(n))
-#define __asan_unpoison_memory_region(p, n)	((void)(p), (void)(n))
+#define fuzz_poison(p, n)	((void)(p), (void)(n))
+#define fuzz_unpoison(p, n)	((void)(p), (void)(n))
 #endif
 
 /* The IP header a harness writes, and the TTL a Register copies */
@@ -245,13 +261,13 @@ static void fuzz_pim_cksum(uint8_t *msg, size_t len)
 
 void fuzz_buf_load(char *buf, const void *pkt, size_t len)
 {
-	__asan_unpoison_memory_region(buf, RECV_BUF_SIZE);
+	fuzz_unpoison(buf, RECV_BUF_SIZE);
 
 	if (len)
 		memcpy(buf, pkt, len);
 
 	if (len < RECV_BUF_SIZE)
-		__asan_poison_memory_region(buf + len, RECV_BUF_SIZE - len);
+		fuzz_poison(buf + len, RECV_BUF_SIZE - len);
 }
 
 void fuzz_pim_feed(uint32_t src, uint32_t dst, const uint8_t *msg, size_t len)
@@ -262,7 +278,7 @@ void fuzz_pim_feed(uint32_t src, uint32_t dst, const uint8_t *msg, size_t len)
 	if (len > FUZZ_MSG_MAX)
 		return;
 
-	__asan_unpoison_memory_region(pim_recv_buf, RECV_BUF_SIZE);
+	fuzz_unpoison(pim_recv_buf, RECV_BUF_SIZE);
 
 	ip = (struct ip *)pim_recv_buf;
 	memset(ip, 0, MIN_IP_HEADER_LEN);
@@ -281,8 +297,8 @@ void fuzz_pim_feed(uint32_t src, uint32_t dst, const uint8_t *msg, size_t len)
 	/* And the packet ends here, whatever a parser makes of a length
 	 * field inside it */
 	if (MIN_IP_HEADER_LEN + len < RECV_BUF_SIZE)
-		__asan_poison_memory_region(pim_recv_buf + MIN_IP_HEADER_LEN + len,
-					    RECV_BUF_SIZE - MIN_IP_HEADER_LEN - len);
+		fuzz_poison(pim_recv_buf + MIN_IP_HEADER_LEN + len,
+			    RECV_BUF_SIZE - MIN_IP_HEADER_LEN - len);
 
 	accept_pim((ssize_t)(MIN_IP_HEADER_LEN + len));
 }
