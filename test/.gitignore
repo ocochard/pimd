@@ -2,7 +2,7 @@
 *.o
 *.trs
 .deps/*
-autorp
+/autorp
 igmpv3
 mping
 pimsend
