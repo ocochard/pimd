@@ -307,27 +307,68 @@ int debug_kind(int proto, int type, int code)
     return 0;
 }
 
+/*
+ * Two questions, one function, and the mask says which: DEBUG_ALL is the
+ * usage text and `pimctl debug ?` asking what subsystems there are, any
+ * other mask is somebody asking which of them are on.
+ */
 int debug_list(int mask, char *buf, size_t len)
 {
     struct debugname *d;
     uint32_t last = 0;
     size_t i;
+    int pass;
 
     memset(buf, 0, len);
-    for (i = 0, d = debugnames; i < NELEMS(debugnames); i++, d++) {
-	if (!(mask & d->level))
-	    continue;
 
-	if (last == d->level)
-	    continue;
-	last = d->level;
+    /* What there is: one name per subsystem, in the order of the table.
+     * DEBUG_TIMEOUT is not part of DEBUG_ALL, so it is not listed here
+     * either, and is asked for by name. */
+    if ((uint32_t)mask == DEBUG_ALL) {
+	for (i = 0, d = debugnames; i < NELEMS(debugnames); i++, d++) {
+	    if (!(mask & d->level))
+		continue;
 
-	if (mask != (int)DEBUG_ALL)
+	    if (last == d->level)
+		continue;
+	    last = d->level;
+
+	    if (*buf)
+		strlcat(buf, ", ", len);
+	    strlcat(buf, d->name, len);
+	}
+
+	return 0;
+    }
+
+    /*
+     * What is on.  A row answers only when every bit it names is set: the
+     * first row of the table is "all", which carries DEBUG_ALL and so
+     * shares a bit with every mask there is, and matching on that made it
+     * the answer to anything -- `pimctl debug pim_jp` replied "all", and so
+     * did the startup line of a daemon started with -d anything.
+     *
+     * Rows carrying several bits go first, so that "pim" is the answer for
+     * the nine subsystems it stands for rather than the nine answering one
+     * at a time, and a row takes its bits out of the mask as it prints, so
+     * that the same subsystem under another name is not printed twice.
+     */
+    for (pass = 0; pass < 2; pass++) {
+	for (i = 0, d = debugnames; i < NELEMS(debugnames); i++, d++) {
+	    int several = (d->level & (d->level - 1)) != 0;
+
+	    /* Pass 0 is the rows carrying several bits, pass 1 the rest */
+	    if (several != (pass == 0))
+		continue;
+
+	    if (((uint32_t)mask & d->level) != d->level)
+		continue;
 	    mask &= ~d->level;
 
-	if (*buf)
-	    strlcat(buf, ", ", len);
-	strlcat(buf, d->name, len);
+	    if (*buf)
+		strlcat(buf, ", ", len);
+	    strlcat(buf, d->name, len);
+	}
     }
 
     return 0;

@@ -304,6 +304,18 @@ issue of this repository is written out in full.
   `accept-nbr-from` is the answer to it
 
 ### Fixes
+- `pimctl debug SYSTEM` says which subsystems are on rather than always
+  answering `all`, and so does the `debug level 0x... (...)` line a daemon
+  started with `-d` prints.  `debug_list()` took the first row of
+  `debugnames[]` whose level shared a bit with the mask, and the first row
+  is `all`, which carries every bit there is: `pimctl debug pim_jp` replied
+  `all`, and so did `debug` with anything at all enabled.  A row answers now
+  only when every bit it names is on, and the rows that stand for several
+  subsystems are tried first, so `debug pim` is answered by `pim` rather
+  than by the nine names underneath it.  `pimctl debug ?` and the
+  `Available subsystems` list of `--help`, which are the same function asked
+  with `DEBUG_ALL`, are unchanged.  Found while writing `fuzz_ipc`, whose
+  corpus asks both questions
 - The "this RP is static" sentinel is spelled `PIM_HELLO_HOLDTIME_FOREVER`
   in all four places now.  `src/main.c` stored it as `(uint16_t)0xffffff`
   and `src/pim_proto.c` compared against the same, one `f` too many, which
