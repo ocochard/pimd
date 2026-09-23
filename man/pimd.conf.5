@@ -93,6 +93,62 @@ election to be decided by the address.
 Please note that PIM Assert elections are not the same as the DR
 election.  The PIM Assert election determines the active multicast
 forwarder, whereas the DR election determines the active PIM router.
+.It Cm autorp Cm discovery Oo Cm enable | Cm disable Oc
+Auto-RP, the RP discovery mechanism Cisco published in 1998 and which IOS,
+NX-OS and FRR speak.  A domain that runs it has one or more
+.Em mapping agents
+resolving what the candidate RPs announce and sending the result to
+224.0.1.40, where every router listens; the messages are UDP datagrams to
+port 496.
+.Nm pimd
+listens for them by default and puts what it learns in the same RP set the
+PIM bootstrap mechanism fills, so
+.Ic pimctl show rp
+lists both with a
+.Cm Type
+column saying which is which, and
+.Ic pimctl show autorp
+shows what was heard and from which agent.
+.Pp
+Default:
+.Cm enable .
+Disabling it costs nothing in a domain that runs the bootstrap mechanism and
+nothing else, and is the honest setting where both are run and this router
+should believe only the BSR.
+.Pp
+An RP configured here with
+.Cm rp-address
+always wins over an Auto-RP mapping for the same groups, which is also what
+the specification asks for: the two well-known groups need an RP that no
+dynamic mapping can take away.
+.Pp
+.Sy Note:
+a
+.Em negative
+group prefix, which the specification calls a deny, means "these groups are
+dense mode" there.
+.Nm pimd
+has no dense mode, so it reads one as
+.Em no RP for these groups ,
+and a negative prefix that is the longest match settles the question even
+where a shorter positive prefix covers the group.
+.Pp
+This is the listening half only:
+.Nm pimd
+does not announce itself as a candidate RP over Auto-RP and is not a
+mapping agent, and it does not forward the two well-known groups, so the
+messages have to reach it the way the specification assumes -- flooded by
+the domain, or carried as ordinary sparse-mode groups with an RP
+configured for them.
+.It Cm autorp-limit Ar <0-1000000>
+How many group-to-RP mappings Auto-RP may make this router hold.  Nothing
+authenticates a mapping message and one datagram can name 255 RPs with 255
+group prefixes each, so this is a cap on state somebody else creates, like
+.Cm rpt-prune-limit
+and its neighbours.  Mappings beyond it are refused and the fact is logged
+once;
+.Ic pimctl show status
+has the count.  Default: 1024.
 .It Cm assert-preference Oo Cm configured | Cm rib Oc
 Where the metric preference of a PIM Assert comes from.  RFC 7761
 sec. 4.6.3 says it is the administrative distance of the routing

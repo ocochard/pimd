@@ -5938,7 +5938,7 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    for (grp_rp = grp_mask->grp_rp_next; grp_rp; grp_rp = grp_rp_next) {
 		grp_rp_next = grp_rp->grp_rp_next;
 
-		if (grp_rp->is_static)
+		if (grp_rp->origin != RP_ORIGIN_BSR)
 		    continue;
 
 		if (grp_rp->fragment_tag != curr_bsr_fragment_tag)

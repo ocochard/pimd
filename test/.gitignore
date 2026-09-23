@@ -2,9 +2,12 @@
 *.o
 *.trs
 .deps/*
+autorp
 igmpv3
 mping
 pimsend
+fuzz_autorp
+fuzz_autorp_replay
 fuzz_config
 fuzz_config_replay
 fuzz_igmp

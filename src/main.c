@@ -475,6 +475,7 @@ int main(int argc, char *argv[])
     init_route();
     init_rp_and_bsr();   /* Must be after init_vifs() */
     add_static_rp();	 /* Must be after init_vifs() */
+    init_autorp();	 /* Must be after init_vifs(), it joins a group */
 
     sa.sa_handler = handle_signals;
     sa.sa_flags = 0;	/* Interrupt system calls */
@@ -565,6 +566,7 @@ static void timer(void *i __attribute__((unused)))
     age_vifs();		/* Timeout neighbors and groups         */
     age_routes();	/* Timeout routing entries              */
     age_misc();		/* Timeout the rest (Cand-RP list, etc) */
+    age_autorp();	/* ... and the Auto-RP mappings behind some of it */
 
     virtual_time += TIMER_INTERVAL;
     timer_set(TIMER_INTERVAL, timer, NULL);
@@ -778,7 +780,7 @@ static void add_static_rp(void)
 	 * that way it did not get back until somebody sent it a SIGHUP.
 	 */
 	if (entry)
-	    entry->is_static = TRUE;
+	    entry->origin = RP_ORIGIN_STATIC;
 
 	rph = rph->next;
     }
@@ -835,6 +837,7 @@ static void restart(int signo)
     timer_exit();
     stop_all_vifs();
     k_stop_pim(igmp_socket);
+    stop_autorp();
     ipc_exit();
 	
     nhandlers = 0;
@@ -875,6 +878,7 @@ static void restart(int signo)
     init_vifs();
     init_rp_and_bsr();   /* Must be after init_vifs() */
     add_static_rp();	 /* Must be after init_vifs() */
+    init_autorp();	 /* Must be after init_vifs(), it joins a group */
     ipc_init(sock_file);
 	
     /* Touch PID file to acknowledge SIGHUP */

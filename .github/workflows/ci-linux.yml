@@ -171,7 +171,7 @@ jobs:
 
       - name: Hunt for a minute per harness
         run: |
-          mkdir -p work/config work/pim work/igmp work/ipc
+          mkdir -p work/config work/pim work/igmp work/ipc work/autorp
           test/fuzz_config -max_len=4096 -max_total_time=60 -seed=1	\
               -artifact_prefix=$PWD/ work/config test/fuzz/corpus/config
           test/fuzz_pim -max_len=512 -max_total_time=60 -seed=1		\
@@ -180,6 +180,8 @@ jobs:
               -artifact_prefix=$PWD/ work/igmp test/fuzz/corpus/igmp
           test/fuzz_ipc -max_len=1024 -max_total_time=60 -seed=1		\
               -artifact_prefix=$PWD/ work/ipc test/fuzz/corpus/ipc
+          test/fuzz_autorp -max_len=512 -max_total_time=60 -seed=1	\
+              -artifact_prefix=$PWD/ work/autorp test/fuzz/corpus/autorp
 
       - name: Keep whatever it found
         if: failure()
@@ -245,7 +247,7 @@ jobs:
 
       - name: Hunt for a minute per harness
         run: |
-          mkdir -p work/config work/pim work/igmp work/ipc
+          mkdir -p work/config work/pim work/igmp work/ipc work/autorp
           test/fuzz_config -max_len=4096 -max_total_time=60 -seed=1	\
               -artifact_prefix=$PWD/ work/config test/fuzz/corpus/config
           test/fuzz_pim -max_len=512 -max_total_time=60 -seed=1		\
@@ -254,6 +256,8 @@ jobs:
               -artifact_prefix=$PWD/ work/igmp test/fuzz/corpus/igmp
           test/fuzz_ipc -max_len=1024 -max_total_time=60 -seed=1		\
               -artifact_prefix=$PWD/ work/ipc test/fuzz/corpus/ipc
+          test/fuzz_autorp -max_len=512 -max_total_time=60 -seed=1	\
+              -artifact_prefix=$PWD/ work/autorp test/fuzz/corpus/autorp
 
       - name: Keep whatever it found
         if: failure()

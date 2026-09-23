@@ -23,7 +23,7 @@ set -u
 rc=0
 found=0
 
-for h in config pim igmp ipc; do
+for h in config pim igmp ipc autorp; do
 	bin="./fuzz_${h}_replay"
 	dir="$srcdir/fuzz/corpus/$h"
 

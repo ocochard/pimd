@@ -15,6 +15,7 @@
  */
 
 #include "defs.h"
+#include "autorp.h"
 #include <sys/stat.h>		/* umask() */
 #include <pwd.h>
 #include <time.h>		/* tzset() */
@@ -133,7 +134,7 @@ static char  priv_chroot_path[sizeof(PRIVSEP_CHROOT) > 8
 static char *parent_conf;
 static char *parent_pid;
 static char *parent_sock;
-static int   parent_fd[PRIV_SOCK_IFEVENT + 1];
+static int   parent_fd[PRIV_SOCK_AUTORP + 1];
 static pid_t parent_child = -1;
 
 static void parent_cleanup(void);
@@ -965,7 +966,7 @@ static int parent_socket(uint32_t kind)
 {
     int sd = -1;
 
-    if (kind < PRIV_SOCK_IGMP || kind > PRIV_SOCK_IFEVENT) {
+    if (kind < PRIV_SOCK_IGMP || kind > PRIV_SOCK_AUTORP) {
 	errno = EINVAL;
 	return -1;
     }
@@ -981,6 +982,34 @@ static int parent_socket(uint32_t kind)
 
     case PRIV_SOCK_UDP:
 	sd = socket(AF_INET, SOCK_DGRAM, 0);
+	break;
+
+    case PRIV_SOCK_AUTORP:
+	/* The one socket that arrives bound.  Auto-RP is UDP to port 496,
+	 * which is privileged, so the child could not bind it even where
+	 * it is allowed to create a socket at all -- and under the Linux
+	 * filter it is not.
+	 */
+	sd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sd >= 0) {
+	    struct sockaddr_in sin;
+	    int on = 1;
+
+	    (void)setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+	    memset(&sin, 0, sizeof(sin));
+	    sin.sin_family      = AF_INET;
+	    sin.sin_addr.s_addr = INADDR_ANY;
+	    sin.sin_port        = htons(AUTORP_PORT);
+
+	    if (bind(sd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+		int err = errno;
+
+		close(sd);
+		errno = err;
+		sd = -1;
+	    }
+	}
 	break;
 
     case PRIV_SOCK_ROUTE:
@@ -1030,7 +1059,7 @@ static void parent_release(void)
 {
     int i;
 
-    for (i = PRIV_SOCK_IGMP; i <= PRIV_SOCK_IFEVENT; i++) {
+    for (i = PRIV_SOCK_IGMP; i <= PRIV_SOCK_AUTORP; i++) {
 	if (parent_fd[i] >= 0) {
 	    close(parent_fd[i]);
 	    parent_fd[i] = -1;
@@ -1390,7 +1419,7 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
 
     strlcpy(priv_username, name, sizeof(priv_username));
 
-    for (i = 0; i <= PRIV_SOCK_IFEVENT; i++)
+    for (i = 0; i <= PRIV_SOCK_AUTORP; i++)
 	parent_fd[i] = -1;
 
     parent_conf = strdup(conf);

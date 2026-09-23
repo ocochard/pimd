@@ -71,6 +71,12 @@
  * routers create, not a protocol constant: see rpt_prune_entry().
  */
 #define PIM_RPT_PRUNE_LIMIT            1024
+/* How many group-to-RP mappings Auto-RP may make this router hold,
+ * autorp-limit in pimd.conf.  A cap on state others create, and Auto-RP
+ * creates it with no neighbour relationship behind it at all: one datagram
+ * can name 255 RPs with 255 group prefixes each.  See autorp_map_get().
+ */
+#define PIM_AUTORP_LIMIT               1024
 /* How many (S,G) entries data from directly connected sources may make this
  * router hold as their DR, local-sg-limit in pimd.conf.  Another cap on state
  * others create, not a protocol constant: see local_sg_entry().

@@ -268,6 +268,13 @@ netstat -M          # SVR4, e.g. Illumos
 Show PIM Rendezvous-Point (RP) set
 .It Nm Ar show crp
 Show PIM Candidate Rendezvous-Point (CRP) set.
+.It Nm Ar show autorp
+Show the group-to-RP mappings learned over Auto-RP, which agent each came
+from and how long it is still believed.  The positive ones are in
+.Ar show rp
+as well, marked
+.Cm Auto-RP ;
+a denied prefix is only here, having no RP to be a row there.
 .It Nm Ar show compat
 Show PIM status, compat mode.  Previously available as
 .Nm pimd Fl r ,

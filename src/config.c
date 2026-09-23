@@ -74,6 +74,8 @@
 #define CONF_ANYCAST_RP                         22
 #define CONF_REGISTER_SG_LIMIT                  23
 #define CONF_ASSERT_PREFERENCE                  24
+#define CONF_AUTORP                             25
+#define CONF_AUTORP_LIMIT                       26
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -792,6 +794,10 @@ static int parse_option(char *word)
 	return CONF_REGISTER_SG_LIMIT;
     if (EQUAL(word, "assert-preference"))
 	return CONF_ASSERT_PREFERENCE;
+    if (EQUAL(word, "autorp"))
+	return CONF_AUTORP;
+    if (EQUAL(word, "autorp-limit"))
+	return CONF_AUTORP_LIMIT;
 
     return CONF_UNKNOWN;
 }
@@ -2507,6 +2513,50 @@ static int parse_assert_preference(char *s)
 }
 
 /**
+ * parse_autorp - Parse autorp option
+ * @s: String token
+ *
+ * Auto-RP, the RP discovery mechanism of doc/pim-autorp-spec01.txt: a
+ * mapping agent somewhere in the domain announces the group-to-RP mappings
+ * to 224.0.1.40 and every router listens.  pimd listens for them by
+ * default, and this is how to say it should not -- an operator whose
+ * domain runs the Bootstrap mechanism and nothing else loses nothing by
+ * leaving it on, but a domain that runs both has two sources for one
+ * answer, and which of them a router believes should be said out loud.
+ *
+ * Syntax:
+ * autorp discovery [enable | disable]
+ *
+ * Returns:
+ * When parsing @s is successful this function returns %TRUE, otherwise %FALSE.
+ */
+static int parse_autorp(char *s)
+{
+    char *w;
+
+    w = next_word(&s);
+    if (!EQUAL(w, "discovery")) {
+	WARN("Invalid autorp option '%s', expected 'discovery'", w);
+	return FALSE;
+    }
+
+    w = next_word(&s);
+    if (EQUAL(w, "disable")) {
+	autorp_enabled = FALSE;
+    } else if (EQUAL(w, "enable") || EQUAL(w, "")) {
+	autorp_enabled = TRUE;
+    } else {
+	WARN("Invalid autorp discovery option '%s', expected 'enable' or 'disable'", w);
+	return FALSE;
+    }
+
+    logit(LOG_INFO, 0, "Auto-RP discovery is %s",
+	  autorp_enabled ? "enabled" : "disabled");
+
+    return TRUE;
+}
+
+/**
  * parse_igmp_query_interval - Parse igmp-query-interval option
  * @s: String token
  *
@@ -2698,6 +2748,8 @@ void config_vifs_from_file(void)
     local_sg_limit = PIM_LOCAL_SG_LIMIT;
     register_sg_limit = PIM_REGISTER_SG_LIMIT;
     assert_pref_from_rib = FALSE;
+    autorp_enabled = TRUE;
+    autorp_limit = PIM_AUTORP_LIMIT;
 
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
@@ -2802,6 +2854,14 @@ void config_vifs_from_file(void)
 
 	    case CONF_ASSERT_PREFERENCE:
 		parse_assert_preference(s);
+		break;
+
+	    case CONF_AUTORP:
+		parse_autorp(s);
+		break;
+
+	    case CONF_AUTORP_LIMIT:
+		parse_state_limit(s, "autorp-limit", &autorp_limit, PIM_AUTORP_LIMIT);
 		break;
 
 	    default:

@@ -71,7 +71,8 @@ enum {
 	IPC_PIM_MFC,
 	IPC_PIM_RP,
 	IPC_PIM_CRP,
-	IPC_PIM_DUMP
+	IPC_PIM_DUMP,
+	IPC_AUTORP
 };
 
 static struct ipcmd {
@@ -97,6 +98,7 @@ static struct ipcmd {
 	{ IPC_PIM_NEIGH,  "show neighbor", "[detail]", "Show router neighbor table" },
 	{ IPC_PIM_RP,     "show rp", NULL, "Show Rendezvous-Point (RP) set" },
 	{ IPC_PIM_CRP,    "show crp", NULL, "Show candidate Rendezvous-Point (CRP) set" },
+	{ IPC_AUTORP,     "show autorp", NULL, "Show Auto-RP group-to-RP mappings" },
 	{ IPC_PIM,        "show pim", "[detail]", "Show interfaces, neighbors and routes (default)"},
 	{ IPC_PIM_DUMP,   "show compat", "[detail]", "Show router status, compat mode" },
 
@@ -553,13 +555,29 @@ static int show_rp(FILE *fp)
 			else
 				fprintf(fp, "%-16s  ", "");
 
-			if (ht == PIM_HELLO_HOLDTIME_FOREVER) {
+			/* Where the mapping came from, which used to be read
+			 * off the holdtime: a configured RP is the one with
+			 * no holdtime, so "static" and "forever" were the
+			 * same answer.  With Auto-RP beside the BSR they are
+			 * not, and only the entry itself knows. */
+			switch (rp_grp->origin) {
+			case RP_ORIGIN_STATIC:
 				snprintf(type, sizeof(type), "Static");
-				snprintf(htstr, sizeof(htstr), "Forever");
-			} else {
+				break;
+
+			case RP_ORIGIN_AUTORP:
+				snprintf(type, sizeof(type), "Auto-RP");
+				break;
+
+			default:
 				snprintf(type, sizeof(type), "Dynamic");
-				snprintf(htstr, sizeof(htstr), "%d", ht);
+				break;
 			}
+
+			if (ht == PIM_HELLO_HOLDTIME_FOREVER)
+				snprintf(htstr, sizeof(htstr), "Forever");
+			else
+				snprintf(htstr, sizeof(htstr), "%d", ht);
 
 			fprintf(fp, "%-15s  %4d  %8s  %-7s\n",
 				inet_fmt(rp_grp->rp->rpentry->address, s1, sizeof(s1)),
@@ -902,6 +920,7 @@ static int show_status(FILE *fp)
 	fprintf(fp, "RPT Prune entries    : %u of %u\n", rpt_prune_entries, rpt_prune_limit);
 	fprintf(fp, "Local (S,G) entries  : %u of %u\n", local_sg_entries, local_sg_limit);
 	fprintf(fp, "Register (S,G) state : %u of %u\n", register_sg_entries, register_sg_limit);
+	fprintf(fp, "Auto-RP mappings     : %u of %u\n", autorp_entries, autorp_limit);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_anycast_rp(fp);
@@ -993,6 +1012,14 @@ static int show_igmp(FILE *fp)
 	rc += show_igmp_groups(fp);
 
 	return rc;
+}
+
+/* What Auto-RP has said, which the RP table above cannot show: a denied
+ * prefix has no RP to put in a row, and nothing else says which agent a
+ * mapping came from or when it stops being believed. */
+static int show_autorp(FILE *fp)
+{
+	return dump_autorp(fp, detail);
 }
 
 static int show_dump(FILE *fp)
@@ -1170,6 +1197,10 @@ void ipc_handle(int sd)
 
 	case IPC_PIM_CRP:
 		ipc_show(client, show_crp, cmd, sizeof(cmd));
+		break;
+
+	case IPC_AUTORP:
+		ipc_show(client, show_autorp, cmd, sizeof(cmd));
 		break;
 
 	case IPC_PIM:

@@ -1,6 +1,6 @@
 #!/bin/bash -eu
 #
-# Build the four fuzz harnesses of test/fuzz/ the way OSS-Fuzz wants them
+# Build the five fuzz harnesses of test/fuzz/ the way OSS-Fuzz wants them
 #
 # This is the canonical copy: the build.sh of the projects/pimd/ directory in
 # google/oss-fuzz is two lines that exec this one, so that a harness added
@@ -17,7 +17,7 @@
 # objects in src/libpimd.a, is built by make with $CFLAGS in force.
 #
 # The source lists below are test/Makefile.am's, and have to stay that way:
-# fuzz_config is the harness and the stubs, the other three add the router the
+# fuzz_config is the harness and the stubs, the other four add the router the
 # packets arrive at.  A file added to FUZZ_ROUTER there is added here too.
 
 cd "$(dirname "$0")/../../.."
@@ -45,7 +45,7 @@ fuzz_cppflags="-I$PWD/src -I$PWD/include -I$PWD"
 # routesock.c out of the link: mrib.c defines every symbol either of them
 # exports to anything but main.c, so the archive members are never pulled in
 # and an RPF lookup answers the same on every machine.  See its header.
-for harness in config pim igmp ipc; do
+for harness in config pim igmp ipc autorp; do
 	case $harness in
 	config)	sources="test/fuzz/fuzz_config.c test/fuzz/stubs.c" ;;
 	*)	sources="test/fuzz/fuzz_$harness.c test/fuzz/router.c test/fuzz/mrib.c test/fuzz/stubs.c" ;;

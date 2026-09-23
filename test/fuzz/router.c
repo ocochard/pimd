@@ -513,7 +513,7 @@ void fuzz_router_build(void)
 					 rph->group, rph->mask,
 					 curr_bsr_hash_mask, curr_bsr_fragment_tag);
 		if (entry)
-			entry->is_static = TRUE;
+			entry->origin = RP_ORIGIN_STATIC;
 	}
 
 	/* The prologue: a neighbor on every link, and a shared tree and a

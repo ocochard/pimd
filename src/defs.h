@@ -288,6 +288,7 @@ typedef void (*ihfunc_t) (int);
 extern uint16_t         pim_timer_hello_interval;
 extern uint16_t         pim_timer_hello_holdtime;
 extern uint32_t         rpt_prune_limit;
+extern uint32_t         autorp_limit;
 extern uint32_t         local_sg_limit;
 extern uint32_t         register_sg_limit;
 
@@ -535,6 +536,22 @@ extern int	inet_valid_subnet	(uint32_t nsubnet, uint32_t nmask);
 extern char	*inet_fmt		(uint32_t addr, char *s, size_t len);
 extern char	*netname		(uint32_t addr, uint32_t mask);
 extern uint32_t	inet_parse		(char *s, int n);
+
+/* autorp.c */
+extern int	autorp_socket;
+extern int	autorp_enabled;
+extern uint32_t	autorp_entries;
+extern void	init_autorp		(void);
+extern void	stop_autorp		(void);
+/* The dispatcher, and the one entry point of the daemon a fuzz harness can
+ * hand an Auto-RP datagram to: every test a message has to survive before
+ * a mapping is believed is behind it, and a harness reproducing any of
+ * that would keep a copy to fall out of step with this one.
+ */
+extern void	accept_autorp		(uint32_t from, char *buf, size_t len);
+extern void	age_autorp		(void);
+extern int	autorp_denied		(uint32_t group);
+extern int	dump_autorp		(FILE *fp, int detail);
 
 /* ipc.c */
 extern void	ipc_init		(char *sockfile);

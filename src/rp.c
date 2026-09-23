@@ -391,7 +391,7 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	 * is 0xffff, so the next BSR to name the same RP for the same prefix
 	 * would arrange for pimd.conf's RP to age out when that BSR died.
 	 */
-	if (!entry_next->is_static)
+	if (entry_next->origin == RP_ORIGIN_BSR)
 	    entry_next->holdtime = rp_holdtime;
 	entry_next->fragment_tag = fragment_tag;
 
@@ -641,7 +641,7 @@ void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
 	entry_next = entry->grp_rp_next;
 
-	if (entry->is_static)
+	if (entry->origin != RP_ORIGIN_BSR)
 	    keep = TRUE;
     }
 
@@ -653,7 +653,7 @@ void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
 	entry_next = entry->grp_rp_next;
 
-	if (!entry->is_static)
+	if (entry->origin == RP_ORIGIN_BSR)
 	    delete_rp_grp_entry(used_cand_rp_list, used_grp_mask_list, entry);
     }
 }
@@ -991,6 +991,18 @@ rp_grp_entry_t *rp_grp_match(uint32_t group)
 	    curr_group_mask = mask_ptr->group_mask;
 	}
     }
+
+    /*
+     * An Auto-RP deny for this group, from a prefix at least as long as
+     * whatever was found above, is final: the draft has one longest match
+     * decide, and a negative match means the group has no RP even where a
+     * shorter positive prefix covers it (doc/pim-autorp-spec01.txt sec. 6,
+     * rule 1).  pimd.conf's own RP is the exception -- a configured
+     * mapping outlives every domain-wide mechanism, which is also what
+     * sec. 8 needs for the two Auto-RP groups themselves.
+     */
+    if (best_entry && best_entry->origin != RP_ORIGIN_STATIC && autorp_denied(group))
+	return NULL;
 
     return best_entry;
 }

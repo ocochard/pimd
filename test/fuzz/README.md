@@ -11,6 +11,7 @@ header comment of its own file; this is the map.
 | `fuzz_pim.c`       | `accept_pim()`, so every `receive_pim_*()` behind it  | `corpus/pim/`       |
 | `fuzz_igmp.c`      | `accept_igmp()`: IGMP, mtrace, and the kernel upcalls | `corpus/igmp/`      |
 | `fuzz_ipc.c`       | `ipc_handle()`: the pimctl command parser and `show_*()` | `corpus/ipc/`     |
+| `fuzz_autorp.c`    | `accept_autorp()`: the Auto-RP datagram parser        | `corpus/autorp/`    |
 
 `stubs.c` supplies what `main.c` would have defined, since a harness brings
 its own `main()`, and `replay.c` is a `main()` of its own for builds without
@@ -19,7 +20,7 @@ libFuzzer: it hands every file it is given to the harness once, which is how
 `../fuzz-corpus.sh`.
 
 `router.c`, `topology.h` and `mrib.c` are the router the packets arrive at,
-shared by `fuzz_pim`, `fuzz_igmp` and `fuzz_ipc`: two interfaces, three
+shared by `fuzz_pim`, `fuzz_igmp`, `fuzz_ipc` and `fuzz_autorp`: two interfaces, three
 neighbours, a DR election this router wins on one link and loses on the
 other, an RP set with one range of its own and one a neighbour is the RP
 for, a (\*,G) and an (S,G).  `router.c`'s header says
@@ -47,7 +48,8 @@ test/fuzz_config -max_len=4096 work test/fuzz/corpus/config	# hunt
 test/fuzz_pim -max_len=512 work test/fuzz/corpus/pim		# hunt
 test/fuzz_igmp -max_len=512 work test/fuzz/corpus/igmp		# hunt
 test/fuzz_ipc -max_len=1024 work test/fuzz/corpus/ipc		# hunt
-make check							# replay all four
+test/fuzz_autorp -max_len=512 work test/fuzz/corpus/autorp	# hunt
+make check							# replay all five
 ```
 
 The scratch directory comes first on purpose: libFuzzer writes every new unit
@@ -176,6 +178,34 @@ which carries the packet itself behind the header for the RP to encapsulate.
 V5 and V6 of `doc/rfc7761-compliance.md` were both on that path, and it is the
 one place a harness gets to say something the kernel never would.
 
+The Auto-RP corpus
+------------------
+
+An input is the UDP payload of one Auto-RP message and nothing else -- the
+IP and UDP headers are the kernel's -- which is byte for byte what
+`test/autorp -o FILE` writes and what `test/autorp -b FILE` sends.  So the
+seeds are built by the tree's own builder, one per shape the parser treats
+differently:
+
+```sh
+test/autorp -r 10.0.1.1 -h 180 -o test/fuzz/corpus/autorp/mapping.bin 239.1.0.0/16
+test/autorp -r 10.0.1.1 -h 180 -o test/fuzz/corpus/autorp/mapping-deny.bin \
+    -n 239.9.0.0/16 239.0.0.0/8
+test/autorp -r 10.0.1.1 -R 5 -o test/fuzz/corpus/autorp/rpcount-lies.bin 239.1.0.0/16
+```
+
+`-R` and `-G` write an RP count and a group count that do not match what
+follows, which is the shape this parser has to survive: both are bytes off
+the wire saying how much is there.  `-t announce` is the message type a
+router that is not a mapping agent must refuse, and `-V` a version it must
+refuse.
+
+The sender is the harness's, not the message's: pimd takes it from the
+kernel, and `fuzz_autorp` borrows the low two bits of the first reserved
+byte -- sent as zero and ignored on reception -- to pick one of the four
+senders of `topology.h`.  A crasher therefore reproduces from whichever jail
+it is sent out of.
+
 The IPC corpus
 --------------
 
@@ -214,6 +244,7 @@ neither crashes:
 FUZZ_DEBUG=1 test/fuzz_pim_replay test/fuzz/corpus/pim/join-sg.bin
 FUZZ_DEBUG=1 test/fuzz_igmp_replay test/fuzz/corpus/igmp/upcall-wholepkt.bin
 FUZZ_DEBUG=1 test/fuzz_ipc_replay test/fuzz/corpus/ipc/show-rp.txt
+FUZZ_DEBUG=1 test/fuzz_autorp_replay test/fuzz/corpus/autorp/mapping-deny.bin
 ```
 
 should show the prologue building neighbours, a DR and an RP set, and then

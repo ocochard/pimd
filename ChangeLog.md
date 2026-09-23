@@ -218,6 +218,51 @@ issue of this repository is written out in full.
   and the header length are what accept_igmp() reads first and synthesizing
   them would put the upcall path out of reach; `igmpv3 -o` writes seeds of
   that shape and the three upcall seeds are committed as the bytes they are
+- pimd learns RPs over **Auto-RP** now, the RP discovery mechanism Cisco
+  published in 1998 (`doc/pim-autorp-spec01.txt`) and which IOS, NX-OS and
+  FRR speak: it listens on 224.0.1.40, UDP port 496, for the mapping
+  messages an agent sends, and puts what it hears in the same RP set the
+  bootstrap mechanism fills.  `pimctl show rp` says which of the three
+  sources each row came from in its `Type` column -- `Static`, `Dynamic`
+  for the BSR's, `Auto-RP` -- and `pimctl show autorp` says which agent a
+  mapping came from and how long it is still believed.  `autorp discovery
+  disable` in `pimd.conf` turns it off
+- This is the listening half only: pimd does not announce itself as a
+  candidate RP over Auto-RP, is not a mapping agent, and does not forward
+  the two well-known groups, which the specification assumes a dense mode
+  does (sec. 3.3).  In a sparse-only domain the messages need an RP
+  configured for those two groups, which is what sec. 8 asks for anyway.
+  The rest is staged in `aidd_docs/plans/autorp.md`
+- A configured `rp-address` beats an Auto-RP mapping for the same groups,
+  which sec. 8 needs as well: the two Auto-RP groups themselves must not be
+  something a mapping can take away.  And a *negative* prefix -- a deny --
+  means "these groups are dense mode" in the specification, which pimd does
+  not have; it is read as "no RP for these groups", final on the longest
+  match even where a shorter positive prefix covers the group (sec. 6,
+  rule 1)
+- New `autorp-limit`, default 1024, capping the mappings Auto-RP may make
+  this router hold.  Nothing authenticates a mapping message and one
+  datagram can name 255 RPs with 255 group prefixes each, so this is a cap
+  on state somebody else creates, like `rpt-prune-limit` and its
+  neighbours; `pimctl show status` has the count, and the refusal is logged
+  once
+- New `fuzz_autorp` harness over the new parser, with a corpus of its own,
+  and `test/autorp.c`, which builds one Auto-RP message with every field
+  that can be got wrong exposed as an option -- including an RP count and a
+  group count that do not match what follows.  `-o FILE` writes the payload
+  instead of sending it, which is what seeds the corpus, and `-b FILE`
+  sends a file verbatim, which is how a crasher goes back on the wire
+- New `autorp` scenario in `test/lab.sh`: ED1 plays the mapping agent that
+  pimd cannot be yet, and R1 has to learn a mapping, refuse an
+  announcement, leave the groups under a deny without an RP while serving
+  the ones beside it, keep its configured RP against a mapping for the same
+  range, age a mapping out when the agent goes quiet, stop at
+  `autorp-limit`, and forget all of it across a reload
+- `rp_grp_entry_t` records which mechanism gave it the mapping rather than
+  a `is_static` flag.  The rule it stands for has not changed -- only the
+  BSR's own entries are the BSR's to overwrite and to collect, RFC 7761
+  sec. 4.7 -- but with a third source a flag could no longer say it, and
+  the `Type` column of `show rp` had been reading it off the holdtime
 - The fuzz harnesses run under MemorySanitizer as well, in a `msan` job of
   `ci-linux.yml`: every corpus replayed and a minute of hunting each, on
   every push.  MSan answers a question no other checker in this tree does

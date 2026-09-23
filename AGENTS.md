@@ -130,7 +130,11 @@ while no command adds protocol state: the `show_*()` are readers, `debug` and `l
 globals it puts back, and `restart` and `kill` are `main.c`'s and stubbed. Its `INITED` number is
 therefore not comparable with the other three -- the build happens before libFuzzer resets the
 counters, so its 702 edges are `ipc.c` and the `show_*()` alone -- and `FUZZ_DEBUG=1` prints the
-*reply* rather than a log, `ipc.c` logging nothing.
+*reply* rather than a log, `ipc.c` logging nothing. `fuzz_autorp` hands one Auto-RP datagram to
+`accept_autorp()`: RP count, group count and mask length are bytes off the wire saying how much
+follows, with no neighbour relationship and no checksum behind any of it, which is the shape of
+every parser bug this tree has had. Its input is the UDP payload, byte for byte what
+`test/autorp -o FILE` writes and `-b FILE` sends.
 
 The router all of them run the parsers inside is `test/fuzz/router.c`, over the addresses of
 `test/fuzz/topology.h`, built per input and torn down again (once, for `fuzz_ipc`): two interfaces,
@@ -263,6 +267,11 @@ kernel MFC and a register vif behind the parser -- with the sanitizers as the ve
 holds afterwards is deliberately not asserted, a mutant Bootstrap that stays valid being a BSR
 takeover and RFC 7761 sec. 4.7 working rather than a bug,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
+`autorp` the only one where an RP is learned from neither -- ED1 plays the mapping agent with
+`test/autorp`, since pimd cannot be one yet, and R1 has to learn a mapping, refuse an
+announcement, leave the groups under a negative prefix without an RP, keep its configured RP
+against a mapping for the same range, age a mapping out, stop at `autorp-limit` and forget the lot
+across a reload; the messages reach R1 alone, nothing flooding the two well-known groups,
 `anycast` the only one where two routers are the RP for the same address, an RFC 4610
 Anycast-RP set on `lo0` of R2 and R3 that copy each other Registers (Null-Registers on FreeBSD,
 whose kernel hands pimd only the headers of a data Register), which also asserts the copy budget with a
@@ -390,6 +399,16 @@ Needs root and a multicast-capable kernel (`CONFIG_IP_MROUTE`/`CONFIG_IP_PIMSM_V
 sudo ./src/pimd -n -s -l debug -d igmp,pim_jp,kernel,pim_register -f ./pimd.conf
 sudo ./src/pimctl show pim            # or: show mrt / show rp / show interface / show neighbor
 ```
+
+pimd learns an RP three ways now: `rp-address` in `pimd.conf`, the PIM bootstrap mechanism, and
+Auto-RP (`doc/pim-autorp-spec01.txt`), whose mapping messages it listens for on 224.0.1.40, UDP
+port 496, unless `autorp discovery disable` says not to. The listening half only -- it neither
+announces itself nor acts as a mapping agent, and does not flood the two well-known groups, which
+are stages 2 and 3 of `aidd_docs/plans/autorp.md`. A configured RP wins over a learned one, a
+negative prefix means "no RP for these groups" in a daemon with no dense mode, `autorp-limit` caps
+what an unauthenticated domain can make this router hold, and `pimctl show autorp` says what was
+heard and from which agent. The `Type` column of `show rp` is what says which of the three a row
+came from, which is what `rp_grp_entry_t`'s `origin` is for.
 
 `-i IDENT` changes syslog name, `.conf`, PID and socket file names all at once, for running
 several instances (one per `-t TABLE_ID` on Linux). `pimctl -u FILE` picks a non-default socket.

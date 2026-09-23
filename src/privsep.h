@@ -50,6 +50,7 @@ enum priv_sock {
     PRIV_SOCK_UDP,		/* UDP, for the interface ioctls       */
     PRIV_SOCK_ROUTE,		/* routing socket / netlink, RPF       */
     PRIV_SOCK_IFEVENT,		/* the same, for interface events      */
+    PRIV_SOCK_AUTORP,		/* UDP, bound to the Auto-RP port 496   */
 };
 
 /*

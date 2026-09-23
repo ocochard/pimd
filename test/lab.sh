@@ -904,10 +904,10 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
-	   ifnew ifgone renumber register-filter crafted fuzz static-rp anycast anycast-dr"
+	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
-		     rpt register-filter alias crafted static-rp ssm fuzz ifnew ifgone
+		     rpt register-filter alias crafted static-rp autorp ssm fuzz ifnew ifgone
 		     renumber ssm-range solo privsep"
 
 # keepalive: groups the source blasts at, and how long the entries must
@@ -1011,6 +1011,7 @@ PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
 IGMPV3="$WORKDIR/igmpv3"
 PIMSEND="$WORKDIR/pimsend"
+AUTORP="$WORKDIR/autorp"
 # mping joins the group it sends to, which would give the (S,G) entries a
 # leaf and hide the bug the keepalive scenario is after.  That scenario
 # needs a source that only sends, so it gets its own little sender.
@@ -1280,6 +1281,29 @@ SSMR_DEFAULT_RANGE=232.0.0.0/8
 # the configured RP and the advertised one ($RP_ADDR, R2's address on the R1
 # link) are the same router under two addresses and cannot be merged into
 # one entry -- see check_static_rp() for why that matters.
+# autorp: the mapping agent is test/autorp, run from ED1 on R1's LAN, since
+# nothing in this tree announces Auto-RP yet -- and the messages reach R1
+# only, the two well-known groups being flooded by a dense mode pimd does
+# not have (doc/pim-autorp-spec01.txt sec. 3.3, and stage 3 of
+# aidd_docs/plans/autorp.md).  So every assertion below is R1's.
+AUTORP_AGENT=${AUTORP_AGENT:-10.0.1.10}		# ED1, playing the agent
+AUTORP_IF=${AUTORP_IF:-${EP}101a}		# its interface on R1's LAN
+AUTORP_RP=${AUTORP_RP:-10.0.12.2}		# the RP a mapping names
+AUTORP_RP2=${AUTORP_RP2:-10.0.12.1}		# ... and another one
+AUTORP_RANGE=${AUTORP_RANGE:-239.1.0.0/16}
+AUTORP_GROUP=${AUTORP_GROUP:-239.1.1.1}		# inside it
+AUTORP_DENY=${AUTORP_DENY:-239.9.0.0/16}
+AUTORP_DENY_GROUP=${AUTORP_DENY_GROUP:-239.9.9.9}	# inside the deny
+AUTORP_WIDE=${AUTORP_WIDE:-239.0.0.0/8}		# covers both, positively
+AUTORP_STATIC_RANGE=${AUTORP_STATIC_RANGE:-239.5.0.0/16}
+AUTORP_STATIC_GROUP=${AUTORP_STATIC_GROUP:-239.5.5.5}
+# Short enough to watch age out, long enough to survive a slow box
+AUTORP_SHORT=${AUTORP_SHORT:-15}
+AUTORP_AGE_WAIT=${AUTORP_AGE_WAIT:-60}
+# The cap the flood in step 8 has to hit, and how many prefixes it sends
+AUTORP_LIMIT=${AUTORP_LIMIT:-8}
+AUTORP_FLOOD=${AUTORP_FLOOD:-16}
+
 STATICRP_ADDR=${STATICRP_ADDR:-10.0.23.2}
 STATICRP_WAIT=${STATICRP_WAIT:-180}
 
@@ -1663,7 +1687,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2290,6 +2314,31 @@ write_configs() {
 		return
 	fi
 
+	if [ "$SCENARIO" = autorp ]; then
+		# No candidacies anywhere: Auto-RP is the only thing that can
+		# give R1 an RP, so a row in its RP table came from a mapping
+		# message and from nothing else.  R2 and R3 are here to make
+		# the daemon a router rather than to be asserted on.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: the router under test, listening for Auto-RP on the
+		# LAN ED1 plays the mapping agent on
+		hello-interval 10
+		autorp-limit $AUTORP_LIMIT
+		rp-address $AUTORP_RP2 $AUTORP_STATIC_RANGE
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: plain transit router, no RP role of any kind
+		hello-interval 10
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: the same, and the far end of the chain
+		hello-interval 10
+		EOF
+		return
+	fi
+
 	if [ "$SCENARIO" = static-rp ]; then
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: first hop router, no BSR/RP role
@@ -2881,6 +2930,10 @@ start() {
 	print "Building pimsend (crafted PIM message generator) ..."
 	cc -O2 -o "$PIMSEND" "$PIMD_SRC/test/pimsend.c" || \
 		die "failed building $PIMD_SRC/test/pimsend.c"
+
+	print "Building autorp (Auto-RP mapping agent) ..."
+	cc -O2 -o "$AUTORP" "$PIMD_SRC/test/autorp.c" || \
+		die "failed building $PIMD_SRC/test/autorp.c"
 
 	print "Disabling multicast loopback on the host (restored by the last stop) ..."
 	disable_mcast_loop
@@ -3706,6 +3759,7 @@ check() {
 	crafted)    check_crafted; return $? ;;
 	fuzz)       check_fuzz; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
+	autorp)     check_autorp; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
 	privsep)    check_privsep; return $? ;;
@@ -4691,6 +4745,173 @@ anycast_ttl() {
 # configured RP this way did not get it back when the BSR died -- it aged
 # the learned RP set out and was left with no RP at all until somebody sent
 # it a SIGHUP.
+# Auto-RP discovery: the RP set filled by a mechanism that is not the BSR
+# and not pimd.conf.  ED1 plays the mapping agent (test/autorp), R1 is the
+# router under test, and nothing on this lab is a Candidate-RP or a
+# Candidate-BSR -- so an RP in R1's table came from a mapping message, and
+# an RP that is gone was aged out rather than replaced.
+#
+# What it cannot assert is the domain: the two well-known groups are
+# flooded by dense mode in the world the draft was written for, and pimd
+# has none, so R2 and R3 never hear the agent.  That is stage 3's listener,
+# aidd_docs/plans/autorp.md, and this scenario grows a step for it then.
+check_autorp() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The control for every step below: no candidacy anywhere, so the
+	# only RP R1 can have before a message arrives is the one its own
+	# pimd.conf names.
+	print "2. R1 starts with no RP but the one it is configured with"
+	if no_autorp_rp r1 "$AUTORP_RP"; then
+		ok "r1 has no Auto-RP mapping before any message"
+	else
+		fail "r1 holds an Auto-RP RP before the agent has said anything"
+		return 1
+	fi
+
+	print "3. A mapping message gives R1 an RP"
+	autorp_send -r "$AUTORP_RP" -h 180 "$AUTORP_RANGE"
+	if wait_for 30 has_autorp_rp r1 "$AUTORP_RP"; then
+		ok "r1 learned $AUTORP_RP for $AUTORP_RANGE, and calls it Auto-RP"
+	else
+		fail "r1 never learned $AUTORP_RP from the mapping agent"
+		dprint "$(pimctl r1 show autorp)"
+		return 1
+	fi
+	if autorp_knows r1 "$AUTORP_AGENT"; then
+		ok "show autorp names $AUTORP_AGENT as the agent it heard it from"
+	else
+		fail "show autorp does not say where the mapping came from"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+
+	# sec. 3.2: an announcement is addressed to the mapping agents and is
+	# one RP's claim, not the resolved answer.  A router that believed it
+	# would hold two RPs for one range with nothing having chosen.
+	print "4. An RP announcement is not a mapping, and is refused"
+	autorp_send -t announce -r "$AUTORP_RP2" -h 180 "$AUTORP_WIDE"
+	sleep 5
+	if no_autorp_rp r1 "$AUTORP_RP2"; then
+		ok "r1 ignored the announcement for $AUTORP_WIDE, as a router that is not an agent"
+	else
+		fail "r1 took an RP out of an announcement, which nobody has resolved"
+	fi
+
+	# sec. 6 rule 1, and the one place pimd has to read the draft rather
+	# than the RFC: a negative prefix is dense mode there, and here it is
+	# "no RP", which is what a sparse-only daemon can honestly do.
+	print "5. A negative prefix leaves the groups inside it with no RP"
+	autorp_send -r "$AUTORP_RP" -h 180 -n "$AUTORP_DENY" "$AUTORP_WIDE"
+	if wait_for 30 autorp_denies r1 "$AUTORP_DENY"; then
+		ok "r1 recorded the deny for $AUTORP_DENY"
+	else
+		fail "r1 did not record the deny, the rest of this step cannot be read"
+		dprint "$(pimctl r1 show autorp)"
+		return 1
+	fi
+
+	autorp_join "$AUTORP_GROUP"
+	if wait_for 30 has_wc_route r1 "$AUTORP_GROUP"; then
+		ok "a member of $AUTORP_GROUP, which $AUTORP_WIDE covers positively, got a (*,G)"
+	else
+		fail "no (*,G) for $AUTORP_GROUP, so step 5's negative half would prove nothing"
+		dprint "$(pimctl r1 show mrt)"
+	fi
+
+	autorp_join "$AUTORP_DENY_GROUP"
+	sleep 10
+	if no_wc_route r1 "$AUTORP_DENY_GROUP"; then
+		ok "a member of $AUTORP_DENY_GROUP got none, the longest match being the deny"
+	else
+		fail "r1 built a shared tree for a group the agent denied, sec. 6 rule 1"
+		dprint "$(pimctl r1 show mrt)"
+	fi
+
+	# sec. 8, and pimd's own precedence: what an operator configured
+	# outlives what the domain says, or the two Auto-RP groups themselves
+	# could be taken away by an Auto-RP message.
+	print "6. The RP from pimd.conf outlives a mapping for the same range"
+	autorp_send -r "$AUTORP_RP" -h 180 "$AUTORP_STATIC_RANGE"
+	sleep 5
+	if pimctl r1 show rp | grep "$AUTORP_RP2" | grep -q Static; then
+		ok "r1 still holds $AUTORP_RP2 for $AUTORP_STATIC_RANGE, from its own pimd.conf"
+	else
+		fail "r1 lost the configured RP to an Auto-RP mapping"
+		dprint "$(pimctl r1 show rp)"
+	fi
+	autorp_join "$AUTORP_STATIC_GROUP"
+	if wait_for 30 has_wc_route r1 "$AUTORP_STATIC_GROUP"; then
+		ok "and serves $AUTORP_STATIC_GROUP with it"
+	else
+		fail "r1 has the configured RP but built no shared tree with it"
+		dprint "$(pimctl r1 show mrt)"
+	fi
+
+	print "7. A mapping is believed for its holdtime and no longer"
+	autorp_send -r "$AUTORP_RP" -h "$AUTORP_SHORT" 238.7.0.0/16
+	if wait_for 30 autorp_knows r1 "238.7.0.0"; then
+		ok "r1 took the mapping for 238.7.0.0/16 at holdtime $AUTORP_SHORT"
+	else
+		fail "r1 never took the short-holdtime mapping"
+		return 1
+	fi
+	if wait_for "$AUTORP_AGE_WAIT" autorp_forgot r1 "238.7.0.0"; then
+		ok "and dropped it once the agent stopped refreshing it"
+	else
+		fail "r1 still holds 238.7.0.0/16 after ${AUTORP_AGE_WAIT}s, nothing ages the mappings"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+
+	# Nothing authenticates a mapping message, and one datagram can name
+	# 255 RPs with 255 prefixes each.  autorp-limit is the answer, and
+	# this is it working rather than the daemon growing.
+	print "8. A flood of mappings stops at autorp-limit"
+	i=0
+	while [ "$i" -lt "$AUTORP_FLOOD" ]; do
+		autorp_send -r "$AUTORP_RP" -h 180 "237.$i.0.0/16"
+		i=$((i + 1))
+	done
+	sleep 5
+	if pimctl r1 show status | grep -q "Auto-RP mappings     : $AUTORP_LIMIT of $AUTORP_LIMIT"; then
+		ok "r1 holds $AUTORP_LIMIT mappings of $AUTORP_LIMIT, and refused the rest"
+	else
+		fail "the cap did not hold: $(pimctl r1 show status | grep 'Auto-RP mappings')"
+	fi
+	if ${SUDO} grep -q "Auto-RP mapping limit" "$WORKDIR/r1.log"; then
+		ok "and said so once in its log"
+	else
+		fail "r1 refused mappings without saying why"
+	fi
+
+	# Every scenario that adds state to the daemon owes this one: a
+	# reload tears the RP set down and builds it again, and anything that
+	# outlived it would be a mapping nobody can withdraw.
+	print "9. A reload forgets what Auto-RP said"
+	pimctl r1 restart >/dev/null 2>&1
+	if wait_for 30 autorp_forgot r1 "$AUTORP_RANGE"; then
+		ok "r1 came back with an empty Auto-RP table"
+	else
+		fail "a mapping survived the reload, restart() does not reset it"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	if wait_for 30 no_autorp_rp r1 "$AUTORP_RP"; then
+		ok "and with no Auto-RP row in its RP set"
+	else
+		fail "an Auto-RP RP survived the reload in the RP set"
+		dprint "$(pimctl r1 show rp)"
+	fi
+
+	result
+}
+
 check_static_rp() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
@@ -4745,6 +4966,50 @@ check_static_rp() {
 
 	result
 }
+
+# --- autorp -----------------------------------------------------------
+#
+# One Auto-RP message from ED1, which plays the mapping agent this tree
+# cannot be yet.  Sent on R1's LAN, so R1 is the only router that hears it.
+autorp_send() {
+	box_run ed1 "$AUTORP" -i "$AUTORP_AGENT" "$@" >/dev/null 2>&1
+}
+
+# Has router $1 an RP for $2 that it learned from Auto-RP?  The Type column
+# says which of the three sources a row came from, which is the whole point
+# of there being one.
+has_autorp_rp() {
+	pimctl "$1" show rp 2>/dev/null | grep "$2" | grep -q "Auto-RP"
+}
+
+no_autorp_rp() { ! has_autorp_rp "$1" "$2"; }
+
+# ... and what `show autorp' says, which is the only view of a deny: the RP
+# set holds no row at all for a range that has no RP.
+autorp_denies() {
+	pimctl "$1" show autorp 2>/dev/null | grep "$2" | grep -q DENY
+}
+
+autorp_knows() {
+	pimctl "$1" show autorp 2>/dev/null | grep -q "$2"
+}
+
+autorp_forgot() { ! autorp_knows "$1" "$2"; }
+
+# A membership from ED1 for one group, the way ssm does it: a report from
+# the tool rather than a kernel join, so that nothing answers the queries
+# afterwards and the state is pimd's alone.
+autorp_join() {
+	box_run ed1 "$IGMPV3" -i "$AUTORP_AGENT" -g "$1" -v 2 >/dev/null 2>&1
+}
+
+# Did that leave R1 with a (*,G) for the group?  Which is the behaviour a
+# deny has to change: no RP, no shared tree, whatever else is in the table.
+has_wc_route() {
+	pimctl "$1" show mrt 2>/dev/null | grep "$2" | grep -q WC
+}
+
+no_wc_route() { ! has_wc_route "$1" "$2"; }
 
 # Has router $1 learned $2 from the bootstrap router, i.e. holds it with a
 # holdtime rather than Forever?  The counterpart of has_static_rp().

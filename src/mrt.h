@@ -196,6 +196,16 @@ typedef struct grp_mask {
     uint8_t		 group_rp_number; /* Used when assembling segments  */
 } grp_mask_t;
 
+/*
+ * Where a group-to-RP mapping came from.  A Bootstrap may only overwrite
+ * and collect its own: pimd.conf's rp-address outlives every BSR, and an
+ * Auto-RP mapping is another domain-wide mechanism's to withdraw, not this
+ * one's.  See add_rp_grp_entry() and age_rp_grp_entries() in src/rp.c.
+ */
+#define RP_ORIGIN_BSR		0	/* The default, a Bootstrap said so */
+#define RP_ORIGIN_STATIC	1	/* pimd.conf, rp-address	    */
+#define RP_ORIGIN_AUTORP	2	/* An Auto-RP mapping message	    */
+
 typedef struct rp_grp_entry {
     struct rp_grp_entry *rp_grp_next; /* Next entry for same RP		 */
     struct rp_grp_entry *rp_grp_prev; /* Prev entry for same RP		 */
@@ -206,9 +216,10 @@ typedef struct rp_grp_entry {
     uint16_t		 fragment_tag; /* The fragment tag from the
 					* received BSR message		 */
     uint8_t		 priority;    /* The RP priority		 */
-    uint8_t		 is_static;   /* From pimd.conf's rp-address, so
-				       * not the BSR's to withdraw or to
-				       * collect, RFC 7761 sec. 4.7	 */
+    uint8_t		 origin;      /* RP_ORIGIN_*: who told us.  Only
+				       * the BSR's own are the BSR's to
+				       * withdraw or to collect, RFC 7761
+				       * sec. 4.7			 */
     grp_mask_t		*group;	      /* Pointer to (group,mask) entry	 */
     cand_rp_t		*rp;	      /* Pointer to the RP		 */
 } rp_grp_entry_t;

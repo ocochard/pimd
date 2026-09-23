@@ -1,4 +1,4 @@
-EXTRA_DIST         = README.md igmpv3.c mping.c pimsend.c
+EXTRA_DIST         = README.md autorp.c igmpv3.c mping.c pimsend.c
 # Not in TESTS: needs root and FreeBSD vnet jails or Linux named netns, see the script header
 EXTRA_DIST        += lab.sh lab-freebsd.sh lab-linux.sh
 # Not in TESTS either: needs bhyve and a licensed Arista vEOS image on top
@@ -13,10 +13,11 @@ AM_CFLAGS          = @PIMD_CFLAGS@
 AM_LDFLAGS         = @PIMD_LDFLAGS@
 AM_CPPFLAGS        = -I$(top_srcdir)/src -I$(top_srcdir)/include
 
-noinst_PROGRAMS    = mping igmpv3 pimsend
+noinst_PROGRAMS    = mping igmpv3 pimsend autorp
 mping_SOURCES      = mping.c
 igmpv3_SOURCES     = igmpv3.c
 pimsend_SOURCES    = pimsend.c
+autorp_SOURCES     = autorp.c
 
 # The corpus is dist'ed whether or not this build has the harnesses, so a
 # tarball can be fuzzed and, more to the point, so the replay test below
@@ -44,6 +45,15 @@ EXTRA_DIST        += fuzz/corpus/pim/hello.bin			\
 		     fuzz/corpus/pim/register.bin		\
 		     fuzz/corpus/pim/register-null.bin		\
 		     fuzz/corpus/pim/regstop.bin
+EXTRA_DIST        += fuzz/corpus/autorp/mapping.bin		\
+		     fuzz/corpus/autorp/mapping-multi.bin	\
+		     fuzz/corpus/autorp/mapping-deny.bin	\
+		     fuzz/corpus/autorp/mapping-forever.bin	\
+		     fuzz/corpus/autorp/mapping-default.bin	\
+		     fuzz/corpus/autorp/announce.bin		\
+		     fuzz/corpus/autorp/rpcount-lies.bin	\
+		     fuzz/corpus/autorp/grpcount-lies.bin	\
+		     fuzz/corpus/autorp/bad-version.bin
 EXTRA_DIST        += fuzz/corpus/ipc/show-pim-detail.txt	\
 		     fuzz/corpus/ipc/show-mrt-detail.txt	\
 		     fuzz/corpus/ipc/show-status.txt		\
@@ -102,6 +112,12 @@ noinst_PROGRAMS   += fuzz_igmp_replay
 fuzz_igmp_replay_SOURCES = fuzz/fuzz_igmp.c $(FUZZ_ROUTER) fuzz/replay.c
 fuzz_igmp_replay_LDADD   = $(FUZZ_LDADD)
 
+# The Auto-RP datagram parser, which walks two counts and a mask length
+# off the wire with no neighbour relationship behind any of it.
+noinst_PROGRAMS   += fuzz_autorp_replay
+fuzz_autorp_replay_SOURCES = fuzz/fuzz_autorp.c $(FUZZ_ROUTER) fuzz/replay.c
+fuzz_autorp_replay_LDADD   = $(FUZZ_LDADD)
+
 # The pimctl socket: ipc.c's command parser and the show_*() it dispatches
 # to, which need the same router to have something to print.
 noinst_PROGRAMS   += fuzz_ipc_replay
@@ -131,6 +147,12 @@ fuzz_igmp_SOURCES   = fuzz/fuzz_igmp.c $(FUZZ_ROUTER)
 fuzz_igmp_CFLAGS    = $(AM_CFLAGS) -fsanitize=fuzzer
 fuzz_igmp_LDFLAGS   = $(AM_LDFLAGS) -fsanitize=fuzzer
 fuzz_igmp_LDADD     = $(FUZZ_LDADD)
+
+noinst_PROGRAMS   += fuzz_autorp
+fuzz_autorp_SOURCES = fuzz/fuzz_autorp.c $(FUZZ_ROUTER)
+fuzz_autorp_CFLAGS  = $(AM_CFLAGS) -fsanitize=fuzzer
+fuzz_autorp_LDFLAGS = $(AM_LDFLAGS) -fsanitize=fuzzer
+fuzz_autorp_LDADD   = $(FUZZ_LDADD)
 
 noinst_PROGRAMS   += fuzz_ipc
 fuzz_ipc_SOURCES    = fuzz/fuzz_ipc.c $(FUZZ_ROUTER)

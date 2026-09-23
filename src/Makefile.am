@@ -15,7 +15,8 @@ sbin_PROGRAMS    = pimd pimctl
 # about the pimd binary changes -- the library is static, built from the
 # same sources with the same flags, and is not installed.
 noinst_LIBRARIES = libpimd.a
-libpimd_a_SOURCES = config.c		debug.c		debug.h			    \
+libpimd_a_SOURCES = autorp.c		autorp.h				    \
+		   config.c		debug.c		debug.h			    \
 		   defs.h		dvmrp_proto.c	dvmrp.h			    \
 		   igmp_proto.c		igmp.c		igmpv2.h	igmpv3.h    \
 		   inet.c		ipc.c		kern.c			    \
