@@ -97,7 +97,7 @@ past that. The `crafted` scenario is its first user; write the positive control 
 "was it refused?" assertion, since a parser that refuses everything passes all of them.
 
 `test/fuzz/` is the in-process half of the same idea, and needs no network, no root and no kernel:
-`--enable-fuzz` builds four harnesses, each with a `_replay` twin driven by a `main()` of its own over
+`--enable-fuzz` builds five harnesses, each with a `_replay` twin driven by a `main()` of its own over
 files -- which is what `make check` runs over `test/fuzz/corpus/`, so every input a fuzzer found and
 every crasher it produced stays asserted everywhere, with no clang and no privileges. The sanitizers
 are the verdict: build the tree `-fsanitize=address,undefined` or a run only proves the parsers do
@@ -121,14 +121,14 @@ shape and the three upcall seeds are committed as bytes, their layout written do
 `ipc_init()` registers with the event loop, over a UNIX socket of the harness's own and a connected
 client per input, some fifty thousand a second: an input is the bytes a client writes and nothing
 else, so the corpus is text and a crasher goes back at a live daemon with `nc -U`. Its severity is
-the lowest of the four -- the socket is bound under `umask(0077)`, so the peer is already root --
+the lowest of the five -- the socket is bound under `umask(0077)`, so the peer is already root --
 and its subject is the hand-written pointer work that reads that text, the prefix match of
 `ipc_read()` against `cmds[]`, `strip()`'s `memmove()` and the backwards walk in `chomp()` whose
 bound exists because without it a command of newlines writes its way off the front of the buffer.
 It is the one harness that builds the router once rather than per input, which is legitimate only
 while no command adds protocol state: the `show_*()` are readers, `debug` and `log` move two
 globals it puts back, and `restart` and `kill` are `main.c`'s and stubbed. Its `INITED` number is
-therefore not comparable with the other three -- the build happens before libFuzzer resets the
+therefore not comparable with the other four -- the build happens before libFuzzer resets the
 counters, so its 702 edges are `ipc.c` and the `show_*()` alone -- and `FUZZ_DEBUG=1` prints the
 *reply* rather than a log, `ipc.c` logging nothing. `fuzz_autorp` hands one Auto-RP datagram to
 `accept_autorp()`: RP count, group count and mask length are bytes off the wire saying how much
@@ -160,7 +160,7 @@ deviation V5, and would have been invisible to a hunt of any length. `--enable-f
 instrumentation -- without that the harness alone is instrumented and the run explores 7 edges of
 `config.c` instead of 730, at full speed, looking healthy. `test/fuzz/README.md` has the recipes;
 `test/fuzz/stubs.c` supplies what `main.c` would have defined.  A second sanitizer runs over the
-same four, in the `msan` job of `ci-linux.yml`: MemorySanitizer answers "was this value ever
+same five, in the `msan` job of `ci-linux.yml`: MemorySanitizer answers "was this value ever
 written?" rather than "did this read something it should not have", which is the shape deviations
 V5 and V6 had and which ASan is happy with, a live allocation being a live allocation.  A build is
 one sanitizer or the other, so it is a job of its own, Linux and clang only; the instrumented libc
@@ -202,9 +202,10 @@ tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 `-ftrivial-auto-var-init=zero` zeroes precisely the stack residue a short-packet read would show and
 `_FORTIFY_SOURCE` wraps what ASan interposes, while the aliasing flag is in that set without being
 hardening. `run all` walks its
-scenarios (`rpt`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
+scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
-`renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `anycast`, `anycast-dr`, `privsep`); see the script
+`renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
+`anycast-dr`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -320,7 +321,8 @@ down is answerable from that file rather than by grepping the labs.
 Two tests put a second PIM implementation on the wire, and everything else here has pimd on both
 ends -- where a field pimd encodes wrongly it also decodes wrongly and the run stays green.
 
-`test/frr-interop.sh` is the cheap one: FRRouting's `zebra` and `pimd` in the middle box of the
+`test/frr-interop.sh` is the cheap one, and the only interop test CI can run: FRRouting's `zebra`
+and `pimd` in the middle box of the
 chain `test/lab.sh` builds, through the same `lab-freebsd.sh` and `lab-linux.sh` backends, so it
 runs on both systems and needs no VM, no vendor image and no account -- `net/frr10` on FreeBSD, the
 `frr` package on Debian and Ubuntu, found under `$FRR_LIB` and run as the packaged user (FRR's
@@ -333,6 +335,11 @@ then FRR announcing to pimd's, with no BSR anywhere so that any RP either side h
 Auto-RP message. `autorp` ends in no traffic on purpose: sec. 3.3 of the draft floods the two
 well-known groups and neither daemon does, pimd sending its own out of every PIM interface and FRR
 its Discovery out of the one link its source address is on, so R3 one hop further learns nothing.
+The `frr-interop` job of `.github/workflows/ci-linux.yml` runs all three on every push, `-j 2` beside
+the `lab` job: it wants an image whose `frr` package is 10.3 or later (Ubuntu 26.04 carries 10.5)
+because `autorp` would fail rather than skip on an older one, and it applies the AppArmor override
+itself, which `check_apparmor()` refuses to do on a machine somebody owns.
+
 Two things about FRR shape the rest: an FRR that is itself the BSR never puts its own Candidate-RP
 into the Bootstrap it originates (measured -- its database stays empty and the Bootstrap carries no
 RP), which is why each scenario gives the two daemons the roles that work; and on Ubuntu the

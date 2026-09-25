@@ -272,7 +272,7 @@ jobs:
           if-no-files-found: ignore
 
   lab:
-    # The network namespace lab: twenty-one PIM-SM scenarios over real
+    # The network namespace lab: twenty-five PIM-SM scenarios over real
     # namespaces, veth pairs and bridges, asserting on forwarded traffic and
     # on the kernel MFC in each namespace.  The suite above cannot hold them:
     # automake runs it under an unprivileged `unshare`, and a lab box has to
@@ -325,4 +325,85 @@ jobs:
                           sudo tail -n 200 "$f"
                   done
           done
+          exit ${rc:-0}
+
+  frr-interop:
+    # The other half of the same lab, with a second implementation on the
+    # wire.  Everything above has pimd on both ends of every exchange, so a
+    # field pimd encodes wrongly it also decodes wrongly and the run stays
+    # green; test/freebsd-interop.sh is the way past that and it needs bhyve
+    # and a licensed vEOS image, so it can never run here.  FRR is the half
+    # that can: a package, a netns and no VM.
+    #
+    # test/frr-interop.sh is the same file the FreeBSD lab runs, over the
+    # same backends, and its three scenarios are two mirrors and an Auto-RP
+    # exchange -- frr-rp and pimd-rp swap who writes a message and who parses
+    # it, because a parser wrong in the same way as its own encoder passes
+    # one of them and fails the other, and autorp is the only test of pimd's
+    # Auto-RP against an encoder that is not pimd's.
+    #
+    # A job of its own for the reason the lab is one: it takes far longer
+    # than the build, which should report without waiting for it.
+    name: FRR interop on Linux
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        # Ubuntu 26.04 carries FRR 10.5, and the version matters for one
+        # scenario: Auto-RP discovery arrived in FRR 10.2 and the mapping
+        # agent in 10.3, so an older distribution would fail autorp rather
+        # than skip it.  The version is printed to keep that answerable from
+        # the log when a runner image moves.
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 frr
+          /usr/lib/frr/pimd --version | head -1
+
+      - name: Allow FRR's pimd a pathspace under AppArmor
+        # Ubuntu's apparmor package (not the frr one) confines
+        # /usr/lib/frr/pimd, and the profile grants it exactly
+        # @{run}/frr/<daemon>.pid and .vty -- no subdirectory -- while each
+        # slot of this lab keeps its FRR state in a pathspace of its own
+        # under /run/frr.  Without the override FRR's pimd exits before it
+        # opens anything, which looks exactly like a crash and leaves the
+        # denial in dmesg alone.  check_apparmor() in the script stops and
+        # prints these two commands rather than running them: editing the
+        # host's mandatory access control policy behind a developer's back
+        # is not the script's to do.  A runner is a throwaway machine and
+        # this file is where that consent is given.
+        run: |
+          printf '@{run}/frr/*/ rw,\n@{run}/frr/** rwk,\n' | \
+                  sudo tee -a /etc/apparmor.d/local/pimd
+          sudo apparmor_parser -r /etc/apparmor.d/pimd
+
+      - name: Build
+        # No --enable-test here: this lab compiles its own mping from
+        # test/mping.c when it starts, and wants nothing else out of test/.
+        run: |
+          ./autogen.sh
+          ./configure --prefix=
+          make V=1
+
+      - name: Run the FRR interop lab
+        # Two scenarios at a time, as the lab job does and for the same
+        # reason: four vCPUs, and every assertion is a poll against a
+        # timeout, so a lab too crowded to converge loses a deadline rather
+        # than time.
+        #
+        # Unlike lab.sh this one does not rename a failed scenario's work
+        # directory -- stop() leaves it where it is, one pimd log per router
+        # plus FRR's own in r2.log -- so the logs are printed only when the
+        # run failed.  Slot 0 is /tmp/pimd-frr, the others carry the number.
+        run: |
+          sudo sh test/frr-interop.sh -j 2 run all || rc=$?
+          if [ -n "${rc:-}" ]; then
+                  for f in /tmp/pimd-frr*/*.log; do
+                          test -f "$f" || continue
+                          echo "===== $f ====="
+                          sudo tail -n 200 "$f"
+                  done
+          fi
           exit ${rc:-0}
