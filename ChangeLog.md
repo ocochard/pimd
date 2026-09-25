@@ -433,6 +433,23 @@ issue of this repository is written out in full.
   comes out valid is a BSR takeover by a sender that has said Hello, which
   is RFC 7761 sec. 4.7 working rather than pimd going wrong, and
   `accept-nbr-from` is the answer to it
+- New interoperability lab, `test/frr-interop.sh`, pimd against FRRouting's
+  own `pimd` on both supported systems.  It builds the chain of boxes
+  `test/lab.sh` builds, through the same `lab-freebsd.sh` and
+  `lab-linux.sh` backends, and runs FRR's `zebra` and `pimd` in the middle
+  box: a second implementation on the wire, which is what tells a field
+  pimd encodes wrongly from one both ends read the same wrong way, and
+  unlike `test/freebsd-interop.sh` it costs a package rather than a
+  licensed VM image.  Three scenarios, `frr-rp` and `pimd-rp` mirrors of
+  each other so that each side writes what the other parses -- Bootstrap,
+  Candidate-RP-Advertisement, `(*,G)` Join, Register and Register-Stop,
+  each ending in traffic counted in replies -- and `autorp`, which is the
+  only test of pimd's Auto-RP against a parser that is not pimd's, in both
+  directions: pimd announcing to FRR's mapping agent, then FRR announcing
+  to pimd's.  `-s SLOT` and `-j JOBS` work as they do in the other labs,
+  each slot keeping its FRR state in a pathspace of its own; on Ubuntu the
+  lab says so when AppArmor refuses that pathspace, and prints the override
+  rather than applying it
 
 ### Fixes
 - `pimctl debug SYSTEM` says which subsystems are on rather than always

@@ -1,7 +1,7 @@
 pimd Test Suites
 ================
 
-Two labs live in this directory, and neither is part of `make check`.
+Three labs live in this directory, and none of them is part of `make check`.
 
 * The **vnet jail and network namespace lab**, `lab.sh`, is one set of
   scenarios over two backends: vnet jails and epairs on FreeBSD, named
@@ -10,18 +10,23 @@ Two labs live in this directory, and neither is part of `make check`.
   merely compiling them, and on Linux it exercises `netlink.c` and the
   Linux kernel glue the same way.  It holds the scenarios that reproduce
   specific upstream issues.  CI runs it on both systems on every push.
-* The **Arista vEOS interoperability lab** puts a foreign PIM
-  implementation on the wire.  The other lab has pimd on both ends of
-  every exchange, so a message pimd encodes wrongly is a message pimd
-  decodes wrongly in the same way and the run stays green.  This one
-  catches that.
+* The **FRR interoperability lab**, `frr-interop.sh`, puts a second
+  implementation on the wire: FRRouting's own `pimd`, one box of the same
+  chain.  `lab.sh` has pimd on both ends of every exchange, so a message
+  pimd encodes wrongly is a message pimd decodes wrongly in the same way
+  and the run stays green.  This one catches that, and it is a package
+  away on both systems — no VM, no vendor image, no account.
+* The **Arista vEOS interoperability lab** does the same against EOS, a
+  third reading of the same RFCs and one nobody here can read the source
+  of.  A bug the two open source daemons happen to share is exactly the
+  bug the FRR lab cannot see, so it is worth the VM it costs.
 
-Neither is in `TESTS`: automake drives that under an unprivileged
+None of them is in `TESTS`: automake drives that under an unprivileged
 `unshare -mrun`, and a lab box has to outlive the command that built it,
-so both want real root, and on FreeBSD a couple of kernel modules loaded
-beforehand.
+so all three want real root, and on FreeBSD a couple of kernel modules
+loaded beforehand.
 The vEOS lab also needs a licensed VM image, which is why it is the one
-CI cannot run.  There used to be a third suite, a set of Linux-only
+CI cannot run.  There used to be a fourth suite, a set of Linux-only
 scripts that `make check` ran; the section below says where it went.
 
 
@@ -31,6 +36,7 @@ Table of Contents
 * [Shared tools](#shared-tools)
 * [The Linux suite, and where it went](#the-linux-suite-and-where-it-went)
 * [The vnet jail and network namespace lab](#the-vnet-jail-and-network-namespace-lab)
+* [The FRR interoperability lab](#the-frr-interoperability-lab)
 * [The Arista vEOS interoperability lab](#the-arista-veos-interoperability-lab)
 * [What any of it reaches](#what-any-of-it-reaches)
 * [Which suite sees what](#which-suite-sees-what)
@@ -247,6 +253,74 @@ that state; a sequential run never provoked it.  Fixed in `076343d` —
 entry exists — and `-j 4 run all` has been 14 of 14 since.  Run the pool
 for that, not despite it.  `rp-lasthop` failed once in four runs and has
 not repeated.
+
+
+The FRR interoperability lab
+----------------------------
+
+    sudo test/frr-interop.sh run all          # or: run frr-rp
+    sudo test/frr-interop.sh -j 3 run all     # three at a time, a slot each
+
+`frr-interop.sh` is the cheap half of the idea the vEOS lab is the
+expensive half of.  It builds the same chain of boxes `lab.sh` does — vnet
+jails on FreeBSD, named network namespaces on Linux, through the very same
+`lab-freebsd.sh` and `lab-linux.sh` — and runs FRR's `zebra` and `pimd` in
+the middle box instead of the pimd under test:
+
+    ED1 --- R1 --- R2 --- R3 --- ED2          R2 is FRR
+                   |
+      pimd-rp adds +--- ED4
+
+Three scenarios, and the first two are each other's mirror.  Who writes a
+message and who parses it is the whole difference, because a parser that is
+wrong in the same way as its own encoder passes one of them and fails the
+other:
+
+| Scenario  | Who is what | What only this one can see |
+|-----------|-------------|----------------------------|
+| `frr-rp`  | R1 is the BSR, FRR the Candidate-RP and so the RP | FRR's Candidate-RP-Advertisement parsed by pimd's BSR; pimd's Bootstrap parsed by FRR *and flooded on*, which is the only way R3 two hops away can hold the RP set; pimd's Register decapsulated by FRR; FRR's Register-Stop obeyed by pimd |
+| `pimd-rp` | FRR is the BSR, R1 the Candidate-RP and the RP; FRR is the first and last hop router for a LAN of its own | pimd's Candidate-RP-Advertisement parsed by FRR's BSR; FRR's Bootstrap parsed by pimd; FRR's `(*,G)` Join believed by pimd; FRR's Register decapsulated by pimd; pimd's Register-Stop obeyed by FRR |
+| `autorp`  | No BSR anywhere; each side announces and each side plays mapping agent in turn | Auto-RP, in both directions: pimd's Announcement resolved by FRR's agent and FRR's Discovery read back by pimd, then the roles swapped.  pimd's Auto-RP code is the newest wire format in this tree and this is the only parser for it that is not its own |
+
+The two BSR scenarios end in traffic — `mping` from one end device to the
+other, counted in replies — so a table that agrees while nothing forwards
+is still a failure.  `autorp` does not, and cannot: sec. 3.3 of the
+Auto-RP draft floods the two well-known groups hop by hop and neither
+daemon floods them.  pimd sends its own out of every PIM interface, FRR
+sends its Discovery out of the one link its source address is on, so
+between them they cover one link and R3 learns nothing.  That is asserted
+by not being asserted on, and written down in the script header.
+
+Roles are the way they are for a reason found here: an FRR that is itself
+the BSR never puts its own Candidate-RP into the Bootstrap it originates —
+its candidate-RP database stays empty, nothing goes on the wire, and the
+Bootstrap carries no RP at all.  The same FRR sends a correct
+Advertisement to somebody else's BSR, and as BSR takes one from pimd and
+floods it.  So each scenario gives the two daemons the roles that work,
+which is also the pairing that tests the most: every Bootstrap here
+carries an RP the *other* implementation wrote the Advertisement for.
+
+Requirements: root, a built pimd tree, and FRR with its pimd daemon —
+`net/frr10` on FreeBSD, the `frr` package on Debian and Ubuntu.  The
+daemons are found under `/usr/local/lib/frr` or `/usr/lib/frr`, or
+`$FRR_LIB`, and they run as the packaged user: FRR's `privs_init()` exits
+when the user it runs as is not in the vty group, so running them as root
+is not an option and the lab does not try.  Each slot keeps its FRR state
+in a pathspace of its own (`-N`) under `/var/run/frr`, which is what lets
+`-s` and `-j` work the way they do in the other labs.
+
+On Ubuntu that pathspace is what AppArmor is about to refuse: the profile
+the `frr` package ships grants FRR's pimd exactly `@{run}/frr/<daemon>.pid`
+and `.vty`, no subdirectory, and a denied daemon looks exactly like a
+crashed one.  The lab checks for it before building anything and prints
+the override the profile itself points at:
+
+    printf '@{run}/frr/*/ rw,\n@{run}/frr/** rwk,\n' | sudo tee /etc/apparmor.d/local/pimd
+    sudo apparmor_parser -r /etc/apparmor.d/pimd
+
+It is not applied automatically: a test script that edits the host's
+mandatory access control policy behind your back is worse than one that
+stops and tells you which two commands to run.
 
 
 The Arista vEOS interoperability lab
@@ -475,24 +549,27 @@ run of both.
 Which suite sees what
 ---------------------
 
-| | lab, on FreeBSD | lab, on Linux | vEOS lab |
-|---|---|---|---|
-| Runs in `make check`        | no  | no  | no  |
-| Unicast RPF lookups         | `routesock.c`, or `netlink.c` with `NETLINK=yes` | `netlink.c` | `routesock.c` |
-| Kernel glue                 | BSD `kern.c` | Linux `kern.c` | BSD `kern.c` |
-| Unicast routing             | static | static | static |
-| Several PIM routers per link| `shared-lan*` | `shared-lan*` | `assert-lan` |
-| Assert metrics that differ  | no | no | `assert-lan` |
-| Point-to-point vifs         | `gif-tunnel*` | `gif-tunnel*`, over ipip | no |
-| Interfaces changing at runtime | `ifgone`, `renumber` | `ifgone`, `renumber` | no |
-| One router in every role    | `solo` | `solo` | no |
-| A foreign implementation    | no | no | yes |
+| | lab, on FreeBSD | lab, on Linux | FRR lab | vEOS lab |
+|---|---|---|---|---|
+| Runs in `make check`        | no  | no  | no | no  |
+| Unicast RPF lookups         | `routesock.c`, or `netlink.c` with `NETLINK=yes` | `netlink.c` | either, by system | `routesock.c` |
+| Kernel glue                 | BSD `kern.c` | Linux `kern.c` | either, by system | BSD `kern.c` |
+| Unicast routing             | static | static | static | static |
+| Several PIM routers per link| `shared-lan*` | `shared-lan*` | no | `assert-lan` |
+| Assert metrics that differ  | no | no | no | `assert-lan` |
+| Point-to-point vifs         | `gif-tunnel*` | `gif-tunnel*`, over ipip | no | no |
+| Interfaces changing at runtime | `ifgone`, `renumber` | `ifgone`, `renumber` | no | no |
+| One router in every role    | `solo` | `solo` | no | no |
+| Auto-RP against another implementation | no | no | `autorp` | no |
+| A foreign implementation    | no | no | yes | yes |
 
 A change to `src/pim_proto.c` or `src/route.c` wants the lab on both
 systems.  A change to how a message is *encoded* —
-Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert —
-wants the vEOS lab too, because it is the only one that can tell a wrong
-encoding from a matching pair of wrong ones.
+Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert — wants
+an interoperability lab too, because those are the only ones that can tell
+a wrong encoding from a matching pair of wrong ones: the FRR lab first,
+being minutes and a package, and the vEOS lab for anything the two open
+source daemons might have read the same way.
 
 [arista-dl]: https://www.arista.com/en/support/software-download
 [185]: https://github.com/troglobit/pimd/issues/185

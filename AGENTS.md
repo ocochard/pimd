@@ -317,9 +317,36 @@ reachable after the shared tree has lost the interface. No `xfail()` in either f
 naming what reproduces it, or `none`, so which deviations are covered and which are only written
 down is answerable from that file rather than by grepping the labs.
 
-`test/freebsd-interop.sh` is the only test that puts a second PIM implementation on the wire: an
-Arista vEOS in bhyve, between two pimd routers in vnet jails. Every other test has pimd on both
-ends, so a message pimd encodes wrongly it also decodes wrongly and the run stays green. Its two
+Two tests put a second PIM implementation on the wire, and everything else here has pimd on both
+ends -- where a field pimd encodes wrongly it also decodes wrongly and the run stays green.
+
+`test/frr-interop.sh` is the cheap one: FRRouting's `zebra` and `pimd` in the middle box of the
+chain `test/lab.sh` builds, through the same `lab-freebsd.sh` and `lab-linux.sh` backends, so it
+runs on both systems and needs no VM, no vendor image and no account -- `net/frr10` on FreeBSD, the
+`frr` package on Debian and Ubuntu, found under `$FRR_LIB` and run as the packaged user (FRR's
+`privs_init()` exits when the user it runs as is not in the vty group, so root is not an option).
+Three scenarios: `frr-rp` (R1 is the BSR, FRR the Candidate-RP and the RP) and `pimd-rp` (the
+roles swapped, and FRR the first and last hop router for a LAN of its own, ED4) are mirrors, each
+ending in traffic counted in `mping` replies rather than in tables, and `autorp` is the only test
+of pimd's Auto-RP against a parser that is not pimd's -- pimd announcing to FRR's mapping agent,
+then FRR announcing to pimd's, with no BSR anywhere so that any RP either side holds came off an
+Auto-RP message. `autorp` ends in no traffic on purpose: sec. 3.3 of the draft floods the two
+well-known groups and neither daemon does, pimd sending its own out of every PIM interface and FRR
+its Discovery out of the one link its source address is on, so R3 one hop further learns nothing.
+Two things about FRR shape the rest: an FRR that is itself the BSR never puts its own Candidate-RP
+into the Bootstrap it originates (measured -- its database stays empty and the Bootstrap carries no
+RP), which is why each scenario gives the two daemons the roles that work; and on Ubuntu the
+AppArmor profile the `frr` package ships grants FRR's pimd no pathspace under `/var/run/frr`, which
+is where a slot keeps its FRR state, so `check_apparmor()` stops the run and prints the override
+instead of applying it. `-s SLOT` and `-j JOBS` work as they do in the other labs. Where the RP is
+pimd its config says `spt-threshold packets 0 interval 10`, deliberately: an RP that does not want
+the source tree keeps the DR encapsulating and RFC 7761 sec. 4.4.2 has it that way, pimd does it to
+pimd as well, and without that line the Register-Stop assertion would report which side of a 100
+second timer the stream landed on.
+
+`test/freebsd-interop.sh` is the expensive one, and the only one with an implementation nobody here
+can read the source of: an Arista vEOS in bhyve, between two pimd routers in vnet jails. A bug the
+two open source daemons share is exactly the bug the FRR lab cannot see. Its two
 scenarios are each other's mirror, and running both is the point -- a parser that is wrong in the
 same way as its encoder passes one and fails the other:
 
