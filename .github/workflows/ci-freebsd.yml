@@ -201,11 +201,25 @@ jobs:
           sync: rsync
           copyback: false
           prepare: |
-            # A release VM points at the quarterly branch, which is a
+            # A release VM points at the quarterly branch, which is a whole
             # release of FRR behind; the lab wants the newest port there is.
+            # A repository of our own rather than a rewrite of the base
+            # config, since the name pkg ships that config under has changed
+            # -- FreeBSD on the older images, FreeBSD-ports on these -- and
+            # both are turned off here by name.  "pkg+" is an SRV mirror and
+            # needs saying so, or pkg refuses every URL it builds from it.
             mkdir -p /usr/local/etc/pkg/repos
-            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }\n' \
-                    > /usr/local/etc/pkg/repos/FreeBSD.conf
+            cat > /usr/local/etc/pkg/repos/pimd-latest.conf <<'EOF'
+            FreeBSD: { enabled: no }
+            FreeBSD-ports: { enabled: no }
+            pimd-latest: {
+              url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest",
+              mirror_type: "srv",
+              signature_type: "fingerprints",
+              fingerprints: "/usr/share/keys/pkg",
+              enabled: yes
+            }
+            EOF
             pkg update -f
             pkg install -y autoconf automake pkgconf frr10
 
