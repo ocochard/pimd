@@ -325,6 +325,14 @@ jobs:
                           sudo tail -n 200 "$f"
                   done
           done
+          # A pimd whose unprivileged half died takes its parent with it
+          # without logging a word, and the core goes into the chroot: the
+          # kernel's own line is the only thing that says a daemon was
+          # killed rather than merely quiet.
+          if [ -n "${rc:-}" ]; then
+                  echo "===== dmesg ====="
+                  sudo dmesg | grep -iE "segfault|pimd|oom|killed process" | tail -n 40 || true
+          fi
           exit ${rc:-0}
 
   frr-interop:

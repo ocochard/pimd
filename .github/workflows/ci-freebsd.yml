@@ -156,9 +156,22 @@ jobs:
                     for f in "$d"/*.log; do
                             test -f "$f" || continue
                             echo "===== $f ====="
-                            tail -n 200 "$f"
+                            tail -n 400 "$f"
                     done
             done
+
+            # What the logs cannot say.  A pimd that separates its
+            # privileges exits without a word when its unprivileged half
+            # dies: parent_loop() reaches "gone", unlinks the pimctl socket
+            # and exit(0)s, and the child's core stays inside its chroot.
+            # So the daemon simply stops logging, which reads the same as a
+            # daemon that was busy.  kern.logsigexit is on by default and
+            # the kernel says which it was -- "pid N (pimd), jid M, uid U:
+            # exited on signal 11" -- so ask it before the VM goes away.
+            if [ -n "${rc:-}" ]; then
+                    echo "===== dmesg ====="
+                    dmesg | grep -iE "pimd|pimctl|out of swap|killed" | tail -n 40 || true
+            fi
 
             exit ${rc:-0}
 
