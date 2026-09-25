@@ -175,6 +175,12 @@
 #define MUTATE_FIRST			4
 #define MAX_SOURCES			64
 
+/* How long a -c burst waits for a full send queue, per packet: 1ms at a
+ * time, up to a second, which is far longer than a queue takes to drain
+ * and short enough that a destination that never drains still ends. */
+#define SEND_RETRY_US			1000
+#define SEND_RETRIES			1000
+
 /*
  * How the message is put together.  Everything the caller may want wrong
  * lives here rather than being passed down through a dozen arguments, and
@@ -702,7 +708,7 @@ int main(int argc, char *argv[])
 	unsigned char ttl = 1;
 	size_t len;
 	int sd, c, on = 1, rec_set = 0;
-	unsigned count = 1, n, mutate = 0;
+	unsigned count = 1, n, mutate = 0, tries;
 	uint32_t seed = 1;
 	uint8_t orig[BUFSZ];
 
@@ -905,8 +911,26 @@ int main(int argc, char *argv[])
 				setsum(buf, len, type, &o);
 		}
 
-		if (sendto(sd, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
-			err(1, "failed sending to %s", dest);
+		/* A -c burst outruns the interface queue on a slow machine,
+		 * and the kernel answers ENOBUFS rather than blocking: a
+		 * raw socket has no flow control to wait on.  Giving up
+		 * there would end the burst at the first full queue and
+		 * send fewer packets than -c asked for without saying so,
+		 * which is a test that silently stopped testing: it is the
+		 * likeliest reading of an anycast lab that got 19 Registers
+		 * of a burst of 600 across on a four vCPU CI machine and
+		 * failed the budget it was asserting.  So wait for the
+		 * queue to drain instead, and give up only if it never does.
+		 */
+		for (tries = 0; ;) {
+			if (sendto(sd, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst)) >= 0)
+				break;
+			if (errno == EINTR)
+				continue;	/* signal, and not a full queue */
+			if (errno != ENOBUFS || tries++ >= SEND_RETRIES)
+				err(1, "failed sending to %s", dest);
+			usleep(SEND_RETRY_US);
+		}
 	}
 
 	close(sd);

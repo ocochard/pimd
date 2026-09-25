@@ -2969,8 +2969,12 @@ start() {
 	check_req
 
 	if box_exists r1; then
-		die "lab already running, run '$0 stop' first"
+		die "lab already running in slot $SLOT, run '$0 -s $SLOT stop' first"
 	fi
+
+	# Past that guard the boxes of this slot are this run's to take down
+	# again, which is what run_one_died() asks before it does.
+	LAB_OURS=yes
 
 	# Owned by the invoking user: pimd runs as root and can still drop its
 	# PID file and control socket in here, but mping is built unprivileged.
@@ -4499,36 +4503,42 @@ check_anycast() {
 	# probes still arriving can take a slot again before the six do, so what
 	# is asserted is that some of the six fit and some do not.
 	print "11. Registers make no more state than register-sg-limit allows"
-	pimctl r2 restart >/dev/null 2>&1 || die "failed reloading pimd on r2"
-	wait_for 30 anycast_member_is r2 "$ANY_R2" || true
-	# The reload drops the neighbours too, and pimd makes no (S,G) for a
-	# source whose next hop is not a PIM neighbour, limit or none
-	wait_for 60 has_neighbor r2 10.0.12.1 || true
-	count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
-	if [ -n "$count" ] && [ "$count" -lt "$ANY_SG_LIMIT" ]; then
-		ok "r2 counts $count Register (S,G) entries after a reload, the count was given back"
+	# A reload that does not come back is an assertion of this step and
+	# not the end of the scenario, which is what it was when this die()d:
+	# the rest of the step needs the reload, step 12 does not.
+	if ! pimctl r2 restart >/dev/null 2>&1; then
+		fail "r2 did not reload, so register-sg-limit could not be asserted"
 	else
-		fail "r2 counts '$count' Register (S,G) entries after a reload"
-	fi
-	for i in 101 102 103 104 105 106; do
-		box_run ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_LIMIT_GROUP" \
-			-s "10.0.1.$i" -N >/dev/null 2>&1 || true
-	done
-	sleep 2
-	held=0
-	for i in 101 102 103 104 105 106; do
-		has_sg r2 "10.0.1.$i" "$ANY_LIMIT_GROUP" && held=$((held + 1))
-	done
-	count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
-	if [ "$held" -ge 1 ] && [ "$held" -lt 6 ] && logged r2 "register-sg-limit $ANY_SG_LIMIT reached"; then
-		ok "r2 holds $held of 6 sources, and said it reached register-sg-limit $ANY_SG_LIMIT"
-	else
-		fail "r2 holds $held of 6 sources under register-sg-limit $ANY_SG_LIMIT"
-	fi
-	if [ -n "$count" ] && [ "$count" -le "$ANY_SG_LIMIT" ]; then
-		ok "r2 counts $count Register (S,G) entries of $ANY_SG_LIMIT"
-	else
-		fail "r2 counts '$count' Register (S,G) entries against a limit of $ANY_SG_LIMIT"
+		wait_for 30 anycast_member_is r2 "$ANY_R2" || true
+		# The reload drops the neighbours too, and pimd makes no (S,G) for a
+		# source whose next hop is not a PIM neighbour, limit or none
+		wait_for 60 has_neighbor r2 10.0.12.1 || true
+		count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
+		if [ -n "$count" ] && [ "$count" -lt "$ANY_SG_LIMIT" ]; then
+			ok "r2 counts $count Register (S,G) entries after a reload, the count was given back"
+		else
+			fail "r2 counts '$count' Register (S,G) entries after a reload"
+		fi
+		for i in 101 102 103 104 105 106; do
+			box_run ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$ANY_ADDR" -g "$ANY_LIMIT_GROUP" \
+				-s "10.0.1.$i" -N >/dev/null 2>&1 || true
+		done
+		sleep 2
+		held=0
+		for i in 101 102 103 104 105 106; do
+			has_sg r2 "10.0.1.$i" "$ANY_LIMIT_GROUP" && held=$((held + 1))
+		done
+		count=$(pimctl r2 show status 2>/dev/null | sed -n 's/^Register (S,G) state *: *\([0-9]*\) of .*/\1/p')
+		if [ "$held" -ge 1 ] && [ "$held" -lt 6 ] && logged r2 "register-sg-limit $ANY_SG_LIMIT reached"; then
+			ok "r2 holds $held of 6 sources, and said it reached register-sg-limit $ANY_SG_LIMIT"
+		else
+			fail "r2 holds $held of 6 sources under register-sg-limit $ANY_SG_LIMIT"
+		fi
+		if [ -n "$count" ] && [ "$count" -le "$ANY_SG_LIMIT" ]; then
+			ok "r2 counts $count Register (S,G) entries of $ANY_SG_LIMIT"
+		else
+			fail "r2 counts '$count' Register (S,G) entries against a limit of $ANY_SG_LIMIT"
+		fi
 	fi
 
 	# Step 5 asked what kind of copy had crossed as soon as one had, which
@@ -8878,22 +8888,45 @@ check_solo() {
 	}
 }
 
+# stop() wipes the work directory, so a scenario that failed keeps a copy
+# of it: one pimd log per router, the traffic captures, and the configs.
+keep_failed() {
+	saved="$WORKDIR.$SCENARIO.failed"
+	${SUDO} rm -rf "$saved"
+	${SUDO} cp -a "$WORKDIR" "$saved" 2>/dev/null || true
+	echo "pimd logs and traffic captures kept in $saved"
+}
+
+# What run_one() does when a step gave up rather than failed an assertion.
+# die() exits this shell wherever it is called from, so without this the
+# copy above and the stop() below are both skipped: the lab is left running
+# in this slot, and every later scenario of it dies "lab already running"
+# before it has started anything.  That is how run 36077110847 of
+# CI-FreeBSD reported 23 failures and kept no log of any of them -- one
+# reload gave up in anycast, and the twenty-two scenarios behind it in that
+# slot never ran.  A scenario that gives up ends like one that failed.
+run_one_died() {
+	trap - EXIT
+	# Not ours to clean up: start() refused because a lab of this slot was
+	# already up, and it belongs to whoever left it there.
+	[ "${LAB_OURS:-no}" = yes ] || exit 1
+	keep_failed
+	stop || true
+	exit 1
+}
+
 # Its status has a name of its own: sh has no locals, and "run all" keeps
 # the verdict of the whole walk in rc, which a passing scenario after a
 # failed one would otherwise put back to 0.
 run_one() {
 	one_rc=0
+	trap run_one_died EXIT
 	start
 	check || one_rc=$?
 	[ "$SANITIZE" = no ] || stop_pimd
 	check_sanitizer || one_rc=$?
-	if [ "$one_rc" -ne 0 ]; then
-		# stop() wipes the work directory, keep what failed
-		saved="$WORKDIR.$SCENARIO.failed"
-		${SUDO} rm -rf "$saved"
-		${SUDO} cp -a "$WORKDIR" "$saved" 2>/dev/null || true
-		echo "pimd logs and traffic captures kept in $saved"
-	fi
+	trap - EXIT
+	[ "$one_rc" -eq 0 ] || keep_failed
 	stop
 	return $one_rc
 }

@@ -53,6 +53,11 @@
 #define MAX_PREFIXES		32
 #define MAX_MSG			4096
 
+/* How long a -c burst waits for a full send queue, per packet, as in
+ * pimsend.c: 1ms at a time, up to a second. */
+#define SEND_RETRY_US		1000
+#define SEND_RETRIES		1000
+
 struct prefix {
 	struct in_addr	group;
 	unsigned	masklen;
@@ -300,9 +305,19 @@ send:
 	if (inet_pton(AF_INET, group, &dst.sin_addr) != 1)
 		errx(1, "invalid group %s", group);
 
+	/* A full send queue is ENOBUFS here rather than a wait, and giving
+	 * up on it would make a -c burst quietly shorter than it says on a
+	 * loaded machine; see the same loop in pimsend.c. */
 	for (i = 0; i < count; i++) {
-		if (sendto(sd, msg, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0)
-			err(1, "failed sending to %s", group);
+		int tries = 0;
+
+		while (sendto(sd, msg, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+			if (errno == EINTR)
+				continue;
+			if (errno != ENOBUFS || tries++ >= SEND_RETRIES)
+				err(1, "failed sending to %s", group);
+			usleep(SEND_RETRY_US);
+		}
 	}
 
 	close(sd);

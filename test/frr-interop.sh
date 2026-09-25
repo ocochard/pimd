@@ -1070,6 +1070,10 @@ start() {
 		die "lab already running in slot $SLOT, run '$0 -s $SLOT stop' first"
 	fi
 
+	# Past that guard the boxes of this slot are this run's to take down
+	# again, which is what run_one_died() asks before it does.
+	LAB_OURS=yes
+
 	mkdir -p "$WORKDIR"
 
 	print "Building mping (multicast ping) from the pimd tree ..."
@@ -1495,14 +1499,34 @@ verdict() {
 	fi
 }
 
+# What run_one() does when a step gave up rather than failed an assertion.
+# die() exits this shell wherever it is called from, so without this the
+# stop() below is skipped and the lab of this slot is left running, which
+# every later scenario of the slot then dies on before it has started
+# anything -- see the same handler in lab.sh, and run 36077110847 of
+# CI-FreeBSD, which is what it is named after.  There is more to leave
+# behind here than there: frr_start() gives up when zebra or FRR's pimd
+# never opens its vty, and those two are what stop() takes down before the
+# boxes, along with the pathspace of this slot under /run/frr.
+run_one_died() {
+	trap - EXIT
+	# Not ours to clean up: start() refused because a lab of this slot was
+	# already up, and it belongs to whoever left it there.
+	[ "${LAB_OURS:-no}" = yes ] || exit 1
+	stop || true
+	exit 1
+}
+
 run_one() {
 	set_scenario "$1"
+	trap run_one_died EXIT
 	start
 	# "set -e" is on, and a scenario that fails an assertion is exactly
 	# what has to be reported rather than exited on
 	rc=0
 	check || rc=$?
 	verdict
+	trap - EXIT
 	stop
 	return $rc
 }
