@@ -76,7 +76,7 @@ jobs:
             /tmp/inst/sbin/pimctl -u /tmp/pimd.sock kill
 
   lab:
-    # The vnet jail lab: twenty-one PIM-SM scenarios over real jails, epairs
+    # The vnet jail lab: twenty-five PIM-SM scenarios over real jails, epairs
     # and bridges, asserting on forwarded traffic and on the kernel MFC in
     # each vnet.  It is the only regression test that exercises the RPF
     # lookups in routesock.c and the kern.c BSD branches, rather than merely
@@ -159,5 +159,94 @@ jobs:
                             tail -n 200 "$f"
                     done
             done
+
+            exit ${rc:-0}
+
+  frr-interop:
+    # The interop lab's other kernel.  ci-linux.yml runs the same three
+    # scenarios over netns, and everything FreeBSD-specific they would
+    # exercise -- routesock.c, the kern.c BSD branches, the jail backend of
+    # lab-freebsd.sh -- is exactly what that job cannot reach.  A bug in
+    # pimd's reading of a foreign implementation that only shows on this
+    # half would otherwise be found by hand or not at all.
+    #
+    # net/frr10 has to be 10.7.1_1 or newer: FRR's pimd is built by that
+    # revision of the port and by no earlier one, and the package before it
+    # installs the daemons in sbin with no pimd among them at all.  The
+    # official repositories are behind that today -- FreeBSD:15:amd64 is
+    # 10.6.1 on quarterly and 10.7.1 on latest, neither of which has it --
+    # so the job asks the installed package its version and says what it is
+    # skipping rather than failing on something no commit here can fix.  It
+    # starts running of its own accord once the builders catch up.
+    name: FRR interop on FreeBSD ${{ matrix.release }} (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "15.1"
+            arch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run the FRR interop lab in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          usesh: true
+          sync: rsync
+          copyback: false
+          prepare: |
+            # A release VM points at the quarterly branch, which is a
+            # release of FRR behind; the lab wants the newest port there is.
+            mkdir -p /usr/local/etc/pkg/repos
+            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }\n' \
+                    > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
+            pkg install -y autoconf automake pkgconf frr10
+
+          run: |
+            set -eux
+            cd $GITHUB_WORKSPACE
+
+            # Older than the revision that builds FRR's pimd: there is
+            # nothing for this lab to talk to, and nothing a commit here
+            # could do about it.
+            frr_ver=$(pkg query %v frr10)
+            echo "net/frr10 $frr_ver"
+            if [ "$(pkg version -t "$frr_ver" 10.7.1_1)" = "<" ]; then
+                    echo "SKIP: net/frr10 $frr_ver has no pimd, 10.7.1_1 is the"
+                    echo "      first revision that builds it; nothing to run."
+                    exit 0
+            fi
+
+            kldload -n ip_mroute
+            kldload -n if_bridge
+
+            ./autogen.sh
+            ./configure --prefix= --enable-test
+            make V=1
+
+            # Already root in the VM, so the script's sudo wrapper is empty.
+            # Two scenarios at a time, as the lab job above and for the same
+            # reason: four vCPUs, and every assertion is a poll against a
+            # timeout.
+            #
+            # This lab leaves a failed scenario's work directory where it
+            # is rather than renaming it, and copyback is off, so the logs
+            # are printed here or the VM takes them with it.
+            SUDO= sh test/frr-interop.sh -j 2 run all || rc=$?
+
+            if [ -n "${rc:-}" ]; then
+                    for f in /tmp/pimd-frr*/*.log; do
+                            test -f "$f" || continue
+                            echo "===== $f ====="
+                            tail -n 200 "$f"
+                    done
+            fi
 
             exit ${rc:-0}

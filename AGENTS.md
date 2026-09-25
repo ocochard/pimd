@@ -335,10 +335,16 @@ then FRR announcing to pimd's, with no BSR anywhere so that any RP either side h
 Auto-RP message. `autorp` ends in no traffic on purpose: sec. 3.3 of the draft floods the two
 well-known groups and neither daemon does, pimd sending its own out of every PIM interface and FRR
 its Discovery out of the one link its source address is on, so R3 one hop further learns nothing.
-The `frr-interop` job of `.github/workflows/ci-linux.yml` runs all three on every push, `-j 2` beside
-the `lab` job: it wants an image whose `frr` package is 10.3 or later (Ubuntu 26.04 carries 10.5)
-because `autorp` would fail rather than skip on an older one, and it applies the AppArmor override
-itself, which `check_apparmor()` refuses to do on a machine somebody owns.
+A `frr-interop` job of each CI workflow runs all three on every push, `-j 2` beside the lab job of
+the same file. On Linux (`ci-linux.yml`) it wants an image whose `frr` package is 10.3 or later
+(Ubuntu 26.04 carries 10.5) because `autorp` would fail rather than skip on an older one, and it
+applies the AppArmor override itself, which `check_apparmor()` refuses to do on a machine somebody
+owns. On FreeBSD (`ci-freebsd.yml`) it is the only thing in CI that puts a second implementation on
+the routing socket and the jail backend, and it needs `net/frr10` 10.7.1_1 or newer, that being the
+revision of the port that builds FRR's pimd at all -- 10.7.1 installs the daemons in `sbin` without
+it. The job switches the VM from quarterly to the latest repository, asks `pkg version -t` what it
+got, and skips with a line saying so rather than failing on a package no commit here can move; it
+starts running by itself once the builders catch up.
 
 Two things about FRR shape the rest: an FRR that is itself the BSR never puts its own Candidate-RP
 into the Bootstrap it originates (measured -- its database stays empty and the Bootstrap carries no
