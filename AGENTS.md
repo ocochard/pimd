@@ -175,8 +175,11 @@ next -- and that is measured with `-runs=N` against `-runs=4N`, not assumed: `fu
 static RP list of every `rp-address` line that way, 39MB per 600k inputs, and ended a long hunt at
 libFuzzer's RSS limit rather than at a bug.
 
-`test/igmpv3.c` sends one IGMPv3 membership report and exits, which is what the `ssm` scenario of
-`lab.sh` drives to assert (S,G) membership state rather than forwarded traffic. Use that tool, not a kernel join, whenever a test needs a router to age a
+`test/igmpv3.c` sends one IGMP message and exits: an IGMPv3 membership report, which is what the
+`ssm` scenario of `lab.sh` drives to assert (S,G) membership state rather than forwarded traffic,
+or with `-v` a v2 or v1 report and with `-L` a v2 leave, which is what `igmp-compat` drives -- no
+host sends a v1 report any more and no kernel will send one, so the older versions have to come
+from here. Use that tool, not a kernel join, whenever a test needs a router to age a
 membership out: a kernel that joined a group answers every query afterwards, so the membership
 never expires while the emulated device is on the LAN.
 
@@ -216,7 +219,8 @@ up to sequentially; `keepalive` alone is a floor of about 6 minutes). The addres
 the jails are the same in every slot, `net.inet.ip.mcast.loop` is the one piece of host state they
 share, and they hold it between them under a lock in `/var/run/pimd-lab-mcastloop`, last one out
 restoring it -- `freebsd-interop.sh` counts in the same place. `shared-lan`,
-`shared-lan-spt` and `assert-recover` are one topology and the only one with several PIM routers on
+`shared-lan-spt`, `assert-recover` and `igmp-compat` are one topology and the only one with several
+PIM routers on
 a link, so DR election, IGMP querier election and the assert election only ever run there
 (`shared-lan` is also the only one that gives two routers different
 route metrics, with `route change -metric` (FreeBSD 16 and later, step 12 skips itself on older
@@ -231,7 +235,14 @@ router *leaves* the assert state rather than how it enters one -- it kills the w
 loser meets a new GenID, then renumbers the winner's interface downwards),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is
 adjacent to the BSR and the RP and where the shared tree and the shortest path tree leave a router by
-different interfaces, `ssm` and `ssm-range` are the only ones about IGMP state rather than PIM
+different interfaces, `igmp-compat` is the only one about the versions of IGMP -- an interface pinned to v1 or v2 with
+`phyint ... igmpv1`/`igmpv2` on a link whose querier is in v3 mode, so that the sec. 7.3.1 refusal
+has something to refuse and an interface that refuses nothing beside it; one group each at v1, v2
+and v3 from `test/igmpv3.c`'s `-v`, read out of the per-group version column of `pimctl show igmp
+groups`; the climb back out of an older mode, one version per timeout, with v3 reports holding the
+membership up meanwhile; and the leaves, where a v2 group is asked with a v2 group-specific query
+and a group a v1 host reported ignores the leave entirely --
+`ssm` and `ssm-range` are the only ones about IGMP state rather than PIM
 forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asserts both halves of
 the replacement), `alias` the only one where an interface carries more than one address, so the only
 one that reaches the alias branch of `config_vifs_from_kernel()`, the only one whose sender sits

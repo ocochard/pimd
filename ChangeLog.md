@@ -7,6 +7,10 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `pimctl show igmp groups` has a version column, the compatibility mode of
+  each group rather than of the interface: an older membership report puts
+  one group back a version without touching the others, and a timer of its
+  own brings it forward again, which nothing else reported
 - pimd separates its privileges.  It runs as two processes now: a small
   privileged parent that owns the descriptors and makes the calls the kernel
   asks root for, and an unprivileged child, running as `nobody`, that does
@@ -452,6 +456,26 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- The IGMPv1 *interface* mode is gone, with the seven branches that served
+  it.  `VIFF_IGMPV1` could not be set: the `phyint` parser took `igmpv2` and
+  `igmpv3` only and cleared the flag in both cases, so nothing in any
+  configuration ever reached the code that sent a Max Response Time of zero,
+  refused a v2 query, or asked a group at v1 because of the interface.  IGMPv1
+  *hosts* are unaffected and still supported, which is the part RFC 3376
+  sec. 7.3.2 asks for: a v1 membership report still puts its own group into v1
+  compatibility mode, that group is still asked with a v1 group-specific query
+  and still ignores leaves while the old host is there, and `pimctl show igmp
+  groups` reports it.  What went is a mode nobody could turn on for hosts that
+  no longer exist
+- A group stops being treated as an older version's when the older hosts go
+  quiet, however old they were.  `switch_version()` moved a group up one
+  version per timeout and armed no timer for the next one, so a group a v1
+  host had reported climbed to v2 and stayed there for as long as the
+  membership lasted; each version gets a timeout of its own now, which is
+  what RFC 3376 sec. 7.3.2 asks for
+- A v1 group-specific query is no longer logged as a v2 one.  The query is
+  named by the length of the message in the log, and a v1 query is eight bytes
+  like a v2 one
 - A separated pimd no longer dies, silently and with an empty log, when its
   unprivileged half has more to say than the privileged one can write down.
   The two halves talk over a unix `SOCK_SEQPACKET` socketpair, which on

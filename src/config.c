@@ -1389,14 +1389,16 @@ static int parse_phyint(char *s)
 		continue;
 	    }
 
+	    /* The two compatibility modes of RFC 3376 sec. 7.3.1 this daemon
+	     * has: v2, where the periodic query is truncated at the group
+	     * address and a v3 query from another router is refused, and v3,
+	     * which is the default. */
 	    if (EQUAL(w, "igmpv2")) {
-		v->uv_flags &= ~VIFF_IGMPV1;
 		v->uv_flags |=  VIFF_IGMPV2;
 		continue;
 	    }
 
 	    if (EQUAL(w, "igmpv3")) {
-		v->uv_flags &= ~VIFF_IGMPV1;
 		v->uv_flags &= ~VIFF_IGMPV2;
 		continue;
 	    }

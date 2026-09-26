@@ -206,7 +206,7 @@ struct uvif {
     struct listaddr *uv_dvmrp_neighbors; /* list of neighboring routers     */
     nbrbitmap_t	     uv_nbrmap;	    /* bitmap of active neighboring routers */
     struct listaddr *uv_querier;    /* IGMP querier on vif                  */
-    int		     uv_igmpv1_warn;/* To rate-limit IGMPv1 warnings	    */
+    int		     uv_igmp_warn;  /* Rate-limits the version warnings */
     int		     uv_prune_lifetime; /* Prune lifetime or 0 for default  */
     struct vif_acl  *uv_acl;	    /* access control list of groups        */
     int		     uv_leaf_timer; /* time until this vif is considrd leaf */
@@ -244,7 +244,6 @@ struct uvif {
 #define VIFF_QUERIER		0x000400       /* I am the subnet's querier */
 #define VIFF_ONEWAY		0x000800       /* Maybe one way interface   */
 #define VIFF_LEAF		0x001000       /* all neighbors are leaves  */
-#define VIFF_IGMPV1		0x002000       /* Act as an IGMPv1 Router   */
 #define	VIFF_REXMIT_PRUNES	0x004000       /* retransmit prunes         */
 #define VIFF_PASSIVE		0x008000       /* passive tunnel	    */
 #define	VIFF_ALLOW_NONPRUNERS	0x010000       /* ok to peer with nonprunrs */

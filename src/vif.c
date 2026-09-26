@@ -226,7 +226,7 @@ void zero_vif(struct uvif *v, int t)
     v->uv_dvmrp_neighbors = (struct listaddr *)NULL;
     NBRM_CLRALL(v->uv_nbrmap);
     v->uv_querier	= (struct listaddr *)NULL;
-    v->uv_igmpv1_warn	= 0;
+    v->uv_igmp_warn	= 0;
     v->uv_prune_lifetime = 0;
     v->uv_acl		= (struct vif_acl *)NULL;
     RESET_TIMER(v->uv_leaf_timer);

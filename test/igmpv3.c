@@ -49,6 +49,19 @@
  * picks the version itself, and follows whatever the querier on the LAN
  * has negotiated.
  *
+ * "-L" makes it a leave instead of a report, which only v2 has: the eight
+ * bytes of a v2 message with type 0x17, sent to ALL-ROUTERS rather than to
+ * the group (RFC 2236 sec. 2.1).  What it is for is the other half of the
+ * version rules -- a router acts on a leave for a group in v2 mode, sends a
+ * group-specific query of that version, and ignores the leave entirely on
+ * an interface in v1 mode -- none of which a v3 "to_in" report exercises.
+ *
+ * "-v 1" is the same eight bytes with the type of RFC 1112, which is what
+ * puts a group into v1 compatibility mode: a router that hears one stops
+ * acting on leaves for that group until the mode times out, and there is
+ * no other way to ask for that -- no host has sent a v1 report in twenty
+ * years, and no kernel will send one now.
+ *
  * "-o FILE" writes the packet instead of sending it, and writes the IP
  * header with it: -i and the destination this version reports to, twenty
  * bytes, no options.  That is one packet as the daemon is handed it, which
@@ -72,8 +85,12 @@
 #include <unistd.h>
 
 #define IGMPV3_HOST_MEMBERSHIP_REPORT	0x22
+#define IGMPV1_HOST_MEMBERSHIP_REPORT	0x12
 #define IGMPV2_HOST_MEMBERSHIP_REPORT	0x16
+#define IGMPV2_HOST_LEAVE_GROUP		0x17
+
 #define IGMPV3_ALL_ROUTERS		"224.0.0.22"
+#define ALL_ROUTERS			"224.0.0.2"
 
 #define MODE_IS_INCLUDE			1
 #define MODE_IS_EXCLUDE			2
@@ -181,8 +198,12 @@ static int usage(int rc)
 		"  -t TYPE    is_in, is_ex, to_in, to_ex, allow, block\n"
 		"  -n COUNT   Generate COUNT consecutive sources from -b instead\n"
 		"  -b BASE    First address of the generated range\n"
-		"  -v VER     IGMP version, 3 (default) or 2; a v2 report has no\n"
-		"             source list, so -t and any sources are ignored\n"
+		"  -L         Send a v2 leave (type 0x17) to ALL-ROUTERS rather\n"
+		"             than a report; implies -v 2\n"
+
+		"  -v VER     IGMP version, 3 (default), 2 or 1; a v1 or v2\n"
+		"             report has no source list, so -t and any sources\n"
+		"             are ignored\n"
 		"  -o FILE    Write the packet, IP header and all, instead of\n"
 		"             sending it.  Needs no socket and no root.  For\n"
 		"             seeding the corpus of test/fuzz/fuzz_igmp.c\n");
@@ -197,8 +218,8 @@ int main(int argc, char *argv[])
 	struct in_addr ifaddr, group;
 	const char *base = NULL;
 	const char *outfile = NULL;
-	struct in_addr *dest = NULL;
-	int type = -1, num = 0, version = 3;
+	struct in_addr *dest = NULL, allrtrs;
+	int type = -1, num = 0, version = 3, leave = 0;
 	unsigned char ttl = 1;
 	size_t len;
 	int nsrcs = 0;
@@ -207,7 +228,7 @@ int main(int argc, char *argv[])
 	memset(&ifaddr, 0, sizeof(ifaddr));
 	memset(&group, 0, sizeof(group));
 
-	while ((c = getopt(argc, argv, "b:g:h?i:n:o:t:v:")) != -1) {
+	while ((c = getopt(argc, argv, "b:g:h?i:Ln:o:t:v:")) != -1) {
 		switch (c) {
 		case 'b':
 			base = optarg;
@@ -231,6 +252,11 @@ int main(int argc, char *argv[])
 			outfile = optarg;
 			break;
 
+		case 'L':
+			leave = 1;
+			version = 2;
+			break;
+
 		case 't':
 			type = rectype(optarg);
 			if (type < 0)
@@ -239,7 +265,7 @@ int main(int argc, char *argv[])
 
 		case 'v':
 			version = atoi(optarg);
-			if (version != 2 && version != 3)
+			if (version < 1 || version > 3)
 				errx(1, "unsupported IGMP version %s", optarg);
 			break;
 
@@ -278,10 +304,12 @@ int main(int argc, char *argv[])
 		nsrcs++;
 	}
 
-	if (version == 2) {
-		/* RFC 2236 sec. 2: type, max response time (0 in a report),
-		 * checksum, group.  Eight bytes, no records and no sources,
-		 * and it goes to the group rather than to ALL-IGMPv3-ROUTERS.
+	if (version < 3) {
+		/* RFC 2236 sec. 2, and RFC 1112 appendix I before it: type,
+		 * max response time (0 in a report), checksum, group.  Eight
+		 * bytes, no records and no sources, and it goes to the group
+		 * rather than to ALL-IGMPv3-ROUTERS.  The two versions differ
+		 * in the type byte alone.
 		 */
 		struct v2report {
 			uint8_t  type;
@@ -291,13 +319,28 @@ int main(int argc, char *argv[])
 		} __attribute__((packed)) v2;
 
 		memset(&v2, 0, sizeof(v2));
-		v2.type  = IGMPV2_HOST_MEMBERSHIP_REPORT;
+		if (leave)
+			v2.type = IGMPV2_HOST_LEAVE_GROUP;
+		else if (version == 1)
+			v2.type = IGMPV1_HOST_MEMBERSHIP_REPORT;
+		else
+			v2.type = IGMPV2_HOST_MEMBERSHIP_REPORT;
 		v2.group = group.s_addr;
 		v2.csum  = cksum(&v2, sizeof(v2));
 
 		memcpy(&rep, &v2, sizeof(v2));
 		len = sizeof(v2);
-		dest = &group;
+
+		/* A report goes to the group it is about, a leave to
+		 * ALL-ROUTERS: the group is precisely what the sender is no
+		 * longer a member of (RFC 2236 sec. 2.1). */
+		if (leave) {
+			if (inet_pton(AF_INET, ALL_ROUTERS, &allrtrs) != 1)
+				errx(1, "invalid destination");
+			dest = &allrtrs;
+		} else {
+			dest = &group;
+		}
 	} else {
 		rep.type = IGMPV3_HOST_MEMBERSHIP_REPORT;
 		rep.ngrec = htons(1);

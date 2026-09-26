@@ -394,9 +394,6 @@ static uint32_t dr_addr(struct uvif *uv)
 
 static int igmp_version(struct uvif *uv)
 {
-	if (uv->uv_flags & VIFF_IGMPV1)
-		return 1;
-
 	if (uv->uv_flags & VIFF_IGMPV2)
 		return 2;
 
@@ -959,7 +956,7 @@ static int show_igmp_groups(FILE *fp)
 	vifi_t vifi;
 
 	fprintf(fp, "IGMP Group Membership Table_\n");
-	fprintf(fp, "Interface         Group            Source           Last Reported    Timeout=\n");
+	fprintf(fp, "Interface         Group            Source           Last Reported    Timeout  Version=\n");
 	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
 		for (group = uv->uv_groups; group; group = group->al_next) {
 			char pre[40], post[40];
@@ -967,19 +964,24 @@ static int show_igmp_groups(FILE *fp)
 			snprintf(pre, sizeof(pre), "%-16s  %-15s  ",
 				 uv->uv_name, inet_fmt(group->al_addr, s1, sizeof(s1)));
 
+			/* The version is the group's compatibility mode, not
+			 * the interface's: one older report puts the group
+			 * back a version (RFC 3376 sec. 7.3.2) and a timer
+			 * of its own brings it forward again, which is state
+			 * nothing else here could show. */
 			if (!group->al_sources) {
-				snprintf(post, sizeof(post), "%-15s  %7u",
+				snprintf(post, sizeof(post), "%-15s  %7u  %7d",
 					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
-					 group->al_timer);
+					 group->al_timer, group->al_pv);
 				fprintf(fp, "%s%-15s  %s\n", pre, "ANY", post);
 				continue;
 			}
 
 			/* Each (S,G) membership expires on a timer of its own */
 			for (source = group->al_sources; source; source = source->al_next) {
-				snprintf(post, sizeof(post), "%-15s  %7u",
+				snprintf(post, sizeof(post), "%-15s  %7u  %7d",
 					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
-					 source->al_timer);
+					 source->al_timer, group->al_pv);
 				fprintf(fp, "%s%-15s  %s\n",
 					pre, inet_fmt(source->al_addr, s1, sizeof(s1)), post);
 			}

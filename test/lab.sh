@@ -309,6 +309,38 @@
 #               address - is not covered: it needs one router reachable at
 #               the same address on two of its own links, which no topology
 #               here builds.  Takes about 4 minutes.
+#   igmp-compat The versions of IGMP, on the shared-LAN topology above -- the
+#               only one here with several routers on a link, which is what
+#               a querier election and a compatibility mode both need.  R4's
+#               interface on br1 is pinned to v2 with "phyint ... igmpv2",
+#               every other interface is at the v3 default, and
+#               igmp-query-interval is 5s so that the timers are 25 seconds
+#               rather than 385.
+#
+#               Three questions, and each refusal is asserted beside a
+#               message of the same kind that is *not* refused, since a rule
+#               that rejects everything would pass the first half of each:
+#
+#                 - what a router does with a query of a version above its
+#                   interface's mode (RFC 3376 sec. 7.3.1).  R5, the
+#                   querier, is in v3 mode, so its periodic queries are the
+#                   ones R4 must refuse -- and R3, on the same LAN and in
+#                   the same v3 mode, refuses none of them.
+#                 - what an older membership report does to the group it
+#                   names (sec. 7.3.2): one group each at v1, v2 and v3 on
+#                   one interface, read out of the version column "pimctl
+#                   show igmp groups" prints per group.  A group's mode is
+#                   not configuration: the report that arrives decides it.
+#                 - how a group leaves that mode again: v3 reports keep the
+#                   membership alive without re-arming the version timer, so
+#                   the v2 group climbs back to v3 and the v1 group climbs
+#                   twice, one version per timeout.
+#
+#               Ends on the leaves, which is where the mode decides whether
+#               the daemon acts at all: the querier asks a v2 group with a
+#               v2 group-specific query and drops it, and the same leave for
+#               a group a v1 host reported is ignored, RFC 2236 having no
+#               leave for a v1 host to send.  Takes about 4 minutes.
 #   ssm         IGMPv3 (S,G) membership state on R3, the last hop router,
 #               for a group in the 232.0.0.0/8 SSM range.  The only
 #               scenario about what IGMP leaves behind on a router rather
@@ -772,7 +804,7 @@
 #
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
-# "shared-lan-spt", "assert-recover", "ssm", "ssm-range", "alias",
+# "shared-lan-spt", "assert-recover", "igmp-compat", "ssm", "ssm-range", "alias",
 # "ifnew", "ifgone", "renumber", "register-filter", "crafted", "fuzz",
 # "static-rp", "anycast", "anycast-dr", or "all"
 # for run.
@@ -903,10 +935,10 @@ SCENARIO=${SCENARIO:-rpt}
 # running keepalive alone with three slots idle, because the longest
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
-	   shared-lan shared-lan-spt assert-recover ssm ssm-range alias
+	   shared-lan shared-lan-spt assert-recover igmp-compat ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
-		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel
+		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
 		     renumber ssm-range solo privsep"
 
@@ -1152,6 +1184,21 @@ SL_R3_ADDR=10.0.3.2
 SL_DR_ADDR=10.0.3.3
 SL_QUERIER_ADDR=10.0.3.1
 SL_ED3_ADDR=10.0.3.10
+
+# igmp-compat: the three groups ED3 reports, one per version, and the query
+# interval every router on the LAN is given.  The interval is what makes the
+# scenario short enough to run: igmp_group_membership_timeout() is
+# IGMP_ROBUSTNESS_VARIABLE * igmp_query_interval + IGMP_QUERY_RESPONSE_INTERVAL
+# (src/igmp_proto.c), so 5 gives 25 seconds where the default 125 gives 385 --
+# and that timeout is both the membership timer and the one switch_version()
+# walks a group's compatibility mode back up on.
+IC_GROUP_V1=${IC_GROUP_V1:-225.1.9.1}
+IC_GROUP_V2=${IC_GROUP_V2:-225.1.9.2}
+IC_GROUP_V3=${IC_GROUP_V3:-225.1.9.3}
+IC_QUERY_INTERVAL=${IC_QUERY_INTERVAL:-5}
+IC_QUERIER_TIMEOUT=${IC_QUERIER_TIMEOUT:-20}
+IC_VER_TIMEOUT=$((3 * IC_QUERY_INTERVAL + 10))
+
 
 # The address the shared LAN's DR starts at.  assert-recover replaces it,
 # see AR_DR_ADDR below, so set_scenario() puts this one back for the two
@@ -1702,16 +1749,18 @@ usage() {
 	EOF
 }
 
-# Three scenarios, one topology: it is the only one in this file with more
+# Four scenarios, one topology: it is the only one in this file with more
 # than one PIM router on a link, so anything about an election has to be
-# built on it.  shared-lan and shared-lan-spt differ in whether the last hop
+# built on it -- the assert election of the three below, and the IGMP
+# querier election of igmp-compat, which is also the only place where the
+# routers of a LAN do not all speak the same version of IGMP.  shared-lan and shared-lan-spt differ in whether the last hop
 # router is allowed onto the shortest path tree, and therefore in which of
 # the two contenders the spec says must win the assert; assert-recover takes
 # shared-lan's answer as its starting point and goes after the two ways a
 # router leaves the assert state again.
 is_shared_lan() {
 	case $SCENARIO in
-	shared-lan|shared-lan-spt|assert-recover) return 0 ;;
+	shared-lan|shared-lan-spt|assert-recover|igmp-compat) return 0 ;;
 	esac
 
 	return 1
@@ -1719,7 +1768,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1768,8 +1817,15 @@ set_scenario() {
 	# Join/Prune period, for the whole run.  pim_hello is here for the
 	# same reason: the line that says a Hello was refused by
 	# accept-nbr-from sits behind IF_DEBUG(DEBUG_PIM_HELLO).
+	#
+	# igmp-compat asks for igmp for the same kind of reason: the line that
+	# says a group changed compatibility mode, and the one that says which
+	# version a group-specific query went out as, are both behind
+	# IF_DEBUG(DEBUG_IGMP), and they are half of what that scenario reads.
 	if [ "$SCENARIO" = crafted ] || [ "$SCENARIO" = fuzz ]; then
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
+	elif [ "$SCENARIO" = igmp-compat ]; then
+		DEBUG="$DEBUG_DEFAULT,igmp"
 	else
 		DEBUG=$DEBUG_DEFAULT
 	fi
@@ -2046,7 +2102,7 @@ routes() {
 		ed2) echo "default 10.0.3.1" ;;
 		esac
 		return ;;
-	shared-lan|shared-lan-spt|assert-recover)
+	shared-lan|shared-lan-spt|assert-recover|igmp-compat)
 		# R5 reaches the source and the RP through R3, which is what
 		# makes this scenario work: its Join names R3 as the upstream
 		# router, and receive_pim_join_prune() (src/pim_proto.c) only
@@ -2725,6 +2781,44 @@ write_configs() {
 		# inert both routers derive the same number from the same
 		# kind of route, so steps 9 to 12 still tie on preference and
 		# are decided by the metric and the address as before.
+		# igmp-compat asks a different question of the same wires:
+		# what the three routers of the LAN do when they do not agree
+		# on which IGMP version the LAN speaks.  Every one of them
+		# gets the short query interval, so the membership and
+		# compatibility timers are seconds rather than minutes; R4's
+		# LAN interface is held at v2 and R5's interface towards ED2
+		# at v1, which are the two modes that change what the daemon
+		# accepts and what it ignores.
+		if [ "$SCENARIO" = igmp-compat ]; then
+			cat <<-EOF > "$WORKDIR/r3.conf"
+			# R3: v3 on the shared LAN, the version pimd defaults
+			# to, and the router the per-group assertions read
+			igmp-query-interval $IC_QUERY_INTERVAL
+			igmp-querier-timeout $IC_QUERIER_TIMEOUT
+			spt-threshold infinity
+			EOF
+
+			cat <<-EOF > "$WORKDIR/r4.conf"
+			# R4: the same LAN, held in v2 compatibility mode, so
+			# a v3 query from another router is one it must refuse
+			# (RFC 3376 sec. 7.3.1)
+			igmp-query-interval $IC_QUERY_INTERVAL
+			igmp-querier-timeout $IC_QUERIER_TIMEOUT
+			spt-threshold infinity
+			phyint $SL_R4_IF igmpv2
+			EOF
+
+			cat <<-EOF > "$WORKDIR/r5.conf"
+			# R5: the querier of the shared LAN, lowest address
+			# there, and in the v3 mode pimd defaults to -- so its
+			# periodic queries are the ones R4 has to refuse
+			igmp-query-interval $IC_QUERY_INTERVAL
+			igmp-querier-timeout $IC_QUERIER_TIMEOUT
+			spt-threshold infinity
+			EOF
+			return
+		fi
+
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: upstream router for R5 on the shared LAN ($SL_R3_ADDR),
 		# neither its DR nor its querier
@@ -3247,6 +3341,54 @@ iface_querier_is() { [ "$(iface_querier "$1" "$2")" = "$3" ]; }
 iface_querier() {
 	pimctl "$1" -t show igmp 2>/dev/null | \
 		awk -v ifn="$2" '$1 == ifn && $2 ~ /^(Up|Down|Disabled)$/ { print $3; exit }'
+}
+
+# The compatibility version of one group on one router, out of the column
+# "show igmp groups" prints per group: an older report puts a group back a
+# version and switch_version() (src/igmp_proto.c) walks it forward again, and
+# this is the state that says which.
+igmp_group_version() {
+	pimctl "$1" -t show igmp groups 2>/dev/null | \
+		awk -v g="$2" '$2 == g { print $6; exit }'
+}
+
+igmp_group_is_version() {
+	[ "$(igmp_group_version "$1" "$2")" = "$3" ]
+}
+
+igmp_group_gone() {
+	[ -z "$(igmp_group_version "$1" "$2")" ]
+}
+
+# One membership report from ED3 on the shared LAN, of the version asked for:
+# "v3" is an IS_EX report of the group, "v2" and "v1" the eight byte report
+# of that version, and "leave" a v2 leave.
+ic_report() {
+	case $2 in
+	v3)	box_run ed3 "$IGMPV3" -i "$SL_ED3_ADDR" -g "$1" -t is_ex ;;
+	v2)	box_run ed3 "$IGMPV3" -i "$SL_ED3_ADDR" -g "$1" -v 2 ;;
+	v1)	box_run ed3 "$IGMPV3" -i "$SL_ED3_ADDR" -g "$1" -v 1 ;;
+	leave)	box_run ed3 "$IGMPV3" -i "$SL_ED3_ADDR" -g "$1" -L ;;
+	esac >/dev/null 2>&1 || true
+}
+
+# Keep a group's membership alive with v3 reports for up to $2 seconds, or
+# until the condition in $3.. holds.  A v3 report refreshes the membership
+# timer and leaves the version timer alone, which is how a group outlives the
+# compatibility mode an older report put it in.
+ic_hold_v3() {
+	ich_group=$1
+	ich_timeout=$2
+	shift 2
+
+	while [ "$ich_timeout" -gt 0 ]; do
+		"$@" >/dev/null 2>&1 && return 0
+		ic_report "$ich_group" v3
+		sleep 3
+		ich_timeout=$((ich_timeout - 3))
+	done
+
+	return 1
 }
 
 # Have all three routers on the shared LAN settled on r5 as the querier?
@@ -3816,6 +3958,7 @@ check() {
 	gif-tunnel) check_gif_tunnel; return $? ;;
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
+	igmp-compat) check_igmp_compat; return $? ;;
 	assert-recover) check_assert_recover; return $? ;;
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
@@ -8248,6 +8391,194 @@ check_gif_staticrp() {
 # scenario with the right hand links rebuilt as bridges; from 6 on it is the
 # part no point-to-point link can reach, where three routers have to agree
 # on who speaks for a LAN they all sit on.
+# igmp-compat: the versions of IGMP, on the one topology here with several
+# routers on a link.  Three questions, none of which the other scenarios can
+# ask: what a router does with a query of a version the link is not in
+# (RFC 3376 sec. 7.3.1), what an older membership report does to the group it
+# names (sec. 7.3.2), and how the group comes back out of that mode again.
+#
+# The interface mode is configuration and there are two of them: R4's
+# interface on the shared LAN is pinned to v2 with "phyint ... igmpv2" and
+# every other interface is at the v3 pimd defaults to.  A group's mode is not
+# configured at all -- the version of the report that arrives decides it, one
+# group at a time -- and the two are asserted apart here.  Each refusal has a
+# message of the same kind that is *not* refused beside it, since a rule that
+# rejects everything would pass the first half of each.
+check_igmp_compat() {
+	print "1. Each interface is in the compatibility mode its config asked for"
+	if [ "$(iface_igmp_version r3 "$SL_R3_IF")" = 3 ]; then
+		ok "r3 is in v3 mode on the shared LAN, the default"
+	else
+		fail "r3 reads version '$(iface_igmp_version r3 "$SL_R3_IF")' on $SL_R3_IF, want 3"
+	fi
+	if [ "$(iface_igmp_version r4 "$SL_R4_IF")" = 2 ]; then
+		ok "r4 is in v2 mode on the same LAN, from \"phyint $SL_R4_IF igmpv2\""
+	else
+		fail "r4 reads version '$(iface_igmp_version r4 "$SL_R4_IF")' on $SL_R4_IF, want 2"
+	fi
+	if [ "$(iface_igmp_version r5 "${EP}503b")" = 3 ]; then
+		ok "r5, the querier, is in v3 mode, so its queries are v3 ones"
+	else
+		fail "r5 reads version '$(iface_igmp_version r5 "${EP}503b")' on ${EP}503b, want 3"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The querier election takes the lowest address, whatever the versions"
+	if wait_for 60 queriers_settled; then
+		ok "r3, r4 and r5 all call $SL_QUERIER_ADDR (r5) the querier"
+	else
+		fail "the shared LAN never settled on $SL_QUERIER_ADDR as its querier"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. A query of a higher version than the interface's mode is refused"
+	# R5 is the querier of the LAN and in v3 mode, so its periodic queries
+	# are v3 ones: exactly what sec. 7.3.1 tells R4 not to act on.
+	if wait_for 30 logged r4 "but interface is in IGMP v2 network compatibility mode"; then
+		ok "r4 refused a v3 query from the querier, its LAN being in v2 mode"
+	else
+		fail "r4 never refused a v3 query on an interface in v2 mode"
+	fi
+	# The control, and the reason this is not a rule that refuses
+	# everything: the same queries, from the same router, on an interface
+	# that is in no older mode.
+	if logged r3 "network compatibility mode"; then
+		fail "r3 refused a query on an interface in v3 mode, where nothing is higher"
+	else
+		ok "r3 refused none of them, its own interface being in v3 mode"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. An older report puts its own group back a version, and nothing else"
+	ic_report "$IC_GROUP_V3" v3
+	ic_report "$IC_GROUP_V2" v2
+	ic_report "$IC_GROUP_V1" v1
+	if wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V3" 3; then
+		ok "$IC_GROUP_V3 is a v3 group, reported by a v3 host"
+	else
+		fail "$IC_GROUP_V3 reads version '$(igmp_group_version r3 "$IC_GROUP_V3")', want 3"
+	fi
+	if wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V2" 2; then
+		ok "$IC_GROUP_V2 went to v2 on a v2 report, on the same v3 interface"
+	else
+		fail "$IC_GROUP_V2 reads version '$(igmp_group_version r3 "$IC_GROUP_V2")', want 2"
+	fi
+	if wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V1" 1; then
+		ok "$IC_GROUP_V1 went to v1 on a v1 report"
+	else
+		fail "$IC_GROUP_V1 reads version '$(igmp_group_version r3 "$IC_GROUP_V1")', want 1"
+	fi
+	if logged r3 "Change IGMP compatibility mode to v1 for group $IC_GROUP_V1"; then
+		ok "and r3 said so for each of them as it happened"
+	else
+		fail "r3 never logged the change to v1 for $IC_GROUP_V1"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. And a group comes back out of that mode, one version per timeout"
+	# The membership has to outlive the version timer for this to be
+	# visible at all, and both are igmp_group_membership_timeout() --
+	# ${IC_VER_TIMEOUT}s here, from igmp-query-interval $IC_QUERY_INTERVAL.  So a v3
+	# report goes in every few seconds: it refreshes the membership without
+	# re-arming the version timer, which is the state a link leaves behind
+	# when the old host stops reporting and the v3 hosts do not.
+	# Each group's mode is put back on immediately before it is watched:
+	# the timers of the two run at the same time, so a group asserted after
+	# another one has been held for two timeouts has already climbed all
+	# the way on its own.
+	ic_report "$IC_GROUP_V2" v2
+	wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V2" 2 || true
+	ic_hold_v3 "$IC_GROUP_V2" $((IC_VER_TIMEOUT * 2)) igmp_group_is_version r3 "$IC_GROUP_V2" 3
+	if igmp_group_is_version r3 "$IC_GROUP_V2" 3; then
+		ok "$IC_GROUP_V2 is back to v3 after ${IC_VER_TIMEOUT}s without a v2 report"
+	else
+		fail "$IC_GROUP_V2 reads version '$(igmp_group_version r3 "$IC_GROUP_V2")' after twice the timeout"
+	fi
+	if logged r3 "Switch IGMP compatibility mode back to v3 for group $IC_GROUP_V2"; then
+		ok "and r3 said which group it was and which version it went to"
+	else
+		fail "r3 never logged the switch back to v3 for $IC_GROUP_V2"
+	fi
+
+	# The v1 group takes two of those timeouts, and the first one is not
+	# the one that matters: a group that stops at v2 and stays there is
+	# what this asserts against, since nothing a host can do would move it.
+	ic_report "$IC_GROUP_V1" v1
+	wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V1" 1 || true
+	ic_hold_v3 "$IC_GROUP_V1" $((IC_VER_TIMEOUT * 2)) igmp_group_is_version r3 "$IC_GROUP_V1" 2
+	if igmp_group_is_version r3 "$IC_GROUP_V1" 2; then
+		ok "$IC_GROUP_V1 climbed from v1 to v2 on the first timeout"
+	else
+		fail "$IC_GROUP_V1 reads version '$(igmp_group_version r3 "$IC_GROUP_V1")', want 2 after one timeout"
+	fi
+	ic_hold_v3 "$IC_GROUP_V1" $((IC_VER_TIMEOUT * 2)) igmp_group_is_version r3 "$IC_GROUP_V1" 3
+	if igmp_group_is_version r3 "$IC_GROUP_V1" 3; then
+		ok "and to v3 on the second, the one timer each version gets"
+	else
+		fail "$IC_GROUP_V1 reads version '$(igmp_group_version r3 "$IC_GROUP_V1")', want 3 after two timeouts"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "6. A leave is acted on for a v2 group and ignored while a v1 host is there"
+	# Both groups are v3 again by now, so each is put back where this step
+	# wants it first.  The v2 one is the control: the same leave, the same
+	# host, the same interface, and the only difference is the version of
+	# the report that came before it.
+	ic_report "$IC_GROUP_V2" v2
+	wait_for 20 igmp_group_is_version r3 "$IC_GROUP_V2" 2 || true
+	ic_report "$IC_GROUP_V2" leave
+	if wait_for 20 igmp_group_gone r3 "$IC_GROUP_V2"; then
+		ok "the v2 group went away on ED3's leave"
+	else
+		fail "$IC_GROUP_V2 is still there after a leave, version '$(igmp_group_version r3 "$IC_GROUP_V2")'"
+	fi
+	# The group-specific query is the querier's to send, and on this LAN
+	# that is R5 -- accept_leave_message() (src/igmp_proto.c) sends one
+	# only where VIFF_QUERIER is set, and every router on the link then
+	# shortens its own timer for the group when it sees it.
+	if logged r5 "Sending IGMP v2 query (al_pv=2)"; then
+		ok "and the querier asked the group at v2, the version the group is in"
+	else
+		fail "r5 sent no v2 group-specific query for a group in v2 mode"
+	fi
+	if logged r5 "Sending IGMP v3 query (al_pv=2)"; then
+		fail "r5 asked a v2 group with a v3 query"
+	else
+		ok "and not at v3, which the hosts of a v2 group would not answer"
+	fi
+
+	# The v1 group is read on R5 rather than R3 because this half is the
+	# querier's: a v1 report sets al_old, "old hosts present", and a leave
+	# for a group in that state is ignored -- RFC 2236 gives a v1 host no
+	# way to send one, so the leave cannot have come from every member.
+	# al_old is aged in query_groups() (src/igmp_proto.c), which only the
+	# querier runs, so R5 forgets the old host within a query interval or
+	# two and R3 never does.
+	ic_report "$IC_GROUP_V1" v1
+	wait_for 20 igmp_group_is_version r5 "$IC_GROUP_V1" 1 || true
+	ic_report "$IC_GROUP_V1" leave
+	sleep 3
+	if igmp_group_is_version r5 "$IC_GROUP_V1" 1; then
+		ok "the v1 group is untouched by the same leave while an old host is remembered"
+	else
+		fail "$IC_GROUP_V1 reads '$(igmp_group_version r5 "$IC_GROUP_V1")' after a leave an old host's group must ignore"
+	fi
+
+	# And once it is forgotten the same leave is acted on, with the query
+	# at the group's own version -- the one place a v1 query is sent at
+	# all, now that no interface can be pinned to v1.
+	sleep $((IC_QUERY_INTERVAL * 2 + 2))
+	ic_report "$IC_GROUP_V1" leave
+	if wait_for 20 logged r5 "Sending IGMP v1 query (al_pv=1)"; then
+		ok "and asked at v1 once it was, which is the version the group is in"
+	else
+		fail "r5 sent no v1 group-specific query for a group in v1 mode"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	result
+}
+
 check_shared_lan() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do

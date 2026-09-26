@@ -134,14 +134,7 @@ void query_groups(struct uvif *v)
 	 * interface, which may channge at runtime depending on version
 	 * of the end devices on a segment.
 	 */
-	if (v->uv_flags & VIFF_IGMPV1) {
-	    /*
-	     * RFC 3376: When in IGMPv1 mode, routers MUST send Periodic
-	     *           Queries with a Max Response Time of 0
-	     */
-	    datalen = 0;
-	    code = 0;
-	} else if (v->uv_flags & VIFF_IGMPV2) {
+	if (v->uv_flags & VIFF_IGMPV2) {
 	    /*
 	     * RFC 3376: When in IGMPv2 mode, routers MUST send Periodic
 	     *           Queries truncated at the Group Address field
@@ -206,21 +199,22 @@ void accept_membership_query(int ifi, uint32_t src, uint32_t dst, uint32_t group
      * compatibility mode as specified in RFC 3376 - 7.3.1
      */
     if (v->uv_querier) {
-	if ((igmp_version == 3 && (v->uv_flags & VIFF_IGMPV2)) ||
-	    (igmp_version == 2 && (v->uv_flags & VIFF_IGMPV1))) {
+	int mode = (v->uv_flags & VIFF_IGMPV2) ? 2 : 3;
+
+	if (igmp_version > mode) {
 	    int i;
 
 	    /*
 	     * Exponentially back-off warning rate
 	     */
-	    i = ++v->uv_igmpv1_warn;
+	    i = ++v->uv_igmp_warn;
 	    while (i && !(i & 1))
 		i >>= 1;
 	    if (i == 1)
 		logit(LOG_WARNING, 0, "Received IGMP v%d query from %s on %s,"
 		      " but interface is in IGMP v%d network compatibility mode",
 		      igmp_version, inet_fmt(src, s1, sizeof(s1)),
-		      v->uv_name, v->uv_flags & VIFF_IGMPV1 ? 1 : 2);
+		      v->uv_name, mode);
 	    return;
 	}
     }
@@ -283,7 +277,7 @@ void accept_membership_query(int ifi, uint32_t src, uint32_t dst, uint32_t group
      * we must set our membership timer to [Last Member Query Count] *
      * the [Max Response Time] in the packet.
      */
-    if (!(v->uv_flags & VIFF_IGMPV1) && group != 0 && src != v->uv_lcl_addr) {
+    if (group != 0 && src != v->uv_lcl_addr) {
 	struct listaddr *g;
 
 	IF_DEBUG(DEBUG_IGMP) {
@@ -571,15 +565,6 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 
     v = &uvifs[vifi];
 
-#if 0
-    /* XXX: a PIM-SM last-hop router needs to know when a local member
-     * has left.
-     */
-    if (!(v->uv_flags & (VIFF_QUERIER | VIFF_DR))
-	|| (v->uv_flags & VIFF_IGMPV1))
-	return;
-#endif
-
     /*
      * Look for the group in our group list in order to set up a short-timeout
      * query.
@@ -587,6 +572,7 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
     for (g = v->uv_groups; g; g = g->al_next) {
 	int datalen;
 	int code;
+	int qver = 3;
 
 	if (group == g->al_addr) {
 	    IF_DEBUG(DEBUG_IGMP)
@@ -645,20 +631,23 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 	    code = IGMP_LAST_MEMBER_QUERY_INTERVAL * IGMP_TIMER_SCALE;
 
 	    /* Use lowest IGMP version */
-	    if (v->uv_flags & VIFF_IGMPV2 || g->al_pv <= 2) {
-		datalen = 0;
-	    } else if (v->uv_flags & VIFF_IGMPV1 || g->al_pv == 1) {
+	    if (g->al_pv == 1) {
 		datalen = 0;
 		code = 0;
+		qver = 1;
+	    } else if (v->uv_flags & VIFF_IGMPV2 || g->al_pv <= 2) {
+		datalen = 0;
+		qver = 2;
 	    } else {
 		datalen = 4;
+		qver = 3;
 	    }
 
 	    /** send a group specific querry **/
 	    if (v->uv_flags & VIFF_QUERIER) {
 		IF_DEBUG(DEBUG_IGMP)
-		    logit(LOG_DEBUG, 0, "%s(): Sending IGMP v%s query (al_pv=%d)",
-			  __func__, datalen == 4 ? "3" : "2", g->al_pv);
+		    logit(LOG_DEBUG, 0, "%s(): Sending IGMP v%d query (al_pv=%d)",
+			  __func__, qver, g->al_pv);
 
 		send_igmp(igmp_send_buf, v->uv_lcl_addr, g->al_addr,
 			  IGMP_MEMBERSHIP_QUERY, code, g->al_addr, datalen);
@@ -977,6 +966,16 @@ static void switch_version(void *arg)
 
     logit(LOG_INFO, 0, "Switch IGMP compatibility mode back to v%d for group %s",
 	  cbk->g->al_pv, inet_fmt(cbk->g->al_addr, s1, sizeof(s1)));
+
+    /* One version per timeout, and the next one needs a timer of its own:
+     * RFC 3376 sec. 7.3.2 keeps an Older Version Host Present timer per
+     * version, so a group a v1 host reported goes to v2 when that host has
+     * been quiet for the timeout and to v3 when it has been quiet for
+     * another one.  Without this it stopped at v2 and stayed there for as
+     * long as the membership lasted, whatever the hosts on the link did. */
+    cbk->g->al_versiontimer = 0;
+    if (cbk->g->al_pv < 3)
+	cbk->g->al_versiontimer = SetVerTimer(cbk->vifi, cbk->g);
 
     free(cbk);
 }

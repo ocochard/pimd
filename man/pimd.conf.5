@@ -387,9 +387,26 @@ settings in the configuration file.
 Selectively disable or enable this interface.  Only enabled interfaces
 get a VIF in the kernel.
 .It Cm igmpv2 | Cm igmpv3
-Force interface to use IGMPv2 or IGMPv3.  Default:
+Force the interface into an IGMP compatibility mode, RFC 3376 sec. 7.3.1.
+Default:
 .Cm igmpv3
 since v2.3.0.
+.Pp
+The mode decides both what this router sends and what it accepts there: in
+.Cm igmpv2
+mode the periodic query is truncated at the group address, and a v3 query
+from another router on the link is refused and logged rather than acted on.
+A mode is a statement about the whole link, so every router on it wants the
+same one.
+.Pp
+The compatibility mode of an individual
+.Em group
+is not this setting and is not configured: an older membership report puts
+that group back a version by itself and a timer of its own brings it forward
+again, which
+.Nm pimctl
+.Cm show Cm igmp Cm groups
+reports per group.
 .It Cm dr-priority Ar <1-4294967294>
 When there are multiple PIM routers on the same LAN the DR is usually
 elected based on the highest numerical IP address.  This setting can be
