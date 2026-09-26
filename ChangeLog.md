@@ -452,6 +452,27 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A separated pimd no longer dies, silently and with an empty log, when its
+  unprivileged half has more to say than the privileged one can write down.
+  The two halves talk over a unix `SOCK_SEQPACKET` socketpair, which on
+  FreeBSD carries no `PR_ATOMIC` and runs through `sosend_generic()` like a
+  stream: a blocking `sendmsg()` that has copied part of a message and is
+  waiting for room returns *what it copied* when a signal arrives, not
+  `EINTR`, and pimd takes a signal every `TIMER_INTERVAL` with no
+  `SA_RESTART` anywhere.  `msg_send()` read that short count as "the peer is
+  gone" and left the fragment in the socket, so the far half then read its
+  next message across it: either a message that came up short, which the
+  parent also read as the child being gone, or a shifted one, logged as
+  "Privsep helper asked for operation 0, which does not exist".  Either way
+  the parent unlinked the pimctl socket and exited without a word, and the
+  child went with it -- the log it tried to write being the thing that broke.
+  Both sides resume a short transfer from where it stopped now, and
+  `SIGPIPE` is ignored so that a half whose peer really is gone says so
+  instead of being killed by the default action, which leaves nothing in the
+  log and nothing in `dmesg` either.  Seen twice on the FreeBSD CI runner as
+  the `anycast` scenario losing its RP mid-burst, and reproduced on demand by
+  stopping the privileged half, flooding the unprivileged one with work that
+  makes it log, and signalling it while it blocks
 - `pimctl debug SYSTEM` says which subsystems are on rather than always
   answering `all`, and so does the `debug level 0x... (...)` line a daemon
   started with `-d` prints.  `debug_list()` took the first row of

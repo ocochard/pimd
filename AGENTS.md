@@ -286,7 +286,11 @@ whose kernel hands pimd only the headers of a data Register), which also asserts
 has to register it to R3 itself, and must not let a member's Register-Stop arm the suppression timer of
 an entry it is not registering (step 9),
 `privsep` the only one about the daemon's own two halves rather than about PIM: that the
-process holding root is not the one parsing the wire, that `pimctl show status` and the kernel
+process holding root is not the one parsing the wire, that neither half takes the other down when
+the socketpair between them fills (step 2b: the privileged half stopped, the unprivileged one
+flooded with Registers it refuses and logs, and signalled while it blocks -- which killed the
+daemon outright until `msg_send()` learned to resume a short transfer, and which asserts that more
+than the socketpair holds crossed it, or the step proved nothing), that `pimctl show status` and the kernel
 agree on which user, which sandbox (`seccomp` on Linux, `none` on the BSDs -- Capsicum refuses
 every `sendto()` carrying a destination, so pimd cannot use it) and which `chroot()` -- compared
 against what the kernel resolves the child's `/` to, `proc_root()` in the two OS files -- that a

@@ -56,11 +56,13 @@
 #include <sys/wait.h>
 
 /*
- * The wire.  Both messages are fixed size and are read and written whole,
- * so neither side ever parses a length the other side chose: a short read
- * is a protocol error and the peer is gone.  That costs a couple of
+ * The wire.  Both messages are fixed size and neither side ever parses a
+ * length the other side chose: every transfer is the size of the struct,
+ * so a message that arrives at all arrives whole.  That costs a couple of
  * kilobytes per call on a socketpair and buys the absence of the entire
- * class of bug this daemon is being separated to contain.
+ * class of bug this daemon is being separated to contain.  The size is the
+ * agreement; a transfer that stops short of it is resumed rather than read
+ * as the peer going away, see msg_send() and msg_recv().
  */
 struct priv_req {
     uint32_t	op;
@@ -142,7 +144,27 @@ static int parent_loop(int sd) __attribute__((noreturn));
 
 /*
  * Send and receive, with an optional descriptor riding along.  EINTR is
- * expected: the child runs on a SIGALRM tick.
+ * expected: the child runs on a SIGALRM tick, and sigaction() is called
+ * with no SA_RESTART on purpose (src/main.c), so every signal this daemon
+ * takes lands in the middle of whatever syscall was running.
+ *
+ * Both loop until the whole struct has crossed, and that is not belt and
+ * braces.  A unix SOCK_SEQPACKET socket on FreeBSD carries neither
+ * PR_ATOMIC nor a record boundary (sys/kern/uipc_usrreq.c): it runs
+ * through sosend_generic() like a stream, so a blocking sendmsg() that has
+ * already copied part of a record and is waiting for room returns *what it
+ * copied* when a signal arrives, not EINTR.  Measured, on a socketpair
+ * with the buffer filled and a 1ms timer: "SHORT 436 of 700".  Treating
+ * that as the peer going away is what it was, and it cost a daemon on the
+ * FreeBSD CI runner: the fragment stayed in the buffer, the far side read
+ * the next message across it, and both halves gave up without a word --
+ * the child because the log it tried to send is the thing that broke, the
+ * parent because a message it cannot read means the child is gone.
+ *
+ * So a short transfer is resumed from where it stopped.  The descriptor
+ * rides on the first fragment; a signal cannot split a control message
+ * away from the byte it accompanies, since SCM_RIGHTS is passed with the
+ * first byte of the record either way.
  */
 static int msg_send(int sd, void *buf, size_t len, int fd)
 {
@@ -152,76 +174,60 @@ static int msg_send(int sd, void *buf, size_t len, int fd)
 	struct cmsghdr align;
 	char buf[CMSG_SPACE(sizeof(int))];
     } cmsg;
+    size_t off = 0;
     ssize_t n;
 
-    iov.iov_base = buf;
-    iov.iov_len  = len;
+    while (off < len) {
+	iov.iov_base = (char *)buf + off;
+	iov.iov_len  = len - off;
 
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_iov    = &iov;
-    msg.msg_iovlen = 1;
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_iov    = &iov;
+	msg.msg_iovlen = 1;
 
-    if (fd >= 0) {
-	struct cmsghdr *cm;
+	if (fd >= 0 && off == 0) {
+	    struct cmsghdr *cm;
 
-	memset(&cmsg, 0, sizeof(cmsg));
-	msg.msg_control    = cmsg.buf;
-	msg.msg_controllen = sizeof(cmsg.buf);
+	    memset(&cmsg, 0, sizeof(cmsg));
+	    msg.msg_control    = cmsg.buf;
+	    msg.msg_controllen = sizeof(cmsg.buf);
 
-	cm = CMSG_FIRSTHDR(&msg);
-	cm->cmsg_len   = CMSG_LEN(sizeof(int));
-	cm->cmsg_level = SOL_SOCKET;
-	cm->cmsg_type  = SCM_RIGHTS;
-	memcpy(CMSG_DATA(cm), &fd, sizeof(fd));
+	    cm = CMSG_FIRSTHDR(&msg);
+	    cm->cmsg_len   = CMSG_LEN(sizeof(int));
+	    cm->cmsg_level = SOL_SOCKET;
+	    cm->cmsg_type  = SCM_RIGHTS;
+	    memcpy(CMSG_DATA(cm), &fd, sizeof(fd));
+	}
+
+	n = sendmsg(sd, &msg, 0);
+	if (n < 0) {
+	    if (errno == EINTR)
+		continue;	/* Nothing copied, the whole of it is left */
+	    return -1;
+	}
+	if (n == 0)
+	    return -1;		/* Cannot happen on a socket, and not a loop */
+
+	off += (size_t)n;
     }
 
-    do {
-	n = sendmsg(sd, &msg, 0);
-    } while (n < 0 && errno == EINTR);
-
-    return n == (ssize_t)len ? 0 : -1;
+    return 0;
 }
 
-static int msg_recv(int sd, void *buf, size_t len, int *fd)
+/*
+ * Every descriptor in here is already open in this process: the kernel
+ * installed them before recvmsg() returned, so one that is not wanted has
+ * to be closed rather than skipped.  Counting them out of cmsg_len rather
+ * than demanding one exactly is the difference: this side is the
+ * privileged one when the parent reads a request, and a child that
+ * attached two descriptors to every message it sent would otherwise fill
+ * the parent's descriptor table a pair at a time.
+ */
+static int msg_take_fd(struct msghdr *msg, int *fd)
 {
-    struct msghdr msg;
-    struct iovec iov;
-    union {
-	struct cmsghdr align;
-	char buf[CMSG_SPACE(sizeof(int))];
-    } cmsg;
     struct cmsghdr *cm;
-    ssize_t n;
 
-    if (fd)
-	*fd = -1;
-
-    iov.iov_base = buf;
-    iov.iov_len  = len;
-
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_iov        = &iov;
-    msg.msg_iovlen     = 1;
-    msg.msg_control    = cmsg.buf;
-    msg.msg_controllen = sizeof(cmsg.buf);
-
-    do {
-	n = recvmsg(sd, &msg, 0);
-    } while (n < 0 && errno == EINTR);
-
-    if (n != (ssize_t)len)
-	return -1;
-
-    /*
-     * Every descriptor in here is already open in this process: the kernel
-     * installed them before recvmsg() returned, so one that is not wanted
-     * has to be closed rather than skipped.  Counting them out of
-     * cmsg_len rather than demanding one exactly is the difference: this
-     * side is the privileged one when the parent reads a request, and a
-     * child that attached two descriptors to every message it sent would
-     * otherwise fill the parent's descriptor table a pair at a time.
-     */
-    for (cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+    for (cm = CMSG_FIRSTHDR(msg); cm; cm = CMSG_NXTHDR(msg, cm)) {
 	size_t i, nfds;
 
 	if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS)
@@ -244,6 +250,57 @@ static int msg_recv(int sd, void *buf, size_t len, int *fd)
 
     return 0;
 }
+
+static int msg_recv(int sd, void *buf, size_t len, int *fd)
+{
+    struct msghdr msg;
+    struct iovec iov;
+    union {
+	struct cmsghdr align;
+	char buf[CMSG_SPACE(sizeof(int))];
+    } cmsg;
+    size_t off = 0;
+    ssize_t n;
+
+    if (fd)
+	*fd = -1;
+
+    while (off < len) {
+	iov.iov_base = (char *)buf + off;
+	iov.iov_len  = len - off;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_iov        = &iov;
+	msg.msg_iovlen     = 1;
+	msg.msg_control    = cmsg.buf;
+	msg.msg_controllen = sizeof(cmsg.buf);
+
+	n = recvmsg(sd, &msg, 0);
+	if (n < 0) {
+	    if (errno == EINTR)
+		continue;
+	    return -1;
+	}
+	if (n == 0)
+	    return -1;		/* The peer really is gone */
+
+	off += (size_t)n;
+
+	/* The descriptors of this fragment, before the next read
+	 * overwrites the control buffer they were counted out of. */
+	if (msg_take_fd(&msg, fd))
+	    return -1;
+
+	/* Waiting here for the rest of a message gives the peer nothing it
+	 * did not already have: each half talks to one other process and to
+	 * no one else, so a peer that stops mid-message can equally stop
+	 * before sending one, and a parent with no child to serve has
+	 * nothing left to do anyway. */
+    }
+
+    return 0;
+}
+
 
 /*
  * One request, one reply.  Anything that goes wrong on the socket means
@@ -1430,6 +1487,16 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
 	logit(LOG_ERR, errno, "Failed allocating memory for the privsep helper");
 	return -1;
     }
+
+    /* A write to a socketpair whose far half has gone is EPIPE here and a
+     * signal everywhere else, and the default action of that signal is to
+     * end the process without a word: the half that dies cannot say what
+     * killed it, and the kernel does not log a SIGPIPE either, having no
+     * core to take.  That is a daemon that vanishes with an empty log,
+     * which is what the FreeBSD runner showed before msg_send() learned to
+     * resume a short transfer.  Ignored so the error comes back as a
+     * return value that priv_call() and parent_loop() can report. */
+    signal(SIGPIPE, SIG_IGN);
 
     if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) < 0 &&
 	socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) {

@@ -1389,6 +1389,12 @@ CRAFT_ADDR=${CRAFT_ADDR:-10.0.1.99}
 CRAFT_SECADDR=${CRAFT_SECADDR:-10.0.1.77}
 CRAFT_SRC=${CRAFT_SRC:-10.0.1.10}
 R1_LAN_ADDR=${R1_LAN_ADDR:-10.0.1.1}
+
+# privsep step 2b: a group R1 is not the RP for and a source nothing else
+# names, so the Registers of the flood are refused and logged and leave no
+# state for the steps after it to work around.
+PRIVSEP_FLOOD_GROUP=${PRIVSEP_FLOOD_GROUP:-225.1.2.9}
+PRIVSEP_FLOOD_SRC=${PRIVSEP_FLOOD_SRC:-10.0.1.55}
 CRAFT_BADLEN=${CRAFT_BADLEN:-200}
 CRAFT_PRIO=${CRAFT_PRIO:-200}
 
@@ -8608,6 +8614,86 @@ check_privsep() {
 	else
 		fail "r1: the PID file names the unprivileged child, a SIGHUP would not reach the sockets"
 	fi
+
+	# What a busy daemon does to its own helper, which is the shape of the
+	# bug this step exists for: the two halves talk over a socketpair that
+	# is 64K deep, every log line the child writes crosses it, and a parent
+	# slow to write them down fills it.  The child then blocks inside
+	# sendmsg(), and on FreeBSD a unix SOCK_SEQPACKET socket has no
+	# PR_ATOMIC: a blocking send that has copied part of a message and is
+	# waiting for room answers a signal with *what it copied*, not EINTR --
+	# and pimd takes a signal every TIMER_INTERVAL, sigaction() called with
+	# no SA_RESTART on purpose.  A short send used to end the daemon: the
+	# fragment stayed in the socket, the parent read its next message
+	# across it, unlinked the pimctl socket and exited without a word, and
+	# the child went with it.  Twice on the FreeBSD CI runner, as anycast
+	# losing its RP mid-burst with an empty log.
+	#
+	# SIGSTOP is the parent that cannot keep up, sped up: a real one is a
+	# small VM under a flood.  SIGUSR1 is pimd's own timer tick, sped up
+	# the same way -- it is handled, so what matters is that it arrives
+	# while the child is blocked.
+	print "2b. A parent that cannot keep up does not take the daemon with it"
+	pimctl r1 debug all >/dev/null 2>&1
+	ps_log_before=$(${SUDO} wc -c "$WORKDIR/r1.log" 2>/dev/null | awk '{print $1}')
+	${SUDO} kill -STOP "$ps_parent" 2>/dev/null || fail "r1: could not stop $ps_parent"
+	# Registers for a group r1 is not the RP of: refused, logged, and no
+	# state left behind.  Hellos would do as much to the socketpair and
+	# would also leave r1 believing the sender is a PIM neighbour, which
+	# the steps after this one would then be asserting around.
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" register -d "$R1_LAN_ADDR" \
+		-g "$PRIVSEP_FLOOD_GROUP" -s "$PRIVSEP_FLOOD_SRC" -c 4000 >/dev/null 2>&1 || true
+	ps_i=0
+	ps_signalled=0
+	while [ "$ps_i" -lt 20 ]; do
+		if ${SUDO} kill -USR1 "$ps_child" 2>/dev/null; then
+			ps_signalled=$((ps_signalled + 1))
+		fi
+		sleep 0.2
+		ps_i=$((ps_i + 1))
+	done
+	${SUDO} kill -CONT "$ps_parent" 2>/dev/null || true
+	sleep 2
+	pimctl r1 debug none >/dev/null 2>&1
+
+	ps_log_after=$(${SUDO} wc -c "$WORKDIR/r1.log" 2>/dev/null | awk '{print $1}')
+	ps_log_grew=$((${ps_log_after:-0} - ${ps_log_before:-0}))
+
+	if ${SUDO} kill -0 "$ps_parent" 2>/dev/null && ${SUDO} kill -0 "$ps_child" 2>/dev/null; then
+		ok "r1: both halves ($ps_parent, $ps_child) are still there, $ps_signalled signals into the flood"
+	else
+		# What the bug looked like: the parent unlinks the socket and
+		# goes, the child follows, and the log stops wherever the
+		# flood had got to.
+		fail "r1: the daemon is gone after a stalled parent and a flood, $ps_log_grew bytes of it written, see $WORKDIR/r1.log"
+		return 1
+	fi
+	if wait_for 30 pimd_is_up r1; then
+		ok "r1: and it still answers on its pimctl socket"
+	else
+		fail "r1: pimd stopped answering after a stalled parent and a flood"
+		return 1
+	fi
+
+	# The control for the step itself, and it is only worth asking of a
+	# daemon that lived: a flood the socketpair swallowed whole never
+	# blocked the child, and a step that never blocks the child cannot
+	# tell a fixed daemon from a broken one.  The log is what the parent
+	# wrote down, so it counts what crossed -- 64K is the socketpair, and
+	# this writes ten times that.
+	if [ "$ps_log_grew" -gt 65536 ]; then
+		ok "r1: the child wrote $ps_log_grew bytes through a 64K socketpair, so it did block"
+	else
+		fail "r1: only $ps_log_grew bytes crossed, less than the socketpair holds: the flood proved nothing"
+	fi
+	# The parent says this when it reads a message that begins inside the
+	# one before it, which is the fragment in the socket by another name.
+	if logged r1 "does not exist" || logged r1 "Lost the privileged helper"; then
+		fail "r1: the two halves lost step, see $WORKDIR/r1.log"
+	else
+		ok "r1: neither half complained of a message it could not place"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
 
 	print "3. pimd says the same about itself, and names this system's sandbox"
 	got=$(pimctl r1 show status | sed -n 's/^Privilege separation *: *//p')
