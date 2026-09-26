@@ -214,7 +214,7 @@ static void triggered_hello_send(struct uvif *v)
 	if (!(v->uv_flags & VIFF_DR))
 	    continue;
 
-	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf)))
+	if ((bsr_length = create_pim_bootstrap_message(pim_send_buf, SEND_BUF_SIZE)))
 	    send_pim_unicast(pim_send_buf, 0, MAXTTL, v->uv_mtu, v->uv_lcl_addr, nbr->address,
 			     PIM_BOOTSTRAP, bsr_length);
     }
@@ -5970,7 +5970,7 @@ void send_pim_bootstrap(void)
     size_t len;
     vifi_t vifi;
 
-    if ((len = create_pim_bootstrap_message(pim_send_buf))) {
+    if ((len = create_pim_bootstrap_message(pim_send_buf, SEND_BUF_SIZE))) {
 	for (vifi = 0; vifi < numvifs; vifi++) {
 	    if (uvifs[vifi].uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER))
 		continue;

@@ -948,6 +948,7 @@ static int show_status(FILE *fp)
 	fprintf(fp, "Local (S,G) entries  : %u of %u\n", local_sg_entries, local_sg_limit);
 	fprintf(fp, "Register (S,G) state : %u of %u\n", register_sg_entries, register_sg_limit);
 	fprintf(fp, "Auto-RP mappings     : %u of %u\n", autorp_entries, autorp_limit);
+	fprintf(fp, "RP set group ranges  : %u of %u\n", rp_set_entries, rp_set_limit);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_anycast_rp(fp);

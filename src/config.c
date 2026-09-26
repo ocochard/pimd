@@ -77,6 +77,7 @@
 #define CONF_ASSERT_PREFERENCE                  24
 #define CONF_AUTORP                             25
 #define CONF_AUTORP_LIMIT                       26
+#define CONF_RP_SET_LIMIT                       27
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -799,6 +800,8 @@ static int parse_option(char *word)
 	return CONF_AUTORP;
     if (EQUAL(word, "autorp-limit"))
 	return CONF_AUTORP_LIMIT;
+    if (EQUAL(word, "rp-set-limit"))
+	return CONF_RP_SET_LIMIT;
 
     return CONF_UNKNOWN;
 }
@@ -2881,6 +2884,7 @@ void config_vifs_from_file(void)
     assert_pref_from_rib = FALSE;
     autorp_enabled = TRUE;
     autorp_limit = PIM_AUTORP_LIMIT;
+    rp_set_limit = PIM_RP_SET_LIMIT;
     autorp_config_reset();
 
     /* Reset flags on file (re)load */
@@ -2994,6 +2998,10 @@ void config_vifs_from_file(void)
 
 	    case CONF_AUTORP_LIMIT:
 		parse_state_limit(s, "autorp-limit", &autorp_limit, PIM_AUTORP_LIMIT);
+		break;
+
+	    case CONF_RP_SET_LIMIT:
+		parse_state_limit(s, "rp-set-limit", &rp_set_limit, PIM_RP_SET_LIMIT);
 		break;
 
 	    default:

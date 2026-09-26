@@ -7,6 +7,12 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `rp-set-limit` in `pimd.conf` caps the group ranges the RP set may hold, the
+  way `autorp-limit` caps Auto-RP mappings and for the same reason: the state
+  is a stranger's to create.  Ranges beyond it are refused and the fact is
+  logged once, and `pimctl show status` reports "RP set group ranges" as a
+  count against the limit.  Default 1024, which is well inside what one
+  Bootstrap message can carry
 - `pimctl show igmp groups` has a version column, the compatibility mode of
   each group rather than of the interface: an older membership report puts
   one group back a version without touching the others, and a timer of its
@@ -456,6 +462,19 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A bootstrap router no longer writes its RP set past the end of the send
+  buffer.  `create_pim_bootstrap_message()` (`src/rp.c`) walked every group
+  range of the set and every RP under it into a 128K buffer with nothing
+  bounding the walk -- "TODO: XXX: No fragmentation support (yet)" -- and the
+  set is not this router's to size: a Candidate-RP Advertisement is unicast
+  to the elected BSR, so `receive_pim_cand_rp_adv()` asks for no neighbour
+  relationship and no place on any of its links, and one message names up to
+  255 group ranges.  Forty of them from a host that had sent no Hello, 10200
+  ranges, walked the buffer off its end on the next Bootstrap:
+  AddressSanitizer, "heap-buffer-overflow ... 0 bytes after 131072-byte
+  region", in a lab of three routers.  The message is bounded now, and an RP
+  set that does not fit is cut short and said once rather than written out;
+  `rp-set-limit` below bounds the set itself
 - The IGMPv1 *interface* mode is gone, with the seven branches that served
   it.  `VIFF_IGMPV1` could not be set: the `phyint` parser took `igmpv2` and
   `igmpv3` only and cleared the flag in both cases, so nothing in any

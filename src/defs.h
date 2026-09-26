@@ -289,6 +289,8 @@ extern uint16_t         pim_timer_hello_interval;
 extern uint16_t         pim_timer_hello_holdtime;
 extern uint32_t         rpt_prune_limit;
 extern uint32_t         autorp_limit;
+extern uint32_t         rp_set_limit;
+extern uint32_t         rp_set_entries;
 extern uint32_t         local_sg_limit;
 extern uint32_t         register_sg_limit;
 
@@ -732,7 +734,7 @@ extern rpentry_t *rp_match		(uint32_t group);
 extern rp_grp_entry_t *rp_grp_match	(uint32_t group);
 extern rpentry_t *rp_find		(uint32_t rp_address);
 extern int	remap_grpentry		(grpentry_t *grpentry_ptr);
-extern int	create_pim_bootstrap_message (char *send_buff);
+extern int	create_pim_bootstrap_message (char *send_buff, size_t buflen);
 extern int	check_mrtentry_rp	(mrtentry_t *mrtentry_ptr, uint32_t rp_addr);
 extern void	age_misc		(void);
 

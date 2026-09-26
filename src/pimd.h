@@ -77,6 +77,16 @@
  * can name 255 RPs with 255 group prefixes each.  See autorp_map_get().
  */
 #define PIM_AUTORP_LIMIT               1024
+
+/*
+ * rp-set-limit in pimd.conf.  How many group ranges the RP set may hold,
+ * and the state behind it is a stranger's to create: a Candidate-RP
+ * Advertisement is unicast to the BSR, so it needs no neighbour
+ * relationship and no place on any link of this router -- one message can
+ * name 255 ranges, and receive_pim_cand_rp_adv() took every one of them.
+ * See add_grp_mask().
+ */
+#define PIM_RP_SET_LIMIT               1024
 /* How many (S,G) entries data from directly connected sources may make this
  * router hold as their DR, local-sg-limit in pimd.conf.  Another cap on state
  * others create, not a protocol constant: see local_sg_entry().

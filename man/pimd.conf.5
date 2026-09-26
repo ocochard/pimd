@@ -207,6 +207,17 @@ and its neighbours.  Mappings beyond it are refused and the fact is logged
 once;
 .Ic pimctl show status
 has the count.  Default: 1024.
+.It Cm rp-set-limit Ar <0-1000000>
+How many group ranges the RP set may hold.  A Candidate-RP Advertisement is
+unicast to the bootstrap router, so it needs no neighbour relationship and no
+place on any of its links: anyone who can route a packet to the elected BSR
+can ask it to remember 255 group ranges per message, and the BSR then puts
+what it remembers into every Bootstrap it sends.  Ranges beyond the limit are
+refused and the fact is logged once;
+.Ic pimctl show status
+has the count.  A Bootstrap is not fragmented (RFC 5059 sec. 3.2 is not
+implemented), so an RP set larger than one message holds is cut short when the
+message is built, whatever this is set to.  Default: 1024.
 .It Cm assert-preference Oo Cm configured | Cm rib Oc
 Where the metric preference of a PIM Assert comes from.  RFC 7761
 sec. 4.6.3 says it is the administrative distance of the routing

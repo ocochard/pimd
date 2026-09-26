@@ -55,6 +55,11 @@ uint16_t                 my_bsr_timeout;
 uint16_t                 recommended_rp_holdtime;
 uint32_t                 my_bsr_address;
 uint32_t                 my_bsr_hash_mask;
+uint32_t                 rp_set_limit = PIM_RP_SET_LIMIT;
+uint32_t                 rp_set_entries;	/* Group ranges held now */
+static int               rp_set_limit_said = FALSE;
+static int               bootstrap_truncated_said = FALSE;
+
 uint8_t                  cand_bsr_flag = FALSE; /* Set to TRUE if I am
 						 * a candidate BSR */
 uint32_t                 my_cand_rp_address;
@@ -90,6 +95,11 @@ void init_rp_and_bsr(void)
     /* TODO: if the grplist is not NULL, remap all groups ASAP! */
     delete_rp_list(&cand_rp_list, &grp_mask_list);
     delete_rp_list(&segmented_cand_rp_list, &segmented_grp_mask_list);
+
+    /* A reload gives the count back, and lets the log say it again */
+    rp_set_entries = 0;
+    rp_set_limit_said = FALSE;
+    bootstrap_truncated_said = FALSE;
 
     if (cand_bsr_flag == FALSE) {
 	/*
@@ -267,11 +277,31 @@ static grp_mask_t *add_grp_mask(grp_mask_t **used_grp_mask_list, uint32_t group_
 	}
     }
 
+    /* Every group range of the RP set is created here, whoever asked for
+     * it: a Bootstrap, a Candidate-RP Advertisement, an Auto-RP mapping or
+     * a line of pimd.conf.  The first two are a stranger's to send -- a
+     * Cand-RP-Adv is unicast to the BSR and needs no neighbour
+     * relationship -- and what they made this router hold was bounded by
+     * nothing at all, which a BSR then wrote into every Bootstrap it built
+     * until the send buffer ran out (see create_pim_bootstrap_message()).
+     */
+    if (rp_set_entries >= rp_set_limit) {
+	if (!rp_set_limit_said) {
+	    logit(LOG_WARNING, 0, "RP set limit of %u group ranges reached, refusing %s"
+		  " (rp-set-limit in %s raises it)", rp_set_limit,
+		  netname(group_addr, group_mask), config_file);
+	    rp_set_limit_said = TRUE;
+	}
+
+	return NULL;
+    }
+
     ptr = calloc(1, sizeof(grp_mask_t));
     if (!ptr) {
 	logit(LOG_ERR, 0, "Ran out of memory in add_grp_mask()");
 	return NULL;
     }
+    rp_set_entries++;
 
     ptr->grp_rp_next = (rp_grp_entry_t *)NULL;
     ptr->next = next;
@@ -701,6 +731,9 @@ static void delete_grp_mask_entry(cand_rp_t **used_cand_rp_list, grp_mask_t **us
 	free(entry_ptr);
     }
 
+    if (rp_set_entries > 0)
+	rp_set_entries--;
+
     free(grp_mask_delete);
 }
 
@@ -1033,9 +1066,9 @@ rpentry_t *rp_find(uint32_t rp_address)
  * Bootstrap router to multicast the RP-set or by the DR to unicast it to
  * a new neighbor. It DOES NOT change any timers.
  */
-int create_pim_bootstrap_message(char *send_buff)
+int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 {
-    uint8_t *data_ptr;
+    uint8_t *data_ptr, *end;
     grp_mask_t *mask_ptr;
     rp_grp_entry_t *entry_ptr;
     int datalen;
@@ -1046,6 +1079,17 @@ int create_pim_bootstrap_message(char *send_buff)
 	return 0;
 
     data_ptr = (uint8_t *)(send_buff + sizeof(struct ip) + sizeof(pim_header_t));
+    end = (uint8_t *)send_buff + buflen;
+
+    /* The fragment tag, hash mask length, priority and BSR address, before
+     * any of the set: a buffer too small even for those is a caller's
+     * mistake rather than a state this can be in, and saying so beats
+     * writing them. */
+    if ((size_t)(end - data_ptr) < 4 + PIM_ENCODE_UNI_ADDR_LEN) {
+	logit(LOG_WARNING, 0, "Bootstrap send buffer of %zu bytes is too small for its own header",
+	      buflen);
+	return 0;
+    }
     if (curr_bsr_address == my_bsr_address)
 	curr_bsr_fragment_tag++;
 
@@ -1055,11 +1099,37 @@ int create_pim_bootstrap_message(char *send_buff)
     PUT_BYTE(curr_bsr_priority, data_ptr);
     PUT_EUADDR(curr_bsr_address, data_ptr);
 
-    /* TODO: XXX: No fragmentation support (yet) */
+    /* TODO: XXX: No fragmentation support (yet), so an RP set larger than
+     * one message holds is cut short rather than carried in fragments with
+     * a shared tag (RFC 5059 sec. 3.2).  What must not happen is writing
+     * past the buffer, which is what this did: the set is a stranger's to
+     * grow -- see add_grp_mask() -- and 40 Candidate-RP Advertisements of
+     * 255 ranges each walked a 128K send buffer off its end, measured with
+     * AddressSanitizer.  rp-set-limit bounds the set itself; this bounds
+     * the message whatever the set is.
+     */
     for (mask_ptr = grp_mask_list; mask_ptr; mask_ptr = mask_ptr->next) {
+	size_t need;
+
 	if (IN_PIM_SSM_RANGE(mask_ptr->group_addr)) {
 	    continue;  /* Do not advertise internal virtual RP for SSM groups */
 	}
+
+	/* The range's own record, and one per RP under it.  Compared as a
+	 * distance rather than by forming data_ptr + need, which would be a
+	 * pointer past the end of the object before anything is written. */
+	need = PIM_ENCODE_GRP_ADDR_LEN + 4
+	    + (size_t)mask_ptr->group_rp_number * (PIM_ENCODE_UNI_ADDR_LEN + 4);
+	if ((size_t)(end - data_ptr) < need) {
+	    if (!bootstrap_truncated_said) {
+		logit(LOG_WARNING, 0, "RP set does not fit in one Bootstrap message,"
+		      " %zu bytes in and %s onwards left out", (size_t)(data_ptr - (uint8_t *)send_buff),
+		      netname(mask_ptr->group_addr, mask_ptr->group_mask));
+		bootstrap_truncated_said = TRUE;
+	    }
+	    break;
+	}
+
 	MASK_TO_MASKLEN(mask_ptr->group_mask, masklen);
 	PUT_EGADDR(mask_ptr->group_addr, masklen, 0, data_ptr);
 	PUT_BYTE(mask_ptr->group_rp_number, data_ptr);

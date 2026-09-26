@@ -168,7 +168,10 @@
 #define EGADDR_B_BIT			0x80
 #define EGADDR_Z_BIT			0x01
 
-#define BUFSZ				2048
+/* One message.  Big enough for the widest thing this builds -- a
+ * Cand-RP-Adv of 255 group ranges, which is what the count byte allows --
+ * with room to spare rather than exactly. */
+#define BUFSZ				4096
 
 /* The first byte a -x flip may land on: version and type are the byte
  * before it and the checksum the two after, and each has its own option */
@@ -218,6 +221,7 @@ struct opts {
 	unsigned pref;
 	unsigned metric;
 	unsigned priority;
+	unsigned nprefixes;		/* -G, group ranges in a Cand-RP-Adv */
 };
 
 static uint8_t buf[BUFSZ];
@@ -484,16 +488,38 @@ static uint8_t *build_bootstrap(uint8_t *p, const struct opts *o)
 	return p;
 }
 
+/*
+ * One Candidate-RP-Advertisement.  -G asks for more than one group range in
+ * it, each the next block of the mask length after -g: the count is a byte
+ * on the wire, so 255 is the most one message can carry, and what it is for
+ * is the size of the RP set a BSR ends up holding -- which is what it puts
+ * into every Bootstrap it sends afterwards.
+ */
 static uint8_t *build_cand_rp_adv(uint8_t *p, const struct opts *o)
 {
 	unsigned holdtime = o->holdtime < 0 ? 150 : (unsigned)o->holdtime;
+	unsigned count = o->nprefixes ? o->nprefixes : 1;
+	unsigned step = o->gmasklen >= 32 ? 1 : 1u << (32 - o->gmasklen);
+	struct in_addr grp = o->group;
+	unsigned i;
 
-	p = put_byte(p, 1);		/* prefix count */
+	if (count > 255)
+		errx(1, "a Cand-RP-Adv carries at most 255 group ranges");
+	if ((size_t)(p - buf) + 10 + count * 8 > sizeof(buf))
+		errx(1, "%u group ranges do not fit in a %zu byte message",
+		     count, sizeof(buf));
+
+	p = put_byte(p, count);		/* prefix count */
 	p = put_byte(p, o->priority);
 	p = put_short(p, holdtime);
 	p = put_euaddr(p, o, o->rp);
 
-	return put_egaddr(p, o, o->group);
+	for (i = 0; i < count; i++) {
+		p = put_egaddr(p, o, grp);
+		grp.s_addr = htonl(ntohl(grp.s_addr) + step);
+	}
+
+	return p;
 }
 
 /*
@@ -626,6 +652,9 @@ static int usage(int rc)
 		"  -0         Leave the Register's inner header checksum zero, which\n"
 		"             sec. 4.9.3 says the RP MUST NOT check\n"
 		"  -p PRIO    Priority: DR, BSR or candidate RP, default 1\n"
+		"  -G COUNT   Group ranges in a Cand-RP-Adv, consecutive blocks\n"
+		"             of -m starting at -g; at most 255, the wire's own\n"
+		"             limit.  Default 1\n"
 		"  -P PREF    Assert metric preference, default 101\n"
 		"  -C METRIC  Assert metric, default 1024\n"
 		"  -R         Set the Assert RPT bit, or make a Join/Prune's (S,G)\n"
@@ -750,10 +779,11 @@ int main(int argc, char *argv[])
 	optind++;
 
 	while ((c = getopt(argc, argv,
-			  "0A:Bb:C:c:d:E:e:F:f:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
+			  "0A:Bb:C:c:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'b': rawfile = optarg;				break;
+		case 'G': o.nprefixes = num(optarg, "group range count");	break;
 		case 'S': seed = num(optarg, "mutation seed");		break;
 		case 'x': mutate = num(optarg, "bytes to flip");	break;
 		case 'E': o.rec_encoding = num(optarg, "encoding type"); rec_set = 1; break;

@@ -935,10 +935,10 @@ SCENARIO=${SCENARIO:-rpt}
 # running keepalive alone with three slots idle, because the longest
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
-	   shared-lan shared-lan-spt assert-recover igmp-compat ssm ssm-range alias
+	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
-		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat
+		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
 		     renumber ssm-range solo privsep"
 
@@ -1198,6 +1198,36 @@ IC_GROUP_V3=${IC_GROUP_V3:-225.1.9.3}
 IC_QUERY_INTERVAL=${IC_QUERY_INTERVAL:-5}
 IC_QUERIER_TIMEOUT=${IC_QUERIER_TIMEOUT:-20}
 IC_VER_TIMEOUT=$((3 * IC_QUERY_INTERVAL + 10))
+
+# bsr-elect: two Candidate-BSRs on the chain, R1 and R2.  The priorities are
+# what the first half of the scenario turns on -- higher wins, RFC 5059
+# sec. 3.1 -- and the addresses what the second half falls back to, R2's
+# being the higher of the two.  The interval is the Bootstrap period, and
+# my_bsr_timeout is 2 * period + 10 (src/config.c), so a BSR that dies is
+# replaced $BE_BSR_TIMEOUT seconds later.
+BE_R1_ADDR=${BE_R1_ADDR:-10.0.12.1}
+BE_R2_ADDR=${BE_R2_ADDR:-10.0.12.2}
+BE_HIGH_PRIO=${BE_HIGH_PRIO:-20}
+BE_LOW_PRIO=${BE_LOW_PRIO:-10}
+BE_INTERVAL=${BE_INTERVAL:-10}
+BE_BSR_TIMEOUT=$((2 * BE_INTERVAL + 10))
+
+# What a router that is *not* a Candidate-BSR waits before deciding the BSR
+# is gone.  A Bootstrap does not carry the period it was sent at, so a
+# receiver has only the default to go on -- 2 * 60 + 10, RFC 5059 sec. 5 --
+# whatever interval the domain's BSR actually uses.  R3 is that router.
+BE_NONCAND_TIMEOUT=${BE_NONCAND_TIMEOUT:-130}
+
+# What a stranger can make the elected BSR hold: ED1 is on R1's LAN and has
+# never sent a Hello, and a Candidate-RP Advertisement is unicast to the BSR,
+# so neither a neighbour relationship nor a place on the BSR's own links is
+# needed.  Each message carries $BE_CRP_RANGES ranges, the wire's own limit
+# being 255.
+BE_RP_SET_LIMIT=${BE_RP_SET_LIMIT:-600}
+BE_RP_SET_WIDE=${BE_RP_SET_WIDE:-8000}
+BE_CRP_RANGES=${BE_CRP_RANGES:-255}
+BE_CRP_MSGS=${BE_CRP_MSGS:-6}
+BE_CRP_FLOOD=${BE_CRP_FLOOD:-40}
 
 
 # The address the shared LAN's DR starts at.  assert-recover replaces it,
@@ -1768,7 +1798,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2459,6 +2489,42 @@ write_configs() {
 		return
 	fi
 
+	if [ "$SCENARIO" = bsr-elect ]; then
+		# Two Candidate-BSRs, which no other scenario here has: R1
+		# with the higher priority and R2 with the higher address,
+		# so the first election is decided by the priority and the
+		# second -- once step 3 gives R2 the same one -- by the
+		# address it falls back to.
+		#
+		# R1 is also the Candidate-RP, and the one ED1 floods with
+		# Candidate-RP Advertisements in step 5: rp-set-limit is
+		# what bounds the set those create, and it is set low here
+		# so that a handful of messages reach it.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: Candidate-BSR with priority $BE_HIGH_PRIO, and the RP
+		bsr-candidate ${EP}112a priority $BE_HIGH_PRIO interval $BE_INTERVAL
+		rp-candidate ${EP}112a priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		rp-set-limit $BE_RP_SET_LIMIT
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: Candidate-BSR with the lower priority and the higher
+		# address, so it wins nothing until step 2.  It carries the
+		# same rp-set-limit as R1: whichever of the two is the BSR
+		# when step 5 runs is the one a stranger can fill.
+		bsr-candidate ${EPU}112b priority $BE_LOW_PRIO interval $BE_INTERVAL
+		rp-set-limit $BE_RP_SET_LIMIT
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: neither, and the router every election is read from --
+		# what it believes came off the wire rather than out of its
+		# own configuration
+		EOF
+		return
+	fi
+
 	if [ "$SCENARIO" = static-rp ]; then
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: first hop router, no BSR/RP role
@@ -3065,6 +3131,18 @@ restart_pimd() {
 	start_pimd "$r"
 }
 
+# Stop the pimd of one router and leave the rest of the lab running, which
+# is what a scenario wants when the question is what the *others* do about
+# it.  stop_pimd() further down is the other thing, every daemon at once,
+# and is the sanitizer teardown's.
+stop_one_pimd() {
+	r=$1
+
+	[ -f "$WORKDIR/$r.pid" ] || return 0
+	${SUDO} pkill -F "$WORKDIR/$r.pid" 2>/dev/null || true
+	wait_for 15 pimd_is_down "$r" || true
+}
+
 start() {
 	check_req
 
@@ -3341,6 +3419,57 @@ iface_querier_is() { [ "$(iface_querier "$1" "$2")" = "$3" ]; }
 iface_querier() {
 	pimctl "$1" -t show igmp 2>/dev/null | \
 		awk -v ifn="$2" '$1 == ifn && $2 ~ /^(Up|Down|Disabled)$/ { print $3; exit }'
+}
+
+# The BSR one router believes in, out of "show status": the address, and
+# separately the priority, which is the field that says *why* it believes
+# it -- an election decided by the address leaves both candidates' numbers
+# equal and only the address to compare.
+bsr_addr() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk '/Elected BSR/ { f = 1; next } f && /Address/ { print $3; exit }'
+}
+
+bsr_prio() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk '/Elected BSR/ { f = 1; next } f && /Priority/ { print $3; exit }'
+}
+
+bsr_is() { [ "$(bsr_addr "$1")" = "$2" ]; }
+
+all_bsr_is() {
+	for be_r in r1 r2 r3; do
+		[ "$(bsr_addr "$be_r")" = "$1" ] || return 1
+	done
+
+	return 0
+}
+
+# How many group ranges the RP set holds, and what it is allowed to hold
+rp_set_count() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk '/^RP set group ranges/ { print $6; exit }'
+}
+
+rp_set_max() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk '/^RP set group ranges/ { print $8; exit }'
+}
+
+# $2 Candidate-RP Advertisements from ED1 to the BSR at $1, each naming
+# $BE_CRP_RANGES group ranges of its own.  ED1 is a host: it has sent no
+# Hello and is on none of the BSR's links, which is the point -- a
+# Cand-RP-Adv is unicast to the BSR and receive_pim_cand_rp_adv() asks for
+# no neighbour relationship, so this is state anyone who can route a packet
+# to the BSR can create.
+be_flood_crp() {
+	be_i=1
+	while [ "$be_i" -le "$2" ]; do
+		box_run ed1 "$PIMSEND" -i "$SRC_ADDR" candrp -d "$1" \
+			-r "$SRC_ADDR" -g "239.$be_i.0.0" -m 24 \
+			-G "$BE_CRP_RANGES" >/dev/null 2>&1 || true
+		be_i=$((be_i + 1))
+	done
 }
 
 # The compatibility version of one group on one router, out of the column
@@ -3959,6 +4088,7 @@ check() {
 	gif-tunnel-staticrp) check_gif_staticrp; return $? ;;
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
 	igmp-compat) check_igmp_compat; return $? ;;
+	bsr-elect)  check_bsr_elect; return $? ;;
 	assert-recover) check_assert_recover; return $? ;;
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
@@ -8391,6 +8521,193 @@ check_gif_staticrp() {
 # scenario with the right hand links rebuilt as bridges; from 6 on it is the
 # part no point-to-point link can reach, where three routers have to agree
 # on who speaks for a LAN they all sit on.
+# bsr-elect: the one election this file never held.  Every other scenario
+# has a single Candidate-BSR, so the comparison of RFC 5059 sec. 3.1 -- the
+# higher priority, and the higher address where the priorities are equal --
+# has never been made by two pimds; crafted meets Bootstraps that pimsend
+# wrote, which is a parser test rather than an election.
+#
+# It ends on what the elected BSR will hold, because that is the other
+# thing being the BSR means: a Candidate-RP Advertisement is unicast to it
+# and needs no neighbour relationship, so the RP set is state a stranger
+# creates, and the BSR writes all of it into every Bootstrap it sends.
+check_bsr_elect() {
+	print "1. The domain elects the Candidate-BSR with the higher priority"
+	if wait_for 90 all_bsr_is "$BE_R1_ADDR"; then
+		ok "r1, r2 and r3 all call $BE_R1_ADDR the BSR"
+	else
+		fail "the domain settled on '$(bsr_addr r3)' rather than $BE_R1_ADDR"
+		return 1
+	fi
+	if [ "$(bsr_prio r3)" = "$BE_HIGH_PRIO" ]; then
+		ok "and at priority $BE_HIGH_PRIO, which is r1's and not r2's $BE_LOW_PRIO"
+	else
+		fail "r3 reads BSR priority '$(bsr_prio r3)', want $BE_HIGH_PRIO"
+	fi
+	# The loser is a Candidate-BSR that knows it lost, which is the
+	# control for the step above: both are candidates, one is the BSR.
+	if [ "$(bsr_addr r2)" = "$BE_R1_ADDR" ]; then
+		ok "r2 is a Candidate-BSR and defers, its own address being the higher one"
+	else
+		fail "r2 believes $(bsr_addr r2) is the BSR while holding the lower priority"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. The address decides it only when the priorities are equal"
+	cat <<-EOF > "$WORKDIR/r2.conf"
+	# R2: the same priority as R1 now, so the higher address wins
+	bsr-candidate ${EPU}112b priority $BE_HIGH_PRIO interval $BE_INTERVAL
+	rp-set-limit $BE_RP_SET_LIMIT
+	EOF
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	if wait_for 120 all_bsr_is "$BE_R2_ADDR"; then
+		ok "$BE_R2_ADDR took the domain from $BE_R1_ADDR on the address alone"
+	else
+		fail "the domain reads '$(bsr_addr r3)' after r2 matched r1's priority"
+		return 1
+	fi
+	if [ "$(bsr_prio r3)" = "$BE_HIGH_PRIO" ]; then
+		ok "with the priorities equal at $BE_HIGH_PRIO on both sides"
+	else
+		fail "r3 reads BSR priority '$(bsr_prio r3)' after the tiebreak"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. A BSR that goes away is replaced by the other candidate"
+	# R2 is the elected BSR and, on a chain, also the router that relays
+	# its Bootstraps to R3: a Bootstrap travels hop by hop and is
+	# accepted on the RPF interface towards the BSR, so the two things
+	# the loss of R2 causes are read on different routers.  R1 is the one
+	# that can still elect anything.
+	stop_one_pimd r2
+	if wait_for $((BE_BSR_TIMEOUT * 3)) bsr_is r1 "$BE_R1_ADDR"; then
+		ok "r1 took the role back $BE_BSR_TIMEOUT s after r2 went quiet, and is the BSR again"
+	else
+		fail "r1 still reads '$(bsr_addr r1)' after the BSR it deferred to stopped"
+		return 1
+	fi
+	# And the far side of the departed relay has no BSR at all, which is
+	# what a Bootstrap being relayed rather than flooded means: R3 is two
+	# hops from R1 and the hop in between is the one that died.
+	if wait_for $((BE_NONCAND_TIMEOUT + 40)) bsr_is r3 0.0.0.0; then
+		ok "r3, behind the router that died, aged its BSR out after its own ${BE_NONCAND_TIMEOUT}s"
+	else
+		fail "r3 still reads '$(bsr_addr r3)' with nothing left to relay a Bootstrap to it"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. And the domain heals when it comes back"
+	start_pimd r2
+	wait_for "$PIMD_START_WAIT" pimd_is_up r2 || fail "r2 did not come back"
+	if wait_for 120 all_bsr_is "$BE_R2_ADDR"; then
+		ok "r2 is the BSR again on the address tiebreak, and r3 has one once more"
+	else
+		fail "the domain reads '$(bsr_addr r3)' after r2 came back"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. The RP set the BSR holds is a stranger's to fill, and is bounded"
+	# The positive control first: one Cand-RP-Adv from the same host, of
+	# one range, is taken.  Everything after it is about the limit, and a
+	# limit that refused the first message would pass those assertions
+	# without meaning any of it.
+	# R2 is the BSR by now, and only the elected BSR takes a Cand-RP-Adv
+	# at all (receive_pim_cand_rp_adv(), src/pim_proto.c) -- which is the
+	# other half of what makes this state a stranger's to create: it is
+	# addressed to whoever won the election, and ED1 can see who that is
+	# as easily as any router can.
+	be_before=$(rp_set_count r2)
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" candrp -d "$BE_R2_ADDR" \
+		-r "$SRC_ADDR" -g 238.0.0.0 -m 24 >/dev/null 2>&1 || true
+	sleep 2
+	if [ "$(rp_set_count r2)" -gt "${be_before:-0}" ]; then
+		ok "r2 took a Cand-RP-Adv from a host that has sent it no Hello, RP set now $(rp_set_count r2)"
+	else
+		fail "r2's RP set is still $(rp_set_count r2) after a Cand-RP-Adv it should have taken"
+		return 1
+	fi
+
+	be_flood_crp "$BE_R2_ADDR" "$BE_CRP_MSGS"
+	sleep 3
+	if [ "$(rp_set_count r2)" = "$BE_RP_SET_LIMIT" ]; then
+		ok "and stopped at rp-set-limit $BE_RP_SET_LIMIT of $((BE_CRP_MSGS * BE_CRP_RANGES)) ranges offered"
+	else
+		fail "r2 holds $(rp_set_count r2) group ranges against a limit of $BE_RP_SET_LIMIT"
+	fi
+	if logged r2 "RP set limit of $BE_RP_SET_LIMIT group ranges reached"; then
+		ok "and said so once, naming the keyword that raises it"
+	else
+		fail "r2 never said it had reached rp-set-limit"
+	fi
+	if pimd_is_up r2; then
+		ok "r2 is still answering, which is the whole point of the limit"
+	else
+		fail "r2 is gone after $((BE_CRP_MSGS * BE_CRP_RANGES)) group ranges from one host"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "6. A reload gives the count back"
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	wait_for 30 pimd_is_up r2 || fail "r2 did not come back after the reload"
+	be_after=$(rp_set_count r2)
+	if [ -n "$be_after" ] && [ "$be_after" -lt "$BE_RP_SET_LIMIT" ]; then
+		ok "r2 counts $be_after group ranges after the reload, not $BE_RP_SET_LIMIT"
+	else
+		fail "r2 counts '$be_after' group ranges after a reload, the limit being $BE_RP_SET_LIMIT"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "7. And the message is bounded even where the set is not"
+	# The limit is policy and an operator may raise it; the buffer is
+	# not.  With rp-set-limit at $BE_RP_SET_WIDE the set outgrows what one
+	# Bootstrap can carry -- there is no fragmentation (RFC 5059
+	# sec. 3.2), so it is cut short and said once -- and what must not
+	# happen is the write running past the end of the send buffer, which
+	# is what $((BE_CRP_FLOOD * BE_CRP_RANGES)) ranges did before
+	# create_pim_bootstrap_message() bounded it: AddressSanitizer,
+	# "heap-buffer-overflow ... 0 bytes after 131072-byte region".
+	cat <<-EOF > "$WORKDIR/r2.conf"
+	# R2: the same BSR, with the cap raised past what a message holds
+	bsr-candidate ${EPU}112b priority $BE_HIGH_PRIO interval $BE_INTERVAL
+	rp-set-limit $BE_RP_SET_WIDE
+	EOF
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	wait_for 30 pimd_is_up r2 || fail "r2 did not come back"
+	wait_for 90 bsr_is r2 "$BE_R2_ADDR" || fail "r2 is not the BSR after the reload"
+	[ "$FAILED" -eq 0 ] || return 1
+
+	be_flood_crp "$BE_R2_ADDR" "$BE_CRP_FLOOD"
+	sleep "$BE_INTERVAL"
+	if pimd_is_up r2; then
+		ok "r2 survived $((BE_CRP_FLOOD * BE_CRP_RANGES)) group ranges with rp-set-limit at $BE_RP_SET_WIDE"
+	else
+		fail "r2 is gone after $((BE_CRP_FLOOD * BE_CRP_RANGES)) group ranges, see $WORKDIR/r2.log"
+		return 1
+	fi
+	if [ "$(rp_set_count r2)" -gt "$BE_RP_SET_LIMIT" ]; then
+		ok "and holds $(rp_set_count r2) of them, more than one Bootstrap can carry"
+	else
+		fail "r2 holds only $(rp_set_count r2) group ranges, which proves nothing about the message"
+	fi
+	if logged r2 "RP set does not fit in one Bootstrap message"; then
+		ok "and said which range it stopped at rather than writing past the buffer"
+	else
+		fail "r2 never said its RP set had outgrown a Bootstrap"
+	fi
+	# The domain still works, which is what separates a message cut
+	# short from a daemon cut short.
+	if wait_for 60 bsr_is r3 "$BE_R2_ADDR"; then
+		ok "r3 still has $BE_R2_ADDR as its BSR, from the part that fits"
+	else
+		fail "r3 reads '$(bsr_addr r3)' after the BSR's set outgrew a message"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	result
+}
+
 # igmp-compat: the versions of IGMP, on the one topology here with several
 # routers on a link.  Three questions, none of which the other scenarios can
 # ask: what a router does with a query of a version the link is not in

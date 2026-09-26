@@ -208,7 +208,7 @@ hardening. `run all` walks its
 scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
-`anycast-dr`, `privsep`); see the script
+`anycast-dr`, `igmp-compat`, `bsr-elect`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -235,8 +235,17 @@ router *leaves* the assert state rather than how it enters one -- it kills the w
 loser meets a new GenID, then renumbers the winner's interface downwards),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is
 adjacent to the BSR and the RP and where the shared tree and the shortest path tree leave a router by
-different interfaces, `igmp-compat` is the only one about the versions of IGMP -- an interface pinned to v1 or v2 with
-`phyint ... igmpv1`/`igmpv2` on a link whose querier is in v3 mode, so that the sec. 7.3.1 refusal
+different interfaces, `bsr-elect` the only one with two Candidate-BSRs, so the election of RFC 5059
+sec. 3.1 -- the higher priority, and the higher address where the priorities are equal -- is made by
+two pimds there and nowhere else; it also asserts what a dead BSR costs (the other candidate takes
+the role back after `2 * interval + 10`, while a router behind the one that died waits its own
+default 130s, a Bootstrap being relayed hop by hop rather than flooded) and what the elected BSR
+will hold, a Candidate-RP Advertisement being unicast to it and needing no neighbour relationship:
+`rp-set-limit` bounds the RP set a stranger can fill, and the Bootstrap is bounded whatever the set
+is -- 10200 group ranges from a host with no Hello used to walk the 128K send buffer off its end,
+and step 7 is that flood --
+`igmp-compat` is the only one about the versions of IGMP -- an interface pinned to v2 with
+`phyint ... igmpv2` on a link whose querier is in v3 mode, so that the sec. 7.3.1 refusal
 has something to refuse and an interface that refuses nothing beside it; one group each at v1, v2
 and v3 from `test/igmpv3.c`'s `-v`, read out of the per-group version column of `pimctl show igmp
 groups`; the climb back out of an older mode, one version per timeout, with v3 reports holding the
