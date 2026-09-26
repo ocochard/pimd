@@ -180,9 +180,13 @@
 #               R3 is held on the shared tree with spt-threshold infinity,
 #               so what the Arista forwards to it is what it inherits from
 #               R3's (*,G) Join.  X3 is a second downstream router played
-#               by test/pimsend.c: it says Hello and prunes the source off
-#               the shared tree at the Arista, and R3, which still wants
-#               the source for ED2, has to override inside the Arista's
+#               by test/pimsend.c: it says Hello, joins the group and
+#               prunes the source off it in the same message -- the
+#               compound Join(*,G) + Prune(S,G,rpt) of RFC 7761 sec. 4.5.6,
+#               which is what a router that wants the group but not that
+#               source sends, and the only shape this Arista acts on (see
+#               x3_send_rpt_prune()).  R3, which still wants the source for
+#               ED2, has to override inside the Arista's
 #               J/P_Override_Interval.  pimd did not send Join(S,G,rpt) at
 #               all before deviation M1 was fixed, so this is also the
 #               only test whose reader of that message is not pimd.
@@ -674,6 +678,10 @@ RO_STREAM_PKTS=${RO_STREAM_PKTS:-420}
 # out: J/P_Override_Interval is 3 seconds on defaults, which is also what
 # pimsend's Hello leaves the link on, having no LAN Prune Delay option
 RO_SETTLE=${RO_SETTLE:-6}
+
+# How long the Arista's (S,G) has to have stood before the scenario prunes
+# the source off the RPT.  See eos_sg_settled().
+RO_SG_SETTLED=${RO_SG_SETTLED:-20}
 # Seconds of R3's kernel counters that tell a stream from its absence at
 # one packet a second
 RO_WINDOW=${RO_WINDOW:-5}
@@ -1668,6 +1676,27 @@ has_mrt()      { pimctl "$1" show mrt 2>/dev/null | grep -q "$2"; }
 
 eos_has_neighbor() { eos "show ip pim neighbor" 2>/dev/null | grep -q "$1"; }
 eos_has_mroute()   { eos "show ip mroute" 2>/dev/null | grep -q "$1"; }
+
+# The Arista's (S,G) for $1 in group $GROUP, and how old it is.  What it is
+# for is waiting until the tree has settled before asking a question about
+# it: an RP builds this entry as the Registers arrive and switches it to
+# the shortest path tree afterwards, and a Prune(S,G,rpt) that lands while
+# that is still happening is applied to state the Arista then rebuilds.
+eos_sg_age() {
+	eos "show ip mroute $GROUP" 2>/dev/null | \
+		awk -v s="$1," '$1 == s { print $2; exit }'
+}
+
+# Seconds, out of the h:mm:ss the mroute table prints
+eos_sg_settled() {
+	es_age=$(eos_sg_age "$1")
+	case $es_age in
+	"") return 1 ;;
+	esac
+
+	es_secs=$(echo "$es_age" | awk -F: '{ print ($1 * 3600) + ($2 * 60) + $3 }')
+	[ "${es_secs:-0}" -ge "${2:-15}" ]
+}
 
 # The DR pimd elected on the interface.  "show interface" prints
 # "Interface State Address Priority Hello Nbr DR-Address DR-Priority".
@@ -3075,6 +3104,22 @@ x3_send() {
 		die "failed sending a crafted $1 from X3"
 }
 
+# X3 asking for the group but not for this source: a Join(*,G) carrying a
+# Prune(S,G,rpt) in the same group set, which is the message RFC 7761
+# sec. 4.5.6 says to send and the only one this Arista acts on.
+#
+# A bare Prune(S,G,rpt) -- one group set, no joins -- is what this used to
+# send, and EOS ignores it: measured, with the stream flowing and R3
+# stopped, the source kept arriving for 21s after one, while the compound
+# message below stopped it in four.  That is defensible of EOS, and the
+# reason is X3 itself: a router prunes a source off the shared tree it has
+# joined, and X3 had joined nothing, so there was no (*,G) join of its own
+# for the (S,G,rpt) state to hang from.  The scenario was asking a question
+# no router asks.
+x3_send_rpt_prune() {
+	x3_send join -w -u "$RO_EOS_ADDR" -r "$RP_ADDR" -g "$GROUP" -X "$SRC_ADDR"
+}
+
 # Packets R3's kernel has forwarded for the stream so far, from the
 # "Origin Group Packets In-Vif Out-Vifs" rows of netstat -gn, and 0 while it
 # has no entry for it
@@ -3171,6 +3216,23 @@ check_rpt_override() {
 	fi
 	ok "R3 is held on the shared tree"
 
+	# Let the Arista finish building the tree before pruning anything of
+	# it.  stream_reaches_r3() is true as soon as one packet has crossed,
+	# which is while the RP is still turning Registers into an (S,G) and
+	# joining the shortest path tree towards the source -- and a
+	# Prune(S,G,rpt) applied in the middle of that is applied to an entry
+	# the Arista replaces a moment later, which is what made this
+	# scenario fail about as often as it passed.  Measured: at the moment
+	# of the old step 3 the (*,G) was four seconds old, and the source
+	# kept arriving.
+	if wait_for 60 eos_sg_settled "$SRC_ADDR" "$RO_SG_SETTLED"; then
+		ok "the Arista's (S,G) for $SRC_ADDR has stood for ${RO_SG_SETTLED}s, the tree is built"
+	else
+		fail "the Arista has no settled (S,G) for $SRC_ADDR to prune off the RPT"
+		kill "$sender" "$receiver" 2>/dev/null
+		return 1
+	fi
+
 	# The control.  A Prune(S,G,rpt) nobody overrides has to take the
 	# source away, or every override below passes against an Arista that
 	# ignores the Prune altogether.  R3's pimd is stopped rather than
@@ -3180,7 +3242,7 @@ check_rpt_override() {
 	print "3. A Prune(S,G,rpt) nobody overrides takes the source off the link"
 	r3_signal STOP
 	x3_send hello -H 105
-	x3_send prune -u "$RO_EOS_ADDR" -g "$GROUP" -s "$SRC_ADDR" -R
+	x3_send_rpt_prune
 	sleep "$RO_SETTLE"
 	if stream_stopped_at_r3; then
 		ok "the Arista stopped forwarding $SRC_ADDR to R3 on X3's Prune(S,G,rpt)"
@@ -3223,7 +3285,7 @@ check_rpt_override() {
 		cap="$WORKDIR/override-$i.txt"
 		x3_send hello -H 105
 		r3_capture $((RO_SETTLE + RO_WINDOW + 4)) "$cap"
-		x3_send prune -u "$RO_EOS_ADDR" -g "$GROUP" -s "$SRC_ADDR" -R
+		x3_send_rpt_prune
 		sleep "$RO_SETTLE"
 		flowing=no
 		stream_reaches_r3 && flowing=yes
