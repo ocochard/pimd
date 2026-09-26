@@ -87,6 +87,17 @@
  * See add_grp_mask().
  */
 #define PIM_RP_SET_LIMIT               1024
+
+/*
+ * How many RPs one group range may have.  The wire says 255: a Bootstrap
+ * carries the count of them in a byte (RFC 5059 sec. 4.1), and
+ * grp_mask_t's group_rp_number is the byte that holds it here.  Without a
+ * cap the 256th Candidate-RP Advertisement for a range -- 256 unicast
+ * messages from anywhere that can reach the BSR -- wraps that byte to
+ * zero, which puts a false count on the wire and, worse, makes the length
+ * of the message disagree with the list it is built from.
+ */
+#define PIM_MAX_RP_PER_RANGE           255
 /* How many (S,G) entries data from directly connected sources may make this
  * router hold as their DR, local-sg-limit in pimd.conf.  Another cap on state
  * others create, not a protocol constant: see local_sg_entry().

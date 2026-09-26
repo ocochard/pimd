@@ -1229,6 +1229,12 @@ BE_CRP_RANGES=${BE_CRP_RANGES:-255}
 BE_CRP_MSGS=${BE_CRP_MSGS:-6}
 BE_CRP_FLOOD=${BE_CRP_FLOOD:-40}
 
+# Step 5b: one group range, and more RPs offered for it than the count byte
+# of a Bootstrap can hold.  Each Cand-RP-Adv names one RP, so this is one
+# message per RP.
+BE_ONE_RANGE=${BE_ONE_RANGE:-237.7.0.0}
+BE_RP_PER_RANGE=${BE_RP_PER_RANGE:-260}
+
 
 # The address the shared LAN's DR starts at.  assert-recover replaces it,
 # see AR_DR_ADDR below, so set_scenario() puts this one back for the two
@@ -1460,6 +1466,23 @@ ANYDR_STOP_SRC=${ANYDR_STOP_SRC:-10.0.3.90}
 # $CRAFT_PRIO has to beat R2's BSR priority of 1, or the crafted Bootstrap
 # is dropped as less preferred before it reaches anything under test.
 CRAFT_ADDR=${CRAFT_ADDR:-10.0.1.99}
+
+# crafted step 30: how many half RP sets to send, each naming a range of its
+# own.  Enough that a receiver which mistook them for whole ones would be
+# obvious in the count, and few enough to send in a second.
+CRAFT_FRAG_SETS=${CRAFT_FRAG_SETS:-20}
+
+# The network those half-sets name.  Not 239/8: the No-Forward steps above
+# put an RP on 239.1.0.0, and a step that reads "is this range in the RP
+# set" has to name a range no other step has installed.
+CRAFT_FRAG_NET=${CRAFT_FRAG_NET:-238}
+
+# And the BSR priority those messages claim.  Above NOFWD_PRIO, which step
+# 27 leaves as the elected BSR's: a Bootstrap of a lower priority than the
+# current BSR's is refused by the election before the RP set in it is looked
+# at, and a step whose messages are all refused for that reason asserts
+# nothing about fragments.
+CRAFT_FRAG_PRIO=${CRAFT_FRAG_PRIO:-254}
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -3444,6 +3467,8 @@ all_bsr_is() {
 
 	return 0
 }
+
+rp_set_grew() { [ "$(rp_set_count "$1")" -gt "$2" ]; }
 
 # How many group ranges the RP set holds, and what it is allowed to hold
 rp_set_count() {
@@ -6502,6 +6527,44 @@ check_crafted() {
 		ok "a Hello without the option cleared the list"
 	fi
 
+	print "30. A fragmented RP set is held apart until the rest of it arrives"
+	# RFC 5059 sec. 4.1: a group set whose RP count is larger than the
+	# fragment count is part of a set split across messages, and the
+	# receiver holds those RPs aside until the rest turns up rather than
+	# installing half an RP set.  pimd has no fragmentation of its own --
+	# create_pim_bootstrap_message() says so -- so nothing but a crafted
+	# message reaches that path, and `pimsend -D COUNT` is what makes one.
+	cf_before=$(rp_set_count r1)
+	cf_i=0
+	while [ "$cf_i" -lt "$CRAFT_FRAG_SETS" ]; do
+		cf_i=$((cf_i + 1))
+		craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -p "$CRAFT_FRAG_PRIO" \
+		      -g "$CRAFT_FRAG_NET.$cf_i.0.0" -m 16 -r "$CRAFT_ADDR" -D 2
+	done
+	sleep 3
+	cf_after=$(rp_set_count r1)
+	if [ "${cf_after:-0}" -eq "${cf_before:-0}" ]; then
+		ok "r1's RP set is still $cf_after ranges after $CRAFT_FRAG_SETS half-sets"
+	else
+		fail "r1's RP set went from $cf_before to $cf_after ranges on RP sets it has only half of"
+	fi
+	if pimctl r1 -t show rp 2>/dev/null | grep -q "$CRAFT_FRAG_NET.1.0.0"; then
+		fail "r1 installed an RP for $CRAFT_FRAG_NET.1.0.0 from half a set"
+	else
+		ok "and none of those ranges has an RP to match a group to"
+	fi
+	# The control: the same sender, a set that is whole, and a range with
+	# no half of its own pending -- a second message for one of those
+	# would be judged against the count the first one claimed, which is
+	# the assembly this step is about rather than the refusal.
+	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -p "$CRAFT_FRAG_PRIO" \
+	      -g "$CRAFT_FRAG_NET.99.0.0" -m 16 -r "$CRAFT_ADDR"
+	if wait_for 10 rp_set_grew r1 "${cf_after:-0}"; then
+		ok "a whole one for $CRAFT_FRAG_NET.99.0.0 is taken, so the half-sets were refused for being half"
+	else
+		fail "r1 took no RP for $CRAFT_FRAG_NET.99.0.0 even from a complete Bootstrap"
+	fi
+
 	result
 }
 
@@ -8627,6 +8690,40 @@ check_bsr_elect() {
 		fail "r2's RP set is still $(rp_set_count r2) after a Cand-RP-Adv it should have taken"
 		return 1
 	fi
+
+	print "5b. And one range may have no more RPs than a Bootstrap can count"
+	# The count of RPs in a group set is a byte on the wire (RFC 5059
+	# sec. 4.1) and a byte here, and each Cand-RP-Adv names one RP: 256
+	# messages with 256 addresses used to wrap it to zero, which puts a
+	# false count on the wire and made the length of the message disagree
+	# with the list it was built from.
+	be_i=0
+	while [ "$be_i" -lt "$BE_RP_PER_RANGE" ]; do
+		be_i=$((be_i + 1))
+		box_run ed1 "$PIMSEND" -i "$SRC_ADDR" candrp -d "$BE_R2_ADDR" \
+			-r "10.0.6.$((be_i % 250 + 1))" -g "$BE_ONE_RANGE" -m 16 \
+			>/dev/null 2>&1 || true
+		[ "$be_i" -lt 250 ] || box_run ed1 "$PIMSEND" -i "$SRC_ADDR" candrp \
+			-d "$BE_R2_ADDR" -r "10.0.7.$((be_i - 249))" \
+			-g "$BE_ONE_RANGE" -m 16 >/dev/null 2>&1 || true
+	done
+	sleep 3
+	be_rps=$(pimctl r2 -t show rp 2>/dev/null | \
+		awk -v r="$BE_ONE_RANGE/16" '$1 == r { f = 1; c = 1; next }
+					     f && NF == 4 { c++ }
+					     f && NF > 4 { exit }
+					     END { print c + 0 }')
+	if [ "$be_rps" -eq 255 ]; then
+		ok "$BE_ONE_RANGE/16 holds 255 RPs and no more, which is what a byte holds"
+	else
+		fail "$BE_ONE_RANGE/16 holds $be_rps RPs after $BE_RP_PER_RANGE were offered"
+	fi
+	if logged r2 "already has 255 RPs, refusing"; then
+		ok "and r2 said why it stopped taking them"
+	else
+		fail "r2 never said it had all the RPs a group range can hold"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
 
 	be_flood_crp "$BE_R2_ADDR" "$BE_CRP_MSGS"
 	sleep 3

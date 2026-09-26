@@ -58,6 +58,7 @@ uint32_t                 my_bsr_hash_mask;
 uint32_t                 rp_set_limit = PIM_RP_SET_LIMIT;
 uint32_t                 rp_set_entries;	/* Group ranges held now */
 static int               rp_set_limit_said = FALSE;
+static int               rp_per_range_said = FALSE;
 static int               bootstrap_truncated_said = FALSE;
 
 uint8_t                  cand_bsr_flag = FALSE; /* Set to TRUE if I am
@@ -99,6 +100,7 @@ void init_rp_and_bsr(void)
     /* A reload gives the count back, and lets the log say it again */
     rp_set_entries = 0;
     rp_set_limit_said = FALSE;
+    rp_per_range_said = FALSE;
     bootstrap_truncated_said = FALSE;
 
     if (cand_bsr_flag == FALSE) {
@@ -285,7 +287,12 @@ static grp_mask_t *add_grp_mask(grp_mask_t **used_grp_mask_list, uint32_t group_
      * nothing at all, which a BSR then wrote into every Bootstrap it built
      * until the send buffer ran out (see create_pim_bootstrap_message()).
      */
-    if (rp_set_entries >= rp_set_limit) {
+    /* The segmented list is scratch: receive_pim_bootstrap() assembles one
+     * message in it and frees the lot with delete_rp_list(), which frees
+     * the masks directly rather than through delete_grp_mask_entry().  So
+     * only the RP set proper is counted, or the count would climb by a
+     * range per Bootstrap and refuse everything within a day. */
+    if (used_grp_mask_list == &grp_mask_list && rp_set_entries >= rp_set_limit) {
 	if (!rp_set_limit_said) {
 	    logit(LOG_WARNING, 0, "RP set limit of %u group ranges reached, refusing %s"
 		  " (rp-set-limit in %s raises it)", rp_set_limit,
@@ -301,7 +308,8 @@ static grp_mask_t *add_grp_mask(grp_mask_t **used_grp_mask_list, uint32_t group_
 	logit(LOG_ERR, 0, "Ran out of memory in add_grp_mask()");
 	return NULL;
     }
-    rp_set_entries++;
+    if (used_grp_mask_list == &grp_mask_list)
+	rp_set_entries++;
 
     ptr->grp_rp_next = (rp_grp_entry_t *)NULL;
     ptr->next = next;
@@ -426,6 +434,23 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	entry_next->fragment_tag = fragment_tag;
 
 	return entry_next;
+    }
+
+    /* One more RP for this range, and the count of them is a byte both on
+     * the wire and here; see PIM_MAX_RP_PER_RANGE. */
+    if (mask_ptr->group_rp_number >= PIM_MAX_RP_PER_RANGE) {
+	if (!rp_per_range_said) {
+	    logit(LOG_WARNING, 0, "%s already has %u RPs, refusing %s: a Bootstrap counts them in a byte",
+		  netname(group_addr, group_mask), mask_ptr->group_rp_number,
+		  inet_fmt(rp_addr, s1, sizeof(s1)));
+	    rp_per_range_said = TRUE;
+	}
+
+	if (mask_ptr->grp_rp_next == NULL)
+	    delete_grp_mask(used_cand_rp_list, used_grp_mask_list,
+			    group_addr, group_mask);
+
+	return NULL;
     }
 
     cand_rp_ptr = add_cand_rp(used_cand_rp_list, rp_addr);
@@ -731,7 +756,7 @@ static void delete_grp_mask_entry(cand_rp_t **used_cand_rp_list, grp_mask_t **us
 	free(entry_ptr);
     }
 
-    if (rp_set_entries > 0)
+    if (used_grp_mask_list == &grp_mask_list && rp_set_entries > 0)
 	rp_set_entries--;
 
     free(grp_mask_delete);
@@ -1073,6 +1098,7 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
     rp_grp_entry_t *entry_ptr;
     int datalen;
     uint8_t masklen;
+    unsigned rps, written;
     uint16_t holdtime;
 
     if (curr_bsr_address == INADDR_ANY_N)
@@ -1115,11 +1141,25 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	    continue;  /* Do not advertise internal virtual RP for SSM groups */
 	}
 
+	/* How many RPs this range actually has, counted from the list this
+	 * is about to walk rather than taken from group_rp_number: the
+	 * length of the message and the count byte in it both have to agree
+	 * with what gets written, and a byte that has drifted -- or wrapped,
+	 * which it could before PIM_MAX_RP_PER_RANGE -- would leave the
+	 * bound below too small and the count on the wire wrong.
+	 */
+	rps = 0;
+	for (entry_ptr = mask_ptr->grp_rp_next; entry_ptr; entry_ptr = entry_ptr->grp_rp_next) {
+	    if (rps == PIM_MAX_RP_PER_RANGE)
+		break;		/* The count on the wire is a byte */
+	    rps++;
+	}
+
 	/* The range's own record, and one per RP under it.  Compared as a
 	 * distance rather than by forming data_ptr + need, which would be a
 	 * pointer past the end of the object before anything is written. */
 	need = PIM_ENCODE_GRP_ADDR_LEN + 4
-	    + (size_t)mask_ptr->group_rp_number * (PIM_ENCODE_UNI_ADDR_LEN + 4);
+	    + (size_t)rps * (PIM_ENCODE_UNI_ADDR_LEN + 4);
 	if ((size_t)(end - data_ptr) < need) {
 	    if (!bootstrap_truncated_said) {
 		logit(LOG_WARNING, 0, "RP set does not fit in one Bootstrap message,"
@@ -1132,11 +1172,15 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 
 	MASK_TO_MASKLEN(mask_ptr->group_mask, masklen);
 	PUT_EGADDR(mask_ptr->group_addr, masklen, 0, data_ptr);
-	PUT_BYTE(mask_ptr->group_rp_number, data_ptr);
-	PUT_BYTE(mask_ptr->group_rp_number, data_ptr); /* TODO: if frag.*/
+	PUT_BYTE(rps, data_ptr);
+	PUT_BYTE(rps, data_ptr);	/* TODO: if frag.*/
 	PUT_HOSTSHORT(0, data_ptr);
 
-	for (entry_ptr = mask_ptr->grp_rp_next; entry_ptr; entry_ptr = entry_ptr->grp_rp_next) {
+	/* Exactly the records the count above promises, so that the message
+	 * says what it holds however the list changes underneath. */
+	for (entry_ptr = mask_ptr->grp_rp_next, written = 0;
+	     entry_ptr && written < rps;
+	     entry_ptr = entry_ptr->grp_rp_next, written++) {
 	    holdtime = entry_ptr->rp->rpentry->adv_holdtime;
 	    /* Is holdtime in MUST BE interval? (RFC5059 section 3.3) */
 	    if (holdtime != 0 && holdtime <= my_bsr_adv_period)

@@ -462,6 +462,21 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- One group range takes at most 255 RPs, which is what a Bootstrap can say it
+  holds: the count is a byte on the wire (RFC 5059 sec. 4.1) and a byte in
+  `grp_mask_t`, and each Candidate-RP Advertisement names one RP, so 256
+  messages wrapped it to zero -- a false count on the wire, and a length that
+  disagreed with the list the message was built from.  The 256th RP for a range
+  is refused now and the fact logged once
+- A Bootstrap says what it holds: the RP count of each group set is counted from
+  the list the message is written out of rather than taken from that byte, and
+  exactly that many records follow it
+- `rp-set-limit` counts the RP set, not the half-sets waiting to be assembled.
+  A Bootstrap whose group set is fragmented (RFC 5059 sec. 4.1) is held in a
+  list of its own until the rest arrives, and that list is freed wholesale, so
+  counting it made the total climb by a range per fragmented Bootstrap until
+  every new range was refused.  pimd sends no fragmented Bootstrap itself, so
+  this needed a BSR that does
 - A bootstrap router no longer writes its RP set past the end of the send
   buffer.  `create_pim_bootstrap_message()` (`src/rp.c`) walked every group
   range of the set and every RP under it into a 128K buffer with nothing

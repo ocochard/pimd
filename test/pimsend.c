@@ -222,6 +222,7 @@ struct opts {
 	unsigned metric;
 	unsigned priority;
 	unsigned nprefixes;		/* -G, group ranges in a Cand-RP-Adv */
+	unsigned rpcount;		/* -D, the RP count a Bootstrap claims */
 };
 
 static uint8_t buf[BUFSZ];
@@ -475,10 +476,17 @@ static uint8_t *build_bootstrap(uint8_t *p, const struct opts *o)
 	p = put_byte(p, o->priority);	/* BSR priority */
 	p = put_euaddr(p, o, o->upstream);
 
+	/* One RP record follows, so the fragment count is one.  The total is
+	 * one as well unless -D says otherwise: a total larger than the
+	 * fragment is a *fragmented* RP set, RFC 5059 sec. 4.1, which the
+	 * receiver has to hold in a list of its own until the rest of the
+	 * group set arrives.  pimd never sends one -- it has no
+	 * fragmentation -- so nothing else here can put a receiver on that
+	 * path. */
 	p = put_egaddr(p, o, o->group);
-	p = put_byte(p, 1);		/* RP count */
-	p = put_byte(p, 1);		/* fragment RP count */
-	p = put_short(p, 0);		/* reserved */
+	p = put_byte(p, o->rpcount ? o->rpcount : 1);	/* RP count */
+	p = put_byte(p, 1);				/* fragment RP count */
+	p = put_short(p, 0);				/* reserved */
 
 	p = put_euaddr(p, o, o->rp);
 	p = put_short(p, holdtime);
@@ -652,6 +660,10 @@ static int usage(int rc)
 		"  -0         Leave the Register's inner header checksum zero, which\n"
 		"             sec. 4.9.3 says the RP MUST NOT check\n"
 		"  -p PRIO    Priority: DR, BSR or candidate RP, default 1\n"
+		"  -D COUNT   The RP count a Bootstrap's group set claims, when\n"
+		"             it is more than the one record sent: a fragmented\n"
+		"             RP set, which the receiver holds apart until the\n"
+		"             rest arrives.  Default 1\n"
 		"  -G COUNT   Group ranges in a Cand-RP-Adv, consecutive blocks\n"
 		"             of -m starting at -g; at most 255, the wire's own\n"
 		"             limit.  Default 1\n"
@@ -779,10 +791,11 @@ int main(int argc, char *argv[])
 	optind++;
 
 	while ((c = getopt(argc, argv,
-			  "0A:Bb:C:c:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
+			  "0A:Bb:C:c:D:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'b': rawfile = optarg;				break;
+		case 'D': o.rpcount = num(optarg, "declared RP count");	break;
 		case 'G': o.nprefixes = num(optarg, "group range count");	break;
 		case 'S': seed = num(optarg, "mutation seed");		break;
 		case 'x': mutate = num(optarg, "bytes to flip");	break;
