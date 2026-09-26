@@ -578,7 +578,7 @@ Four rules this tree wants at the point of writing, ahead of any wider review:
 - **Remediated code still follows the conventions above.** Keep the surrounding indentation style;
   a security fix is not a licence to reformat.
 
-`rules/security.cocci` is the part of that checklist a machine can decide, as twenty-four semantic
+`rules/security.cocci` is the part of that checklist a machine can decide, as twenty-six semantic
 patches for Coccinelle's `spatch(1)`. Run it with `rules/run.sh`, which makes two passes and needs
 both to hold: every rule has to fire on `rules/control.c`, and `src/` and `lib/` have to stay
 silent. The control pass is the point -- `spatch` prints nothing both when a rule finds nothing and
@@ -632,7 +632,16 @@ that is a job somebody turns off, and the classes it is good at are already cove
 `close()`, fixed -- so re-run it by hand after changing the daemon's error paths, and compare
 against that list.
 
-Four of the rules are about this tree rather than about C, and are the ones worth adding to: a
+The newest two are about a length rather than a buffer, and came out of a bug rather than a
+checklist: a `write()`, `send()`, `sendmsg()` or `recvmsg()` whose result is compared against the
+length it was given, in the call's own expression or a few lines down, which reads a partial
+transfer as an error. That is what killed a separated pimd under load (see `src/privsep.c`'s
+`msg_send()`), and the pass that introduced the rule found two more of them in `src/ipc.c`, where a
+reply longer than the socket buffer was truncated rather than finished. `read()` and `recv()` are
+deliberately outside the rule: asking whether a buffer came back full is also how a reader asks
+whether there is more, which `pimctl.c` does, and a pattern cannot tell that from an error test.
+
+Four other rules are about this tree rather than about C, and are the ones worth adding to: a
 `receive_pim_*()` that never compares its `len` argument to anything (the `receive_pim_assert()`
 bug above, as a pattern), a `uvifs[]` subscript taking a vif index straight from `find_vif_direct()`
 or `local_address()` without testing it against `NO_VIF` -- which is `MAXVIFS`, one past the end of

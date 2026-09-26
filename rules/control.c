@@ -129,6 +129,26 @@ void ctl_idioms(uint32_t src, uint32_t grp)
 	logit(0, 0, "%s", inet_fmt(uvifs[vifi].uv_lcl_addr, s1, sizeof(s1)));	/* unchecked_vif */
 }
 
+/* A transfer compared against its length, in both the shapes a rule sees:
+ * the comparison in the call's own expression, and the result kept and
+ * compared a few lines down.  Neither is the peer going away. */
+ssize_t write(int fd, const void *buf, size_t len);
+ssize_t sendmsg(int fd, const void *msg, int flags);
+
+int ctl_partial_io(int sd, const void *buf, size_t len, const void *msg)
+{
+	ssize_t n;
+
+	if (write(sd, buf, len) != (ssize_t)len)	/* partial_io_direct */
+		return -1;
+
+	n = sendmsg(sd, msg, 0);
+	if (n != (ssize_t)len)			/* partial_io_var */
+		return -1;
+
+	return 0;
+}
+
 /* A handler that parses without bounding first */
 int receive_pim_control(uint32_t src, uint32_t dst, char *msg, size_t len)
 {

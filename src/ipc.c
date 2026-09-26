@@ -228,27 +228,40 @@ static int ipc_read(int sd, char *cmd, ssize_t len)
 	return IPC_ERR;
 }
 
+/*
+ * The client socket is a non-blocking SOCK_STREAM one (ipc_init() and the
+ * accept() below both set O_NONBLOCK), so a write takes what fits in the
+ * socket buffer and says how much that was: a reply longer than the buffer
+ * comes back short, and so does one interrupted by a signal after part of
+ * it was copied.  Neither means the client has gone -- it means the rest
+ * is still to send, which is what this loop does.  Reading a short write
+ * as an error truncated whatever reply was long enough to hit it, "show
+ * mrt" on a busy router being the one to notice.
+ */
 static int ipc_write(int sd, char *msg, size_t sz)
 {
-	ssize_t len;
+	size_t off = 0;
 
 //	logit(LOG_DEBUG, 0, "IPC rpl: '%s'", msg);
 
-	while ((len = write(sd, msg, sz))) {
-		if (-1 == len) {
+	while (off < sz) {
+		ssize_t len;
+
+		len = write(sd, msg + off, sz - off);
+		if (len < 0) {
 			switch (errno) {
 			case EINTR:
 			case EAGAIN:
-				continue;
+				continue;	/* The reader will drain it */
 			default:
-				break;
+				return IPC_ERR;
 			}
 		}
-		break;
-	}
+		if (len == 0)
+			return IPC_ERR;
 
-	if (len != (ssize_t)sz)
-		return IPC_ERR;
+		off += (size_t)len;
+	}
 
 	return 0;
 }
@@ -1094,10 +1107,12 @@ static void ipc_help(int sd, char *buf, size_t len)
 
 	fp = priv_tempfile();
 	if (!fp) {
-		int sz;
-
-		sz = snprintf(buf, len, "Cannot create tempfile: %s", strerror(errno));
-		if (write(sd, buf, sz) != sz)
+		(void)snprintf(buf, len, "Cannot create tempfile: %s", strerror(errno));
+		/* Through ipc_write(), which sends all of it: snprintf()
+		 * answers with the length it wanted rather than the one it
+		 * wrote, so the count this used to hand write() was past
+		 * the end of the buffer whenever the message was truncated. */
+		if (ipc_write(sd, buf, strlen(buf)))
 			logit(LOG_INFO, errno, "Client closed connection");
 		return;
 	}

@@ -42,6 +42,7 @@ fprintf_like = ("fprintf", "dprintf", "vfprintf", "syslog")
 inet_fmt_like = ("inet_fmt", "inet_fmts", "inet_name")
 vif_lookups = ("find_vif", "find_vif_direct", "find_vif_direct_local",
 	       "find_vif_name", "local_address", "get_iif")
+partial_io = ("write", "send", "sendmsg", "recvmsg")
 
 // --------------------------------------------------------------------
 // Copy and buffer hygiene -- CWE-120/121/787, SEI CERT STR31-C
@@ -517,3 +518,82 @@ f << unchecked_vif.f;
 if f in vif_lookups:
     print("%s:%s: [unchecked_vif] uvifs[] subscripted with a lookup result that was not tested against NO_VIF"
           % (p[0].file, p[0].line))
+
+# A transfer that stopped short of the length is not an error by itself.
+# write() and sendmsg() return early when a signal lands after part of the
+# buffer has been copied, read() and recvmsg() return what has arrived, and
+# a non-blocking socket returns what fits: none of that means the peer has
+# gone.  Nor is a record boundary a defence -- a unix SOCK_SEQPACKET socket
+# on FreeBSD carries no PR_ATOMIC and runs through sosend_generic() like a
+# stream.  Comparing the result against the length is that possibility read
+# as failure, which is how the two halves of a separated pimd used to kill
+# each other under a flood: msg_send() took a short send for a peer that had
+# gone, left the fragment in the socket, and the far side then read its next
+# message across it.  Resume from where it stopped instead.  Testing for < 0
+# or == 0 is not this and does not match.
+#
+# read() and recv() are deliberately not in that list, though a short read
+# is the same hazard: filling a buffer and asking whether it came back full
+# is also how a reader asks whether there is more to come -- which is what
+# pimctl.c does with its reply socket -- and a rule cannot tell that from an
+# error test.  The send side and the framed recvmsg() are where a short
+# transfer corrupts something rather than merely ending a read early.
+#
+@partial_io_direct@
+identifier f;
+identifier len;
+expression e;
+type T;
+position p;
+@@
+(
+f@p(...) == len
+|
+f@p(...) != len
+|
+f@p(...) == (T)len
+|
+f@p(...) != (T)len
+|
+f@p(...) == sizeof(e)
+|
+f@p(...) != sizeof(e)
+)
+
+@script:python@
+p << partial_io_direct.p;
+f << partial_io_direct.f;
+@@
+if f in partial_io:
+    print("%s:%s: [partial_io_direct] %s() compared against a length; a short transfer is not an error, resume it"
+          % (p[0].file, p[0].line, f))
+
+# The same thing said in two statements, which is the shape the privsep
+# socketpair had: keep the result, then compare it with the length further
+# down.
+#
+@partial_io_var exists@
+identifier f;
+identifier n, len;
+type T;
+position p;
+@@
+n = f@p(...)
+... when != n = ...
+(
+n == len
+|
+n != len
+|
+n == (T)len
+|
+n != (T)len
+)
+
+@script:python@
+p << partial_io_var.p;
+f << partial_io_var.f;
+@@
+if f in partial_io:
+    print("%s:%s: [partial_io_var] the result of %s() is compared against a length; a short transfer is not an error, resume it"
+          % (p[0].file, p[0].line, f))

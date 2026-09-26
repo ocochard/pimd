@@ -473,6 +473,16 @@ issue of this repository is written out in full.
   the `anycast` scenario losing its RP mid-burst, and reproduced on demand by
   stopping the privileged half, flooding the unprivileged one with work that
   makes it log, and signalling it while it blocks
+- A `pimctl` reply longer than the socket buffer is no longer cut off.  The
+  client socket is a non-blocking stream, so a write takes what fits and says
+  how much that was; `ipc_write()` read anything short of the whole as the
+  client having gone, dropped the rest and reported failure, which `show mrt`
+  on a router with enough state was the command to notice.  It sends the
+  remainder now.  The reply that says a tempfile could not be created went
+  through `write()` directly with the length `snprintf()` *wanted* rather than
+  the one it wrote, which was past the end of the buffer whenever that message
+  was truncated; it goes through `ipc_write()` like every other reply.  Both
+  were found by the Coccinelle rule that came out of the privsep fix above
 - `pimctl debug SYSTEM` says which subsystems are on rather than always
   answering `all`, and so does the `debug level 0x... (...)` line a daemon
   started with `-d` prints.  `debug_list()` took the first row of
