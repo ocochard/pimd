@@ -257,9 +257,19 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		 * nothing in between to interpret.  This used to say so and
 		 * then hand it on regardless, with the version left at the
 		 * v3 it was initialised to, so a nine byte query from
-		 * anywhere on the link still ran the querier election. */
-		logit(LOG_INFO, 0, "Received invalid IGMP query: Max Resp Code = %d, length = %d",
-		      igmp->igmp_code, ipdatalen);
+		 * anywhere on the link still ran the querier election.
+		 *
+		 * Behind the debug flag, and saying who sent it rather than
+		 * a Max Response Code that means nothing at this length:
+		 * anyone on the link can produce this line at will, and
+		 * dropping the packet is now the whole of what happens, so
+		 * an operator who has not asked for igmp debugging has
+		 * nothing to do with it.  The Join/Prune message that is
+		 * too short to parse is logged the same way.
+		 */
+		IF_DEBUG(DEBUG_IGMP)
+		    logit(LOG_NOTICE, 0, "Ignoring IGMP query from %s, %d bytes matches no version",
+			  inet_fmt(src, s1, sizeof(s1)), ipdatalen);
 		return;
 	    }
 	    accept_membership_query(ifi, src, dst, group, igmp->igmp_code, igmp_version);
