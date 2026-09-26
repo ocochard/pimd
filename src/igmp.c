@@ -252,8 +252,15 @@ void accept_igmp(int ifi, ssize_t recvlen)
 	    } else if (ipdatalen >= 12) {
 		igmp_version = 3;
 	    } else {
+		/* Not a query of any version: eight bytes is v1 or v2 and
+		 * twelve or more is v3 (RFC 3376 sec. 7.1), and there is
+		 * nothing in between to interpret.  This used to say so and
+		 * then hand it on regardless, with the version left at the
+		 * v3 it was initialised to, so a nine byte query from
+		 * anywhere on the link still ran the querier election. */
 		logit(LOG_INFO, 0, "Received invalid IGMP query: Max Resp Code = %d, length = %d",
 		      igmp->igmp_code, ipdatalen);
+		return;
 	    }
 	    accept_membership_query(ifi, src, dst, group, igmp->igmp_code, igmp_version);
 	    return;

@@ -41,6 +41,7 @@
  * it to the daemon.
  */
 
+#include <poll.h>		/* poll() in ipc_write() */
 #include <sys/stat.h>		/* umask() */
 #include "defs.h"
 
@@ -49,6 +50,11 @@
 static struct sockaddr_un sun;
 static int ipc_socket = -1;
 static int detail = 0;
+
+/* How long a reply waits for a client that has stopped reading, in ms.  A
+ * dump is written in pieces and this bounds each of them, so a client that
+ * went away costs the router this much once rather than for ever. */
+#define IPC_WRITE_WAIT		2000
 
 enum {
 	IPC_ERR = -1,
@@ -249,13 +255,24 @@ static int ipc_write(int sd, char *msg, size_t sz)
 
 		len = write(sd, msg + off, sz - off);
 		if (len < 0) {
-			switch (errno) {
-			case EINTR:
-			case EAGAIN:
-				continue;	/* The reader will drain it */
-			default:
+			struct pollfd pfd = { .fd = sd, .events = POLLOUT };
+
+			if (errno == EINTR)
+				continue;
+			if (errno != EAGAIN && errno != EWOULDBLOCK)
 				return IPC_ERR;
-			}
+
+			/* A client that has stopped reading answers every
+			 * write with EAGAIN, the socket being non-blocking,
+			 * and retrying at once is a spin -- in a daemon with
+			 * one thread, which is every timer and every packet
+			 * of the router waiting on one pimctl.  So wait for
+			 * room, and give up on the client rather than on the
+			 * router if it never comes. */
+			if (poll(&pfd, 1, IPC_WRITE_WAIT) <= 0)
+				return IPC_ERR;
+
+			continue;
 		}
 		if (len == 0)
 			return IPC_ERR;
