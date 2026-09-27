@@ -146,6 +146,7 @@ of the domain, with
 .Ar ADDR
 as the RP address; an interface name is taken as well.  What it is willing
 to serve is said in the
+.Cm autorp listener ,
 .Cm autorp group-prefix
 lines below, and an announcement with no prefix is not sent at all.
 Defaults: interval 60 seconds, holdtime three times the interval, scope 15.
@@ -154,6 +155,44 @@ This is the Auto-RP counterpart of
 .Cm rp-candidate ,
 and the two are independent: a router may be a candidate for the bootstrap
 mechanism, for Auto-RP, for both, or for neither.
+.It Cm autorp Cm listener Oo Cm enable | disable Oc
+Pass the two Auto-RP groups on: every datagram that arrives on 224.0.1.39
+or 224.0.1.40 is sent out of every other PIM interface with its TTL
+decremented, which is what IOS spells
+.Cm ip pim autorp listener .
+Off by default.
+.Pp
+Auto-RP assumes somebody floods those two groups (sec. 3.3 of
+.Pa doc/pim-autorp-spec01.txt )
+and says nothing about who.  A dense-mode cloud does it, and so does a
+static
+.Cm rp-address
+for each of them, which sec. 8 asks for anyway and
+.Nm pimd
+can configure today.  A sparse-only domain of
+.Nm pimd
+routers has neither, so without this the feature reaches one hop: a
+mapping agent adjacent to the candidate RPs and to the routers works, and
+anything wider does not.
+.Pp
+Three things bound it: only those two groups, only a datagram whose TTL
+survives the decrement, and never back out of the interface it arrived
+on.  There is no duplicate suppression beyond that, so a cycle in the
+topology costs a datagram its remaining TTL and no more.  A relay keeps
+the source address it arrived with, which is what the agent election of
+sec. 3.2 and the
+.Dq Agent
+column of
+.Cm pimctl show autorp
+read.
+.Pp
+.Sy Note:
+this puts the router in the forwarding path for traffic nobody asked it
+to carry, which is why it is off unless asked for.  It also needs the
+arrival interface and the TTL of each datagram from the kernel
+.Pq Dv IP_PKTINFO No or Dv IP_RECVIF , No and Dv IP_RECVTTL ;
+where the kernel answers neither, the listener says so once and relays
+nothing.
 .It Cm autorp Cm group-prefix Ar GROUP Oo Cm masklen Ar LEN Oc Oo Cm deny Oc
 One group range the announcement above offers to serve, repeatable.
 .Cm deny

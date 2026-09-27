@@ -311,6 +311,16 @@ takeover and RFC 7761 sec. 4.7 working rather than a bug,
 announcement, leave the groups under a negative prefix without an RP, keep its configured RP
 against a mapping for the same range, age a mapping out, stop at `autorp-limit` and forget the lot
 across a reload; the messages reach R1 alone, nothing flooding the two well-known groups --
+`autorp-listener` is the third of them and the only one where the agent is not
+adjacent to the RP: R1 announces, R3 two hops away is the agent, and R2 between
+them is neither -- so nothing resolves until `autorp listener` is turned on
+midway through, which makes the first half of the scenario the control for the
+second.  It also asserts what the relay must not do: the mapping comes back
+through R2 in the other direction, the agent R1 names is R3's address and not
+the relay's (sec. 3.2 reads the IP source, which is why this takes a raw socket
+and why the parent opens it under privilege separation), and a tcpdump of the
+R1-R2 link carries R1's datagrams alone, since a relay never goes back out of
+the interface it arrived on.
 `autorp-agent` beside it is the same protocol with pimd in every role, R1 announcing itself, R2
 resolving and telling the domain, R3 two hops away learning the RP, and the sec. 3.2 rules read
 off the *listener* rather than off the agent's own bookkeeping: a prefix a shorter one of the same
@@ -494,10 +504,10 @@ port 496, unless `autorp discovery disable` says not to. It plays the other two 
 Auto-RP (`deny` on a prefix being the one thing Auto-RP says that a Bootstrap cannot), and
 `autorp mapping-agent ADDR` makes it the agent that resolves what the candidates claim -- the
 three rules of sec. 3.2 and the one election there is, an agent falling silent for a higher
-address on the link it heard it from. What is *not* here is the flooding the draft assumes
-(sec. 3.3): pimd sends both messages out of every PIM interface instead, so a domain whose agent
-is adjacent to the RPs and to the routers works and a wider one needs the groups carried some
-other way, which is the listener of `aidd_docs/plans/autorp.md`. A configured RP wins over a
+address on the link it heard it from. The flooding the draft assumes (sec. 3.3) is
+`autorp listener`, off by default: pimd sends its own messages out of every PIM interface, and a
+listener additionally passes on every datagram that arrives on the two groups, TTL decremented and
+never back out of the arrival interface, which is what a domain wider than one hop needs. A configured RP wins over a
 learned one, a
 negative prefix means "no RP for these groups" in a daemon with no dense mode, `autorp-limit` caps
 what an unauthenticated domain can make this router hold, and `pimctl show autorp` says what was

@@ -136,7 +136,7 @@ static char  priv_chroot_path[sizeof(PRIVSEP_CHROOT) > 8
 static char *parent_conf;
 static char *parent_pid;
 static char *parent_sock;
-static int   parent_fd[PRIV_SOCK_AUTORP + 1];
+static int   parent_fd[PRIV_SOCK_AUTORP_RELAY + 1];
 static pid_t parent_child = -1;
 
 static void parent_cleanup(void);
@@ -1023,7 +1023,7 @@ static int parent_socket(uint32_t kind)
 {
     int sd = -1;
 
-    if (kind < PRIV_SOCK_IGMP || kind > PRIV_SOCK_AUTORP) {
+    if (kind < PRIV_SOCK_IGMP || kind > PRIV_SOCK_AUTORP_RELAY) {
 	errno = EINVAL;
 	return -1;
     }
@@ -1067,6 +1067,15 @@ static int parent_socket(uint32_t kind)
 		sd = -1;
 	    }
 	}
+	break;
+
+    case PRIV_SOCK_AUTORP_RELAY:
+	/* The Auto-RP listener re-sends a datagram with the source address
+	 * it arrived with, which takes a raw socket carrying its own IP
+	 * header -- and a raw socket takes root, so it is opened here like
+	 * the other two.  Nothing is bound: it only ever sends.
+	 */
+	sd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
 	break;
 
     case PRIV_SOCK_ROUTE:
@@ -1116,7 +1125,7 @@ static void parent_release(void)
 {
     int i;
 
-    for (i = PRIV_SOCK_IGMP; i <= PRIV_SOCK_AUTORP; i++) {
+    for (i = PRIV_SOCK_IGMP; i <= PRIV_SOCK_AUTORP_RELAY; i++) {
 	if (parent_fd[i] >= 0) {
 	    close(parent_fd[i]);
 	    parent_fd[i] = -1;
@@ -1476,7 +1485,7 @@ int priv_init(const char *user, const char *conf, const char *pid, const char *s
 
     strlcpy(priv_username, name, sizeof(priv_username));
 
-    for (i = 0; i <= PRIV_SOCK_AUTORP; i++)
+    for (i = 0; i <= PRIV_SOCK_AUTORP_RELAY; i++)
 	parent_fd[i] = -1;
 
     parent_conf = strdup(conf);

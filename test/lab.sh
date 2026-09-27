@@ -951,11 +951,12 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
-	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent anycast anycast-dr"
+	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent
+	   autorp-listener anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range solo privsep"
+		     renumber ssm-range autorp-listener solo privsep"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -1471,6 +1472,20 @@ AA_AGENT2=${AA_AGENT2:-10.0.12.1}	# R1, the lower address of the two
 AA_WIDE=${AA_WIDE:-239.0.0.0/8}
 AA_COVERED=${AA_COVERED:-239.1.0.0/16}	# inside it, from the same RP
 AA_DENY=${AA_DENY:-239.9.0.0/16}	# inside it too, and denied
+# autorp-listener: the same three routers, with the roles moved so that
+# nothing works without a relay.  R1 announces, R3 is the agent two hops
+# away, and R2 in the middle is neither -- it only passes the two groups
+# on, which is what `autorp listener' is.  The agent address is R3's on
+# the link it shares with R2, so a Discovery that reaches R1 came through
+# R2 as well and the assertion covers both directions.
+AL_RP=${AL_RP:-10.0.1.1}		# R1, the candidate RP
+AL_AGENT=${AL_AGENT:-10.0.23.3}		# R3, two hops from it
+AL_RANGE=${AL_RANGE:-239.40.0.0/16}
+# R1's address on the link to R2, which is the source its announcements
+# carry there: autorp_send() sends out of every interface and the source
+# is that interface's.  $AL_RP is the RP address inside the payload, which
+# is a different thing and not what a capture sees.
+AL_R1_LINK=${AL_R1_LINK:-10.0.12.1}
 AA_INTERVAL=${AA_INTERVAL:-10}
 AA_HOLDTIME=${AA_HOLDTIME:-30}
 AA_WAIT=${AA_WAIT:-60}
@@ -1883,7 +1898,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2574,6 +2589,34 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: listening only, until step 7 makes it a second agent
 		hello-interval 10
+		EOF
+		return
+	fi
+
+	if [ "$SCENARIO" = autorp-listener ]; then
+		# R1 announces, R3 resolves, and R2 between them is neither:
+		# without a listener on R2 the Announcement dies on the
+		# first link, because pimd floods nothing -- it sends its own
+		# messages out of every PIM interface and relays nothing.
+		# check_autorp_listener() turns the listener on midway, so
+		# the first half of the scenario is the control for it.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: a candidate RP over Auto-RP, two hops from the agent
+		hello-interval 10
+		autorp announce $AL_RP interval $AA_INTERVAL holdtime $AA_HOLDTIME
+		autorp group-prefix ${AL_RANGE%/*} masklen ${AL_RANGE#*/}
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: neither RP nor agent.  The listener is added by the
+		# scenario, so that what it changes is visible
+		hello-interval 10
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: the mapping agent, with no RP of its own adjacent
+		hello-interval 10
+		autorp mapping-agent $AL_AGENT interval $AA_INTERVAL holdtime $AA_HOLDTIME
 		EOF
 		return
 	fi
@@ -4350,6 +4393,7 @@ check() {
 	static-rp)  check_static_rp; return $? ;;
 	autorp)     check_autorp; return $? ;;
 	autorp-agent) check_autorp_agent; return $? ;;
+	autorp-listener) check_autorp_listener; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
 	privsep)    check_privsep; return $? ;;
@@ -5515,6 +5559,121 @@ check_autorp() {
 # in both directions at once and still pass, so the fields the agent rewrites
 # (the resolution rules of sec. 3.2) are asserted on the *listener's* view
 # rather than on the agent's own bookkeeping.
+# autorp-listener: the flooding sec. 3.3 assumes and pimd does not do.  Every
+# other Auto-RP scenario has the agent adjacent to the RP and to the routers,
+# which is the only shape that works without a relay -- pimd sends its own
+# messages out of every PIM interface and passes nobody else's on.  Here the
+# agent is two hops from the RP, so the domain resolves nothing until R2 in
+# the middle is told to relay, and the first half of the scenario is the
+# control for the second.
+check_autorp_listener() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. Without a relay the announcement dies on the first link"
+	# The control, and the reason this scenario exists: R2 hears R1 and
+	# is not an agent, so it does nothing with what it heard, and R3 --
+	# which is the agent -- never sees it.
+	sleep $((AA_INTERVAL * 2 + 2))
+	if autorp_heard r3 "$AL_RP"; then
+		fail "r3 heard $AL_RP two hops away with no listener between them"
+		dprint "$(pimctl r3 show autorp)"
+		return 1
+	else
+		ok "r3, the agent, has heard nothing from $AL_RP"
+	fi
+	if has_rp r1 "${AL_RANGE%/*}"; then
+		fail "r1 has a mapping for $AL_RANGE with nothing resolving it"
+	else
+		ok "and r1 has no mapping, the agent having nothing to resolve"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. With one, the announcement reaches the agent two hops away"
+	cat <<-EOF > "$WORKDIR/r2.conf"
+	# R2: neither RP nor agent, and now passing both groups on
+	hello-interval 10
+	autorp listener
+	EOF
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	wait_for 30 pimd_is_up r2 || fail "r2 did not come back"
+	if wait_for 90 autorp_heard r3 "$AL_RP"; then
+		ok "r3 heard $AL_RP announce $AL_RANGE, relayed by r2"
+	else
+		fail "r3 still hears nothing from $AL_RP with the listener on"
+		dprint "$(pimctl r3 show autorp)"
+		dprint "$(pimctl r2 show autorp)"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. And the mapping comes back the same way"
+	# R3 resolves what it heard and sends a Discovery, which has to cross
+	# R2 in the other direction for R1 to hold the mapping.  The RP in
+	# R1's table is therefore proof of a relay in both directions -- and
+	# it is the proof this uses rather than r2's own log, which says
+	# what it relayed only under "-d crp".
+	if wait_for 90 has_autorp_rp r1 "$AL_RP"; then
+		ok "r1 holds $AL_RP for $AL_RANGE, learned from the agent through r2"
+	else
+		fail "r1 has no Auto-RP mapping for $AL_RP, so the Discovery did not come back"
+		dprint "$(pimctl r1 show rp)"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "5. A relay keeps the sender's address, or the agent election breaks"
+	# What the raw socket is for: accept_autorp() reads the agent off the
+	# IP source -- show autorp prints it, and sec. 3.2 has an agent fall
+	# silent for a higher-addressed one -- so a relay that used its own
+	# address would make R2 the agent as far as R1 is concerned.
+	al_agent=$(autorp_agent_of r1 "${AL_RANGE%/*}")
+	if [ "$al_agent" = "$AL_AGENT" ]; then
+		ok "r1 names $AL_AGENT as the agent, which is r3 and not the relay"
+	else
+		fail "r1 names '$al_agent' as the agent, want $AL_AGENT (r3)"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "6. And it is not sent back out of the link it came in on"
+	# One copy on the R1-R2 link, R1's own.  A relay that went back out
+	# of its arrival interface would be a second, and the two routers
+	# would trade the datagram until its TTL ran out.
+	# Read as text and grepped, the way the passive scenario reads its
+	# link: a tcpdump that caught nothing still leaves a newline behind,
+	# so a timestamped line is what counts as a packet.
+	# R2's end of that link is the one renames() gives a capital to, so
+	# it is $EPU here and not $EP -- a name tcpdump does not know is an
+	# empty capture, which is why this step asserts that it caught the
+	# announcement it is counting copies of.
+	box_run r2 timeout $((AA_INTERVAL * 2 + 4)) tcpdump -l -nni "${EPU}112b" \
+		"udp port 496 and dst 224.0.1.39" >"$WORKDIR/al-announce.txt" 2>/dev/null || true
+	al_srcs=$(awk '/^[0-9][0-9]:/ { sub(/\.496$/, "", $3); print $3 }' \
+		"$WORKDIR/al-announce.txt" | sort -u | tr '\n' ' ')
+	case $al_srcs in
+	"")
+		fail "no announce datagram on ${EPU}112b at all, so r1 is not announcing"
+		;;
+	"$AL_R1_LINK ")
+		ok "the announce group on ${EPU}112b carries $AL_R1_LINK alone, r2 sent nothing back"
+		;;
+	*)
+		fail "the announce group on ${EPU}112b carries '$al_srcs', so a relay went back out of its arrival link"
+		;;
+	esac
+	[ "$FAILED" -eq 0 ] || return 1
+
+	result
+}
+
 check_autorp_agent() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
@@ -5742,6 +5901,15 @@ autorp_heard() {
 
 autorp_quiet() {
 	pimctl "$1" show autorp 2>/dev/null | grep -q "quiet"
+}
+
+# The agent a mapping was heard from, the fourth column of the mapping
+# table -- which is the address a relay must not rewrite, since that is
+# where an agent reads the one it falls silent for (RFC ... sec. 3.2 of
+# the Auto-RP draft).
+autorp_agent_of() {
+	pimctl "$1" -t show autorp 2>/dev/null | \
+		awk -v g="$2" 'NF >= 4 && index($1, g) == 1 { print $4; exit }'
 }
 
 # A membership on R3's own LAN, from ED2, which is where the listener has a

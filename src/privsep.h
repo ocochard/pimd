@@ -51,6 +51,7 @@ enum priv_sock {
     PRIV_SOCK_ROUTE,		/* routing socket / netlink, RPF       */
     PRIV_SOCK_IFEVENT,		/* the same, for interface events      */
     PRIV_SOCK_AUTORP,		/* UDP, bound to the Auto-RP port 496   */
+    PRIV_SOCK_AUTORP_RELAY,	/* raw UDP, the Auto-RP listener's      */
 };
 
 /*

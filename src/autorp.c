@@ -59,6 +59,9 @@
 #include "autorp.h"
 
 #include <netinet/udp.h>
+#ifdef IP_RECVIF
+#include <net/if_dl.h>		/* sockaddr_dl, the BSD arrival interface */
+#endif
 
 /*
  * One mapping as it was heard: an RP, a prefix, and whether the prefix was
@@ -144,6 +147,44 @@ static uint16_t	autorp_agent_better_timer = 0;
 
 int autorp_socket  = -1;
 int autorp_enabled = TRUE;	/* `no autorp discovery' turns it off */
+
+/*
+ * The listener of sec. 3.3, `autorp listener' and off by default.  The
+ * draft assumes the two well-known groups are flooded to every router in
+ * the domain and says nothing about how; a dense-mode cloud does it, and
+ * so does a static rp-address for each of them.  A pimd-only sparse
+ * domain has neither, and without something this feature reaches one hop:
+ * pimd sends its own messages out of every PIM interface, so an agent
+ * adjacent to the RPs and to the routers works and anything wider does
+ * not.
+ *
+ * So: a datagram that arrives is re-sent out of every other PIM
+ * interface with its TTL decremented, which is what IOS's `ip pim autorp
+ * listener' does.  Three things keep it bounded -- the two groups only,
+ * a TTL that has to survive the decrement, and never the interface it
+ * came in on -- and there is no duplicate suppression beyond that, so a
+ * cycle in the topology costs the datagram its remaining TTL and no
+ * more.  It is off by default because it puts this router in the
+ * forwarding path for traffic nobody asked it to carry.
+ *
+ * The source address is the original sender's, which is why this needs a
+ * raw socket rather than the one the messages arrive on: accept_autorp()
+ * reads the agent's identity off the IP source -- `show autorp' prints
+ * it, and sec. 3.2 has an agent fall silent for a higher-addressed one --
+ * so a relay that put its own address there would make every router look
+ * like the agent to its neighbours and decide that election wrongly.
+ */
+static int      autorp_listener_flag = FALSE;
+static int      autorp_relay_socket  = -1;
+static uint8_t *autorp_relay_buf     = NULL;
+static int      autorp_relay_said    = FALSE;
+static int      autorp_listener_said = FALSE;
+static uint16_t autorp_relay_id      = 0;
+
+/* The largest datagram this will relay, which is comfortably more than
+ * either message can be without being fragmented on any link pimd runs
+ * on -- and the bound on the buffers below. */
+#define AUTORP_RELAY_MAX	2048
 
 static void autorp_read(int sd);
 
@@ -848,24 +889,268 @@ void age_autorp(void)
 }
 
 /*
+ * The UDP checksum of a datagram this relays, RFC 768: the pseudo-header
+ * of addresses, protocol and length, then the datagram itself.  Summed
+ * out of a copy rather than by writing the pseudo-header over the IP
+ * header in place, which is the usual trick and is not worth the
+ * confusion here.
+ */
+static uint16_t autorp_udp_cksum(uint32_t src, uint32_t dst, uint8_t *udp, size_t udplen)
+{
+    uint8_t buf[12 + AUTORP_RELAY_MAX];
+    uint8_t *p = buf;
+
+    if (udplen > AUTORP_RELAY_MAX)	/* the caller bounds this already */
+	return 0;
+
+    /* Both are already in network byte order, which is what PUT_NETLONG
+     * writes the bytes of -- PUT_EUADDR hands it an address the same way. */
+    PUT_NETLONG(src, p);
+    PUT_NETLONG(dst, p);
+    PUT_BYTE(0, p);
+    PUT_BYTE(IPPROTO_UDP, p);
+    PUT_HOSTSHORT(udplen, p);
+    memcpy(p, udp, udplen);
+
+    return (uint16_t)inet_cksum((uint16_t *)buf, (u_int)(12 + udplen));
+}
+
+/*
+ * One datagram, out of every PIM interface but the one it arrived on,
+ * with the source it came with and one less TTL.  See the comment on
+ * autorp_listener_flag for what bounds it and why the source is kept.
+ */
+static void autorp_relay(uint32_t from, uint32_t group, int ttl, vifi_t iif,
+			 uint8_t *msg, size_t len)
+{
+    size_t udplen = sizeof(struct udphdr) + len;
+    size_t iplen  = sizeof(struct ip) + udplen;
+    struct sockaddr_in sin;
+    struct udphdr *udp;
+    struct uvif *uv;
+    struct ip *ip;
+    uint8_t hops;
+    vifi_t vifi;
+
+    if (autorp_relay_socket < 0 || !autorp_relay_buf)
+	return;
+
+    /* The scope the sender asked for, sec. 5.  A datagram that would
+     * leave here with nothing left has reached the edge of it. */
+    if (ttl <= 1)
+	return;
+
+    if (iplen > AUTORP_RELAY_MAX) {
+	if (!autorp_relay_said) {
+	    logit(LOG_WARNING, 0, "Auto-RP: %zu bytes from %s is more than the listener relays",
+		  len, inet_fmt(from, s1, sizeof(s1)));
+	    autorp_relay_said = TRUE;
+	}
+
+	return;
+    }
+
+    ip  = (struct ip *)autorp_relay_buf;
+    udp = (struct udphdr *)(autorp_relay_buf + sizeof(struct ip));
+
+    memset(ip, 0, sizeof(*ip));
+    ip->ip_v          = IPVERSION;
+    ip->ip_hl         = sizeof(struct ip) >> 2;
+    ip->ip_id         = htons(++autorp_relay_id);
+    ip->ip_ttl        = (uint8_t)(ttl - 1);
+    ip->ip_p          = IPPROTO_UDP;
+    ip->ip_src.s_addr = from;
+    ip->ip_dst.s_addr = group;
+#ifdef HAVE_IP_HDRINCL_BSD_ORDER
+    ip->ip_len        = iplen;
+#else
+    ip->ip_len        = htons(iplen);
+#endif
+
+    udp->uh_sport = htons(AUTORP_PORT);
+    udp->uh_dport = htons(AUTORP_PORT);
+    udp->uh_ulen  = htons(udplen);
+    udp->uh_sum   = 0;
+    memcpy(autorp_relay_buf + iplen - len, msg, len);
+    udp->uh_sum   = autorp_udp_cksum(from, group, (uint8_t *)udp, udplen);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family      = AF_INET;
+    sin.sin_addr.s_addr = group;
+    sin.sin_port        = htons(AUTORP_PORT);
+
+    /* The header above carries the TTL for the systems that send what is
+     * in it, and this is for the ones that do not: a multicast datagram
+     * leaves a BSD with the socket's IP_MULTICAST_TTL whatever the header
+     * says, and that defaults to 1 -- which is one hop, and the relay
+     * would be pointless.  autorp_send() sets it the same way. */
+    hops = (uint8_t)(ttl - 1);
+    if (setsockopt(autorp_relay_socket, IPPROTO_IP, IP_MULTICAST_TTL,
+		   &hops, sizeof(hops)) < 0)
+	logit(LOG_WARNING, errno, "Auto-RP: failed setting the relay TTL");
+
+    for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
+	if (vifi == iif)
+	    continue;
+	if (uv->uv_flags & (VIFF_REGISTER | VIFF_DISABLED | VIFF_DOWN))
+	    continue;
+
+	k_set_if(autorp_relay_socket, uv->uv_lcl_addr);
+	if (sendto(autorp_relay_socket, autorp_relay_buf, iplen, 0,
+		   (struct sockaddr *)&sin, sizeof(sin)) < 0)
+	    logit(LOG_WARNING, errno, "Auto-RP: failed relaying on %s", uv->uv_name);
+	else
+	    IF_DEBUG(DEBUG_PIM_CAND_RP)
+		logit(LOG_DEBUG, 0, "Auto-RP: relayed %s from %s onto %s, TTL %u",
+		      inet_fmt(group, s1, sizeof(s1)), inet_fmt(from, s2, sizeof(s2)),
+		      uv->uv_name, ttl - 1);
+    }
+}
+
+/*
+ * The group a datagram was addressed to, which recvmsg() does not say:
+ * the type nibble does, an announcement being addressed to the agents and
+ * a mapping to the routers (sec. 4).  A datagram this cannot place is one
+ * accept_autorp() will refuse as well, and is not relayed.
+ */
+static int autorp_relay_group(uint8_t *msg, size_t len, uint32_t *group)
+{
+    if (len < AUTORP_HDR_LEN || AUTORP_VERSION_OF(msg[0]) != AUTORP_VERSION)
+	return FALSE;
+
+    switch (AUTORP_TYPE_OF(msg[0])) {
+    case AUTORP_TYPE_ANNOUNCE:
+	*group = htonl(AUTORP_ANNOUNCE_GROUP);
+	return TRUE;
+
+    case AUTORP_TYPE_MAPPING:
+	*group = htonl(AUTORP_DISCOVERY_GROUP);
+	return TRUE;
+
+    default:
+	return FALSE;
+    }
+}
+
+/*
  * The datagram handler the event loop calls.  One message per call, the
- * sender taken from the kernel rather than from anything in the payload.
+ * sender taken from the kernel rather than from anything in the payload,
+ * and with it the arrival interface and the TTL where the listener wants
+ * them: recvmsg() rather than recvfrom() for those two alone.
  */
 static void autorp_read(int sd)
 {
     struct sockaddr_in from;
-    socklen_t fromlen = sizeof(from);
+    struct cmsghdr *cmsg;
+    struct msghdr msgh;
+    char cmbuf[256];
+    struct iovec iov;
+    vifi_t iif = NO_VIF;
+    uint32_t group;
+    int ttl = -1;
     ssize_t len;
 
     memset(&from, 0, sizeof(from));
-    len = recvfrom(sd, autorp_buf, RECV_BUF_SIZE, 0,
-		   (struct sockaddr *)&from, &fromlen);
+    memset(&msgh, 0, sizeof(msgh));
+    iov.iov_base        = autorp_buf;
+    iov.iov_len         = RECV_BUF_SIZE;
+    msgh.msg_name       = &from;
+    msgh.msg_namelen    = sizeof(from);
+    msgh.msg_control    = cmbuf;
+    msgh.msg_controllen = sizeof(cmbuf);
+    msgh.msg_iov        = &iov;
+    msgh.msg_iovlen     = 1;
+
+    len = recvmsg(sd, &msgh, 0);
     if (len < 0) {
 	if (errno == EINTR || errno == EAGAIN)
 	    return;
 
-	logit(LOG_WARNING, errno, "Failed recvfrom() on the Auto-RP socket");
+	logit(LOG_WARNING, errno, "Failed recvmsg() on the Auto-RP socket");
 	return;
+    }
+
+    for (cmsg = CMSG_FIRSTHDR(&msgh); cmsg; cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
+	if (cmsg->cmsg_level != IPPROTO_IP)
+	    continue;
+
+	switch (cmsg->cmsg_type) {
+#ifdef IP_PKTINFO
+	case IP_PKTINFO:
+	{
+	    struct in_pktinfo ipi;
+
+	    if (cmsg->cmsg_len < CMSG_LEN(sizeof(ipi)))
+		break;
+
+	    memcpy(&ipi, CMSG_DATA(cmsg), sizeof(ipi));
+	    iif = find_vif(ipi.ipi_ifindex);
+	    break;
+	}
+#endif
+#ifdef IP_RECVIF
+	case IP_RECVIF:
+	{
+	    struct sockaddr_dl sdl;
+
+	    /* Variable length, and the index is what this wants: copy what
+	     * the kernel said it wrote and no more. */
+	    if (cmsg->cmsg_len < CMSG_LEN(offsetof(struct sockaddr_dl, sdl_data)))
+		break;
+
+	    memset(&sdl, 0, sizeof(sdl));
+	    memcpy(&sdl, CMSG_DATA(cmsg),
+		   MIN(cmsg->cmsg_len - CMSG_LEN(0), sizeof(sdl)));
+	    iif = find_vif((int)sdl.sdl_index);
+	    break;
+	}
+#endif
+#ifdef IP_RECVTTL
+	case IP_RECVTTL:
+	    if (cmsg->cmsg_len < CMSG_LEN(sizeof(uint8_t)))
+		break;
+
+	    ttl = *(uint8_t *)CMSG_DATA(cmsg);
+	    break;
+#endif
+#if defined(IP_TTL) && IP_TTL != IP_RECVTTL
+	case IP_TTL:
+	{
+	    int val;
+
+	    if (cmsg->cmsg_len < CMSG_LEN(sizeof(val)))
+		break;
+
+	    memcpy(&val, CMSG_DATA(cmsg), sizeof(val));
+	    ttl = val;
+	    break;
+	}
+#endif
+	default:
+	    break;
+	}
+    }
+
+    /* Relayed before it is parsed, and only where both answers came back:
+     * without the TTL there is nothing to decrement, and without the
+     * arrival interface the relay would go back out of the link it came
+     * in on and the two routers would trade it until the TTL ran out.
+     * A kernel that answers neither leaves the listener with nothing to
+     * work from, which is worth saying once rather than quietly doing
+     * nothing. */
+    if (autorp_listener_flag) {
+	if (ttl < 0 || iif == NO_VIF) {
+	    if (!autorp_listener_said) {
+		logit(LOG_WARNING, 0, "Auto-RP: the listener has no %s for a datagram"
+		      " from %s, not relaying",
+		      ttl < 0 ? "TTL" : "arrival interface",
+		      inet_fmt(from.sin_addr.s_addr, s1, sizeof(s1)));
+		autorp_listener_said = TRUE;
+	    }
+	} else if (autorp_relay_group((uint8_t *)autorp_buf, (size_t)len, &group)) {
+	    autorp_relay(from.sin_addr.s_addr, group, ttl, iif,
+			 (uint8_t *)autorp_buf, (size_t)len);
+	}
     }
 
     accept_autorp(from.sin_addr.s_addr, autorp_buf, (size_t)len);
@@ -889,10 +1174,53 @@ static void autorp_join(void)
 
 	/* Only an agent has anything to do with the announce group, and
 	 * joining it otherwise would have this router carry traffic it
-	 * would then throw away */
-	if (autorp_agent_flag)
+	 * would then throw away -- unless it is the one passing it on,
+	 * which cannot relay what it does not receive */
+	if (autorp_agent_flag || autorp_listener_flag)
 	    k_join(autorp_socket, htonl(AUTORP_ANNOUNCE_GROUP), uv);
     }
+}
+
+/*
+ * The raw socket a relay goes out of.  A datagram keeps the source
+ * address it arrived with, which the socket the messages come in on
+ * cannot do, so this one carries its own IP header (k_hdr_include()) the
+ * way the PIM socket does.  Loopback is off: a relay this router heard
+ * back would be relayed again, and the TTL is the only thing that would
+ * stop it.
+ */
+static void autorp_relay_init(void)
+{
+    int sd;
+
+    if (autorp_relay_socket > -1)
+	return;
+
+    if (!autorp_relay_buf) {
+	autorp_relay_buf = calloc(1, AUTORP_RELAY_MAX);
+	if (!autorp_relay_buf) {
+	    logit(LOG_WARNING, errno, "Auto-RP: out of memory for the listener, not relaying");
+	    return;
+	}
+    }
+
+    /* As with the socket above: a raw socket takes root, and under the
+     * Linux filter the child may not call socket(2) at all. */
+    sd = priv_socket(PRIV_SOCK_AUTORP_RELAY);
+    if (sd < 0)
+	sd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
+    if (sd < 0) {
+	logit(LOG_WARNING, errno, "Auto-RP: failed creating the listener socket, not relaying");
+	return;
+    }
+
+    k_hdr_include(sd, TRUE);
+    k_set_loop(sd, FALSE);
+
+    autorp_relay_socket = sd;
+    logit(LOG_INFO, 0, "Auto-RP: listener relaying %s and %s between PIM interfaces",
+	  inet_fmt(htonl(AUTORP_ANNOUNCE_GROUP), s1, sizeof(s1)),
+	  inet_fmt(htonl(AUTORP_DISCOVERY_GROUP), s2, sizeof(s2)));
 }
 
 void init_autorp(void)
@@ -942,6 +1270,17 @@ void init_autorp(void)
     }
 
     autorp_socket = sd;
+
+    /* The listener wants two things off each datagram that recvfrom()
+     * does not give: which interface it came in on and how much TTL is
+     * left.  Asked for here rather than in autorp_relay(), the option
+     * being a property of the socket. */
+    if (autorp_listener_flag) {
+	k_set_recvif(autorp_socket, TRUE);
+	k_set_recvttl(autorp_socket, TRUE);
+	autorp_relay_init();
+    }
+
     autorp_join();
 
     /* Both say something at once rather than after an interval: a router
@@ -965,6 +1304,14 @@ void init_autorp(void)
  * read the words, and what an announcement or an agent is made of belongs
  * beside the code that sends it.
  */
+/* `autorp listener' in pimd.conf, and off again on a reload that drops it */
+void autorp_listener_set(int on)
+{
+    autorp_listener_flag = on;
+
+    logit(LOG_INFO, 0, "Auto-RP listener is %s", on ? "enabled" : "disabled");
+}
+
 void autorp_config_reset(void)
 {
     struct autorp_prefix *pfx, *next;
@@ -987,6 +1334,8 @@ void autorp_config_reset(void)
     autorp_agent_holdtime	= AUTORP_DEFAULT_HOLDTIME;
     autorp_agent_ttl		= AUTORP_DEFAULT_SCOPE;
     autorp_agent_better		= INADDR_ANY_N;
+
+    autorp_listener_flag	= FALSE;
 }
 
 void autorp_announce_set(uint32_t addr, int interval, int holdtime, int ttl)
@@ -1051,6 +1400,16 @@ void stop_autorp(void)
 	close(autorp_socket);
 	autorp_socket = -1;
     }
+
+    if (autorp_relay_socket > -1) {
+	close(autorp_relay_socket);
+	autorp_relay_socket = -1;
+    }
+
+    free(autorp_relay_buf);
+    autorp_relay_buf = NULL;
+    autorp_relay_said = FALSE;
+    autorp_listener_said = FALSE;
 }
 
 static void dump_autorp_config(FILE *fp);
@@ -1125,6 +1484,10 @@ static void dump_autorp_config(FILE *fp)
 	    fprintf(fp, "    %-18s %s\n", netname(pfx->group_addr, pfx->group_mask),
 		    pfx->negative ? "deny" : "");
     }
+
+    if (autorp_listener_flag)
+	fprintf(fp, "Passing both groups on, %s\n",
+		autorp_relay_socket > -1 ? "autorp listener" : "autorp listener, but no socket");
 
     if (autorp_agent_flag) {
 	fprintf(fp, "Mapping agent %s every %u sec, holdtime %u, scope %u%s\n",

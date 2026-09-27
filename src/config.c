@@ -3156,6 +3156,26 @@ static int parse_autorp(char *s)
     }
 
     /*
+     * Pass the two well-known groups on, sec. 3.3, which the draft
+     * assumes somebody does and pimd otherwise does not: off unless a
+     * pimd.conf asks, since it puts this router in the forwarding path
+     * for traffic nobody asked it to carry.
+     */
+    if (EQUAL(w, "listener")) {
+	w = next_word(&s);
+	if (EQUAL(w, "disable")) {
+	    autorp_listener_set(FALSE);
+	} else if (EQUAL(w, "enable") || EQUAL(w, "")) {
+	    autorp_listener_set(TRUE);
+	} else {
+	    WARN("Invalid autorp listener option '%s', expected 'enable' or 'disable'", w);
+	    return FALSE;
+	}
+
+	return TRUE;
+    }
+
+    /*
      * The two roles, which take the same three numbers after an address:
      * how often to speak, how long what was said is worth, and how far it
      * travels.  An interface name is taken as well as an address, the way
@@ -3280,8 +3300,8 @@ static int parse_autorp(char *s)
 	return TRUE;
     }
 
-    WARN("Invalid autorp option '%s', expected 'discovery', 'announce',"
-	 " 'mapping-agent' or 'group-prefix'", w);
+    WARN("Invalid autorp option '%s', expected 'discovery', 'listener',"
+	 " 'announce', 'mapping-agent' or 'group-prefix'", w);
 
     return FALSE;
 }

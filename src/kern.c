@@ -316,6 +316,42 @@ void k_set_pktinfo(int socket __attribute__((unused)), int val __attribute__((un
 
 
 /*
+ * The arrival interface of a datagram, which the Auto-RP listener needs to
+ * keep from sending a relay back out of the link it came in on.  The
+ * function above asks for it the Linux way; the BSDs have no IPv4
+ * IP_PKTINFO and spell the same thing IP_RECVIF, handing back a
+ * sockaddr_dl whose sdl_index is the ifindex.  A caller that gets neither
+ * has to do without: see autorp_relay() in src/autorp.c, which refuses to
+ * relay rather than guess.
+ */
+void k_set_recvif(int socket __attribute__((unused)), int val __attribute__((unused)))
+{
+#ifdef IP_PKTINFO
+    k_set_pktinfo(socket, val);
+#elif defined(IP_RECVIF)
+    if (setsockopt(socket, IPPROTO_IP, IP_RECVIF, &val, sizeof(val)) < 0)
+	logit(LOG_ERR, errno, "Failed %s IP_RECVIF on socket %d",
+	      ENABLINGSTR(val), socket);
+#endif
+}
+
+
+/*
+ * And its TTL, which the same relay decrements.  Linux answers this in a
+ * cmsg of type IP_TTL and an int, the BSDs in one of type IP_RECVTTL and a
+ * byte, so the reader takes either.
+ */
+void k_set_recvttl(int socket __attribute__((unused)), int val __attribute__((unused)))
+{
+#ifdef IP_RECVTTL
+    if (setsockopt(socket, IPPROTO_IP, IP_RECVTTL, &val, sizeof(val)) < 0)
+	logit(LOG_ERR, errno, "Failed %s IP_RECVTTL on socket %d",
+	      ENABLINGSTR(val), socket);
+#endif
+}
+
+
+/*
  * Set the default TTL for the multicast packets outgoing from this
  * socket.
  * TODO: Does it affect the unicast packets?

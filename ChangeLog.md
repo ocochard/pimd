@@ -7,6 +7,20 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `autorp listener` passes the two Auto-RP groups on, which is what makes the
+  feature work in a domain more than one hop wide.  Auto-RP assumes somebody
+  floods 224.0.1.39 and 224.0.1.40 to every router (sec. 3.3) and says nothing
+  about who; pimd has no dense mode, so without this a mapping agent adjacent
+  to the candidate RPs and to the routers works and anything wider does not.
+  A datagram that arrives on either group is now re-sent out of every other
+  PIM interface with its TTL decremented, which is what IOS spells `ip pim
+  autorp listener`.  Off by default: it puts the router in the forwarding path
+  for traffic nobody asked it to carry.  Three things bound it -- those two
+  groups only, a TTL that survives the decrement, and never back out of the
+  arrival interface -- and a relay keeps the source address it arrived with,
+  which is where the agent election of sec. 3.2 and the "Agent" column of
+  `pimctl show autorp` read the agent.  That takes a raw socket, so under
+  privilege separation the parent opens it
 - `phyint ... igmp-accept-groups PREFIX` says which multicast groups a host on
   that link may join.  A membership report for any other group is ignored: no
   group state, no shared tree, nothing a host on a stub LAN can make this

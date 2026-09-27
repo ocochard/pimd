@@ -562,6 +562,7 @@ extern void	age_autorp		(void);
 extern int	autorp_denied		(uint32_t group);
 extern int	dump_autorp		(FILE *fp, int detail);
 extern void	autorp_config_reset	(void);
+extern void	autorp_listener_set	(int on);
 extern void	autorp_announce_set	(uint32_t addr, int interval, int holdtime, int ttl);
 extern void	autorp_agent_set	(uint32_t addr, int interval, int holdtime, int ttl);
 extern int	autorp_prefix_add	(uint32_t group_addr, uint8_t masklen, int negative);
@@ -634,6 +635,8 @@ extern void	ipc_exit		(void);
 extern void	k_set_sndbuf		(int socket, int bufsize, int minsize);
 extern void	k_set_rcvbuf		(int socket, int bufsize, int minsize);
 extern void	k_hdr_include		(int socket, int val);
+extern void	k_set_recvif		(int socket, int val);
+extern void	k_set_recvttl		(int socket, int val);
 extern void	k_set_pktinfo		(int socket, int val);
 extern void	k_set_ttl		(int socket, int t);
 #ifdef RAW_OUTPUT_IS_RAW
