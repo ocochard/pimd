@@ -1190,6 +1190,11 @@ PASSIVE_HELLO_WAIT=${PASSIVE_HELLO_WAIT:-70}
 # every step.  ED2_IF is the receiver's side of the same wire, not R3's.
 PASSIVE_IF=${PASSIVE_IF:-${EP}203a}
 PASSIVE_UP_IF=${PASSIVE_UP_IF:-${EP}123b}
+
+# How long tcpdump watches the passive link for PIM of any type.  Longer
+# than a Hello period, so that the message this router would otherwise send
+# most often has had two chances to appear.
+PASSIVE_PIM_WAIT=${PASSIVE_PIM_WAIT:-40}
 RPLH_ADDR=10.0.3.1
 
 # shared-lan: the shared segment is 10.0.3.0/24, with three PIM routers and
@@ -8695,6 +8700,23 @@ check_passive() {
 		fail "r3 sent a Hello on $PASSIVE_IF, which is passive"
 	else
 		ok "and none on $PASSIVE_IF in the same window"
+	fi
+
+	# And not a PIM packet of any type, read off the wire rather than out
+	# of a log: the Hello is the one message this router suppresses
+	# explicitly, and every other one is suppressed by the interface
+	# having no neighbour -- VIFF_NONBRS, which receive_pim_hello() clears
+	# only after the passive check, so a passive interface can never lose
+	# it.  That is the invariant this assertion is here to hold, since it
+	# is what "no PIM on the wire" rests on.
+	box_run ed2 timeout "$PASSIVE_PIM_WAIT" tcpdump -l -c 1 -nni "$ED2_IF" \
+		"ip proto 103" >"$WORKDIR/passive-pim.txt" 2>/dev/null || true
+	# A timestamped line is a packet; tcpdump that caught nothing still
+	# leaves a newline behind, which -s counts as content.
+	if grep -qE "^[0-9][0-9]:" "$WORKDIR/passive-pim.txt"; then
+		fail "PIM on a passive link: $(grep -E "^[0-9][0-9]:" "$WORKDIR/passive-pim.txt" | head -1)"
+	else
+		ok "and no PIM packet of any type in ${PASSIVE_PIM_WAIT}s of tcpdump on the link"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

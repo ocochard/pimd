@@ -682,6 +682,10 @@ RO_SETTLE=${RO_SETTLE:-6}
 # How long the Arista's (S,G) has to have stood before the scenario prunes
 # the source off the RPT.  See eos_sg_settled().
 RO_SG_SETTLED=${RO_SG_SETTLED:-20}
+
+# How many $RO_WINDOW-second readings step 3 will take before deciding the
+# Arista has not acted on the Prune at all.
+RO_PRUNE_TRIES=${RO_PRUNE_TRIES:-5}
 # Seconds of R3's kernel counters that tell a stream from its absence at
 # one packet a second
 RO_WINDOW=${RO_WINDOW:-5}
@@ -3142,7 +3146,21 @@ stream_stopped_at_r3() { ! stream_reaches_r3; }
 
 # R3's pimd, stopped and continued.  The pidfile is pimd's own, not the
 # daemon(8) supervisor's, and the jails share the host's filesystem.
-r3_signal() { ${SUDO} kill "-$1" "$(${SUDO} cat "$WORKDIR/r3.pid")"; }
+#
+# Both halves of it: pimd separates its privileges, the pidfile names the
+# privileged parent, and the child is the one that speaks PIM.  A SIGSTOP
+# is not forwarded the way SIGTERM is (parent_signal(), src/privsep.c), so
+# stopping the parent alone leaves the child answering X3's Prune(S,G,rpt)
+# with an override -- until it blocks writing a log line to a parent that
+# is not reading, which is a race this scenario lost about as often as it
+# won.  "A Prune nobody overrides" has to mean nobody.
+r3_signal() {
+	rs_parent=$(${SUDO} cat "$WORKDIR/r3.pid")
+
+	for rs_pid in $(${SUDO} pgrep -P "$rs_parent" 2>/dev/null) "$rs_parent"; do
+		${SUDO} kill "-$1" "$rs_pid" 2>/dev/null || true
+	done
+}
 
 # Capture what R3 sends on the link, from X3, for $1 seconds into $2
 r3_capture() {
@@ -3243,11 +3261,17 @@ check_rpt_override() {
 	r3_signal STOP
 	x3_send hello -H 105
 	x3_send_rpt_prune
-	sleep "$RO_SETTLE"
-	if stream_stopped_at_r3; then
+	# Polled rather than sampled once: what this step asserts is that a
+	# Prune nobody overrides takes the source away, and how long the
+	# Arista takes about it is the next step's business, not this one's.
+	# A single reading after $RO_SETTLE seconds failed whenever the box was
+	# busy enough for the Arista to act a second or two later -- the two
+	# readings then straddle the moment it stopped, and a stop reads as a
+	# stream.
+	if wait_for $RO_PRUNE_TRIES stream_stopped_at_r3; then
 		ok "the Arista stopped forwarding $SRC_ADDR to R3 on X3's Prune(S,G,rpt)"
 	else
-		fail "the Arista still forwards $SRC_ADDR ${RO_SETTLE}s after a Prune(S,G,rpt) nobody overrode"
+		fail "the Arista still forwards $SRC_ADDR $((RO_PRUNE_TRIES * RO_WINDOW))s after a Prune(S,G,rpt) nobody overrode"
 		dprint "$(eos "show ip mroute $GROUP")"
 	fi
 
