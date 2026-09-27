@@ -7,6 +7,27 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `pimctl -j` prints the reply as JSON, for a script that would otherwise
+  read columns.  Each table is an array of objects named after the table,
+  `show status` is one object of the same values, and a key is the column
+  heading lowercased with runs of anything but a letter or a digit turned
+  into one underscore -- `.interface[].dr_address` for the "DR Address"
+  column.  A value this router has not got is `null` where the table prints
+  "N/A".  Every table is declared once now, in the function that fills it in,
+  and rendered by either of two writers, so a column added to the text form
+  is in the JSON by construction and the heading is read off the first row
+  rather than written out beside it.  `show compat`, a text format from before
+  `pimctl` existed, has no JSON form and answers `-j` with an "error"
+  member saying so; the `detail` half of `show mrt` has none either, its
+  per-interface maps and timers being a block rather than a table, so
+  `show mrt detail -j` is the table without them.  Three things about the
+  text form changed with it: `show rp` names the group range on every row
+  of it rather than only on the first RP of a range, the secondary
+  addresses of `show neighbor detail` name their interface and say
+  "secondary" in the Mode column, with "N/A" for the priority and uptime
+  a secondary has not got, and the ':' of `show status` moved three
+  columns right, one past the longest label in the listing, so that every
+  one of those lines has a space before the colon
 - `phyint ... passive` runs IGMP on an interface and no PIM: no Hello of this
   router's goes out there and no adjacency is formed with one that arrives, so
   a Join/Prune, an Assert or a unicast Bootstrap from that link is refused for

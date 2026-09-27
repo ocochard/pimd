@@ -1,4 +1,4 @@
-.Dd Sep 12, 2026
+.Dd Sep 27, 2026
 .Dt PIMCTL 8 SMM
 .Os
 .Sh NAME
@@ -7,7 +7,7 @@
 .Xr pimd 8
 .Sh SYNOPSIS
 .Nm pimctl
-.Op Fl mpthv
+.Op Fl jmpthv
 .Op Fl i Ar NAME
 .Op Fl u Ar FILE
 .Op COMMAND
@@ -92,6 +92,50 @@ Connect to named PIM daemon instance.  Since the same
 is capable supporting all the PIM daemon's it comes with heuristics to
 aid the user, i.e., if only one of the supported daemon's is running
 this option is not required.
+.It Fl j, -json
+Print the reply as JSON rather than as tables, for a script that would
+otherwise have to read columns.  Every table becomes an array of
+objects named after the table, every value of
+.Cm show status
+a member of the same object, and a key is the column heading lowercased
+with runs of anything but a letter or a digit turned into one
+underscore, so that the
+.Dq DR Address
+column is
+.Ic .interface[].dr_address
+to
+.Xr jq 1 .
+A field this router has no value for, an unelected BSR's priority or a
+neighbor that advertised no DR priority, is
+.Dv null
+where the table prints
+.Dq N/A .
+.Pp
+This is for the
+.Cm show
+commands and
+.Cm version ;
+.Cm debug ,
+.Cm log ,
+.Cm kill
+and
+.Cm restart
+answer a line of text either way.
+.Cm show compat
+is a text format from before
+.Nm
+existed and has no JSON form at all: with
+.Fl j
+it answers an
+.Dq error
+member saying so.  The
+.Op Ar detail
+half of
+.Cm show mrt
+has none either, its per-interface maps and timers being a block rather
+than a table, so
+.Cm show mrt detail Fl j
+is the table without them.
 .It Fl m, -monitor
 Run
 .Op Ar COMMAND

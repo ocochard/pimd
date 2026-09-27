@@ -329,6 +329,15 @@ few spellings people type anyway work as hidden aliases: `show if` and
 `show interfaces` for `show interface`, `show routes` for `show mrt`, and
 `show groups` for `show igmp groups`.
 
+`pimctl -j` prints the reply as JSON instead of tables, for a script
+that would otherwise read columns:
+
+    pimctl -j show interface | jq -r '.interface[] | "\(.interface) \(.dr_address)"'
+
+A key is the column heading lowercased, with runs of anything but a
+letter or a digit turned into one underscore, and a value this router
+has not got is `null` where the table prints "N/A".
+
 The default command is `pimctl show pim`.  To watch it continually
 (notice the `-c` flag to watch(1) to tell it to interpret the ANSI
 escape sequences):

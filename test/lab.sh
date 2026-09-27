@@ -1099,6 +1099,9 @@ OFFPATH_EPAIRS="$DEFAULT_EPAIRS ${EP}113"
 # solo: one router, an end device on each of its two LANs and nothing else.
 # The link to the receiver is numbered 104 rather than 102 or 103, which
 # would read as a link to a second or third router; there is none here.
+# It is also where "pimctl -j" is asserted, step 7: what that needs is a
+# router with something in every table, which the steps before it build,
+# and the cheapest topology that gets there is this one.
 SOLO_BOXES="ed1 r1 ed2"
 SOLO_ROUTERS="r1"
 SOLO_EPAIRS="${EP}101 ${EP}104"
@@ -3293,11 +3296,13 @@ start() {
 has_neighbor() { pimctl "$1" show neighbor 2>/dev/null | grep -q "$2"; }
 
 # Does router $1 hold $3 as a secondary address of its neighbour $2?  The
-# detail listing puts each one on a line of its own under the neighbour's.
+# detail listing puts each one on a row of its own under the neighbour's,
+# said so by "secondary" in the Mode column, the fourth: interface, then
+# the address, whichever kind of row it is.
 has_secaddr() {
 	pimctl "$1" show neighbor detail 2>/dev/null | awk -v n="$2" -v a="$3" '
-		$NF != "secondary" { cur = $2; next }
-		cur == n && $1 == a { found = 1 }
+		$4 != "secondary" { cur = $2; next }
+		cur == n && $2 == a { found = 1 }
 		END { exit !found }
 	'
 }
@@ -3314,6 +3319,116 @@ took_p2p_branch() {
 	${SUDO} grep -q "Installing $GIF_IF ($2 -> $3)" "$WORKDIR/$1.log" 2>/dev/null
 }
 has_rp()       { pimctl "$1" show rp 2>/dev/null | grep -q "$2"; }
+
+# Is what arrives on stdin JSON?  A parser where the machine has one --
+# python3 on both CI runners and on any developer box -- and a structural
+# test where it has neither, which is weaker (it cannot see a missing
+# comma) but is never absent: a document that opens, closes, keeps its
+# braces and brackets balanced and puts nothing outside them.
+json_ok() {
+	if command -v python3 >/dev/null 2>&1; then
+		python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1
+	elif command -v jq >/dev/null 2>&1; then
+		jq . >/dev/null 2>&1
+	else
+		awk '
+			{
+				for (i = 1; i <= length($0); i++) {
+					ch = substr($0, i, 1)
+					if (instr) {
+						if (esc)		{ esc = 0; continue }
+						if (ch == "\\")	{ esc = 1; continue }
+						if (ch == "\"")	  instr = 0
+						continue
+					}
+					if (ch == "\"")		{ instr = 1; continue }
+					if (ch == "{" || ch == "[")	{ depth++; seen = 1; continue }
+					if (ch == "}" || ch == "]")	{ depth--; if (depth < 0) bad = 1; continue }
+					if (depth == 0 && ch != " " && ch != "\t")
+						bad = 1
+				}
+			}
+			END { exit (bad || !seen || depth != 0) }
+		'
+	fi
+}
+
+# The two renderings of one table, row by row: "declared once, rendered
+# twice" has to mean the same rows carrying the same values, and nothing
+# else here would catch a column that reaches one form and not the other,
+# or a width too narrow to keep two columns apart.  $1 is the JSON, $2 the
+# table with its headings already stripped by -t.
+#
+# Two calls cannot be made at the same instant, so a number is allowed to
+# differ by a few (a timeout counts down between them) and an uptime is
+# compared by its shape.  A value with a space in it, "SPT KAT WC", is
+# looked for in the line rather than among its fields.
+json_cmp() {
+	python3 - "$1" "$2" <<-'PYEOF'
+		import json, re, sys
+
+		DUR = re.compile(r"^(\d+d)?\d+h\d+m\d+s(/(\d+d)?\d+h\d+m\d+s)?$")
+
+		doc = json.load(open(sys.argv[1]))
+		rows = next((v for v in doc.values() if isinstance(v, list)), None)
+		if rows is None:
+		    sys.exit("no table in the JSON")
+
+		# The values a table ends with ("Number of Groups : 3") are not rows
+		lines = [l for l in open(sys.argv[2]).read().splitlines()
+		         if l.strip() and not re.search(r"\s:\s", l)]
+
+		if len(rows) != len(lines):
+		    sys.exit("%d rows in the JSON, %d in the table" % (len(rows), len(lines)))
+
+		# Field by field, in order: an empty value prints as blanks, which
+		# split() drops, and a value with a space in it ("SPT KAT WC") is
+		# that many fields.  A row must run out on both sides at once.
+		for row, line in zip(rows, lines):
+		    fields = line.split()
+		    at = 0
+		    for key, val in row.items():
+		        if val == "":
+		            continue
+		        if val is None:
+		            want, num = "N/A", 1
+		        elif isinstance(val, int):
+		            want, num = str(val), 1
+		        else:
+		            want, num = val, len(val.split())
+
+		        if at + num > len(fields):
+		            sys.exit("%s is %r in the JSON, and the row ran out: %r" % (key, val, line))
+
+		        got = " ".join(fields[at:at + num])
+		        at += num
+
+		        if got == want:
+		            continue
+		        # A timer counted down between the two calls, or an uptime
+		        # moved on; both are the same value a second apart.
+		        if isinstance(val, int) and got.lstrip("-").isdigit() \
+		           and abs(int(got) - val) <= 3:
+		            continue
+		        if DUR.match(want) and DUR.match(got):
+		            continue
+		        sys.exit("%s is %r in the JSON and %r in the table" % (key, val, got))
+
+		    if at != len(fields):
+		        sys.exit("the table row has %d field(s) the JSON has not: %r"
+		                 % (len(fields) - at, line))
+	PYEOF
+}
+
+# Both renderings of the table $2.. on router $1, compared as above
+json_matches_text() {
+	jmt_r=$1
+	shift
+	pimctl "$jmt_r" -t "$@" >"$WORKDIR/jmt.txt" 2>/dev/null
+	pimctl "$jmt_r" -j "$@" >"$WORKDIR/jmt.json" 2>/dev/null
+
+	json_cmp "$WORKDIR/jmt.json" "$WORKDIR/jmt.txt"
+}
 
 # The BSR router $1 has elected, out of the "Elected BSR" block of
 # "show status"; empty while it has none
@@ -5314,7 +5429,7 @@ check_autorp() {
 		i=$((i + 1))
 	done
 	sleep 5
-	if pimctl r1 show status | grep -q "Auto-RP mappings     : $AUTORP_LIMIT of $AUTORP_LIMIT"; then
+	if pimctl r1 show status | grep -qE "^Auto-RP mappings +: $AUTORP_LIMIT of $AUTORP_LIMIT"; then
 		ok "r1 holds $AUTORP_LIMIT mappings of $AUTORP_LIMIT, and refused the rest"
 	else
 		fail "the cap did not hold: $(pimctl r1 show status | grep 'Auto-RP mappings')"
@@ -6556,6 +6671,19 @@ check_crafted() {
 		fail "r1 lists $SRC_ADDR as a secondary address of itself, sec. 4.3.4 excludes it"
 	else
 		ok "the sender's primary address, listed too, was left out"
+	fi
+
+	# And the JSON of that table says the same, which is asserted here
+	# rather than in solo because this is the only place with a
+	# neighbour that has an Address List: a secondary is a row of its
+	# own there, with "secondary" where a neighbour row has its uptime.
+	if command -v python3 >/dev/null 2>&1; then
+		if cw=$(json_matches_text r1 show neighbor detail 2>&1); then
+			ok "r1: 'show neighbor detail' is the same table either way"
+		else
+			fail "r1: 'show neighbor detail' differs between the two renderings: $cw"
+			dprint "$(pimctl r1 -j show neighbor detail 2>&1)"
+		fi
 	fi
 
 	# A list of another family is not one the neighbour's IPv4 next hops
@@ -8901,11 +9029,10 @@ check_bsr_elect() {
 			-g "$BE_ONE_RANGE" -m 16 >/dev/null 2>&1 || true
 	done
 	sleep 3
+	# "show rp" names the group range on every row of it, one row per RP,
+	# so the RPs of a range are the rows whose first field is that range.
 	be_rps=$(pimctl r2 -t show rp 2>/dev/null | \
-		awk -v r="$BE_ONE_RANGE/16" '$1 == r { f = 1; c = 1; next }
-					     f && NF == 4 { c++ }
-					     f && NF > 4 { exit }
-					     END { print c + 0 }')
+		awk -v r="$BE_ONE_RANGE/16" '$1 == r { c++ } END { print c + 0 }')
 	if [ "$be_rps" -eq 255 ]; then
 		ok "$BE_ONE_RANGE/16 holds 255 RPs and no more, which is what a byte holds"
 	else
@@ -9901,6 +10028,68 @@ check_solo() {
 		ok "r1 kernel has an MFC entry for $GROUP"
 	else
 		fail "r1 kernel MFC is empty, pimd never pushed the route down"
+	fi
+
+	# Every table of a router that has state in all of them, in the other
+	# rendering: "pimctl -j".  The scenario is here rather than in one of
+	# its own because what this needs is a daemon with something in each
+	# table, which the five steps above have just built.
+	print "7. The same tables as JSON, 'pimctl -j'"
+	for c in "show status" "show summary" "show interface" \
+		 "show igmp interface" "show igmp groups" "show neighbor" \
+		 "show mrt" "show mfc" "show rp" "show crp" "show autorp" \
+		 "show pim" "version"; do
+		if pimctl r1 -j $c 2>/dev/null | json_ok; then
+			ok "r1: 'pimctl -j $c' is JSON"
+		else
+			fail "r1: 'pimctl -j $c' is not JSON"
+			dprint "$(pimctl r1 -j $c 2>&1)"
+		fi
+	done
+
+	# The control.  Without it every line above would pass on a json_ok()
+	# that says yes to anything, the text table included.
+	if pimctl r1 show interface 2>/dev/null | json_ok; then
+		fail "json_ok() took the text table for JSON, it asserts nothing"
+	else
+		ok "and the text table is not JSON, so those lines can fail"
+	fi
+
+	# And the two renderings of a table say the same thing, row by row,
+	# which is the whole claim of one declaration and two writers.  Only
+	# with a JSON parser: the fallback above cannot read values out.
+	if command -v python3 >/dev/null 2>&1; then
+		for c in "show interface" "show igmp interface" \
+			 "show igmp groups" "show summary" "show neighbor detail" \
+			 "show mrt" "show mfc" "show rp" "show crp"; do
+			if why=$(json_matches_text r1 $c 2>&1); then
+				ok "r1: '$c' is the same table either way"
+			else
+				fail "r1: '$c' differs between the two renderings: $why"
+				dprint "$(pimctl r1 -j $c 2>&1)"
+				dprint "$(pimctl r1 -p $c 2>&1)"
+			fi
+		done
+
+		# The control.  Mismatched halves have to be refused, or every
+		# line above passes on a comparison that accepts anything.
+		pimctl r1 -t show interface >"$WORKDIR/jmt.txt" 2>/dev/null
+		pimctl r1 -j show rp        >"$WORKDIR/jmt.json" 2>/dev/null
+		if json_cmp "$WORKDIR/jmt.json" "$WORKDIR/jmt.txt" 2>/dev/null; then
+			fail "the RP set's JSON was taken for the interface table, the comparison asserts nothing"
+		else
+			ok "and two different tables do not compare equal"
+		fi
+	else
+		skip "no python3 here, the two renderings are not compared field by field"
+	fi
+
+	# The two dumps that have no JSON form say so, rather than wrapping a
+	# text dump in braces and calling it JSON.
+	if pimctl r1 -j show compat 2>/dev/null | grep -q '"error"'; then
+		ok "r1: 'show compat' answers -j with an error member"
+	else
+		fail "r1: 'show compat' answered -j with something else"
 	fi
 
 	result || {

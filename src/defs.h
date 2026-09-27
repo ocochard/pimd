@@ -560,6 +560,59 @@ extern void	autorp_agent_set	(uint32_t addr, int interval, int holdtime, int ttl
 extern int	autorp_prefix_add	(uint32_t group_addr, uint8_t masklen, int negative);
 
 /* ipc.c */
+/*
+ * One table of a pimctl reply, declared once and rendered twice.
+ *
+ * Every table pimctl prints is a list of rows of the same shape, so a row
+ * is described where it is filled in -- each column's heading, its width,
+ * and its value -- and one of two renderers in src/ipc.c walks it: the
+ * columns pimctl has always printed, or the JSON of "pimctl -j".  Saying
+ * it once is the point: a column added to the text form is in the JSON by
+ * construction, and the heading cannot drift from the rows beneath it,
+ * being read off the first row rather than written out a second time.
+ *
+ * The JSON key is the heading, lowercased, with runs of anything that is
+ * not a letter or a digit turned into one underscore, so that "DR Address"
+ * is .dr_address and jq(1) needs no quoting to reach it.
+ *
+ * IPC_NA is the one way to say a field has no value, "N/A" in the table
+ * and null in the JSON; an empty string is a value like any other and
+ * prints as the blank it is.
+ *
+ * Numbers carry no format of their own: the width is a number and the
+ * renderer owns the conversion, so a caller cannot hand it a "%u" and a
+ * long long.  A negative width left-aligns, as it does in printf(3), and
+ * it must be at least as wide as the heading or that one line will not
+ * line up with the rows.
+ */
+enum ipc_type {
+	IPC_T_STR,
+	IPC_T_NUM,
+	IPC_T_NONE,		/* no value: "N/A" in a table, null in JSON */
+};
+
+struct ipc_field {
+	const char   *key;	/* heading, and the JSON key; NULL ends a row */
+	int	      width;	/* column width, negative to left-align	     */
+	enum ipc_type type;
+	const char   *str;
+	long long     num;
+};
+
+#define IPC_STR(k, w, v) { (k), (w), IPC_T_STR, (v), 0 }
+#define IPC_NUM(k, w, v) { (k), (w), IPC_T_NUM, NULL, (long long)(v) }
+#define IPC_NA(k, w)	 { (k), (w), IPC_T_NONE, NULL, 0 }
+#define IPC_END		 { NULL, 0, IPC_T_STR, NULL, 0 }
+
+/* A number this router may not know, a neighbor's DR priority say: told
+ * apart from a zero rather than printed as one. */
+#define IPC_OPT(k, w, have, v) \
+	{ (k), (w), (have) ? IPC_T_NUM : IPC_T_NONE, NULL, (long long)(v) }
+
+extern int	ipc_json		(void);
+extern void	ipc_table		(FILE *fp, const char *title, const char *name);
+extern void	ipc_row			(FILE *fp, const struct ipc_field *row);
+extern void	ipc_table_end		(FILE *fp);
 extern void	ipc_init		(char *sockfile);
 /* The handler ipc_init() registers with the event loop, and the one entry
  * point of the daemon a fuzz harness can hand a pimctl command to: it is

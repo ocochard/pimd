@@ -92,6 +92,7 @@ struct cmd {
 static int plain = 0;
 static int debug = 0;
 static int heading = 1;
+static int json = 0;
 
 static int cmdind;
 static TAILQ_HEAD(head, cmd) cmds = TAILQ_HEAD_INITIALIZER(cmds);
@@ -467,8 +468,17 @@ static int get(char *cmd, FILE *fp)
 	if (!lfp)
 		return 0;
 
-	while (fgets(buf, sizeof(buf), fp))
-		print(buf, indent);
+	if (json) {
+		/* Verbatim: a row longer than buf must not be broken up, a
+		 * newline inside a JSON string not being a newline. */
+		size_t num;
+
+		while ((num = fread(buf, 1, sizeof(buf), fp)) > 0)
+			fwrite(buf, num, 1, stdout);
+	} else {
+		while (fgets(buf, sizeof(buf), fp))
+			print(buf, indent);
+	}
 
 	fclose(lfp);
 
@@ -570,6 +580,7 @@ static int usage(int rc)
 	       "\n"
 	       "Options:\n"
 	       "  -i, --ident=NAME           Connect to named pimd instance\n"
+	       "  -j, --json                 Output JSON instead of tables\n"
 	       "  -m, --monitor              Run 'COMMAND' every two seconds, like watch(1)\n"
 	       "  -p, --plain                Use plain table headings, no ctrl chars\n"
 	       "  -t, --no-heading           Skip table headings\n"
@@ -638,6 +649,11 @@ static int cmd(int argc, char *argv[])
 	if (!strcmp(cmd, "help"))
 		return usage(0);
 
+	/* Only the show commands answer with tables; the rest answer a line
+	 * of text, which JSON has nothing to add to. */
+	if (json && (!strncmp(cmd, "show", 4) || !strcmp(cmd, "version")))
+		strlcat(buf, " json", sizeof(buf));
+
 	return get(cmd, NULL);
 }
 
@@ -647,6 +663,7 @@ int main(int argc, char *argv[])
 		{ "debug",      0, NULL, 'd' },
 		{ "help",       0, NULL, 'h' },
 		{ "ident",      1, NULL, 'i' },
+		{ "json",       0, NULL, 'j' },
 		{ "monitor",    0, NULL, 'm' },
 		{ "no-heading", 0, NULL, 't' },
 		{ "plain",      0, NULL, 'p' },
@@ -657,7 +674,7 @@ int main(int argc, char *argv[])
 	int monitor = 0;
 	int c, rc;
 
-	while ((c = getopt_long(argc, argv, "dh?i:mptu:v", long_options, NULL)) != EOF) {
+	while ((c = getopt_long(argc, argv, "dh?i:jmptu:v", long_options, NULL)) != EOF) {
 		switch(c) {
 		case 'd':
 			debug = 1;
@@ -669,6 +686,10 @@ int main(int argc, char *argv[])
 
 		case 'i':	/* --ident=NAME */
 			ident = optarg;
+			break;
+
+		case 'j':
+			json = 1;
 			break;
 
 		case 'm':
@@ -702,7 +723,7 @@ int main(int argc, char *argv[])
 		}
 
 		if (optind >= argc)
-			rc = get("show", NULL);
+			rc = get(json ? "show json" : "show", NULL);
 		else
 			rc = cmd(argc - optind, &argv[optind]);
 

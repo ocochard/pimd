@@ -544,6 +544,19 @@ Layers, roughly bottom-up:
   `show_*()` functions that print to a `FILE *`. `pimctl.c` is the standalone client. `debug.c`
   holds `logit()`, the debug-subsystem bitmask (`-d`) and the compat `show compat` dumps.
   Adding a `pimctl` command means adding an `IPC_*` enum value, a `cmds[]` row and a dispatch case.
+  A table is declared once, in the function that fills it in -- an array of `struct ipc_field`
+  (`defs.h`), one entry per column, built with `IPC_STR()`, `IPC_NUM()` and `IPC_OPT()` and handed
+  to `ipc_row()` between an `ipc_table()` and an `ipc_table_end()` -- and either of two writers
+  renders it, the columns or the JSON of `pimctl -j`. The heading comes off the first row, so a
+  column added to one form is in the other by construction and an empty table prints no header;
+  a width must be at least as wide as its heading. `show status` is the other shape, single values
+  written with the `ipc_kv_*()` of `ipc.c`, where a section is a key prefix rather than an object
+  and `IPC_KV_COL` keeps a space in front of every colon, so that " : " tells such a line from a
+  table row.
+  A dump whose text form is prose rather than a table -- `dump_anycast_rp()`, `dump_autorp()` --
+  asks `ipc_json()` and renders the two separately. `show compat` has no JSON form at all and
+  answers `-j` with an "error" member saying so; `show mrt detail`'s per-interface maps and
+  timers have none either, and JSON is the table without them.
 - `dvmrp_proto.c` and `trace.c` are legacy DVMRP/mtrace interop stubs.
 
 `lib/` holds fallback implementations (`strlcpy`, `strlcat`, `strtonum`, `pidfile`, `tempfile`,

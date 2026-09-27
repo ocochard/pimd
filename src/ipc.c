@@ -50,6 +50,246 @@
 static struct sockaddr_un sun;
 static int ipc_socket = -1;
 static int detail = 0;
+static int json = 0;		/* "pimctl -j", a word check_modifiers() reads */
+
+static int ipc_rows;		/* rows in the table being written	  */
+static int ipc_items;		/* tables and values in the reply so far  */
+
+/* Whether this reply is JSON, for the dumps that are not in this file */
+int ipc_json(void)
+{
+	return json;
+}
+
+/* The string as JSON: the escapes RFC 8259 sec. 7 requires and no others,
+ * with anything below a space written as \u00xx.  A byte above 0x7f goes
+ * through as it stands -- what is printed here is addresses, interface
+ * names and words of this file's own, none of which leave ASCII. */
+static void ipc_json_str(FILE *fp, const char *str)
+{
+	putc('"', fp);
+	for (; str && *str; str++) {
+		switch (*str) {
+		case '"':  fputs("\\\"", fp); break;
+		case '\\': fputs("\\\\", fp); break;
+		case '\n': fputs("\\n", fp);  break;
+		case '\r': fputs("\\r", fp);  break;
+		case '\t': fputs("\\t", fp);  break;
+		default:
+			if ((unsigned char)*str < 0x20)
+				fprintf(fp, "\\u%04x", *str);
+			else
+				putc(*str, fp);
+			break;
+		}
+	}
+	putc('"', fp);
+}
+
+static void ipc_json_key(FILE *fp, const char *key)
+{
+	int sep = 0, first = 1;
+
+	putc('"', fp);
+	for (; *key; key++) {
+		if (!isalnum((unsigned char)*key)) {
+			sep = !first;	/* one underscore, and none leading */
+			continue;
+		}
+
+		if (sep)
+			putc('_', fp);
+		putc(tolower((unsigned char)*key), fp);
+		sep = 0;
+		first = 0;
+	}
+	putc('"', fp);
+}
+
+/*
+ * The head of a table: the title pimctl underlines, or in JSON the name of
+ * the array its rows go in.  The headings come with the first row, so a
+ * table nothing is in prints no header, which is what every one of these
+ * did by hand before.
+ */
+void ipc_table(FILE *fp, const char *title, const char *name)
+{
+	ipc_rows = 0;
+
+	if (json) {
+		fprintf(fp, "%s  \"%s\": [", ipc_items++ ? ",\n" : "", name);
+		return;
+	}
+
+	fprintf(fp, "%s_\n", title);
+}
+
+void ipc_row(FILE *fp, const struct ipc_field *row)
+{
+	const struct ipc_field *f;
+	const char *sep = "";
+
+	if (!json) {
+		if (!ipc_rows) {
+			for (f = row; f->key; f++)
+				fprintf(fp, "%*s  ", f->width, f->key);
+			fprintf(fp, "=\n");
+		}
+
+		for (f = row; f->key; f++) {
+			switch (f->type) {
+			case IPC_T_STR:
+				fprintf(fp, "%*s  ", f->width, f->str ? f->str : "");
+				break;
+
+			case IPC_T_NUM:
+				fprintf(fp, "%*lld  ", f->width, f->num);
+				break;
+
+			case IPC_T_NONE:
+				fprintf(fp, "%*s  ", f->width, "N/A");
+				break;
+			}
+		}
+		fprintf(fp, "\n");
+		ipc_rows++;
+
+		return;
+	}
+
+	fprintf(fp, "%s\n    {", ipc_rows++ ? "," : "");
+	for (f = row; f->key; f++, sep = ",") {
+		fprintf(fp, "%s ", sep);
+		ipc_json_key(fp, f->key);
+		fputs(": ", fp);
+		if (f->type == IPC_T_NUM)
+			fprintf(fp, "%lld", f->num);
+		else if (f->type == IPC_T_NONE)
+			fputs("null", fp);
+		else
+			ipc_json_str(fp, f->str ? f->str : "");
+	}
+	fprintf(fp, " }");
+}
+
+void ipc_table_end(FILE *fp)
+{
+	if (json)
+		fprintf(fp, "%s]", ipc_rows ? "\n  " : "");
+}
+
+/*
+ * The other half of a reply: a single value, "Key : value" in a column of
+ * its own where a table would have had rows.  "show status" is all of
+ * these, and a section of it is a prefix rather than an object, so that
+ * every value of the reply is one key a script can ask for: the "Address"
+ * under "Elected BSR" is .elected_bsr_address.
+ *
+ * The column is one wider than the longest label any of them has, so that
+ * every ':' lines up and every one of them has a space in front of it --
+ * "Number of Cache MIRRORs" is the long one, and a reader that tells a
+ * value from a table row by the " : " in it would have no space there.
+ */
+#define IPC_KV_COL	24
+
+static const char *ipc_sect;	/* the section the next values are in, or NULL */
+
+static void ipc_section(FILE *fp, const char *title)
+{
+	ipc_sect = title;
+
+	if (!json && title)
+		fprintf(fp, "%s\n", title);
+}
+
+static void ipc_kv(FILE *fp, const char *key)
+{
+	char buf[80];
+	int indent;
+
+	if (!json) {
+		indent = ipc_sect ? 4 : 0;
+		fprintf(fp, "%*s%-*s: ", indent, "", IPC_KV_COL - indent, key);
+		return;
+	}
+
+	fprintf(fp, "%s  ", ipc_items++ ? ",\n" : "");
+	if (ipc_sect) {
+		snprintf(buf, sizeof(buf), "%s %s", ipc_sect, key);
+		key = buf;
+	}
+	ipc_json_key(fp, key);
+	fputs(": ", fp);
+}
+
+/* In JSON the separator of the next value ends this one */
+static void ipc_kv_end(FILE *fp)
+{
+	if (!json)
+		putc('\n', fp);
+}
+
+/* A NULL value is one this router has not got, as IPC_NA is in a table */
+static void ipc_kv_str(FILE *fp, const char *key, const char *val)
+{
+	ipc_kv(fp, key);
+	if (!val)
+		fputs(json ? "null" : "N/A", fp);
+	else if (json)
+		ipc_json_str(fp, val);
+	else
+		fputs(val, fp);
+	ipc_kv_end(fp);
+}
+
+static void ipc_kv_num(FILE *fp, const char *key, long long val)
+{
+	ipc_kv(fp, key);
+	fprintf(fp, "%lld", val);
+	ipc_kv_end(fp);
+}
+
+/* A number of seconds, which every timer here is said in */
+static void ipc_kv_secs(FILE *fp, const char *key, long long val)
+{
+	ipc_kv(fp, key);
+	fprintf(fp, json ? "%lld" : "%lld sec", val);
+	ipc_kv_end(fp);
+}
+
+/* A number this router may not have, an unelected BSR's priority say */
+static void ipc_kv_opt(FILE *fp, const char *key, int have, long long val)
+{
+	ipc_kv(fp, key);
+	if (!have)
+		fputs(json ? "null" : "N/A", fp);
+	else
+		fprintf(fp, "%lld", val);
+	ipc_kv_end(fp);
+}
+
+/* State against the limit that caps it, two numbers in JSON */
+static void ipc_kv_limit(FILE *fp, const char *key, unsigned used, unsigned limit)
+{
+	char buf[80];
+
+	if (!json) {
+		ipc_kv(fp, key);
+		fprintf(fp, "%u of %u\n", used, limit);
+		return;
+	}
+
+	ipc_kv_num(fp, key, used);
+	snprintf(buf, sizeof(buf), "%s limit", key);
+	ipc_kv_num(fp, buf, limit);
+}
+
+/* What a command with no JSON form answers, so that -j is always JSON */
+static void ipc_no_json(FILE *fp, const char *cmd)
+{
+	fprintf(fp, "%s  \"error\": ", ipc_items++ ? ",\n" : "");
+	fprintf(fp, "\"%s has no JSON form, it is a text dump\"", cmd);
+}
 
 /* How long a reply waits for a client that has stopped reading, in ms.  A
  * dump is written in pieces and this bounds each of them, so a client that
@@ -180,20 +420,36 @@ static void strip(char *cmd, size_t len)
 	chomp(cmd);
 }
 
-static void check_detail(char *cmd, size_t len)
+/*
+ * The words that may follow a command: "detail", which every table that has
+ * a long form takes, and "json", which "pimctl -j" appends.  Read in any
+ * order and left as they were found for the next one, so that "show mrt
+ * detail json" and "show mrt json detail" are the same request.
+ *
+ * A word matches while it is a prefix of the keyword, which is how "detail"
+ * has always been read here -- "det" is a word somebody has typed.
+ */
+static int is_word(const char *cmd, size_t len, const char *word)
 {
-	const char *det = "detail";
+	return len > 0 && len <= strlen(word) && !strncasecmp(cmd, word, len);
+}
 
-	strip(cmd, len);
+static void check_modifiers(char *cmd, size_t len)
+{
+	strip(cmd, len);		/* the command itself */
 
-	len = MIN(strlen(cmd), strlen(det));
-	if (len > 0 && !strncasecmp(cmd, det, len)) {
+	while (*cmd) {
 		len = strcspn(cmd, " \t\n");
-		strip(cmd, len);
 
-		detail = 1;
-	} else
-		detail = 0;
+		if (is_word(cmd, len, "detail"))
+			detail = 1;
+		else if (is_word(cmd, len, "json"))
+			json = 1;
+		else
+			break;		/* not ours, leave it alone */
+
+		strip(cmd, len);
+	}
 }
 
 static int ipc_read(int sd, char *cmd, ssize_t len)
@@ -220,12 +476,17 @@ static int ipc_read(int sd, char *cmd, ssize_t len)
 	cmd[num] = 0;
 //	logit(LOG_DEBUG, 0, "IPC cmd: '%s'", cmd);
 
+	/* One command's modifiers are not the next one's, whether or not
+	 * this one turns out to name a command at all */
+	detail = 0;
+	json = 0;
+
 	for (size_t i = 0; i < NELEMS(cmds); i++) {
 		struct ipcmd *c = &cmds[i];
 		size_t clen = strlen(c->cmd);
 
 		if (!strncasecmp(cmd, c->cmd, clen)) {
-			check_detail(cmd, clen);
+			check_modifiers(cmd, clen);
 			return c->op;
 		}
 	}
@@ -313,10 +574,19 @@ static void ipc_show(int sd, int (*cb)(FILE *), char *buf, size_t len)
 		return;
 	}
 
+	/* One reply is one JSON document, however many tables it holds */
+	ipc_items = 0;
+	ipc_sect = NULL;
+	if (json)
+		fprintf(fp, "{\n");
+
 	if (cb(fp)) {
 		fclose(fp);
 		return;
 	}
+
+	if (json)
+		fprintf(fp, "\n}\n");
 
 	rewind(fp);
 	ipc_send(sd, buf, len, fp);
@@ -349,18 +619,6 @@ static int ipc_wrap(int sd, int (*cb)(char *, size_t), char *buf, size_t len)
 		return IPC_ERR;
 
 	return ipc_write(sd, buf, strlen(buf));
-}
-
-static char *get_dr_prio(pim_nbr_entry_t *n)
-{
-	static char prio[11];
-
-	if (n->dr_prio_present)
-		snprintf(prio, sizeof(prio), "%10u", n->dr_prio);
-	else
-		snprintf(prio, sizeof(prio), "   N");
-
-	return prio;
 }
 
 static const char *ifstate(struct uvif *uv)
@@ -443,23 +701,33 @@ static int show_neighbor(FILE *fp, struct uvif *uv, pim_nbr_entry_t *n)
 		 timetostr(uptime, tmp, sizeof(tmp)),
 		 timetostr(n->timer, NULL, 0));
 
-	tmp[0] = '\0';
-	if ((uv->uv_flags & VIFF_DR) == 0) {
-		if (uv->uv_pim_neighbor_dr == n)
-			snprintf(tmp, sizeof(tmp), "DR");
-	}
+	struct ipc_field row[] = {
+		IPC_STR("Interface",      -16, uv->uv_name),
+		IPC_STR("Address",        -15, inet_fmt(n->address, s1, sizeof(s1))),
+		IPC_OPT("Priority",	   10, n->dr_prio_present, n->dr_prio),
+		IPC_STR("Mode",		   -9, !(uv->uv_flags & VIFF_DR) &&
+					       uv->uv_pim_neighbor_dr == n ? "DR" : ""),
+		IPC_STR("Uptime/Expires", -28, buf),
+		IPC_END
+	};
 
-	fprintf(fp, "%-16s  %-15s  %4s  %-4s  %-28s\n",
-		uv->uv_name,
-		inet_fmt(n->address, s1, sizeof(s1)),
-		get_dr_prio(n), tmp, buf);
+	ipc_row(fp, row);
 
-	/* Its Address List, RFC 7761 sec. 4.3.4, one address to a line so
-	 * that the table above keeps one neighbor to a line without it. */
+	/* Its Address List, RFC 7761 sec. 4.3.4, one address to a row of its
+	 * own, said so by the mode: a neighbor keeps one row otherwise. */
 	if (detail) {
-		for (uint16_t i = 0; i < n->nsecaddrs; i++)
-			fprintf(fp, "%-16s  %-15s  secondary\n", "",
-				inet_fmt(n->secaddrs[i], s1, sizeof(s1)));
+		for (uint16_t i = 0; i < n->nsecaddrs; i++) {
+			struct ipc_field sec[] = {
+				IPC_STR("Interface",	  -16, uv->uv_name),
+				IPC_STR("Address",	  -15, inet_fmt(n->secaddrs[i], s1, sizeof(s1))),
+				IPC_NA ("Priority",	   10),
+				IPC_STR("Mode",		   -9, "secondary"),
+				IPC_NA ("Uptime/Expires", -28),
+				IPC_END
+			};
+
+			ipc_row(fp, sec);
+		}
 	}
 
 	return 0;
@@ -472,9 +740,7 @@ static int show_neighbors(FILE *fp)
 	struct uvif *uv;
 	vifi_t vifi;
 
-	fprintf(fp, "PIM Neighbor Table_\n");
-	if (numvifs)
-		fprintf(fp, "Interface         Address            Priority  Mode  Uptime/Expires               =\n");
+	ipc_table(fp, "PIM Neighbor Table", "neighbor");
 
 	for (vifi = 0; vifi < numvifs; vifi++) {
 		uv = &uvifs[vifi];
@@ -483,30 +749,43 @@ static int show_neighbors(FILE *fp)
 			show_neighbor(fp, uv, n);
 	}
 
+	ipc_table_end(fp);
+
 	return 0;
 }
 
 static void show_interface(FILE *fp, struct uvif *uv)
 {
-	char *pri = "N/A";
-	char tmp[11];
-
-	snprintf(tmp, sizeof(tmp), "%10u", uv->uv_dr_prio);
+	uint32_t prio = uv->uv_dr_prio;
+	int known = 1;
 
 	if (uv->uv_flags & VIFF_REGISTER)
 		return;
 
-	if (uv->uv_flags & VIFF_DR)
-		pri = tmp;
-	else if (uv->uv_pim_neighbor_dr)
-		pri = get_dr_prio(uv->uv_pim_neighbor_dr);
+	/* The DR's priority is this router's own where it is the DR, and
+	 * otherwise the neighbor's -- which it has only if that neighbor's
+	 * Hello carried the option. */
+	if (!(uv->uv_flags & VIFF_DR)) {
+		pim_nbr_entry_t *dr = uv->uv_pim_neighbor_dr;
 
-	fprintf(fp, "%-16s  %-8s  %-15s  %4s  %5d  %3zu  %-15s  %4s\n",
-		uv->uv_name,
-		ifstate(uv),
-		inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1)),
-		tmp, pim_timer_hello_interval, nbr_count(uv),
-		inet_fmt(dr_addr(uv), s2, sizeof(s2)), pri);
+		known = dr && dr->dr_prio_present;
+		if (known)
+			prio = dr->dr_prio;
+	}
+
+	struct ipc_field row[] = {
+		IPC_STR("Interface",   -16, uv->uv_name),
+		IPC_STR("State",	-8, ifstate(uv)),
+		IPC_STR("Address",     -15, inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1))),
+		IPC_NUM("Priority",     10, uv->uv_dr_prio),
+		IPC_NUM("Hello",	 5, pim_timer_hello_interval),
+		IPC_NUM("Nbr",		 3, nbr_count(uv)),
+		IPC_STR("DR Address",  -15, inet_fmt(dr_addr(uv), s2, sizeof(s2))),
+		IPC_OPT("DR Priority",  11, known, prio),
+		IPC_END
+	};
+
+	ipc_row(fp, row);
 }
 
 /*
@@ -520,31 +799,31 @@ static int show_summary(FILE *fp)
 	struct uvif *uv;
 	vifi_t vifi;
 
-	fprintf(fp, "Interface Summary_\n");
-	if (numvifs)
-		fprintf(fp, "%-16s  %-8s  %-15s  %4s  %-15s  %4s  %-15s  %6s =\n",
-			"Interface", "State", "Address", "Nbrs", "DR Address",
-			"IGMP", "Querier", "Groups");
+	ipc_table(fp, "Interface Summary", "summary");
 
 	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
-		char querier[20], version[4];
+		char querier[20];
 
 		/* The register vif has neither neighbors nor memberships */
 		if (uv->uv_flags & VIFF_REGISTER)
 			continue;
 
-		snprintf(version, sizeof(version), "v%d", igmp_version(uv));
+		struct ipc_field row[] = {
+			IPC_STR("Interface",  -16, uv->uv_name),
+			IPC_STR("State",       -8, ifstate(uv)),
+			IPC_STR("Address",    -15, inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1))),
+			IPC_NUM("Nbrs",		4, nbr_count(uv)),
+			IPC_STR("DR Address", -15, inet_fmt(dr_addr(uv), s2, sizeof(s2))),
+			IPC_NUM("IGMP",		4, igmp_version(uv)),
+			IPC_STR("Querier",    -15, igmp_querier(uv, querier, sizeof(querier))),
+			IPC_NUM("Groups",	6, group_count(uv)),
+			IPC_END
+		};
 
-		fprintf(fp, "%-16s  %-8s  %-15s  %4zu  %-15s  %4s  %-15s  %6zu\n",
-			uv->uv_name,
-			ifstate(uv),
-			inet_fmt(uv->uv_lcl_addr, s1, sizeof(s1)),
-			nbr_count(uv),
-			inet_fmt(dr_addr(uv), s2, sizeof(s2)),
-			version,
-			igmp_querier(uv, querier, sizeof(querier)),
-			group_count(uv));
+		ipc_row(fp, row);
 	}
+
+	ipc_table_end(fp);
 
 	return 0;
 }
@@ -554,12 +833,12 @@ static int show_interfaces(FILE *fp)
 {
 	vifi_t vifi;
 
-	fprintf(fp, "PIM Interface Table_\n");
-	if (numvifs)
-		fprintf(fp, "Interface         State     Address            Priority  Hello  Nbr  DR Address      DR Priority =\n");
+	ipc_table(fp, "PIM Interface Table", "interface");
 
 	for (vifi = 0; vifi < numvifs; vifi++)
 		show_interface(fp, &uvifs[vifi]);
+
+	ipc_table_end(fp);
 
 	return 0;
 }
@@ -569,22 +848,15 @@ static int show_rp(FILE *fp)
 {
 	grp_mask_t *grp;
 
-	fprintf(fp, "PIM Rendez-Vous Point Set Table_\n");
-	if (grp_mask_list)
-		fprintf(fp, "Group Address     RP Address       Prio  Holdtime  Type=\n");
+	ipc_table(fp, "PIM Rendez-Vous Point Set Table", "rp");
 
 	for (grp = grp_mask_list; grp; grp = grp->next) {
 		struct rp_grp_entry *rp_grp = grp->grp_rp_next;
 
 		while (rp_grp) {
 			uint16_t ht = rp_grp->holdtime;
+			const char *type;
 			char htstr[10];
-			char type[10];
-
-			if (rp_grp == grp->grp_rp_next)
-				fprintf(fp, "%-16s  ", netname(grp->group_addr, grp->group_mask));
-			else
-				fprintf(fp, "%-16s  ", "");
 
 			/* Where the mapping came from, which used to be read
 			 * off the holdtime: a configured RP is the one with
@@ -593,15 +865,15 @@ static int show_rp(FILE *fp)
 			 * not, and only the entry itself knows. */
 			switch (rp_grp->origin) {
 			case RP_ORIGIN_STATIC:
-				snprintf(type, sizeof(type), "Static");
+				type = "Static";
 				break;
 
 			case RP_ORIGIN_AUTORP:
-				snprintf(type, sizeof(type), "Auto-RP");
+				type = "Auto-RP";
 				break;
 
 			default:
-				snprintf(type, sizeof(type), "Dynamic");
+				type = "Dynamic";
 				break;
 			}
 
@@ -610,13 +882,22 @@ static int show_rp(FILE *fp)
 			else
 				snprintf(htstr, sizeof(htstr), "%d", ht);
 
-			fprintf(fp, "%-15s  %4d  %8s  %-7s\n",
-				inet_fmt(rp_grp->rp->rpentry->address, s1, sizeof(s1)),
-				rp_grp->priority, htstr, type);
+			struct ipc_field row[] = {
+				IPC_STR("Group Address", -16, netname(grp->group_addr, grp->group_mask)),
+				IPC_STR("RP Address",	 -15, inet_fmt(rp_grp->rp->rpentry->address, s1, sizeof(s1))),
+				IPC_NUM("Prio",		   4, rp_grp->priority),
+				IPC_STR("Holdtime",	   8, htstr),
+				IPC_STR("Type",		  -7, type),
+				IPC_END
+			};
+
+			ipc_row(fp, row);
 
 			rp_grp = rp_grp->grp_rp_next;
 		}
 	}
+
+	ipc_table_end(fp);
 
 	return 0;
 }
@@ -626,9 +907,7 @@ static int show_crp(FILE *fp)
 {
 	struct cand_rp *rp;
 
-	fprintf(fp, "PIM Candidate Rendez-Vous Point Table_\n");
-	if (cand_rp_list)
-		fprintf(fp, "Group Address     RP Address       Prio  Holdtime  Expires =\n");
+	ipc_table(fp, "PIM Candidate Rendez-Vous Point Table", "crp");
 
 	for (rp = cand_rp_list; rp; rp = rp->next) {
 		struct rp_grp_entry *rp_grp = rp->rp_grp_next;
@@ -637,24 +916,71 @@ static int show_crp(FILE *fp)
 		char buf[10];
 
 		if (entry->adv_holdtime == PIM_HELLO_HOLDTIME_FOREVER)
-			snprintf(buf, sizeof(buf), "%8s", "Forever");
+			snprintf(buf, sizeof(buf), "Forever");
 		else
-			snprintf(buf, sizeof(buf), "%8d", entry->adv_holdtime);
+			snprintf(buf, sizeof(buf), "%d", entry->adv_holdtime);
 
-		fprintf(fp, "%-16s  %-15s  %4d  %s  %s\n",
-			netname(grp->group_addr, grp->group_mask),
-			inet_fmt(entry->address, s1, sizeof(s1)),
-			rp_grp->priority, buf,
-			PIM_HELLO_HOLDTIME_FOREVER == rp_grp->holdtime
-			? "Never"
-			: timetostr(rp_grp->holdtime, NULL, 0));
+		struct ipc_field row[] = {
+			IPC_STR("Group Address", -16, netname(grp->group_addr, grp->group_mask)),
+			IPC_STR("RP Address",	 -15, inet_fmt(entry->address, s1, sizeof(s1))),
+			IPC_NUM("Prio",		   4, rp_grp->priority),
+			IPC_STR("Holdtime",	   8, buf),
+			IPC_STR("Expires",	  -8, PIM_HELLO_HOLDTIME_FOREVER == rp_grp->holdtime
+					       ? "Never"
+					       : timetostr(rp_grp->holdtime, NULL, 0)),
+			IPC_END
+		};
+
+		ipc_row(fp, row);
 	}
 
-	fprintf(fp, "\nCurrent BSR address: %s\n", inet_fmt(curr_bsr_address, s1, sizeof(s1)));
+	ipc_table_end(fp);
+
+	if (!json)
+		putc('\n', fp);
+	ipc_kv_str(fp, "Current BSR address", inet_fmt(curr_bsr_address, s1, sizeof(s1)));
 
 	return 0;
 }
 
+/* The MRTF_* of one entry as the words "show mrt" has always printed */
+static const char *route_flags(mrtentry_t *r, char *buf, size_t len)
+{
+	static const struct {
+		uint32_t    flag;
+		const char *name;
+	} flags[] = {
+		{ MRTF_SPT,	    "SPT"      },
+		{ MRTF_KAT,	    "KAT"      },
+		{ MRTF_WC,	    "WC"       },
+		{ MRTF_RP,	    "RP"       },
+		{ MRTF_REGISTER,    "REG"      },
+		{ MRTF_IIF_REGISTER,"IIF_REG"  },
+		{ MRTF_NULL_OIF,    "NULL_OIF" },
+		{ MRTF_KERNEL_CACHE,"CACHE"    },
+		{ MRTF_ASSERTED,    "ASSERTED" },
+		{ MRTF_REG_SUPP,    "REG_SUPP" },
+		{ MRTF_SG,	    "SG"       },
+	};
+
+	buf[0] = 0;
+	for (size_t i = 0; i < NELEMS(flags); i++) {
+		if (!(r->flags & flags[i].flag))
+			continue;
+
+		if (buf[0])
+			strlcat(buf, " ", len);
+		strlcat(buf, flags[i].name, len);
+	}
+
+	return buf;
+}
+
+/*
+ * The long form of one routing entry, below the row it belongs to: the
+ * per-interface maps and the timers, which are a block rather than a
+ * table and have no JSON form.
+ */
 static void dump_route(FILE *fp, mrtentry_t *r)
 {
 	char asserted_oifs[MAXVIFS+1];
@@ -701,21 +1027,7 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	incoming_iif[vifi]	= 0x0;
 	incoming_iif[r->incoming] = 'I';
 
-	/* TODO: don't need some of the flags */
-	if (r->flags & MRTF_SPT)	  fprintf(fp, " SPT");
-	if (r->flags & MRTF_KAT)	  fprintf(fp, " KAT");
-	if (r->flags & MRTF_WC)	          fprintf(fp, " WC");
-	if (r->flags & MRTF_RP)	          fprintf(fp, " RP");
-	if (r->flags & MRTF_REGISTER)     fprintf(fp, " REG");
-	if (r->flags & MRTF_IIF_REGISTER) fprintf(fp, " IIF_REG");
-	if (r->flags & MRTF_NULL_OIF)     fprintf(fp, " NULL_OIF");
-	if (r->flags & MRTF_KERNEL_CACHE) fprintf(fp, " CACHE");
-	if (r->flags & MRTF_ASSERTED)     fprintf(fp, " ASSERTED");
-	if (r->flags & MRTF_REG_SUPP)     fprintf(fp, " REG_SUPP");
-	if (r->flags & MRTF_SG)	          fprintf(fp, " SG");
-	fprintf(fp, "\n");
-
-	if (!detail)
+	if (!detail || json)
 		return;
 
 	fprintf(fp, "Joined   oifs: %-20s\n", joined_oifs);
@@ -746,13 +1058,12 @@ static int show_pim_mrt(FILE *fp)
 {
 	u_int number_of_cache_mirrors = 0;
 	u_int number_of_groups = 0;
+	char flags[80];
 	kernel_cache_t *kc;
 	grpentry_t *g;
 	mrtentry_t *r;
 
-	fprintf(fp, "Multicast Routing Table_\n");
-	if (!detail)
-		fprintf(fp, "Source            Group            RP Address       Flags =\n");
+	ipc_table(fp, "Multicast Routing Table", "mrt");
 
 	/* TODO: remove the dummy 0.0.0.0 group (first in the chain) */
 	for (g = grplist->next; g; g = g->next) {
@@ -765,17 +1076,19 @@ static int show_pim_mrt(FILE *fp)
 					number_of_cache_mirrors++;
 			}
 
-			if (detail)
-				fprintf(fp, "\nSource            Group            RP Address       Flags =\n");
-			fprintf(fp, "%-15s   %-15s  %-15s ",
-				"ANY",
-				inet_fmt(g->group, s1, sizeof(s1)),
-				IN_PIM_SSM_RANGE(g->group)
-				? "SSM"
-				: (g->active_rp_grp
-				   ? inet_fmt(g->rpaddr, s2, sizeof(s2))
-				   : "NULL"));
+			struct ipc_field row[] = {
+				IPC_STR("Source",     -15, "ANY"),
+				IPC_STR("Group",      -15, inet_fmt(g->group, s1, sizeof(s1))),
+				IPC_STR("RP Address", -15, IN_PIM_SSM_RANGE(g->group)
+					? "SSM"
+					: (g->active_rp_grp
+					   ? inet_fmt(g->rpaddr, s2, sizeof(s2))
+					   : "NULL")),
+				IPC_STR("Flags",       -5, route_flags(r, flags, sizeof(flags))),
+				IPC_END
+			};
 
+			ipc_row(fp, row);
 			dump_route(fp, r);
 		}
 
@@ -783,23 +1096,29 @@ static int show_pim_mrt(FILE *fp)
 			if (r->flags & MRTF_KERNEL_CACHE)
 				number_of_cache_mirrors++;
 
-			if (detail)
-				fprintf(fp, "\nSource            Group            RP Address       Flags =\n");
-			fprintf(fp, "%-15s   %-15s  %-15s ",
-				inet_fmt(r->source->address, s1, sizeof(s1)),
-				inet_fmt(g->group, s2, sizeof(s2)),
-				IN_PIM_SSM_RANGE(g->group)
-				? "SSM"
-				: (g->active_rp_grp
-				   ? inet_fmt(g->rpaddr, s3, sizeof(s3))
-				   : "NULL"));
+			struct ipc_field row[] = {
+				IPC_STR("Source",     -15, inet_fmt(r->source->address, s1, sizeof(s1))),
+				IPC_STR("Group",      -15, inet_fmt(g->group, s2, sizeof(s2))),
+				IPC_STR("RP Address", -15, IN_PIM_SSM_RANGE(g->group)
+					? "SSM"
+					: (g->active_rp_grp
+					   ? inet_fmt(g->rpaddr, s3, sizeof(s3))
+					   : "NULL")),
+				IPC_STR("Flags",       -5, route_flags(r, flags, sizeof(flags))),
+				IPC_END
+			};
 
+			ipc_row(fp, row);
 			dump_route(fp, r);
 		}
 	}
 
-	fprintf(fp, "\nNumber of Groups        : %u\n", number_of_groups);
-	fprintf(fp, "Number of Cache MIRRORs : %u\n", number_of_cache_mirrors);
+	ipc_table_end(fp);
+
+	if (!json)
+		putc('\n', fp);
+	ipc_kv_num(fp, "Number of Groups", number_of_groups);
+	ipc_kv_num(fp, "Number of Cache MIRRORs", number_of_cache_mirrors);
 
 	return 0;
 }
@@ -816,7 +1135,7 @@ static int show_pim_mrt(FILE *fp)
 static u_int dump_mfc(FILE *fp, mrtentry_t *r)
 {
 	char oifs[MAXVIFS * (IFNAMSIZ + 1)];
-	struct sg_count cnt;
+	struct sg_count cnt = { 0 };	/* the row reads it either way */
 	kernel_cache_t *kc;
 	u_int num = 0;
 	vifi_t vifi;
@@ -840,18 +1159,23 @@ static u_int dump_mfc(FILE *fp, mrtentry_t *r)
 		strlcpy(oifs, "---", sizeof(oifs));
 
 	for (kc = r->kernel_cache; kc; kc = kc->next) {
+		int have;
+
 		num++;
+		have = !k_get_sg_cnt(udp_socket, kc->source, kc->group, &cnt);
 
-		fprintf(fp, "%-15s  %-15s  %-15s ",
-			inet_fmt(kc->source, s1, sizeof(s1)),
-			inet_fmt(kc->group, s2, sizeof(s2)),
-			r->incoming < numvifs ? uvifs[r->incoming].uv_name : "---");
+		struct ipc_field row[] = {
+			IPC_STR("Source", -15, inet_fmt(kc->source, s1, sizeof(s1))),
+			IPC_STR("Group",  -15, inet_fmt(kc->group, s2, sizeof(s2))),
+			IPC_STR("Iif",	  -15, r->incoming < numvifs ? uvifs[r->incoming].uv_name : "---"),
+			IPC_OPT("Packets", 10, have, cnt.pktcnt),
+			IPC_OPT("Bytes",   10, have, cnt.bytecnt),
+			IPC_OPT("WrongIf",  9, have, cnt.wrong_if),
+			IPC_STR("Oifs",	   -4, oifs),
+			IPC_END
+		};
 
-		if (k_get_sg_cnt(udp_socket, kc->source, kc->group, &cnt))
-			fprintf(fp, "%10s %10s %9s  %s\n", "-", "-", "-", oifs);
-		else
-			fprintf(fp, "%10u %10u %9u  %s\n",
-				cnt.pktcnt, cnt.bytecnt, cnt.wrong_if, oifs);
+		ipc_row(fp, row);
 	}
 
 	return num;
@@ -864,9 +1188,7 @@ static int show_mfc(FILE *fp)
 	grpentry_t *g;
 	mrtentry_t *r;
 
-	fprintf(fp, "Kernel Multicast Forwarding Cache_\n");
-	fprintf(fp, "%-15s  %-15s  %-15s %10s %10s %9s  %s =\n",
-		"Source", "Group", "Iif", "Packets", "Bytes", "WrongIf", "Oifs");
+	ipc_table(fp, "Kernel Multicast Forwarding Cache", "mfc");
 
 	/* TODO: remove the dummy 0.0.0.0 group (first in the chain) */
 	for (g = grplist->next; g; g = g->next) {
@@ -876,7 +1198,11 @@ static int show_mfc(FILE *fp)
 			number_of_entries += dump_mfc(fp, r);
 	}
 
-	fprintf(fp, "\nNumber of MFC entries   : %u\n", number_of_entries);
+	ipc_table_end(fp);
+
+	if (!json)
+		putc('\n', fp);
+	ipc_kv_num(fp, "Number of MFC entries", number_of_entries);
 
 	return 0;
 }
@@ -892,80 +1218,80 @@ static int show_pim(FILE *fp)
 
 static int show_status(FILE *fp)
 {
-	char buf[10];
+	char buf[120];
 	int len;
 
-	fprintf(fp, "PIM Daemon Status=\n");
+	if (!json)
+		fprintf(fp, "PIM Daemon Status=\n");
 
-	snprintf(buf, sizeof(buf), "%d", curr_bsr_priority);
 	MASK_TO_MASKLEN(curr_bsr_hash_mask, len);
 
-	fprintf(fp, "Elected BSR\n");
-	fprintf(fp, "    Address          : %s\n", inet_fmt(curr_bsr_address, s1, sizeof(s1)));
-	fprintf(fp, "    Expiry Time      : %s\n", !pim_bootstrap_timer ? "N/A" : timetostr(pim_bootstrap_timer, NULL, 0));
-	fprintf(fp, "    Priority         : %s\n", !curr_bsr_priority ? "N/A" : buf);
-	fprintf(fp, "    Hash Mask Length : %d\n", len);
+	ipc_section(fp, "Elected BSR");
+	ipc_kv_str(fp, "Address", inet_fmt(curr_bsr_address, s1, sizeof(s1)));
+	ipc_kv_str(fp, "Expiry Time", !pim_bootstrap_timer ? NULL : timetostr(pim_bootstrap_timer, NULL, 0));
+	ipc_kv_opt(fp, "Priority", curr_bsr_priority, curr_bsr_priority);
+	ipc_kv_num(fp, "Hash Mask Length", len);
 
-	snprintf(buf, sizeof(buf), "%d", my_bsr_priority);
-	MASK_TO_MASKLEN(my_bsr_hash_mask, len);
+	ipc_section(fp, "Candidate BSR");
+	ipc_kv_str(fp, "State", ENABLED(cand_bsr_flag));
+	ipc_kv_str(fp, "Address", inet_fmt(my_bsr_address, s1, sizeof(s1)));
+	ipc_kv_opt(fp, "Priority", my_bsr_priority, my_bsr_priority);
 
-	fprintf(fp, "Candidate BSR\n");
-	fprintf(fp, "    State            : %s\n", ENABLED(cand_bsr_flag));
-	fprintf(fp, "    Address          : %s\n", inet_fmt(my_bsr_address, s1, sizeof(s1)));
-	fprintf(fp, "    Priority         : %s\n", !my_bsr_priority ? "N/A" : buf);
+	ipc_section(fp, "Candidate RP");
+	ipc_kv_str(fp, "State", ENABLED(cand_rp_flag));
+	ipc_kv_str(fp, "Address", inet_fmt(my_cand_rp_address, s1, sizeof(s1)));
+	ipc_kv_num(fp, "Priority", my_cand_rp_priority);
+	ipc_kv_secs(fp, "Holdtime", my_cand_rp_holdtime);
 
-	fprintf(fp, "Candidate RP\n");
-	fprintf(fp, "    State            : %s\n", ENABLED(cand_rp_flag));
-	fprintf(fp, "    Address          : %s\n", inet_fmt(my_cand_rp_address, s1, sizeof(s1)));
-	fprintf(fp, "    Priority         : %d\n", my_cand_rp_priority);
-	fprintf(fp, "    Holdtime         : %d sec\n", my_cand_rp_holdtime);
+	ipc_section(fp, NULL);
 
 	/* Which of routesock.c and netlink.c was built in.  On Linux there is
 	 * only ever one answer, but a FreeBSD pimd can be either, and nothing
 	 * else about a running router says which: both answer the same
 	 * lookups. */
-	fprintf(fp, "RPF Backend          : %s\n", rpf_backend);
+	ipc_kv_str(fp, "RPF Backend", rpf_backend);
 
 	/* Where the metric preference of an Assert comes from, which is a
 	 * question about this router's own Asserts that nothing else
 	 * answers: "rib" is only an answer where the backend above can name
 	 * the routing protocol, and a route it cannot name still carries the
 	 * interface's `distance`. */
-	fprintf(fp, "Assert preference    : %s\n",
-		assert_pref_from_rib ? "rib" : "configured");
+	ipc_kv_str(fp, "Assert preference", assert_pref_from_rib ? "rib" : "configured");
 
 	/* Whether the half that parses the wire is the one holding root, and
 	 * what keeps it in.  Nothing else about a running router says so, and
 	 * "separated" that quietly stopped being true is exactly the failure
 	 * worth being able to see. */
 	if (priv_enabled())
-		fprintf(fp, "Privilege separation : %s, sandbox %s, chroot %s\n",
-			priv_user(), priv_sandbox(), priv_chroot_dir());
+		snprintf(buf, sizeof(buf), "%s, sandbox %s, chroot %s",
+			 priv_user(), priv_sandbox(), priv_chroot_dir());
 	else
-		fprintf(fp, "Privilege separation : none, running as root\n");
-	fprintf(fp, "Join/Prune Interval  : %d sec\n", PIM_JOIN_PRUNE_PERIOD);
-	fprintf(fp, "Hello Interval       : %d sec\n", pim_timer_hello_interval);
-	fprintf(fp, "Hello Holdtime       : %d sec\n", pim_timer_hello_holdtime);
-	fprintf(fp, "IGMP query interval  : %d sec\n", igmp_query_interval);
-	fprintf(fp, "IGMP querier timeout : %d sec\n", igmp_querier_timeout);
-	fprintf(fp, "RPT Prune entries    : %u of %u\n", rpt_prune_entries, rpt_prune_limit);
-	fprintf(fp, "Local (S,G) entries  : %u of %u\n", local_sg_entries, local_sg_limit);
-	fprintf(fp, "Register (S,G) state : %u of %u\n", register_sg_entries, register_sg_limit);
-	fprintf(fp, "Auto-RP mappings     : %u of %u\n", autorp_entries, autorp_limit);
-	fprintf(fp, "RP set group ranges  : %u of %u\n", rp_set_entries, rp_set_limit);
+		snprintf(buf, sizeof(buf), "none, running as root");
+	ipc_kv_str(fp, "Privilege separation", buf);
+
+	ipc_kv_secs(fp, "Join/Prune Interval", PIM_JOIN_PRUNE_PERIOD);
+	ipc_kv_secs(fp, "Hello Interval", pim_timer_hello_interval);
+	ipc_kv_secs(fp, "Hello Holdtime", pim_timer_hello_holdtime);
+	ipc_kv_secs(fp, "IGMP query interval", igmp_query_interval);
+	ipc_kv_secs(fp, "IGMP querier timeout", igmp_querier_timeout);
+	ipc_kv_limit(fp, "RPT Prune entries", rpt_prune_entries, rpt_prune_limit);
+	ipc_kv_limit(fp, "Local (S,G) entries", local_sg_entries, local_sg_limit);
+	ipc_kv_limit(fp, "Register (S,G) state", register_sg_entries, register_sg_limit);
+	ipc_kv_limit(fp, "Auto-RP mappings", autorp_entries, autorp_limit);
+	ipc_kv_limit(fp, "RP set group ranges", rp_set_entries, rp_set_limit);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_anycast_rp(fp);
-	fprintf(fp, "SPT Threshold        : %s\n", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
+	ipc_kv_str(fp, "SPT Threshold", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
 	if (spt_threshold.mode != SPT_INF) {
 		if (spt_threshold.mode == SPT_RATE) {
-			fprintf(fp, "SPT Mode             : rate\n");
-			fprintf(fp, "SPT Bytes (kbps)     : %d\n", spt_threshold.bytes / 1000);
+			ipc_kv_str(fp, "SPT Mode", "rate");
+			ipc_kv_num(fp, "SPT Bytes (kbps)", spt_threshold.bytes / 1000);
 		} else {
-			fprintf(fp, "SPT Mode             : packets\n");
-			fprintf(fp, "SPT Packets          : %d\n", spt_threshold.packets);
+			ipc_kv_str(fp, "SPT Mode", "packets");
+			ipc_kv_num(fp, "SPT Packets", spt_threshold.packets);
 		}
-		fprintf(fp, "SPT Interval         : %d sec\n", spt_threshold.interval);
+		ipc_kv_secs(fp, "SPT Interval", spt_threshold.interval);
 	}
 
 	return 0;
@@ -977,38 +1303,40 @@ static int show_igmp_groups(FILE *fp)
 	struct uvif *uv;
 	vifi_t vifi;
 
-	fprintf(fp, "IGMP Group Membership Table_\n");
-	fprintf(fp, "Interface         Group            Source           Last Reported    Timeout  Version=\n");
+	ipc_table(fp, "IGMP Group Membership Table", "igmp_group");
+
 	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
 		for (group = uv->uv_groups; group; group = group->al_next) {
-			char pre[40], post[40];
+			/*
+			 * One row per source, or one saying ANY where the
+			 * membership names none, each with the timer it
+			 * expires on.  The version is the group's
+			 * compatibility mode, not the interface's: one
+			 * older report puts the group back a version
+			 * (RFC 3376 sec. 7.3.2) and a timer of its own
+			 * brings it forward again, which is state nothing
+			 * else here could show.
+			 */
+			source = group->al_sources;
+			do {
+				struct ipc_field row[] = {
+					IPC_STR("Interface",	 -16, uv->uv_name),
+					IPC_STR("Group",	 -15, inet_fmt(group->al_addr, s1, sizeof(s1))),
+					IPC_STR("Source",	 -15, source ? inet_fmt(source->al_addr, s2, sizeof(s2)) : "ANY"),
+					IPC_STR("Last Reported", -15, inet_fmt(group->al_reporter, s3, sizeof(s3))),
+					IPC_NUM("Timeout",	   7, source ? source->al_timer : group->al_timer),
+					IPC_NUM("Version",	   7, group->al_pv),
+					IPC_END
+				};
 
-			snprintf(pre, sizeof(pre), "%-16s  %-15s  ",
-				 uv->uv_name, inet_fmt(group->al_addr, s1, sizeof(s1)));
-
-			/* The version is the group's compatibility mode, not
-			 * the interface's: one older report puts the group
-			 * back a version (RFC 3376 sec. 7.3.2) and a timer
-			 * of its own brings it forward again, which is state
-			 * nothing else here could show. */
-			if (!group->al_sources) {
-				snprintf(post, sizeof(post), "%-15s  %7u  %7d",
-					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
-					 group->al_timer, group->al_pv);
-				fprintf(fp, "%s%-15s  %s\n", pre, "ANY", post);
-				continue;
-			}
-
-			/* Each (S,G) membership expires on a timer of its own */
-			for (source = group->al_sources; source; source = source->al_next) {
-				snprintf(post, sizeof(post), "%-15s  %7u  %7d",
-					 inet_fmt(group->al_reporter, s1, sizeof(s1)),
-					 source->al_timer, group->al_pv);
-				fprintf(fp, "%s%-15s  %s\n",
-					pre, inet_fmt(source->al_addr, s1, sizeof(s1)), post);
-			}
+				ipc_row(fp, row);
+				if (source)
+					source = source->al_next;
+			} while (source);
 		}
 	}
+
+	ipc_table_end(fp);
 
 	return 0;
 }
@@ -1018,25 +1346,30 @@ static int show_igmp_iface(FILE *fp)
 	struct uvif *uv;
 	vifi_t vifi;
 
-	fprintf(fp, "IGMP Interface Table_\n");
-	fprintf(fp, "Interface         State     Querier          Timeout Version  Groups=\n");
+	ipc_table(fp, "IGMP Interface Table", "igmp_interface");
 
 	for (vifi = 0, uv = uvifs; vifi < numvifs; vifi++, uv++) {
-		char timeout[10];
-
 		/* The register_vif is never used for IGMP messages */
 		if (uv->uv_flags & VIFF_REGISTER)
 			continue;
 
-		if (!uv->uv_querier)
-			snprintf(timeout, sizeof(timeout), "None");
-		else
-			snprintf(timeout, sizeof(timeout), "%u", igmp_querier_timeout - uv->uv_querier->al_timer);
+		/* Only a querier elsewhere on the LAN times out; this
+		 * router being the querier itself, nothing does. */
+		struct ipc_field row[] = {
+			IPC_STR("Interface", -16, uv->uv_name),
+			IPC_STR("State",      -8, ifstate(uv)),
+			IPC_STR("Querier",   -15, igmp_querier(uv, s1, sizeof(s1))),
+			IPC_OPT("Timeout",     7, uv->uv_querier,
+				uv->uv_querier ? igmp_querier_timeout - uv->uv_querier->al_timer : 0),
+			IPC_NUM("Version",     7, igmp_version(uv)),
+			IPC_NUM("Groups",      6, group_count(uv)),
+			IPC_END
+		};
 
-		fprintf(fp, "%-16s  %-8s  %-15s  %7s %7d  %6zu\n", uv->uv_name,
-			ifstate(uv), igmp_querier(uv, s1, sizeof(s1)), timeout,
-			igmp_version(uv), group_count(uv));
+		ipc_row(fp, row);
 	}
+
+	ipc_table_end(fp);
 
 	return 0;
 }
@@ -1061,6 +1394,14 @@ static int show_autorp(FILE *fp)
 
 static int show_dump(FILE *fp)
 {
+	/* A frozen format from before pimctl, prose and tables in equal
+	 * measure: there is nothing to declare, so -j says so rather than
+	 * wrapping a text dump in braces and calling it JSON. */
+	if (json) {
+		ipc_no_json(fp, "show compat");
+		return 0;
+	}
+
 	dump_vifs(fp, detail);
 	dump_ssm(fp, detail);
 	dump_pim_mrt(fp, detail);
@@ -1071,7 +1412,18 @@ static int show_dump(FILE *fp)
 
 static int show_version(FILE *fp)
 {
-	fputs(versionstring, fp);
+	char buf[120];
+
+	if (!json) {
+		fputs(versionstring, fp);
+		return 0;
+	}
+
+	/* The banner is one line with a newline of its own */
+	strlcpy(buf, versionstring, sizeof(buf));
+	buf[strcspn(buf, "\n")] = 0;
+	ipc_kv_str(fp, "Version", buf);
+
 	return 0;
 }
 

@@ -926,13 +926,35 @@ int is_ssm_group(uint32_t group)
 
 /*
  * The SSM ranges in effect, for "pimctl show status".  One line, in the
- * column layout the rest of that listing uses.
+ * column layout the rest of that listing uses -- and, like the two lists
+ * below it there, a table of one column in JSON: the text form is prose
+ * rather than a table, so there is nothing to declare once for both.
  */
 void dump_ssm_ranges(FILE *fp)
 {
     struct ssm_range *range;
 
     default_ssm_range();
+
+    if (ipc_json()) {
+	ipc_table(fp, "SSM group ranges", "ssm_range");
+	for (range = ssm_list; range; range = range->next) {
+	    char buf[32];
+
+	    snprintf(buf, sizeof(buf), "%s/%u",
+		     inet_fmt(range->group, s1, sizeof(s1)), range->masklen);
+
+	    struct ipc_field row[] = {
+		IPC_STR("Range", -18, buf),
+		IPC_END
+	    };
+
+	    ipc_row(fp, row);
+	}
+	ipc_table_end(fp);
+
+	return;
+    }
 
     fprintf(fp, "SSM group ranges     :");
     for (range = ssm_list; range; range = range->next)
@@ -1030,6 +1052,29 @@ int register_accepted_from(uint32_t addr)
 void dump_reg_acl(FILE *fp)
 {
     struct reg_acl *acl;
+
+    if (ipc_json()) {
+	if (!reg_acl_list)
+	    return;
+
+	ipc_table(fp, "Register accept list", "register_accept");
+	for (acl = reg_acl_list; acl; acl = acl->next) {
+	    char buf[32];
+
+	    snprintf(buf, sizeof(buf), "%s/%u",
+		     inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+
+	    struct ipc_field row[] = {
+		IPC_STR("Prefix", -18, buf),
+		IPC_END
+	    };
+
+	    ipc_row(fp, row);
+	}
+	ipc_table_end(fp);
+
+	return;
+    }
 
     if (!reg_acl_list)
 	return;
@@ -1312,6 +1357,29 @@ void anycast_rp_copied(uint32_t anycast, uint32_t member)
 void dump_anycast_rp(FILE *fp)
 {
     struct anycast_rp *arp, *m;
+
+    /* A row per member in JSON, where the line below has no place to put
+     * the members of a set but its own prose. */
+    if (ipc_json()) {
+	if (!anycast_rp_list)
+	    return;
+
+	ipc_table(fp, "Anycast-RP sets", "anycast_rp");
+	for (arp = anycast_rp_list; arp; arp = arp->next) {
+	    struct ipc_field row[] = {
+		IPC_STR("Anycast Address", -15, inet_fmt(arp->anycast, s1, sizeof(s1))),
+		IPC_STR("Member",	   -15, inet_fmt(arp->member, s2, sizeof(s2))),
+		IPC_STR("This Router",	   -11, local_address(arp->member) != NO_VIF ? "yes" : "no"),
+		IPC_NUM("Copies",	      6, arp->copies),
+		IPC_END
+	    };
+
+	    ipc_row(fp, row);
+	}
+	ipc_table_end(fp);
+
+	return;
+    }
 
     for (arp = anycast_rp_list; arp; arp = arp->next) {
 	if (!anycast_rp_first(arp))

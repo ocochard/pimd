@@ -1053,10 +1053,37 @@ void stop_autorp(void)
     }
 }
 
+static void dump_autorp_config(FILE *fp);
+
+/* One mapping this router holds, the same row either way it is rendered */
+static void dump_autorp_map(FILE *fp, struct autorp_map *map)
+{
+    char ht[10];
+
+    if (map->holdtime == AUTORP_HOLDTIME_FOREVER)
+	snprintf(ht, sizeof(ht), "Forever");
+    else
+	snprintf(ht, sizeof(ht), "%u", map->holdtime);
+
+    struct ipc_field row[] = {
+	IPC_STR("Group Address", -16, netname(map->group_addr, map->group_mask)),
+	IPC_STR("RP Address",	 -15, map->negative ? "DENY" : inet_fmt(map->rp_addr, s1, sizeof(s1))),
+	IPC_STR("Holdtime",	   8, ht),
+	IPC_STR("Agent",	 -15, inet_fmt(map->origin, s2, sizeof(s2))),
+	IPC_END
+    };
+
+    ipc_row(fp, row);
+}
+
 /*
  * `pimctl show autorp', which is the only thing that says where a mapping
  * came from and when it stops being believed.  The RP set itself shows the
  * positive half of this and knows nothing of the rest.
+ *
+ * What this router announces and resolves is prose between the title and
+ * the table, which is the shape "show status" has: JSON leaves it out and
+ * keeps the mappings, which are what a script is after.
  */
 int dump_autorp(FILE *fp, int detail)
 {
@@ -1064,11 +1091,28 @@ int dump_autorp(FILE *fp, int detail)
 
     (void)detail;
 
-    fprintf(fp, "Auto-RP Mapping Table_\n");
-    if (!autorp_enabled) {
-	fprintf(fp, "Discovery is disabled\n");
-	return 0;
+    ipc_table(fp, "Auto-RP Mapping Table", "autorp");
+
+    if (!ipc_json()) {
+	if (!autorp_enabled) {
+	    fprintf(fp, "Discovery is disabled\n");
+	    return 0;
+	}
+
+	dump_autorp_config(fp);
     }
+
+    for (map = autorp_maps; map; map = map->next)
+	dump_autorp_map(fp, map);
+    ipc_table_end(fp);
+
+    return 0;
+}
+
+/* The prose half: what this router announces, and what it resolves */
+static void dump_autorp_config(FILE *fp)
+{
+    struct autorp_map *map;
 
     if (autorp_announce_flag) {
 	struct autorp_prefix *pfx;
@@ -1098,23 +1142,6 @@ int dump_autorp(FILE *fp, int detail)
 		    netname(map->group_addr, map->group_mask),
 		    map->negative ? "deny" : "");
     }
-
-    fprintf(fp, "Group Address     RP Address       Holdtime  Agent           =\n");
-    for (map = autorp_maps; map; map = map->next) {
-	char ht[10];
-
-	if (map->holdtime == AUTORP_HOLDTIME_FOREVER)
-	    snprintf(ht, sizeof(ht), "Forever");
-	else
-	    snprintf(ht, sizeof(ht), "%u", map->holdtime);
-
-	fprintf(fp, "%-16s  %-15s  %8s  %-15s\n",
-		netname(map->group_addr, map->group_mask),
-		map->negative ? "DENY" : inet_fmt(map->rp_addr, s1, sizeof(s1)),
-		ht, inet_fmt(map->origin, s2, sizeof(s2)));
-    }
-
-    return 0;
 }
 
 /**

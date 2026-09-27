@@ -212,7 +212,8 @@ The IPC corpus
 An input is the bytes a client writes to the pimctl socket: one command, no
 trailing newline, which is exactly what `src/pimctl.c` sends. So the seeds
 are text files and a crasher is readable, one per shape the parser treats
-differently -- a `show` with a `detail` argument, an alias row (`show if`),
+differently -- a `show` with a `detail` argument, one with the `json`
+argument `pimctl -j` appends and one with both, an alias row (`show if`),
 the two commands that take an argument of their own (`debug`, `log`) and
 their `?` form, the ones that answer out of a table (`help`, `version`), one
 that reaches `ipc_wrap()` (`restart`), and one that matches nothing:
