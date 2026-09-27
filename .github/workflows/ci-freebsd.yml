@@ -113,7 +113,13 @@ jobs:
           sync: rsync
           copyback: false
           prepare: |
-            pkg install -y autoconf automake pkgconf
+            # python3 is not a build dependency and the lab runs without
+            # one -- json_ok() falls back to a structural test.  But the
+            # half of solo step 7 that compares the two renderings of a
+            # table field by field needs a JSON parser, and skipped it
+            # here until this line existed, which left the assertion
+            # running on Linux alone.
+            pkg install -y autoconf automake pkgconf python3
 
           run: |
             set -eux
