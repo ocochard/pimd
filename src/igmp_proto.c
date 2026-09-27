@@ -62,11 +62,32 @@ static int DeleteTimer   (int id);
 static void SendQuery    (void *arg);
 static int SetQueryTimer (struct listaddr *g, vifi_t vifi, int to_expire, int q_time, int q_len);
 static uint32_t igmp_group_membership_timeout(void);
+static int group_accepted_on (struct uvif *v, uint32_t group);
 
 /* The querier timeout depends on the configured query interval */
 uint32_t igmp_query_interval  = IGMP_QUERY_INTERVAL;
 uint32_t igmp_querier_timeout = IGMP_OTHER_QUERIER_PRESENT_INTERVAL;
 
+
+/*
+ * May a host on this interface join $2?  The list is a list of group
+ * prefixes from igmp-accept-groups, and an empty one accepts everything,
+ * which is what a pimd.conf without the keyword leaves.
+ */
+static int group_accepted_on(struct uvif *v, uint32_t group)
+{
+    struct vif_acl *acl;
+
+    if (!v->uv_grp_acl)
+	return TRUE;
+
+    for (acl = v->uv_grp_acl; acl; acl = acl->acl_next) {
+	if ((group & acl->acl_mask) == acl->acl_addr)
+	    return TRUE;
+    }
+
+    return FALSE;
+}
 
 /*
  * add_leaf() builds (*,G) state only for a group that maps to an RP, so a
@@ -368,6 +389,24 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 	      __func__, s1, s2, s3, igmp_report_type);
 
     v = &uvifs[vifi];
+
+    /*
+     * And whether a host on this link may join this group at all.  Not the
+     * `scoped' boundary of RFC 2365, which is about where the traffic may
+     * go: that one drops the packets and keeps the membership, so the
+     * state and the shared tree a host asked for are built either way.
+     * An empty list accepts every group.
+     */
+    if (!group_accepted_on(v, group)) {
+	if (!v->uv_grp_warn) {
+	    logit(LOG_WARNING, 0, "Refusing IGMP membership for %s from %s on %s"
+		  " (igmp-accept-groups in %s says which groups are taken)",
+		  s3, s1, v->uv_name, config_file);
+	    v->uv_grp_warn = 1;
+	}
+
+	return;
+    }
 
     /*
      * Look for the group in our group list; if found, reset its timer.

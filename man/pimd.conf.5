@@ -379,7 +379,7 @@ or
 For more information, see the description of
 .Cm phyint ,
 below.
-.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm passive Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm accept-nbr-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc
+.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm passive Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm accept-nbr-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm igmp-accept-groups Ar group Ns / Ns Ar len | Ar group Cm masklen Ar len Oc
 .Pp
 This setting selects and alters properties of the phyiscal interfaces
 .Nm pimd
@@ -508,8 +508,40 @@ IPsec is the other half, and
 neither installs nor requires a security association.
 .It Cm scoped Ar <network/len>
 Optional scoping of multicast groups.  This allows interfaces to be
-configured as an administrative boundary for the specified group(s).
-Multicast streams belonging to the scoped groups will not be forwarded.
+configured as an administrative boundary for the specified group(s),
+RFC 2365.  Multicast streams belonging to the scoped groups will not be
+forwarded.
+.Pp
+.Sy Note:
+this is about where the traffic may go and not about what a host may ask
+for.  A membership for a scoped group is still learned, still holds state
+on this router and still builds a shared tree; what the boundary does is
+drop the packets.  See
+.Cm igmp-accept-groups
+below for the other half.
+.It Cm igmp-accept-groups Ar <group/len> | Ar group Cm masklen Ar len
+The multicast groups a host on this interface may join.  A membership
+report for any other group is ignored: no group state, no shared tree,
+and nothing for a host on a stub LAN to make this router hold by asking.
+An empty list accepts every group, which is what earlier versions always
+did, and the groups of 224.0.0.0/24 are never filtered, being the link
+local control groups this daemon and its neighbours use.
+.Pp
+Multiple ranges may be given, on one line or on several
+.Cm phyint
+lines for the same interface; a group matching any of them is accepted.
+The refusal is logged once per interface, and
+.Cm pimctl show igmp interface
+counts the ranges in force on each one.
+.Pp
+.Sy Note:
+no RFC asks for this.  It is the control other implementations spell
+.Cm ip igmp access-group ,
+and it is not
+.Cm scoped
+above: that is the RFC 2365 forwarding boundary, which drops the traffic
+and keeps the membership.  Use both where a boundary is what is wanted
+and a host is not to be trusted either.
 .El
 .It Cm bsr-candidate Oo Ar address | Ar ifname Oc Oo Cm priority Ar <0-255> Oc
 The

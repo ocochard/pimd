@@ -1229,6 +1229,12 @@ SL_ED3_ADDR=10.0.3.10
 IC_GROUP_V1=${IC_GROUP_V1:-225.1.9.1}
 IC_GROUP_V2=${IC_GROUP_V2:-225.1.9.2}
 IC_GROUP_V3=${IC_GROUP_V3:-225.1.9.3}
+# The group the last step lets a host join, and the one it does not.  Both
+# are reported by the same ED3 on the same LAN, and the routers beside R3
+# have no filter, which is what tells a refused membership from a report
+# that never arrived.
+IC_OK_GROUP=${IC_OK_GROUP:-225.1.9.4}
+IC_DENY_GROUP=${IC_DENY_GROUP:-225.1.9.9}
 IC_QUERY_INTERVAL=${IC_QUERY_INTERVAL:-5}
 IC_QUERIER_TIMEOUT=${IC_QUERIER_TIMEOUT:-20}
 IC_VER_TIMEOUT=$((3 * IC_QUERY_INTERVAL + 10))
@@ -7664,6 +7670,22 @@ iface_igmp_version() {
 		awk -v i="$2" '$1 == i { print $5 }'
 }
 
+# The group ranges igmp-accept-groups allows on interface $2 of router $1,
+# the seventh column of the same table and "N/A" where any group may be
+# joined, which is the default.
+iface_igmp_accept() {
+	pimctl "$1" -t show igmp interface 2>/dev/null | \
+		awk -v i="$2" '$1 == i { print $7 }'
+}
+
+# Does router $1 hold an IGMP membership for group $2?  Read off the group
+# table rather than the routing table: a membership a filter refused leaves
+# no row there, whatever the (*,G) does.
+has_igmp_group() {
+	pimctl "$1" -t show igmp groups 2>/dev/null | \
+		awk -v g="$2" '$2 == g { found = 1 } END { exit !found }'
+}
+
 # How many VIFs router $1 has, the register vif excluded -- "show
 # interface" leaves that one out, one row per VIF for the rest.  What this
 # is for is telling a VIF that came back on the slot it had from one that
@@ -9501,6 +9523,71 @@ check_igmp_compat() {
 		ok "and asked at v1 once it was, which is the version the group is in"
 	else
 		fail "r5 sent no v1 group-specific query for a group in v1 mode"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "8. Which groups a host on the link may join at all"
+	# igmp-accept-groups, which is about the membership rather than about
+	# where the traffic may go: `scoped' is the RFC 2365 boundary and
+	# drops the packets while keeping the state, so a host can still make
+	# a router hold a group and pull a shared tree for it.  No RFC asks
+	# for this one; it is what other implementations spell
+	# "ip igmp access-group".
+	cat <<-EOF > "$WORKDIR/r3.conf"
+	# R3: the same, with one group allowed on the shared LAN
+	igmp-query-interval $IC_QUERY_INTERVAL
+	igmp-querier-timeout $IC_QUERIER_TIMEOUT
+	spt-threshold infinity
+	phyint $SL_R3_IF igmp-accept-groups $IC_OK_GROUP/32
+	EOF
+	pimctl r3 restart >/dev/null 2>&1 || fail "r3 did not reload"
+	wait_for 30 pimd_is_up r3 || fail "r3 did not come back after the reload"
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The control first: the group that is on the list has to be kept, or
+	# everything below passes on a router that refuses every membership.
+	ic_report "$IC_OK_GROUP" v3
+	if wait_for 20 has_igmp_group r3 "$IC_OK_GROUP"; then
+		ok "r3 keeps $IC_OK_GROUP, the group igmp-accept-groups names"
+	else
+		fail "r3 refused $IC_OK_GROUP, which is on its list"
+		dprint "$(pimctl r3 show igmp groups)"
+		return 1
+	fi
+
+	ic_report "$IC_DENY_GROUP" v3
+	sleep 3
+	if has_igmp_group r3 "$IC_DENY_GROUP"; then
+		fail "r3 took $IC_DENY_GROUP, which falls outside its list"
+		dprint "$(pimctl r3 show igmp groups)"
+	else
+		ok "and refuses $IC_DENY_GROUP, which does not"
+	fi
+	if logged r3 "Refusing IGMP membership for $IC_DENY_GROUP"; then
+		ok "saying so once, naming the group and the keyword"
+	else
+		fail "r3 refused it silently"
+	fi
+
+	# And the report did arrive: R4 is on the same segment, heard the same
+	# report and has no list, so it holds what R3 refused.  Without this
+	# the assertion above would pass on a report that never left ED3.
+	if wait_for 20 has_igmp_group r4 "$IC_DENY_GROUP"; then
+		ok "while r4, on the same LAN and with no list, holds it"
+	else
+		fail "r4 never saw $IC_DENY_GROUP either, so nothing was refused"
+	fi
+
+	# The filter is visible, which is where an operator looks for it
+	if [ "$(iface_igmp_accept r3 "$SL_R3_IF")" = 1 ]; then
+		ok "r3's 'show igmp interface' counts the one range it accepts"
+	else
+		fail "r3 reads '$(iface_igmp_accept r3 "$SL_R3_IF")' accepted ranges on $SL_R3_IF, want 1"
+	fi
+	if [ "$(iface_igmp_accept r4 "$SL_R4_IF")" = "N/A" ]; then
+		ok "and r4, with no list, reads N/A there"
+	else
+		fail "r4 reads '$(iface_igmp_accept r4 "$SL_R4_IF")' accepted ranges, want N/A"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

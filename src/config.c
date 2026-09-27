@@ -238,8 +238,9 @@ static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
  * pass over the file; config_phyints_from_file() raises it so that a
  * rescan configures the VIFs that have just appeared and touches no
  * other.  The lists a phyint line appends to -- altnet, scoped,
- * accept-nbr-from -- would otherwise collect a second copy of every entry
- * each time an interface turned up somewhere else on the router.
+ * accept-nbr-from, igmp-accept-groups -- would otherwise collect a second
+ * copy of every entry each time an interface turned up somewhere else on
+ * the router.
  */
 static vifi_t phyint_first = 0;
 
@@ -2044,6 +2045,72 @@ static int parse_phyint(char *s)
 		v->uv_acl = v_acl;
 		logit(LOG_DEBUG, 0, "SCOPED %s/%x", inet_fmt(v_acl->acl_addr, s1, sizeof(s1)), v_acl->acl_mask);
 	    } /* scoped */
+
+	    /*
+	     * Which groups a host on this link may join, and nothing about
+	     * where the traffic may go: `scoped' above is the RFC 2365
+	     * forwarding boundary, which drops the packets and leaves the
+	     * membership -- so a host can still make this router hold
+	     * state and pull a shared tree for a group it has no business
+	     * in.  This refuses the membership itself.
+	     *
+	     * No RFC asks for it; it is the control other implementations
+	     * spell `ip igmp access-group'.  An empty list accepts every
+	     * group, which is what pimd has always done.
+	     */
+	    if (EQUAL(w, "igmp-accept-groups")) {
+		uint32_t grp_masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+		uint32_t grp_addr;
+
+		if (EQUAL((w = next_word(&s)), "")) {
+		    WARN("Missing igmp-accept-groups group for phyint %s",
+			 inet_fmt(local, s1, sizeof(s1)));
+		    continue;
+		}
+
+		parse_prefix_len(w, &grp_masklen);
+
+		grp_addr = inet_parse(w, 4);
+		if (!IN_MULTICAST(ntohl(grp_addr))) {
+		    WARN("Invalid igmp-accept-groups group '%s', not a multicast address", w);
+		    continue;
+		}
+
+		t = s;
+		if (EQUAL((w = next_word(&s)), "masklen")) {
+		    if (EQUAL((w = next_word(&s)), "") || sscanf(w, "%u", &grp_masklen) != 1) {
+			WARN("Invalid igmp-accept-groups masklen for phyint %s",
+			     inet_fmt(local, s1, sizeof(s1)));
+			continue;
+		    }
+		} else {
+		    s = t;
+		}
+
+		/* VAL_TO_MASK() shifts by 32 - masklen, the same hazard the
+		 * two branches above guard.
+		 */
+		if (grp_masklen < 1 || grp_masklen > 32) {
+		    WARN("Invalid (%u) igmp-accept-groups masklen for phyint %s",
+			 grp_masklen, inet_fmt(local, s1, sizeof(s1)));
+		    continue;
+		}
+
+		v_acl = calloc(1, sizeof(struct vif_acl));
+		if (!v_acl) {
+		    logit(LOG_WARNING, 0, "Out of memory when adding igmp-accept-groups");
+		    continue;
+		}
+
+		VAL_TO_MASK(v_acl->acl_mask, grp_masklen);
+		v_acl->acl_addr = grp_addr & v_acl->acl_mask;
+		v_acl->acl_next = v->uv_grp_acl;
+		v->uv_grp_acl = v_acl;
+
+		logit(LOG_INFO, 0, "Accepting IGMP memberships on %s for %s/%u", v->uv_name,
+		      inet_fmt(v_acl->acl_addr, s1, sizeof(s1)), grp_masklen);
+		continue;
+	    } /* igmp-accept-groups */
 
 	    /* RFC 7761 sec. 6.2: "A PIM router SHOULD provide an option to
 	     * limit the set of neighbors from which it will accept

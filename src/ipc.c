@@ -687,6 +687,19 @@ static int igmp_version(struct uvif *uv)
 	return 3;
 }
 
+/* How many group ranges igmp-accept-groups allows here, zero for an
+ * interface where any group may be joined */
+static size_t grp_acl_count(struct uvif *uv)
+{
+	struct vif_acl *acl;
+	size_t num = 0;
+
+	for (acl = uv->uv_grp_acl; acl; acl = acl->acl_next)
+		num++;
+
+	return num;
+}
+
 /* The elected IGMP querier, "Local" when this router won the election */
 static char *igmp_querier(struct uvif *uv, char *buf, size_t len)
 {
@@ -1373,6 +1386,9 @@ static int show_igmp_iface(FILE *fp)
 				uv->uv_querier ? igmp_querier_timeout - uv->uv_querier->al_timer : 0),
 			IPC_NUM("Version",     7, igmp_version(uv)),
 			IPC_NUM("Groups",      6, group_count(uv)),
+			/* The ranges a host here may join, "N/A" where that
+			 * is every group, which is the default */
+			IPC_OPT("Accept",      6, grp_acl_count(uv), grp_acl_count(uv)),
 			IPC_END
 		};
 

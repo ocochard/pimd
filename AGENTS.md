@@ -263,7 +263,12 @@ has something to refuse and an interface that refuses nothing beside it; one gro
 and v3 from `test/igmpv3.c`'s `-v`, read out of the per-group version column of `pimctl show igmp
 groups`; the climb back out of an older mode, one version per timeout, with v3 reports holding the
 membership up meanwhile; and the leaves, where a v2 group is asked with a v2 group-specific query
-and a group a v1 host reported ignores the leave entirely --
+and a group a v1 host reported ignores the leave entirely.  Step 8 is the other
+question about a host on a LAN, `phyint ... igmp-accept-groups`: which groups it
+may join at all, which is the membership rather than the `scoped` boundary
+beside it -- R3 takes the group on its list and refuses the one that is not,
+while R4 on the same segment has no list and holds what R3 refused, so the
+refusal is the filter and not a report that never arrived --
 `ssm` and `ssm-range` are the only ones about IGMP state rather than PIM
 forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asserts both halves of
 the replacement), `alias` the only one where an interface carries more than one address, so the only

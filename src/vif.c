@@ -233,6 +233,8 @@ void zero_vif(struct uvif *v, int t)
     v->uv_addrs		= (struct phaddr *)NULL;
     v->uv_nsecaddrs	= 0;
     v->uv_nbr_acl	= (struct phaddr *)NULL;
+    v->uv_grp_acl	= (struct vif_acl *)NULL;
+    v->uv_grp_warn	= 0;
     v->uv_filter	= (struct vif_filter *)NULL;
 
     RESET_TIMER(v->uv_hello_timer);
@@ -539,6 +541,14 @@ static void stop_vif(vifi_t vifi)
 	v->uv_acl = acl->acl_next;
 	free(acl);
     }
+
+    /* And the groups a host here was allowed to join */
+    while (v->uv_grp_acl) {
+	acl = v->uv_grp_acl;
+	v->uv_grp_acl = acl->acl_next;
+	free(acl);
+    }
+    v->uv_grp_warn = 0;
 
     vifs_down = TRUE;
     logit(LOG_INFO, 0, "Interface %s goes down; VIF #%u out of service", v->uv_name, vifi);

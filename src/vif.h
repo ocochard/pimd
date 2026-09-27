@@ -218,6 +218,13 @@ struct uvif {
     struct phaddr   *uv_nbr_acl;    /* Routers we accept PIM from here, RFC
 				     * 7761 sec. 6.2; empty means all of
 				     * them, which that section requires  */
+    struct vif_acl  *uv_grp_acl;    /* Groups a host on this link may join,
+				     * igmp-accept-groups; empty means any,
+				     * and it is not uv_acl above: that one
+				     * is the `scoped' forwarding boundary,
+				     * which drops the traffic and keeps
+				     * the membership                      */
+    int		     uv_grp_warn;   /* Rate-limits the refusals above      */
     struct vif_filter *uv_filter;   /* Route filters on this vif	    */
     uint16_t	    uv_hello_timer; /* Timer for sending PIM hello msgs     */
     uint32_t	    uv_hello_trigger;/* The triggered Hello pending, 0 none,

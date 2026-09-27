@@ -7,6 +7,16 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `phyint ... igmp-accept-groups PREFIX` says which multicast groups a host on
+  that link may join.  A membership report for any other group is ignored: no
+  group state, no shared tree, nothing a host on a stub LAN can make this
+  router hold by asking.  An empty list accepts every group, so a
+  configuration without the keyword behaves as before, and 224.0.0.0/24 is
+  never filtered.  This is not `scoped`, the RFC 2365 boundary beside it on the
+  same line: that says where the traffic may go and drops the packets while
+  keeping the membership.  No RFC asks for this one -- it is the control other
+  implementations spell `ip igmp access-group` -- and `pimctl show igmp
+  interface` has an `Accept` column counting the ranges in force per interface
 - `crp-accept-from` and `crp-accept-group` in `pimd.conf` say whose Candidate-RP
   Advertisements a bootstrap router acts on, and which group ranges it carries
   out of them.  RFC 5059 sec. 4.1 recommends both: the message is unicast and
