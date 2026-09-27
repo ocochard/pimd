@@ -7,6 +7,20 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `crp-accept-from` and `crp-accept-group` in `pimd.conf` say whose Candidate-RP
+  Advertisements a bootstrap router acts on, and which group ranges it carries
+  out of them.  RFC 5059 sec. 4.1 recommends both: the message is unicast and
+  needs neither a neighbour relationship nor a place on one of the BSR's links,
+  so without them the RP set of the whole domain is state any host able to
+  reach the BSR can create, and the BSR writes all of it into every Bootstrap
+  the domain then believes.  `rp-set-limit` bounds how much of it a stranger
+  can make; these say who the stranger may be.  Either list empty accepts
+  everything, as `register-accept-from` does, so a configuration that says
+  nothing behaves as before.  A range has to fall *inside* a `crp-accept-group`
+  prefix, so a list of 239.1.0.0/16 refuses a candidacy for all of 224.0.0.0/4;
+  refused ranges are dropped one at a time and the rest of the advertisement is
+  kept.  `pimctl show status` lists both, and a refusal is logged once per
+  configuration
 - A `group-prefix` of an `rp-candidate` may carry a `priority` of its own, so
   that one router is the preferred RP for some groups and the last resort for
   others.  A range written without one takes the priority of the

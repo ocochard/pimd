@@ -1279,6 +1279,12 @@ BE_RANGE_PRIO=${BE_RANGE_PRIO:-5}
 # step above left in the set.
 BE_DFLT_PRIO=${BE_DFLT_PRIO:-7}
 
+# Step 8: the two lists of RFC 5059 sec. 4.1.  $BE_OK_RANGE is the range
+# R2 is told to carry, and 224.0.0.0/4 beside it the one that is wider
+# than the list and must not arrive; ED1 is the sender that is refused
+# and R1 the one that is not.
+BE_OK_RANGE=${BE_OK_RANGE:-239.30.0.0}
+
 # Step 5b: one group range, and more RPs offered for it than the count byte
 # of a Bootstrap can hold.  Each Cand-RP-Adv names one RP, so this is one
 # message per RP.
@@ -9227,6 +9233,86 @@ check_bsr_elect() {
 		ok "r3 still has $BE_R2_ADDR as its BSR, from the part that fits"
 	else
 		fail "r3 reads '$(bsr_addr r3)' after the BSR's set outgrew a message"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "8. And who may fill it at all, RFC 5059 sec. 4.1"
+	# Everything above is what an unauthenticated sender can do to a
+	# BSR that accepts every sender, which is the default and which
+	# sec. 4.1 recommends against.  crp-accept-from and
+	# crp-accept-group are that recommendation: the reload below takes
+	# advertisements from R1 alone, and ranges inside $BE_OK_RANGE/16
+	# alone, so ED1 is the refused sender and R1 the control beside it.
+	cat <<-EOF > "$WORKDIR/r2.conf"
+	# R2: the same BSR, now with both of sec. 4.1's lists
+	bsr-candidate ${EPU}112b priority $BE_HIGH_PRIO interval $BE_INTERVAL
+	rp-set-limit $BE_RP_SET_WIDE
+	crp-accept-from $BE_R1_ADDR
+	crp-accept-group $BE_OK_RANGE/16
+	EOF
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	wait_for 30 pimd_is_up r2 || fail "r2 did not come back"
+	wait_for 90 bsr_is r2 "$BE_R2_ADDR" || fail "r2 is not the BSR after the reload"
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# The reload emptied the set, so what is in it now is what arrived
+	# after it.  ED1 first: a range that the group list would take, from
+	# a sender the address list will not.
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" candrp -d "$BE_R2_ADDR" \
+		-r "$SRC_ADDR" -g "$BE_OK_RANGE" -m 16 >/dev/null 2>&1 || true
+	sleep 3
+	if has_rp r2 "$BE_OK_RANGE/16"; then
+		fail "r2 took $BE_OK_RANGE/16 from ED1, which crp-accept-from does not list"
+	else
+		ok "r2 refused ED1's advertisement, the sender not being on its list"
+	fi
+	if logged r2 "Refusing Candidate-RP Advertisement from $SRC_ADDR"; then
+		ok "and said so, naming the sender and the keyword"
+	else
+		fail "r2 refused it silently, so an operator cannot tell it is happening"
+	fi
+
+	# The control: the same range from R1, which is on the list, has to
+	# arrive -- or the assertion above is about a BSR that stopped
+	# taking anything.
+	cat <<-EOF > "$WORKDIR/r1.conf"
+	# R1: Candidate-RP for a range R2's group list accepts
+	bsr-candidate ${EP}112a priority $BE_HIGH_PRIO interval $BE_INTERVAL
+	rp-candidate ${EP}112a priority $BE_CRP_PRIO interval 10
+	group-prefix $BE_OK_RANGE masklen 16
+	group-prefix 224.0.0.0 masklen 4
+	rp-set-limit $BE_RP_SET_LIMIT
+	EOF
+	pimctl r1 restart >/dev/null 2>&1 || fail "r1 did not reload"
+	if wait_for 90 rp_prio_is r2 "$BE_OK_RANGE/16" "$BE_R1_ADDR" "$BE_CRP_PRIO"; then
+		ok "while R1's advertisement of the same range is taken"
+	else
+		fail "r2 has no $BE_OK_RANGE/16 from $BE_R1_ADDR, so it refuses everyone"
+		dprint "$(pimctl r2 show rp)"
+	fi
+
+	# And the other list: R1 advertises 224.0.0.0/4 in the same breath,
+	# which is wider than anything crp-accept-group names, so it is the
+	# range that must not arrive while the one beside it does.
+	if has_rp r2 "224.0.0.0/4"; then
+		fail "r2 took 224.0.0.0/4, which falls outside crp-accept-group $BE_OK_RANGE/16"
+		dprint "$(pimctl r2 show rp)"
+	else
+		ok "and 224.0.0.0/4 from the same router is not, being wider than the list"
+	fi
+	if logged r2 "Refusing group range 224.0.0.0/4"; then
+		ok "which r2 said once, naming that keyword"
+	else
+		fail "r2 dropped the range silently"
+	fi
+	# Both lists are in the status listing, which is where an operator
+	# looks for what a daemon is enforcing.
+	if pimctl r2 show status 2>/dev/null | grep -qE "^Cand-RP accept list +: $BE_R1_ADDR/32" &&
+	   pimctl r2 show status 2>/dev/null | grep -qE "^Cand-RP group list +: $BE_OK_RANGE/16"; then
+		ok "r2's status names both lists it is enforcing"
+	else
+		fail "r2's status does not name the two lists"
+		dprint "$(pimctl r2 show status | grep -i cand)"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

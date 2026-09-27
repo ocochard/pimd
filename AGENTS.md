@@ -243,7 +243,13 @@ default 130s, a Bootstrap being relayed hop by hop rather than flooded) and what
 will hold, a Candidate-RP Advertisement being unicast to it and needing no neighbour relationship:
 `rp-set-limit` bounds the RP set a stranger can fill, and the Bootstrap is bounded whatever the set
 is -- 10200 group ranges from a host with no Hello used to walk the 128K send buffer off its end,
-and step 7 is that flood --
+and step 7 is that flood.  Step 4b is the candidacy pimd *sends*, one priority per group range
+(`group-prefix ... priority`), read two hops away off a router that is neither the candidate nor
+the BSR, since RFC 5059 sec. 4.2 gives a whole advertisement one Priority and sec. 4.1 keeps one
+per RP per range: two numbers that one message could not have carried.  Step 8 is the pair of
+lists sec. 4.1 recommends, `crp-accept-from` and `crp-accept-group`, and the only place either is
+exercised: ED1 is the refused sender, R1 the control beside it, and a range wider than the group
+list is refused from the very router whose other range is taken --
 `passive` is the only one about an interface that runs IGMP and puts no PIM on the wire, which is
 `phyint ... passive`: R3's link to the receiver is passive and its link to R2 is the control in
 every step, so the same daemon is speaking PIM in one direction and not the other -- no Hello of

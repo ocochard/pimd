@@ -78,6 +78,8 @@
 #define CONF_AUTORP                             25
 #define CONF_AUTORP_LIMIT                       26
 #define CONF_RP_SET_LIMIT                       27
+#define CONF_CRP_ACCEPT_FROM                    28
+#define CONF_CRP_ACCEPT_GROUP                   29
 
 /*
  * Beginnings of a refactor of the static uvifs[] array
@@ -131,6 +133,31 @@ struct reg_acl {
 /* Walked once per Register from an unknown sender, so bounded like the
  * SSM ranges above. */
 #define REG_ACL_MAX_ENTRIES 255
+
+/*
+ * One prefix from a crp-accept-from or a crp-accept-group in pimd.conf:
+ * who this bootstrap router takes Candidate-RP Advertisements from, and
+ * which group ranges it takes out of them.  RFC 5059 sec. 4.1 recommends
+ * both -- "restricting which IP addresses the BSR accepts C-RP-Adv
+ * messages from, e.g., access lists... it may also be useful to specify
+ * which group ranges should be accepted" -- because that message is
+ * unicast, needs no neighbour relationship and no place on any of the
+ * BSR's links, and everything it says is written into every Bootstrap
+ * the domain then believes.
+ *
+ * An empty list accepts everything, as with register-accept-from: a
+ * pimd.conf that says nothing is a pimd that behaves as it always did.
+ */
+struct crp_acl {
+    struct crp_acl *next;
+
+    uint32_t  addr;		/* Network byte order, masked */
+    uint32_t  mask;		/* Network byte order */
+    uint32_t  masklen;
+};
+
+/* Walked once per advertisement, and once per group range in it */
+#define CRP_ACL_MAX_ENTRIES 255
 
 /*
  * One member of an Anycast-RP set, from an anycast-rp line in pimd.conf:
@@ -221,6 +248,10 @@ static struct ssm_range *ssm_list = NULL;
 static struct reg_acl   *reg_acl_list = NULL;
 static struct anycast_rp *anycast_rp_list = NULL;
 static struct cand_rp_prefix *cand_rp_prefix_list = NULL;
+static struct crp_acl   *crp_from_list = NULL;
+static struct crp_acl   *crp_group_list = NULL;
+static int               crp_from_said = FALSE;
+static int               crp_group_said = FALSE;
 
 
 /*
@@ -828,6 +859,10 @@ static int parse_option(char *word)
 	return CONF_AUTORP_LIMIT;
     if (EQUAL(word, "rp-set-limit"))
 	return CONF_RP_SET_LIMIT;
+    if (EQUAL(word, "crp-accept-from"))
+	return CONF_CRP_ACCEPT_FROM;
+    if (EQUAL(word, "crp-accept-group"))
+	return CONF_CRP_ACCEPT_GROUP;
 
     return CONF_UNKNOWN;
 }
@@ -870,6 +905,173 @@ static void validate_prefix_len(uint32_t *len)
  * one pre-built message this used to be, because the message a prefix
  * goes in depends on the priority beside it.
  */
+/*
+ * The two lists a bootstrap router filters Candidate-RP Advertisements
+ * with, RFC 5059 sec. 4.1.  Both are lists of prefixes and both are
+ * empty by default, which accepts everything and is what pimd has always
+ * done.
+ */
+static void reset_crp_acl(void)
+{
+    struct crp_acl *acl, *next;
+
+    for (acl = crp_from_list; acl; acl = next) {
+	next = acl->next;
+	free(acl);
+    }
+    crp_from_list = NULL;
+
+    for (acl = crp_group_list; acl; acl = next) {
+	next = acl->next;
+	free(acl);
+    }
+    crp_group_list = NULL;
+
+    crp_from_said = FALSE;
+    crp_group_said = FALSE;
+}
+
+static int add_crp_acl(struct crp_acl **list, const char *what, uint32_t addr, uint32_t masklen)
+{
+    struct crp_acl *acl;
+    size_t num = 0;
+
+    /* VAL_TO_MASK() shifts by 32 - masklen, so bound it here the way
+     * add_reg_acl() does rather than trust the caller. */
+    if (masklen < 1 || masklen > sizeof(uint32_t) * 8) {
+	logit(LOG_WARNING, 0, "Invalid %s masklen %u, ignoring", what, masklen);
+	return FALSE;
+    }
+
+    for (acl = *list; acl; acl = acl->next)
+	num++;
+
+    if (num >= CRP_ACL_MAX_ENTRIES) {
+	logit(LOG_WARNING, 0, "Too many %s prefixes, at most %d", what, CRP_ACL_MAX_ENTRIES);
+	return FALSE;
+    }
+
+    acl = calloc(1, sizeof(*acl));
+    if (!acl) {
+	logit(LOG_WARNING, 0, "Out of memory when adding %s %s/%u", what,
+	      inet_fmt(addr, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+    VAL_TO_MASK(acl->mask, masklen);
+    acl->addr    = addr & acl->mask;
+    acl->masklen = masklen;
+
+    acl->next = *list;
+    *list = acl;
+
+    logit(LOG_INFO, 0, "Candidate-RP Advertisements: %s %s/%u", what,
+	  inet_fmt(acl->addr, s1, sizeof(s1)), masklen);
+
+    return TRUE;
+}
+
+/*
+ * May this bootstrap router act on an advertisement sent by $1?  The
+ * refusal is logged here, and once per configuration: a sender that is
+ * refused usually keeps advertising, and a reload re-arms the warning
+ * because reset_crp_acl() clears the flag with the list.
+ */
+int cand_rp_accepted_from(uint32_t addr)
+{
+    struct crp_acl *acl;
+
+    if (!crp_from_list)
+	return TRUE;
+
+    for (acl = crp_from_list; acl; acl = acl->next) {
+	if ((addr & acl->mask) == acl->addr)
+	    return TRUE;
+    }
+
+    if (!crp_from_said) {
+	logit(LOG_WARNING, 0, "Refusing Candidate-RP Advertisement from %s"
+	      " (crp-accept-from in %s says who may send one)",
+	      inet_fmt(addr, s1, sizeof(s1)), config_file);
+	crp_from_said = TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * And may it take this group range out of one?  The range has to fall
+ * inside a configured prefix rather than merely touch it: a candidacy
+ * for 224.0.0.0/4 is not one for 239.1.0.0/16, and a filter that let the
+ * wider range in would be no filter at all.
+ */
+int cand_rp_group_accepted(uint32_t src, uint32_t group, uint32_t masklen)
+{
+    struct crp_acl *acl;
+
+    if (!crp_group_list)
+	return TRUE;
+
+    for (acl = crp_group_list; acl; acl = acl->next) {
+	if (masklen >= acl->masklen && (group & acl->mask) == acl->addr)
+	    return TRUE;
+    }
+
+    if (!crp_group_said) {
+	logit(LOG_WARNING, 0, "Refusing group range %s/%u from %s"
+	      " (crp-accept-group in %s says which are taken)",
+	      inet_fmt(group, s1, sizeof(s1)), masklen,
+	      inet_fmt(src, s2, sizeof(s2)), config_file);
+	crp_group_said = TRUE;
+    }
+
+    return FALSE;
+}
+
+static int parse_crp_accept(char *s, struct crp_acl **list, const char *what, int group)
+{
+    uint32_t masklen = sizeof(uint32_t) * 8;
+    const char *errstr;
+    long long num;
+    uint32_t addr;
+    char *w;
+
+    w = next_word(&s);
+    if (EQUAL(w, "")) {
+	WARN("Missing %s address", what);
+	return FALSE;
+    }
+
+    if (group)
+	masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+
+    parse_prefix_len(w, &masklen);
+
+    addr = inet_parse(w, 4);
+    if (group) {
+	if (!IN_MULTICAST(ntohl(addr))) {
+	    WARN("Invalid %s group '%s', not a multicast address", what, w);
+	    return FALSE;
+	}
+    } else if (addr == 0xffffff || !inet_valid_host(addr)) {
+	WARN("Invalid %s address '%s'", what, w);
+	return FALSE;
+    }
+
+    if (EQUAL((w = next_word(&s)), "masklen")) {
+	w = next_word(&s);
+	num = strtonum(w, 1, sizeof(uint32_t) * 8, &errstr);
+	if (errstr) {
+	    WARN("Invalid %s masklen %s, %s", what, w, errstr);
+	    return FALSE;
+	}
+
+	masklen = (uint32_t)num;
+    }
+
+    return add_crp_acl(list, what, addr, masklen);
+}
+
 static void reset_cand_rp_prefixes(void)
 {
     struct cand_rp_prefix *pfx, *next;
@@ -1209,6 +1411,70 @@ int register_accepted_from(uint32_t addr)
  * nothing is configured, so that the common case does not grow a line
  * saying it has no policy.
  */
+/*
+ * Who this bootstrap router takes Candidate-RP Advertisements from, and
+ * which group ranges it takes out of them.  Neither line is printed when
+ * the list behind it is empty, an empty list accepting everything.
+ */
+void dump_crp_acl(FILE *fp)
+{
+    struct crp_acl *acl;
+
+    if (ipc_json()) {
+	if (crp_from_list) {
+	    ipc_table(fp, "Cand-RP accept list", "crp_accept_from");
+	    for (acl = crp_from_list; acl; acl = acl->next) {
+		char buf[32];
+
+		snprintf(buf, sizeof(buf), "%s/%u",
+			 inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+
+		struct ipc_field row[] = {
+		    IPC_STR("Prefix", -18, buf),
+		    IPC_END
+		};
+
+		ipc_row(fp, row);
+	    }
+	    ipc_table_end(fp);
+	}
+
+	if (crp_group_list) {
+	    ipc_table(fp, "Cand-RP group list", "crp_accept_group");
+	    for (acl = crp_group_list; acl; acl = acl->next) {
+		char buf[32];
+
+		snprintf(buf, sizeof(buf), "%s/%u",
+			 inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+
+		struct ipc_field row[] = {
+		    IPC_STR("Range", -18, buf),
+		    IPC_END
+		};
+
+		ipc_row(fp, row);
+	    }
+	    ipc_table_end(fp);
+	}
+
+	return;
+    }
+
+    if (crp_from_list) {
+	fprintf(fp, "Cand-RP accept list  :");
+	for (acl = crp_from_list; acl; acl = acl->next)
+	    fprintf(fp, " %s/%u", inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+	fprintf(fp, "\n");
+    }
+
+    if (crp_group_list) {
+	fprintf(fp, "Cand-RP group list   :");
+	for (acl = crp_group_list; acl; acl = acl->next)
+	    fprintf(fp, " %s/%u", inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+	fprintf(fp, "\n");
+    }
+}
+
 void dump_reg_acl(FILE *fp)
 {
     struct reg_acl *acl;
@@ -3137,6 +3403,7 @@ void config_vifs_from_file(void)
     reset_reg_acl();
     reset_anycast_rp();
     reset_cand_rp_prefixes();
+    reset_crp_acl();
 
     fp = priv_fopen_conf();
     if (!fp) {
@@ -3242,6 +3509,14 @@ void config_vifs_from_file(void)
 
 	    case CONF_AUTORP_LIMIT:
 		parse_state_limit(s, "autorp-limit", &autorp_limit, PIM_AUTORP_LIMIT);
+		break;
+
+	    case CONF_CRP_ACCEPT_FROM:
+		parse_crp_accept(s, &crp_from_list, "crp-accept-from", FALSE);
+		break;
+
+	    case CONF_CRP_ACCEPT_GROUP:
+		parse_crp_accept(s, &crp_group_list, "crp-accept-group", TRUE);
 		break;
 
 	    case CONF_RP_SET_LIMIT:

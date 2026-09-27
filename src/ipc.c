@@ -253,7 +253,15 @@ static void ipc_kv_num(FILE *fp, const char *key, long long val)
 static void ipc_kv_secs(FILE *fp, const char *key, long long val)
 {
 	ipc_kv(fp, key);
-	fprintf(fp, json ? "%lld" : "%lld sec", val);
+
+	/* Two calls rather than a format chosen at runtime: a format that
+	 * is not a literal is the shape rules/security.cocci looks for,
+	 * and it is not worth being the one exception to it. */
+	if (json)
+		fprintf(fp, "%lld", val);
+	else
+		fprintf(fp, "%lld sec", val);
+
 	ipc_kv_end(fp);
 }
 
@@ -1282,6 +1290,7 @@ static int show_status(FILE *fp)
 	dump_cand_rp_prefixes(fp);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
+	dump_crp_acl(fp);
 	dump_anycast_rp(fp);
 	ipc_kv_str(fp, "SPT Threshold", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
 	if (spt_threshold.mode != SPT_INF) {

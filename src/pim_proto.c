@@ -6040,6 +6040,14 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 	return FALSE;
     }
 
+    /* Who may fill this router's RP set at all, RFC 5059 sec. 4.1.  The
+     * message is unicast and needs neither a neighbour relationship nor a
+     * place on one of this router's links, so without a list here the
+     * sender is anybody who can reach the BSR.  The refusal is logged
+     * where the list lives, once per configuration. */
+    if (!cand_rp_accepted_from(src))
+	return FALSE;
+
     data_ptr = (uint8_t *)(msg + sizeof(pim_header_t));
     max_data = (uint8_t *)msg + len;
     /* Parse the CAND_RP_ADV message */
@@ -6064,7 +6072,11 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 	 * C-RP MUST NOT send this, and pimd no longer does -- a candidacy
 	 * with no group-prefix line has the default range on its list and
 	 * names it -- but an older pimd on the other end still will, and
-	 * meant the same thing by it. */
+	 * meant the same thing by it.  It is a range like any other to
+	 * crp-accept-group, or a count of zero would be the way around it. */
+	if (!cand_rp_group_accepted(src, htonl(ALL_MCAST_GROUPS_ADDR), ALL_MCAST_GROUPS_LEN))
+	    return FALSE;
+
 	MASKLEN_TO_MASK(ALL_MCAST_GROUPS_LEN, grp_mask);
 	add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
 			 euaddr.unicast_addr, priority, holdtime,
@@ -6108,6 +6120,12 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 		      inet_fmt(src, s1, sizeof(s1)));
 	    continue;
 	}
+
+	/* And which ranges this router will carry for somebody else, the
+	 * other half of sec. 4.1: a candidacy for everything is one line
+	 * in a stranger's configuration file. */
+	if (!cand_rp_group_accepted(src, egaddr.mcast_addr, egaddr.masklen))
+	    continue;
 
 	MASKLEN_TO_MASK(egaddr.masklen, grp_mask);
 	/* Do not advertise internal virtual RP for SSM groups */

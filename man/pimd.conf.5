@@ -603,6 +603,40 @@ be either a unicast address or a multicast group, with an optional group
 address and netmask.  Default group and netmask is 224.0.0.0/16.
 .Sy Note:
 all static RP's are announced with priority 1 (second highest, see above).
+.It Cm crp-accept-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len
+The routers this bootstrap router (BSR) accepts Candidate-RP
+Advertisements from.  Like a Register, that message is unicast: it needs
+no neighbour relationship and no place on any of the BSR's links, so
+without this setting the RP set of the whole domain is state that any
+host able to reach the BSR can create, and the BSR writes all of it into
+every Bootstrap the domain then believes.  RFC 5059 sec. 4.1 recommends
+the option in those words, and an empty list accepts every sender, which
+is what earlier versions always did.
+.Pp
+Multiple lines may be given; a sender matching any of them is accepted.
+A prefix length may be left out, in which case it is 32, a single
+router.  The refusal is logged once, naming the sender and this keyword.
+.Pp
+.Sy Note:
+this matches the address the advertisement was sent from, not the RP
+address inside it, which is often a loopback of the same router and is
+legitimately different.  And, as with
+.Cm register-accept-from ,
+an attacker able to spoof the source address of a unicast packet is not
+stopped by it, only one that cannot.
+.It Cm crp-accept-group Ar group Ns / Ns Ar len | Ar group Cm masklen Ar len
+The group ranges this bootstrap router will carry for a candidate, the
+other half of RFC 5059 sec. 4.1: a candidacy for everything, 224.0.0.0/4,
+is one line in a stranger's configuration file, and a domain that runs
+multicast in 239.1.0.0/16 has no reason to let one in.  An empty list
+accepts every range.
+.Pp
+A range is accepted when it falls inside one of the prefixes given, so
+.Cm crp-accept-group Ar 239.1.0.0/16
+does not accept a candidacy for 224.0.0.0/4 \(em a filter that let the
+wider range through would be no filter.  Ranges that are refused are
+dropped one by one and the rest of the advertisement is kept, since one
+candidate may serve both.
 .It Cm register-accept-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len
 The routers this rendezvous point (RP) accepts PIM Register messages
 from.  A Register is unicast, so without this any host that can reach the

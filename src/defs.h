@@ -491,6 +491,12 @@ extern void	dump_anycast_rp		(FILE *fp);
  * a whole message one Priority, and sec. 4.1 has the BSR keep one per RP
  * per group range. */
 extern void	dump_cand_rp_prefixes	(FILE *fp);
+/* What a bootstrap router will act on, RFC 5059 sec. 4.1: whose
+ * Candidate-RP Advertisements, and which group ranges out of them.  An
+ * empty list accepts everything, as register-accept-from does. */
+extern int	cand_rp_accepted_from	(uint32_t addr);
+extern int	cand_rp_group_accepted	(uint32_t src, uint32_t group, uint32_t masklen);
+extern void	dump_crp_acl		(FILE *fp);
 extern size_t	cand_rp_prefix_count	(uint8_t priority);
 extern int	cand_rp_prefix_at	(uint8_t priority, size_t index,
 					 uint32_t *group, uint32_t *masklen);
