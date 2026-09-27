@@ -3484,6 +3484,13 @@ route_iif() {
 	'
 }
 
+# The two above as conditions, so that a step can wait for the state to
+# settle rather than read it once: an (S,G) whose iif is the vif of $4, and
+# an (S,G) that forwards onto interface $2.  Both are read again on every
+# call, which is what wait_for() needs.
+route_iif_is() { [ "$(route_iif "$1" "$2" "$3")" = "$4" ]; }
+route_oif_has() { map_isset "$1" "$2" "$(route_oifs "$1" "$3" "$4")"; }
+
 # PIM registers R3 has decapsulated so far.  One per data packet means the
 # RP never got off the register vif; a handful means it register-stopped
 # the first hop router early, as it should.
@@ -7490,14 +7497,19 @@ check_alias() {
 	[ "$FAILED" -eq "$converged" ] || return 1
 
 	print "5. Multicast from a sender on the aliased subnet reaches ED2"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+	# The receiver stays up until step 9 has read its state, and is
+	# killed there rather than here.  Everything from step 6 on is about
+	# an (S,G) and the oif the RP's Join gave it, and both of those exist
+	# only while somebody is a member: a machine slow enough to spend a
+	# Keepalive Timer's worth of time on steps 6 to 8 would otherwise
+	# read a source that is back to being register encapsulated and call
+	# it a missing Join.
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
 		>"$WORKDIR/receiver.log" 2>&1 &
 	receiver=$!
 	sleep 2
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
 		>"$WORKDIR/sender.log" 2>&1 || true
-	kill "$receiver" 2>/dev/null || true
-	wait "$receiver" 2>/dev/null || true
 
 	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
 	replies=${replies:-0}
@@ -7569,24 +7581,30 @@ check_alias() {
 	# way and cannot be the witness.  R1 forwarding natively onto the
 	# link to R2 is the Join having arrived.
 	print "9. The RP's (S,G) Join reaches R1 through the secondary address"
-	iif=$(route_iif r2 "$SRC_ADDR" "$GROUP")
+	# A short burst first, so that what is read below is the state of a
+	# source that is sending now rather than the remains of step 5's.
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 5 -w 30 "$GROUP" \
+		>"$WORKDIR/sender2.log" 2>&1 || true
+	wait_for 30 has_mrt r2 "$SRC_ADDR" || true
+
 	want=$(vif_index r2 "${EPU}112b")
-	if [ -n "$iif" ] && [ "$iif" = "$want" ]; then
-		ok "r2 (S,G) incoming interface is ${EPU}112b (vif $iif)"
+	if [ -n "$want" ] && wait_for 60 route_iif_is r2 "$SRC_ADDR" "$GROUP" "$want"; then
+		ok "r2 (S,G) incoming interface is ${EPU}112b (vif $want)"
 	else
-		fail "r2 (S,G) incoming interface is vif '$iif', want $want (${EPU}112b)"
+		fail "r2 (S,G) incoming interface is vif '$(route_iif r2 "$SRC_ADDR" "$GROUP")', want $want (${EPU}112b)"
 	fi
 	if logged r2 "For src $SRC_ADDR, iif is ${EPU}112b, next hop router is $ALIAS_UP_ADDR: NOT A PIM ROUTER"; then
 		fail "r2 did not map $ALIAS_UP_ADDR to a neighbour at some point, see $WORKDIR/r2.log"
 	else
 		ok "r2 never took $ALIAS_UP_ADDR for a router that does not speak PIM"
 	fi
-	oifs=$(route_oifs r1 "$SRC_ADDR" "$GROUP")
-	if map_isset r1 "$ALIAS_UP_IF" "$oifs"; then
+	if wait_for 60 route_oif_has r1 "$ALIAS_UP_IF" "$SRC_ADDR" "$GROUP"; then
 		ok "r1 (S,G) forwards onto $ALIAS_UP_IF, R2's Join arrived"
 	else
-		fail "r1 (S,G) outgoing map '$oifs' does not include $ALIAS_UP_IF, no Join from R2"
+		fail "r1 (S,G) outgoing map '$(route_oifs r1 "$SRC_ADDR" "$GROUP")' does not include $ALIAS_UP_IF, no Join from R2"
 	fi
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
 
 	echo
 	if [ "$FAILED" -eq 0 ]; then
