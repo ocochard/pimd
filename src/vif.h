@@ -245,7 +245,7 @@ struct uvif {
 #define VIFF_ONEWAY		0x000800       /* Maybe one way interface   */
 #define VIFF_LEAF		0x001000       /* all neighbors are leaves  */
 #define	VIFF_REXMIT_PRUNES	0x004000       /* retransmit prunes         */
-#define VIFF_PASSIVE		0x008000       /* passive tunnel	    */
+#define VIFF_PASSIVE		0x008000       /* IGMP here, no PIM on the wire */
 #define	VIFF_ALLOW_NONPRUNERS	0x010000       /* ok to peer with nonprunrs */
 #define VIFF_NOFLOOD		0x020000       /* don't flood on this vif   */
 #define	VIFF_DR			0x040000       /* designated router	    */

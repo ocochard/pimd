@@ -307,6 +307,19 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
     if (v->uv_flags & (VIFF_DOWN | VIFF_DISABLED | VIFF_REGISTER))
 	return FALSE;    /* Shoudn't come on this interface */
 
+    /* A passive interface forms no adjacency: the router next to it may
+     * well be speaking PIM, and the point of the keyword is that this one
+     * does not answer.  Refused here because this is where an adjacency
+     * begins, and without one a Join/Prune, an Assert and a unicast
+     * Bootstrap from that link are already refused. */
+    if (v->uv_flags & VIFF_PASSIVE) {
+	IF_DEBUG(DEBUG_PIM_HELLO)
+	    logit(LOG_DEBUG, 0, "Ignoring PIM HELLO from %s, %s is passive",
+		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+
+	return FALSE;
+    }
+
     /* RFC 7761 sec. 6.2's option, "accept-nbr-from" in pimd.conf.  This is
      * the one that does the work: a router refused here never becomes a
      * neighbor, and a Join/Prune, an Assert and a unicast Bootstrap all
@@ -1088,6 +1101,15 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     char   *buf;
     uint8_t *data;
     size_t  len;
+
+    /* "phyint ... passive": IGMP on this link and no PIM, so no Hello --
+     * and every other message this router would send there wants a
+     * neighbour, which a link with no Hello of ours and none accepted from
+     * anyone else never has.  Checked here rather than at the six places
+     * that send one: a goodbye Hello on the way down is a Hello too, and a
+     * passive interface has nobody to say goodbye to. */
+    if (v->uv_flags & VIFF_PASSIVE)
+	return TRUE;
 
     IF_DEBUG(DEBUG_PIM_HELLO)
 	logit(LOG_DEBUG, 0, "Sending PIM HELLO on %s", v->uv_name);

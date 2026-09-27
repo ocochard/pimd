@@ -379,7 +379,7 @@ or
 For more information, see the description of
 .Cm phyint ,
 below.
-.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm accept-nbr-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc
+.It Cm phyint Ar <address | ifname> Oo Cm disable | enable Oc Oo Cm passive Oc Oo Cm igmpv2 | igmpv3 Oc Oo Cm dr-priority Ar <1-4294967294> Oc Oo Cm ttl-threshold Ar <1-255> Oc Oo Cm distance Ar <1-255> Oc Oo Cm metric Ar <1-1024> Oc Oo Cm altnet Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc Oo Cm accept-nbr-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len Oc Oo Cm scoped Ar network Ns / Ns Ar len | Ar network Cm masklen Ar len Oc
 .Pp
 This setting selects and alters properties of the phyiscal interfaces
 .Nm pimd
@@ -407,6 +407,21 @@ settings in the configuration file.
 .It Cm disable | Cm enable
 Selectively disable or enable this interface.  Only enabled interfaces
 get a VIF in the kernel.
+.It Cm passive
+Run IGMP on the interface and no PIM: this router sends no Hello there and
+forms no adjacency with one that arrives, so a Join/Prune, an Assert or a
+unicast Bootstrap from that link is refused for want of a neighbour.
+Everything else about the interface is unchanged -- it is asked for
+memberships, it is forwarded to, and a source on it is registered -- which is
+what separates
+.Cm passive
+from
+.Cm disable ,
+where the interface is not used at all.
+.Pp
+What it is for is a link with hosts and no routers: a stub LAN where a PIM
+Hello every 30 seconds is noise at best, and an adjacency with whatever
+answers it is a way in.
 .It Cm igmpv2 | Cm igmpv3
 Force the interface into an IGMP compatibility mode, RFC 3376 sec. 7.3.1.
 Default:

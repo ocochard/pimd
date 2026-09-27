@@ -309,6 +309,21 @@
 #               address - is not covered: it needs one router reachable at
 #               the same address on two of its own links, which no topology
 #               here builds.  Takes about 4 minutes.
+#   passive     "phyint ... passive", an interface that runs IGMP and puts
+#               no PIM on the wire.  The chain, with R3's link to ED2
+#               passive and its link to R2 left alone, so the same daemon
+#               speaks PIM in one direction and not the other -- which is
+#               the only way to tell a passive interface from a disabled
+#               one.  Asserts the state pimctl reports, that PIM is alive
+#               upstream, that no Hello of R3's goes out on the passive
+#               link over two Hello periods while they keep going out
+#               upstream, that the receiver behind it is served all the
+#               same, and that a Hello arriving there makes no neighbour --
+#               with the same crafted Hello taken on a link that is not
+#               passive as the control.  That control runs last on purpose:
+#               ED1's address is higher than R1's, so the Hello makes ED1
+#               the DR of that LAN and the source stops being registered.
+#               Takes about 3 minutes.
 #   igmp-compat The versions of IGMP, on the shared-LAN topology above -- the
 #               only one here with several routers on a link, which is what
 #               a querier election and a compatibility mode both need.  R4's
@@ -935,10 +950,10 @@ SCENARIO=${SCENARIO:-rpt}
 # running keepalive alone with three slots idle, because the longest
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
-	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect ssm ssm-range alias
+	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent anycast anycast-dr"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
-		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect
+		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
 		     renumber ssm-range solo privsep"
 
@@ -1164,6 +1179,17 @@ ALIAS_UP_ADDR=10.0.12.11
 # rp-lasthop: the RP moves to R3, on the interface facing the receiver, so
 # the router that is RP is also the one with the directly connected member.
 RCV_ADDR=10.0.3.10
+
+# passive: how long to watch for Hellos before saying there were none.  The
+# Hello period is 30s at the pimd default and this scenario does not shorten
+# it, so this is two of them and a little.
+PASSIVE_HELLO_WAIT=${PASSIVE_HELLO_WAIT:-70}
+
+# R3's own two interfaces on the chain: the one towards ED2, which the
+# scenario makes passive, and the one towards R2, which is the control in
+# every step.  ED2_IF is the receiver's side of the same wire, not R3's.
+PASSIVE_IF=${PASSIVE_IF:-${EP}203a}
+PASSIVE_UP_IF=${PASSIVE_UP_IF:-${EP}123b}
 RPLH_ADDR=10.0.3.1
 
 # shared-lan: the shared segment is 10.0.3.0/24, with three PIM routers and
@@ -1821,7 +1847,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|anycast|anycast-dr)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -1879,6 +1905,11 @@ set_scenario() {
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
 	elif [ "$SCENARIO" = igmp-compat ]; then
 		DEBUG="$DEBUG_DEFAULT,igmp"
+	elif [ "$SCENARIO" = passive ]; then
+		# "Sending PIM HELLO on <if>" and the refusal of an incoming
+		# one are both behind IF_DEBUG(DEBUG_PIM_HELLO), and which
+		# interfaces they name is half of what this scenario reads.
+		DEBUG="$DEBUG_DEFAULT,pim_hello"
 	else
 		DEBUG=$DEBUG_DEFAULT
 	fi
@@ -2334,6 +2365,30 @@ write_configs() {
 
 		: > "$WORKDIR/r2.conf"
 		: > "$WORKDIR/r3.conf"
+		return
+	fi
+
+	if [ "$SCENARIO" = passive ]; then
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router for $SRC_ADDR
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# R3 is the last hop router, and the link to the receiver is
+		# the one under test: IGMP on it, no PIM.  Its upstream link
+		# is left alone, so the same daemon is speaking PIM in one
+		# direction and not the other -- which is the only way to
+		# tell a passive interface from a disabled one.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router, passive towards the receiver
+		phyint $PASSIVE_IF passive
+		EOF
 		return
 	fi
 
@@ -4114,6 +4169,7 @@ check() {
 	shared-lan|shared-lan-spt) check_shared_lan; return $? ;;
 	igmp-compat) check_igmp_compat; return $? ;;
 	bsr-elect)  check_bsr_elect; return $? ;;
+	passive)    check_passive; return $? ;;
 	assert-recover) check_assert_recover; return $? ;;
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
@@ -8584,6 +8640,121 @@ check_gif_staticrp() {
 # scenario with the right hand links rebuilt as bridges; from 6 on it is the
 # part no point-to-point link can reach, where three routers have to agree
 # on who speaks for a LAN they all sit on.
+# passive: "phyint ... passive", an interface that runs IGMP and puts no PIM
+# on the wire.  The point of the scenario is that the two halves of that are
+# asserted apart -- forwarding to a receiver behind it still works, which is
+# what separates passive from disabled, and no Hello of this router's goes
+# out there, nor any adjacency with one that arrives.  R3's upstream link is
+# the control in every step: the same daemon, speaking PIM as usual.
+check_passive() {
+	print "1. The interface is up, running, and says it is passive"
+	if wait_for "$PIMD_START_WAIT" pimd_is_up r3; then
+		ok "r3: pimd answers on its pimctl socket"
+	else
+		fail "r3: pimd not answering, see $WORKDIR/r3.log"
+		return 1
+	fi
+	if [ "$(iface_state r3 "$PASSIVE_IF")" = Passive ]; then
+		ok "r3 reads Passive on $PASSIVE_IF"
+	else
+		fail "r3 reads '$(iface_state r3 "$PASSIVE_IF")' on $PASSIVE_IF, want Passive"
+	fi
+	if [ "$(iface_state r3 "$PASSIVE_UP_IF")" = Up ]; then
+		ok "and Up on $PASSIVE_UP_IF, the link it still speaks PIM on"
+	else
+		fail "r3 reads '$(iface_state r3 "$PASSIVE_UP_IF")' on its upstream link, want Up"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. PIM is alive on the router, just not on that link"
+	if wait_for 60 has_neighbor r3 10.0.23.2; then
+		ok "r3 has r2 as a PIM neighbour upstream"
+	else
+		fail "r3 never saw r2, so nothing below says anything about passive"
+		return 1
+	fi
+	if wait_for 90 has_rp r3 "$RP_ADDR"; then
+		ok "and learned RP $RP_ADDR through it"
+	else
+		fail "r3 never learned the RP"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. No Hello of ours goes out on the passive link"
+	# Long enough for several: the Hello period is $PIM_HELLO_PERIOD here,
+	# and the log names the interface of every one sent.
+	sleep "$PASSIVE_HELLO_WAIT"
+	if logged r3 "Sending PIM HELLO on $PASSIVE_UP_IF"; then
+		ok "r3 sent Hellos on $PASSIVE_UP_IF over ${PASSIVE_HELLO_WAIT}s"
+	else
+		fail "r3 sent no Hello anywhere, so their absence below means nothing"
+		return 1
+	fi
+	if logged r3 "Sending PIM HELLO on $PASSIVE_IF"; then
+		fail "r3 sent a Hello on $PASSIVE_IF, which is passive"
+	else
+		ok "and none on $PASSIVE_IF in the same window"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. And the receiver behind it is still served"
+	# What separates passive from disabled: IGMP runs on the link, the
+	# membership is learned from it, and the shared tree is built to this
+	# router as usual.  Counted in mping replies rather than in tables --
+	# the receiver answers each packet, so a reply is a packet that made
+	# the whole round trip through the passive interface both ways.
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 120 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	sleep 3
+	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 || true
+	kill "$receiver" 2>/dev/null || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_RECEIVED" ]; then
+		ok "ED1 -> $GROUP -> ED2 across a passive last hop link, $replies replies"
+	else
+		fail "only $replies replies through a passive interface, want >= $MIN_RECEIVED"
+	fi
+	if has_mfc r3 "$GROUP"; then
+		ok "r3's kernel has the MFC entry for it"
+	else
+		fail "r3 has no MFC entry for $GROUP"
+	fi
+
+	print "5. A Hello arriving there makes no neighbour"
+	box_run ed2 "$PIMSEND" -i "$RCV_ADDR" hello -H 105 >/dev/null 2>&1 || true
+	sleep 3
+	if has_neighbor r3 "$RCV_ADDR"; then
+		fail "r3 took $RCV_ADDR as a neighbour on a passive interface"
+	else
+		ok "r3 refused $RCV_ADDR, which sent a Hello of its own"
+	fi
+	if logged r3 "is passive"; then
+		ok "and said which interface refused it"
+	else
+		fail "r3 logged nothing about refusing a Hello on a passive interface"
+	fi
+	# The control: the same crafted Hello, on an interface that is not
+	# passive, does make a neighbour.  Without it a router that ignores
+	# every crafted Hello would pass the two assertions above.  It is
+	# last in the scenario because of what it does to the LAN it lands
+	# on: ED1's address is higher than R1's, so R1 stops being the DR
+	# there and the source stops being registered, which is why the
+	# forwarding step runs before this one and not after.
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" hello -H 105 >/dev/null 2>&1 || true
+	if wait_for 20 has_neighbor r1 "$SRC_ADDR"; then
+		ok "the same Hello from ED1 is taken by r1, whose link is not passive"
+	else
+		fail "r1 refused ED1's Hello too, so the refusal above is not about passive"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	result
+}
+
 # bsr-elect: the one election this file never held.  Every other scenario
 # has a single Candidate-BSR, so the comparison of RFC 5059 sec. 3.1 -- the
 # higher priority, and the higher address where the priorities are equal --

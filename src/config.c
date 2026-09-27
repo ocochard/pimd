@@ -1338,6 +1338,7 @@ void dump_anycast_rp(FILE *fp)
  *
  * Syntax:
  * phyint <local-addr | ifname> [disable | enable]
+ *                              [passive]
  *                              [igmpv2  | igmpv3]
  *                              [dr-priority <1-4294967294>]
  *                              [ttl-threshold <1-255>]
@@ -1396,6 +1397,14 @@ static int parse_phyint(char *s)
 	     * has: v2, where the periodic query is truncated at the group
 	     * address and a v3 query from another router is refused, and v3,
 	     * which is the default. */
+	    /* IGMP on this link and no PIM: no Hello of ours and no
+	     * adjacency with anyone else's, which leaves the interface a
+	     * stub the router still forwards to and asks IGMP about. */
+	    if (EQUAL(w, "passive")) {
+		v->uv_flags |= VIFF_PASSIVE;
+		continue;
+	    }
+
 	    if (EQUAL(w, "igmpv2")) {
 		v->uv_flags |=  VIFF_IGMPV2;
 		continue;

@@ -208,7 +208,7 @@ hardening. `run all` walks its
 scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
-`anycast-dr`, `igmp-compat`, `bsr-elect`, `privsep`); see the script
+`anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -244,6 +244,13 @@ will hold, a Candidate-RP Advertisement being unicast to it and needing no neigh
 `rp-set-limit` bounds the RP set a stranger can fill, and the Bootstrap is bounded whatever the set
 is -- 10200 group ranges from a host with no Hello used to walk the 128K send buffer off its end,
 and step 7 is that flood --
+`passive` is the only one about an interface that runs IGMP and puts no PIM on the wire, which is
+`phyint ... passive`: R3's link to the receiver is passive and its link to R2 is the control in
+every step, so the same daemon is speaking PIM in one direction and not the other -- no Hello of
+its own on that link over two Hello periods, no adjacency with a crafted one that arrives (and the
+same crafted Hello taken on a link that is not passive, which is why that step runs last: ED1's
+address is higher than R1's, so the Hello makes ED1 the DR and stops the source being registered),
+and the receiver behind it served all the same, which is what separates passive from disabled,
 `igmp-compat` is the only one about the versions of IGMP -- an interface pinned to v2 with
 `phyint ... igmpv2` on a link whose querier is in v3 mode, so that the sec. 7.3.1 refusal
 has something to refuse and an interface that refuses nothing beside it; one group each at v1, v2

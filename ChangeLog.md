@@ -7,6 +7,16 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `phyint ... passive` runs IGMP on an interface and no PIM: no Hello of this
+  router's goes out there and no adjacency is formed with one that arrives, so
+  a Join/Prune, an Assert or a unicast Bootstrap from that link is refused for
+  want of a neighbour.  Everything else is unchanged -- memberships are
+  learned, traffic is forwarded, a source on it is registered -- which is what
+  separates it from `disable`.  What it is for is a stub LAN of hosts, where a
+  Hello every thirty seconds is noise and an adjacency with whatever answers it
+  is a way in.  `pimctl show interface` reports the state as `Passive`.  The
+  flag it sets, `VIFF_PASSIVE`, had been defined and unused since the tree was
+  imported, meaning "passive tunnel" in mrouted
 - `rp-set-limit` in `pimd.conf` caps the group ranges the RP set may hold, the
   way `autorp-limit` caps Auto-RP mappings and for the same reason: the state
   is a stranger's to create.  Ranges beyond it are refused and the fact is

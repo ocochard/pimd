@@ -371,6 +371,10 @@ static const char *ifstate(struct uvif *uv)
 	if (uv->uv_flags & VIFF_DISABLED)
 		return "Disabled";
 
+	/* Up, and running IGMP, but with no PIM on the wire */
+	if (uv->uv_flags & VIFF_PASSIVE)
+		return "Passive";
+
 	return "Up";
 }
 
