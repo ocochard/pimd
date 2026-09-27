@@ -468,6 +468,7 @@ extern int		errno;
 extern void	timer_init		(void);
 extern void	timer_exit		(void);
 extern uint64_t	timer_now		(void);
+extern uint64_t	timer_now_usec		(void);
 extern int	timer_secs_left		(uint64_t deadline);
 extern void	timer_age_queue		(int);
 extern int	timer_next_delay	(void);
@@ -759,6 +760,11 @@ extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
+/* How long the last pass of it took, and the longest one so far, in
+ * microseconds: doc/TODO.org's open question about the countdown timers,
+ * answered by the daemon rather than by a profiler. */
+extern uint32_t	route_ageing_usec;
+extern uint32_t	route_ageing_peak_usec;
 extern int	spt_switch_on_first_packet (void);
 extern void	route_timers_schedule	(uint64_t when);
 extern void	jp_timer_set		(mrtentry_t *mrt, uint32_t msec);

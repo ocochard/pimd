@@ -7,6 +7,15 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `pimctl show status` reports how long the last pass of `age_routes()` took
+  and the longest one since start-up, in microseconds.  That pass walks every
+  group and every (S,G) once per 5 second tick, which `doc/TODO.org` has long
+  guessed is "very unefficient if the routing table becomes very large"; the
+  daemon measures it for itself now, so an operator asking whether a router is
+  spending its time ageing routes has the answer on the router.  Measured with
+  the new `scale` scenario: 29 us at 200 entries, 95 us at 1000, 282 us at
+  3000 and about a millisecond at 10000 -- linear, and 0.03% of the tick that
+  schedules it, which retires that entry
 - `autorp listener` passes the two Auto-RP groups on, which is what makes the
   feature work in a domain more than one hop wide.  Auto-RP assumes somebody
   floods 224.0.1.39 and 224.0.1.40 to every router (sec. 3.3) and says nothing

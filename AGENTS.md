@@ -348,6 +348,16 @@ and, as its control, that `--no-privsep` is one root process that forwards just 
 on the three router chain and not on `solo` deliberately: a sandbox that forbids sending leaves a
 lone router electing itself BSR and RP, answering `pimctl` and sending nothing, which is exactly
 how the Capsicum attempt passed `solo` and failed everything with a neighbour in it.
+`scale` is the only one that is a measurement rather than an assertion about
+behaviour: a DR is made to hold ten thousand (S,G), one packet per group from
+`mflood` so that what is built is the table rather than a packet rate, and what
+it reads back is what that costs -- the ageing pass the daemon now times for
+itself (`Route ageing usec` and `Route ageing peak` in `show status`), the wall
+time of the build and of `show mrt`, and the kernel MFC, which is empty because
+no group has a member and pimd installs no entry for an empty oif list.  It
+bounds those numbers loosely and prints them, the way the coverage job reports
+rather than gates; the two entries of `doc/TODO.org` it answers carry the
+numbers and the date.
 `register-filter` is the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the

@@ -2351,7 +2351,7 @@ static void route_timers_run(void *arg __attribute__((unused)))
  * ==================================================
  *
  */
-void age_routes(void)
+static void age_routes_pass(void)
 {
     cand_rp_t  *cand_rp;
     grpentry_t *grp;
@@ -2672,6 +2672,36 @@ void age_routes(void)
     } /* For all cand RPs */
 
     jp_flush();
+}
+
+/*
+ * One pass over every group and every (S,G) there is, every
+ * TIMER_INTERVAL seconds -- which is what doc/TODO.org means by the
+ * countdown timers being "very unefficient if the routing table becomes
+ * very large", an entry that predates this fork and had never been
+ * measured.  So measure it: how long the last pass took, and the longest
+ * one since the daemon started, both in "pimctl show status".  An
+ * operator asking whether a router is spending its time ageing routes
+ * has the answer there, and the scale scenario of test/lab.sh reads it
+ * with ten thousand entries held.
+ */
+uint32_t route_ageing_usec;
+uint32_t route_ageing_peak_usec;
+
+void age_routes(void)
+{
+    uint64_t began = timer_now_usec();
+    uint64_t spent;
+
+    age_routes_pass();
+
+    spent = timer_now_usec() - began;
+    if (spent > UINT32_MAX)
+	spent = UINT32_MAX;
+
+    route_ageing_usec = (uint32_t)spent;
+    if (route_ageing_usec > route_ageing_peak_usec)
+	route_ageing_peak_usec = route_ageing_usec;
 }
 
 /**

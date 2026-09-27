@@ -1296,6 +1296,8 @@ static int show_status(FILE *fp)
 	ipc_kv_secs(fp, "IGMP query interval", igmp_query_interval);
 	ipc_kv_secs(fp, "IGMP querier timeout", igmp_querier_timeout);
 	ipc_kv_limit(fp, "RPT Prune entries", rpt_prune_entries, rpt_prune_limit);
+	ipc_kv_num(fp, "Route ageing usec", route_ageing_usec);
+	ipc_kv_num(fp, "Route ageing peak", route_ageing_peak_usec);
 	ipc_kv_limit(fp, "Local (S,G) entries", local_sg_entries, local_sg_limit);
 	ipc_kv_limit(fp, "Register (S,G) state", register_sg_entries, register_sg_limit);
 	ipc_kv_limit(fp, "Auto-RP mappings", autorp_entries, autorp_limit);

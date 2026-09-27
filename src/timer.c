@@ -76,6 +76,21 @@ uint64_t timer_now(void)
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/*
+ * The same clock in microseconds, for measuring something short enough
+ * that milliseconds round it away: one pass of age_routes() over a small
+ * routing table is such a thing, and how long that pass takes is the
+ * question doc/TODO.org has open about the countdown timers.
+ */
+uint64_t timer_now_usec(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
 /* Whole seconds, rounded up, until a deadline on that clock; 0 once it has
  * passed or when it is 0, not running.  For showing one to a person. */
 int timer_secs_left(uint64_t deadline)

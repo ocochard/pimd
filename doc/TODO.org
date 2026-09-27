@@ -173,6 +173,30 @@ the whole message must be parsed completely before starting processing it.
 (There is a nice paper in Sigcomm '97 about fast routing tables
 implementation, so need to check it as well)
 
+Measured before doing it, 2026-09-28, with the `scale' scenario of
+test/lab.sh: a DR holding ten thousand (S,G), built by one packet per group.
+
+The structures are what this entry says they are.  srclist and grplist are
+sorted singly-linked lists and search_srclist()/search_grplist() (src/mrt.c)
+walk them, so a lookup or an insert is O(N) and building the table is O(N^2).
+What the measurement says is that the constant is small and the walk is off
+the data path:
+
+  - 10000 entries were created in 4 seconds, which is the rate the flood was
+    paced at (2500 packets/s): the daemon absorbed every cache miss as it
+    arrived, each one an insert into a list that was already thousands long,
+    and never fell behind.
+  - "pimctl show mrt" printed all 10000 rows in under a second.
+
+And the reason it does not show: pimd walks those lists on a cache miss and
+on control traffic, not per forwarded packet.  Forwarding is the kernel's MFC
+once an entry exists, so the linear search costs one walk per *new* (S,G),
+not one per packet of it.
+
+Worth doing if somebody puts a pimd where a hundred thousand entries are
+expected, where the O(N^2) build would start to show.  Not worth doing for
+the sizes this daemon is deployed at, and not a correctness question at all.
+
 ** Do switch back to the Shared Tree by timing out the SPT if the rate
 is too low (not in the spec, but Ahmed pointed out some complications if
 this happens)
@@ -180,6 +204,32 @@ this happens)
 ** Change all countdown timers to events timeout (callout.c)
 (The current implementation is very unefficient if the routing table becomes
 very large)
+
+Retired by measurement, 2026-09-28: the claim is not true at any size this
+daemon is deployed at.  age_routes() (src/route.c) walks every group and
+every (S,G) once per TIMER_INTERVAL, which is 5 seconds, and it now times
+itself -- "Route ageing usec" and "Route ageing peak" in "pimctl show status",
+which is also how an operator answers this question on a live router.
+
+The `scale' scenario of test/lab.sh builds the table this entry is about and
+reads those numbers back:
+
+  |  (S,G) entries | one ageing pass |
+  |            200 |           29 us |
+  |           1000 |           95 us |
+  |           3000 |          282 us |
+  |          10000 |   900..1300 us  |
+
+Linear, about 0.1 us per entry, and at ten thousand entries a pass is 0.03%
+of the tick that schedules it -- a million entries would still be under 2%,
+and pimd runs out of kernel MFC space long before that.  The timers are not
+what a large table costs.
+
+Note that this is the *ageing* pass, the thing the entry names.  The Join,
+Prune-Pending and Assert Timers are already deadlines on the callout queue
+of src/timer.c (route_timers_run() in src/route.c acts on them), so the
+rewrite this entry asks for is half done and the half that is left is the
+half that was measured and found cheap.
 
 ** Send immediately Join/Prune, instead of relying of Join/Prune timer = 0
 

@@ -952,14 +952,27 @@ SCENARIO=${SCENARIO:-rpt}
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent
-	   autorp-listener anycast anycast-dr"
+	   autorp-listener anycast anycast-dr scale"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range autorp-listener solo privsep"
+		     renumber ssm-range autorp-listener solo privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
+# scale: how many (S,G) the DR is made to hold, how fast they are created,
+# and what the measurement is allowed to take before the scenario calls it
+# a problem rather than a number.  The bounds are deliberately loose -- the
+# point is the numbers it prints, not a benchmark gate on a shared machine
+# -- and an ageing pass that ate a whole tick would be a real answer to
+# doc/TODO.org rather than a flaky test.
+SCALE_GROUP=${SCALE_GROUP:-239.128.0.1}
+SCALE_NUM=${SCALE_NUM:-10000}
+SCALE_PPS=${SCALE_PPS:-2000}
+SCALE_BUILD_WAIT=${SCALE_BUILD_WAIT:-180}
+SCALE_AGEING_MAX_USEC=${SCALE_AGEING_MAX_USEC:-2000000}
+SCALE_SHOW_MAX_SEC=${SCALE_SHOW_MAX_SEC:-30}
+
 KEEP_GROUP=${KEEP_GROUP:-239.1.1.5}
 KEEP_NUM=${KEEP_NUM:-3}
 KEEP_SECONDS=${KEEP_SECONDS:-240}
@@ -1064,6 +1077,7 @@ AUTORP="$WORKDIR/autorp"
 # leaf and hide the bug the keepalive scenario is after.  That scenario
 # needs a source that only sends, so it gets its own little sender.
 MSEND="$WORKDIR/msend"
+MFLOOD="$WORKDIR/mflood"
 
 BOXES="ed1 r1 r2 r3 ed2"
 ROUTERS="r1 r2 r3"
@@ -1898,7 +1912,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|scale)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2403,6 +2417,27 @@ check_req() {
 # It also asks for spt-threshold infinity, like the pimd.conf in issue
 # #251, to keep the RP on the shared tree.
 write_configs() {
+	if [ "$SCENARIO" = scale ]; then
+		# R1 is the DR of the source and the RP of everything it
+		# sends to, so every group makes it hold an (S,G), a source,
+		# a group and a kernel cache entry with nothing else in the
+		# way.  The limit is raised past the flood on purpose: what
+		# is being measured is what a large table costs, and
+		# local-sg-limit is the knob that otherwise stops one.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: DR and RP, with room for the whole flood
+		spt-threshold infinity
+		local-sg-limit $((SCALE_NUM + 100))
+		bsr-candidate ${EP}101b priority 1 interval 10
+		rp-candidate ${EP}101b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		: > "$WORKDIR/r2.conf"
+		: > "$WORKDIR/r3.conf"
+		return
+	fi
+
 	if [ "$SCENARIO" = keepalive ]; then
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: DR for $SRC_ADDR *and* RP for the groups it sends to,
@@ -3221,6 +3256,73 @@ build_msend() {
 	cc -O2 -o "$MSEND" "$WORKDIR/msend.c" || die "failed building $WORKDIR/msend.c"
 }
 
+# A sender for the scale scenario: one packet to each of $3 consecutive
+# groups and then exit, paced at $4 packets per second.  msend above
+# streams for as long as it lives, which measures the packet path; what
+# this one is for is the *table* -- one cache miss per group, the state it
+# builds outliving the sender by PIM_DATA_TIMEOUT.
+build_mflood() {
+	cat <<-'EOF' > "$WORKDIR/mflood.c"
+	#include <arpa/inet.h>
+	#include <netinet/in.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	#include <string.h>
+	#include <sys/socket.h>
+	#include <time.h>
+
+	int main(int argc, char *argv[])
+	{
+		struct sockaddr_in sin;
+		struct in_addr ifa;
+		unsigned char ttl = 5;
+		char buf[64] = "mflood";
+		long pace, ns;
+		uint32_t base;
+		int sd, i, num;
+
+		if (argc != 5) {
+			fprintf(stderr, "usage: %s <src-ip> <first-group> <num> <pps>\n", argv[0]);
+			return 1;
+		}
+
+		if (inet_pton(AF_INET, argv[1], &ifa) != 1)
+			return 1;
+		if (inet_pton(AF_INET, argv[2], &sin.sin_addr) != 1)
+			return 1;
+		base = ntohl(sin.sin_addr.s_addr);
+		num  = atoi(argv[3]);
+		pace = atol(argv[4]);
+		ns   = pace > 0 ? 1000000000L / pace : 0;
+
+		sd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (sd < 0)
+			return 1;
+		if (setsockopt(sd, IPPROTO_IP, IP_MULTICAST_IF, &ifa, sizeof(ifa)))
+			return 1;
+		setsockopt(sd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+
+		memset(&sin, 0, sizeof(sin));
+		sin.sin_family = AF_INET;
+		sin.sin_port = htons(4321);
+
+		for (i = 0; i < num; i++) {
+			struct timespec ts = { 0, ns };
+
+			sin.sin_addr.s_addr = htonl(base + i);
+			sendto(sd, buf, sizeof(buf), 0,
+			       (struct sockaddr *)&sin, sizeof(sin));
+			if (ns)
+				nanosleep(&ts, NULL);
+		}
+
+		return 0;
+	}
+	EOF
+
+	cc -O2 -o "$MFLOOD" "$WORKDIR/mflood.c" || die "failed building $WORKDIR/mflood.c"
+}
+
 # Start pimd on one router.  Split out of start() so that a scenario can
 # restart a single daemon in the middle of a run: the command line has to
 # be the same one, or the router that comes back is not the one the rest of
@@ -3350,6 +3452,11 @@ start() {
 		start_pimd "$r"
 	done
 	verify_rpf_backend "$(pim_routers | awk '{ print $1 }')"
+
+	if [ "$SCENARIO" = scale ]; then
+		print "Building mflood (one packet per group) ..."
+		build_mflood
+	fi
 
 	if [ "$SCENARIO" = keepalive ]; then
 		print "Starting the source on ED1, $KEEP_NUM groups from $KEEP_GROUP ..."
@@ -4394,6 +4501,7 @@ check() {
 	autorp)     check_autorp; return $? ;;
 	autorp-agent) check_autorp_agent; return $? ;;
 	autorp-listener) check_autorp_listener; return $? ;;
+	scale)      check_scale; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
 	privsep)    check_privsep; return $? ;;
@@ -5566,6 +5674,129 @@ check_autorp() {
 # agent is two hops from the RP, so the domain resolves nothing until R2 in
 # the middle is told to relay, and the first half of the scenario is the
 # control for the second.
+# The (S,G) entries router $1 holds, off the counter show status keeps for
+# local-sg-limit: "Local (S,G) entries  : N of M".
+sg_entries() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk '/^Local \(S,G\) entries/ { print $5; exit }'
+}
+
+sg_entries_at_least() { [ "$(sg_entries "$1")" -ge "$2" ] 2>/dev/null; }
+
+# And how long its last pass of age_routes() took, in microseconds, which
+# the daemon measures for itself -- see route_ageing_usec in src/route.c.
+ageing_usec()      { pimctl "$1" -t show status 2>/dev/null | awk '/^Route ageing usec/ { print $5; exit }'; }
+ageing_peak_usec() { pimctl "$1" -t show status 2>/dev/null | awk '/^Route ageing peak/ { print $5; exit }'; }
+
+# scale: what a large routing table costs, which doc/TODO.org has two
+# claims about and no measurement behind either -- "the current
+# implementation is very unefficient if the routing table becomes very
+# large" about the countdown timers, and a Patricia tree for the lookups
+# that are linear walks of two sorted lists today (search_srclist() and
+# search_grplist(), src/mrt.c).
+#
+# So this builds the table the claims are about and reads what it costs.
+# It asserts liveness and correctness at that size -- the daemon still
+# holds the entries, still answers, and its ageing pass still fits inside
+# the tick that schedules it -- and prints the numbers for the record
+# rather than gating on them: the machine this runs on is shared, and a
+# benchmark that fails on a busy afternoon is a test nobody keeps.
+check_scale() {
+	print "1. pimd is alive and the domain has converged"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	# R1 is its own RP, through its own BSR: the row to wait for is the
+	# group range, not the sender's address.
+	if wait_for 90 has_rp r1 "224.0.0.0/4"; then
+		ok "r1 is the RP for the groups the flood will use"
+	else
+		fail "r1 never learned an RP, so the flood would build nothing"
+		dprint "$(pimctl r1 show rp)"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. $SCALE_NUM (S,G) entries, one packet per group"
+	# One cache miss per group, each one a find_route() insert into the
+	# two sorted lists.  The wall time is the creation rate and the
+	# first of the numbers this is here to print.
+	sc_idle=$(ageing_usec r1)
+	sc_began=$(date +%s)
+	box_run ed1 "$MFLOOD" "$SRC_ADDR" "$SCALE_GROUP" "$SCALE_NUM" "$SCALE_PPS" \
+		>/dev/null 2>&1 || true
+	if wait_for "$SCALE_BUILD_WAIT" sg_entries_at_least r1 "$SCALE_NUM"; then
+		sc_secs=$(( $(date +%s) - sc_began ))
+		ok "r1 holds $(sg_entries r1) (S,G) entries, built in ${sc_secs}s"
+	else
+		sc_secs=$(( $(date +%s) - sc_began ))
+		fail "r1 holds $(sg_entries r1) of $SCALE_NUM after ${sc_secs}s"
+		dprint "$(pimctl r1 show status | head -30)"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "3. And an ageing pass over them still fits in its own tick"
+	# The countdown timer claim, measured by the daemon: age_routes()
+	# walks every group and every (S,G) every TIMER_INTERVAL seconds
+	# (5s, src/defs.h).  A pass that took a whole tick would mean the
+	# table had outgrown the design, which is what the TODO entry
+	# guesses; anything well under it means the guess is wrong at this
+	# size, and the number says how wrong.
+	sleep 12
+	sc_now=$(ageing_usec r1)
+	sc_peak=$(ageing_peak_usec r1)
+	if [ -n "$sc_now" ] && [ "$sc_now" -lt "$SCALE_AGEING_MAX_USEC" ]; then
+		ok "an ageing pass over $(sg_entries r1) entries takes ${sc_now}us, peak ${sc_peak}us (idle was ${sc_idle:-?}us)"
+	else
+		fail "an ageing pass takes '${sc_now}'us, past the ${SCALE_AGEING_MAX_USEC}us this bounds it at, peak ${sc_peak}us"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4. The table is still answerable, and correct at that size"
+	# The lookup claim: "show mrt" walks the whole thing, so its wall
+	# time is the dump rather than one lookup -- but a daemon that has
+	# gone quadratic somewhere shows it here first, and a router that
+	# cannot answer at ten thousand entries is the failure this bounds.
+	sc_began=$(date +%s)
+	sc_rows=$(pimctl r1 -t show mrt 2>/dev/null | grep -c "^$SRC_ADDR ")
+	sc_secs=$(( $(date +%s) - sc_began ))
+	if [ "$sc_secs" -le "$SCALE_SHOW_MAX_SEC" ]; then
+		ok "'show mrt' printed $sc_rows rows for $SRC_ADDR in ${sc_secs}s"
+	else
+		fail "'show mrt' took ${sc_secs}s, more than the ${SCALE_SHOW_MAX_SEC}s this bounds it at"
+	fi
+	if [ "$sc_rows" -ge "$SCALE_NUM" ]; then
+		ok "and every group the flood named has its own (S,G)"
+	else
+		fail "'show mrt' has $sc_rows rows for $SRC_ADDR, want $SCALE_NUM"
+	fi
+	# And the kernel's own view, which is empty on purpose: nobody joined
+	# any of these groups, so every entry has an empty oif list, and pimd
+	# installs no MFC entry for one -- the property doc/rfc7761-compliance.md
+	# notes under M7, where it costs an upcall per packet rather than a
+	# cache entry.  It is also why the flood is one packet per group: a
+	# stream would measure that upcall path instead of this table.
+	sc_mfc=$(pimctl r1 -t show mfc 2>/dev/null | grep -c "^$SRC_ADDR " || true)
+	if [ "$sc_mfc" -eq 0 ]; then
+		ok "and the kernel MFC holds none of them, no group having a member"
+	else
+		fail "the kernel MFC holds $sc_mfc entries for groups nobody joined"
+	fi
+	if pimd_is_up r1; then
+		ok "r1 is still answering after all of it"
+	else
+		fail "r1 stopped answering under $SCALE_NUM entries"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	result
+}
+
 check_autorp_listener() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
