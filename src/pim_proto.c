@@ -6060,7 +6060,11 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
     if (holdtime != 0 && holdtime <= my_bsr_adv_period)
 	holdtime = recommended_rp_holdtime;
     if (prefix_cnt == 0) {
-	/* The default 224.0.0.0 and masklen of 4 */
+	/* The default 224.0.0.0 and masklen of 4.  RFC 5059 sec. 4.2 has a
+	 * C-RP MUST NOT send this, and pimd no longer does -- a candidacy
+	 * with no group-prefix line has the default range on its list and
+	 * names it -- but an older pimd on the other end still will, and
+	 * meant the same thing by it. */
 	MASKLEN_TO_MASK(ALL_MCAST_GROUPS_LEN, grp_mask);
 	add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
 			 euaddr.unicast_addr, priority, holdtime,
@@ -6120,53 +6124,105 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 }
 
 
+/*
+ * One Candidate-RP-Advertisement, carrying every group prefix this
+ * router advertises at the given priority.  RFC 5059 sec. 4.2 gives the
+ * message one Priority field for all the ranges in it, so a router with
+ * two priorities sends two messages; what the BSR keeps out of them is a
+ * priority per RP per range (sec. 4.1), which is what makes a router the
+ * preferred RP for one range and the last resort for another.
+ */
+static int send_cand_rp_adv(uint8_t priority, size_t count)
+{
+    uint8_t *data, *start, *cnt;
+    size_t need, i, num = 0;
+
+    /* Header, RP address, and one encoded group address per range */
+    need = 4 + sizeof(pim_encod_uni_addr_t) + count * sizeof(pim_encod_grp_addr_t);
+    if (count > 255 || need > SEND_BUF_SIZE - sizeof(struct ip) - sizeof(pim_header_t)) {
+	logit(LOG_WARNING, 0, "Too many Cand-RP group prefixes at priority %u, not advertising them",
+	      priority);
+	return FALSE;
+    }
+
+    start = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
+    data  = start;
+    cnt   = data;		/* Filled in below, from what was written */
+
+    PUT_BYTE(0, data);
+    PUT_BYTE(priority, data);
+    PUT_HOSTSHORT(my_cand_rp_holdtime, data);
+    PUT_EUADDR(my_cand_rp_address, data);
+
+    for (i = 0; i < count; i++) {
+	uint32_t group, masklen;
+
+	if (!cand_rp_prefix_at(priority, i, &group, &masklen))
+	    break;
+
+	PUT_EGADDR(group, (uint8_t)masklen, 0, data);
+	num++;
+    }
+
+    /* The Prefix Count is what went into the message rather than what was
+     * meant to: a header that says more than the body carries is the bug
+     * this file has had before, and it is one line to make impossible. */
+    *cnt = (uint8_t)num;
+
+    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, my_cand_rp_address, curr_bsr_address,
+		     PIM_CAND_RP_ADV, data - start);
+
+    return TRUE;
+}
+
+/*
+ * The same candidacy put straight into the RP set, for when this router
+ * is the BSR itself and there is no message to send it in.
+ */
+static void add_my_cand_rp(uint8_t priority, size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+	uint32_t group, masklen, mask;
+
+	if (!cand_rp_prefix_at(priority, i, &group, &masklen))
+	    break;
+
+	MASKLEN_TO_MASK(masklen, mask);
+	add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
+			 my_cand_rp_address, priority,
+			 my_cand_rp_holdtime,
+			 group, mask,
+			 my_bsr_hash_mask,
+			 curr_bsr_fragment_tag);
+    }
+}
+
 int send_pim_cand_rp_adv(void)
 {
-    uint8_t prefix_cnt;
-    uint32_t mask;
-    pim_encod_grp_addr_t addr;
-    uint8_t *data;
+    int mine = (curr_bsr_address == my_bsr_address);
+    int priority;
 
     if (!inet_valid_host(curr_bsr_address))
 	return FALSE;  /* No BSR yet */
 
-    if (curr_bsr_address == my_bsr_address) {
-	/* I am the BSR and have to include my own group-prefix stuff */
-	prefix_cnt = *cand_rp_adv_message.prefix_cnt_ptr;
-	if (prefix_cnt == 0) {
-	    /* The default 224.0.0.0 and masklen of 4 */
-	    MASKLEN_TO_MASK(ALL_MCAST_GROUPS_LEN, mask);
-	    add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
-			     my_cand_rp_address, my_cand_rp_priority,
-			     my_cand_rp_holdtime,
-			     htonl(ALL_MCAST_GROUPS_ADDR), mask,
-			     my_bsr_hash_mask,
-			     curr_bsr_fragment_tag);
-	    return TRUE;
-	}
+    /* One message per priority somebody wrote, in priority order, which
+     * is at most 256 walks of a list of at most 255 once an interval.
+     * A candidacy with no group-prefix line of its own has the default
+     * range on that list by now (src/config.c), so there is no message
+     * without a range in it -- sec. 4.2 forbids a Prefix Count of 0. */
+    for (priority = 0; priority <= PIM_MAX_CAND_RP_PRIORITY; priority++) {
+	size_t count = cand_rp_prefix_count((uint8_t)priority);
 
-	/* TODO: hardcoding!! */
-	data = cand_rp_adv_message.buffer + (4 + 6);
-	while (prefix_cnt--) {
-	    GET_EGADDR(&addr, data);
-	    MASKLEN_TO_MASK(addr.masklen, mask);
-	    add_rp_grp_entry(&cand_rp_list,
-			     &grp_mask_list,
-			     my_cand_rp_address, my_cand_rp_priority,
-			     my_cand_rp_holdtime,
-			     addr.mcast_addr, mask,
-			     my_bsr_hash_mask,
-			     curr_bsr_fragment_tag);
-	    /* TODO: Check for len */
-	}
+	if (!count)
+	    continue;
 
-	return TRUE;
+	if (mine)
+	    add_my_cand_rp((uint8_t)priority, count);
+	else
+	    send_cand_rp_adv((uint8_t)priority, count);
     }
-
-    data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
-    memcpy(data, cand_rp_adv_message.buffer, cand_rp_adv_message.message_size);
-    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, my_cand_rp_address, curr_bsr_address,
-		     PIM_CAND_RP_ADV, cand_rp_adv_message.message_size);
 
     return TRUE;
 }

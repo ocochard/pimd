@@ -314,13 +314,6 @@ extern char	       *config_file;
 extern char            *prognm;
 extern char             versionstring[];
 
-extern struct cand_rp_adv_message_ {
-    uint8_t  *buffer;
-    uint8_t  *insert_data_ptr;
-    uint8_t  *prefix_cnt_ptr;
-    uint16_t  message_size;
-} cand_rp_adv_message;
-
 extern int do_vifs;
 extern int retry_forever;
 extern int mrt_table_id;
@@ -493,6 +486,14 @@ extern void	dump_ssm_ranges		(FILE *fp);
 extern int	register_accepted_from	(uint32_t addr);
 extern void	dump_reg_acl		(FILE *fp);
 extern void	dump_anycast_rp		(FILE *fp);
+/* The Candidate-RP group prefixes of pimd.conf, which src/pim_proto.c
+ * builds one advertisement per priority out of: RFC 5059 sec. 4.2 gives
+ * a whole message one Priority, and sec. 4.1 has the BSR keep one per RP
+ * per group range. */
+extern void	dump_cand_rp_prefixes	(FILE *fp);
+extern size_t	cand_rp_prefix_count	(uint8_t priority);
+extern int	cand_rp_prefix_at	(uint8_t priority, size_t index,
+					 uint32_t *group, uint32_t *masklen);
 extern int	anycast_rp_configured	(uint32_t anycast);
 extern int	anycast_rp_member	(uint32_t anycast, uint32_t addr);
 extern uint32_t	anycast_rp_member_at	(uint32_t anycast, size_t index);

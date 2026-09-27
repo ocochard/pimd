@@ -1279,6 +1279,7 @@ static int show_status(FILE *fp)
 	ipc_kv_limit(fp, "Register (S,G) state", register_sg_entries, register_sg_limit);
 	ipc_kv_limit(fp, "Auto-RP mappings", autorp_entries, autorp_limit);
 	ipc_kv_limit(fp, "RP set group ranges", rp_set_entries, rp_set_limit);
+	dump_cand_rp_prefixes(fp);
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_anycast_rp(fp);

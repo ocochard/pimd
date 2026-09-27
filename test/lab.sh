@@ -1263,6 +1263,22 @@ BE_CRP_RANGES=${BE_CRP_RANGES:-255}
 BE_CRP_MSGS=${BE_CRP_MSGS:-6}
 BE_CRP_FLOOD=${BE_CRP_FLOOD:-40}
 
+# Step 4b: R1 is the Candidate-RP, and advertises two ranges at two
+# priorities -- the whole of 224.0.0.0/4 at the rp-candidate priority and
+# one range of its own at a better one.  RFC 5059 sec. 4.2 gives a whole
+# Candidate-RP-Advertisement one priority, so those are two messages, and
+# sec. 4.1 has the BSR keep a priority per RP per range, which is what
+# makes the difference visible two hops away.
+BE_CRP_PRIO=${BE_CRP_PRIO:-20}
+BE_PRIO_RANGE=${BE_PRIO_RANGE:-239.20.0.0}
+BE_RANGE_PRIO=${BE_RANGE_PRIO:-5}
+
+# And the tail of that step: R1 reloaded with no group-prefix line at all,
+# which is a candidacy for 224.0.0.0/4 and the shipped pimd.conf's shape.
+# A third priority tells the advertisement that says so from the entry the
+# step above left in the set.
+BE_DFLT_PRIO=${BE_DFLT_PRIO:-7}
+
 # Step 5b: one group range, and more RPs offered for it than the count byte
 # of a Bootstrap can hold.  Each Cand-RP-Adv names one RP, so this is one
 # message per RP.
@@ -2587,10 +2603,13 @@ write_configs() {
 		# what bounds the set those create, and it is set low here
 		# so that a handful of messages reach it.
 		cat <<-EOF > "$WORKDIR/r1.conf"
-		# R1: Candidate-BSR with priority $BE_HIGH_PRIO, and the RP
+		# R1: Candidate-BSR with priority $BE_HIGH_PRIO, and the RP.
+		# Two group-prefixes, one taking the rp-candidate priority
+		# and one carrying its own: step 4b reads both back off R3.
 		bsr-candidate ${EP}112a priority $BE_HIGH_PRIO interval $BE_INTERVAL
-		rp-candidate ${EP}112a priority 20 interval 10
+		rp-candidate ${EP}112a priority $BE_CRP_PRIO interval 10
 		group-prefix 224.0.0.0 masklen 4
+		group-prefix $BE_PRIO_RANGE masklen 16 priority $BE_RANGE_PRIO
 		rp-set-limit $BE_RP_SET_LIMIT
 		EOF
 
@@ -3651,6 +3670,15 @@ all_bsr_is() {
 }
 
 rp_set_grew() { [ "$(rp_set_count "$1")" -gt "$2" ]; }
+
+# The priority router $1 holds for the RP $3 of group range $2, empty when
+# it holds no such row.  "show rp" prints one row per RP per range, the
+# range first, the RP second and the priority third.
+rp_prio() {
+	pimctl "$1" -t show rp 2>/dev/null | \
+		awk -v r="$2" -v rp="$3" '$1 == r && $2 == rp { print $3; exit }'
+}
+rp_prio_is() { [ "$(rp_prio "$1" "$2" "$3")" = "$4" ]; }
 
 # How many group ranges the RP set holds, and what it is allowed to hold
 rp_set_count() {
@@ -9006,6 +9034,68 @@ check_bsr_elect() {
 	else
 		fail "the domain reads '$(bsr_addr r3)' after r2 came back"
 		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "4b. A Candidate-RP holds one priority per group range"
+	# R1 advertises two ranges at two priorities, which RFC 5059 sec. 4.2
+	# makes two Candidate-RP-Advertisements: one message carries one
+	# Priority for every range in it.  R3 is where both are read, being
+	# neither the candidate nor the BSR -- so the two numbers came off
+	# the wire, through the Bootstrap the BSR built out of them, and a
+	# single message with both ranges in it could not have carried them.
+	if wait_for 60 has_rp r3 "$BE_PRIO_RANGE/16"; then
+		ok "r3 learned $BE_PRIO_RANGE/16 through the BSR"
+	else
+		fail "r3 never learned $BE_PRIO_RANGE/16, which r1 advertises"
+		dprint "$(pimctl r3 show rp)"
+		return 1
+	fi
+	be_own=$(rp_prio r3 "$BE_PRIO_RANGE/16" "$BE_R1_ADDR")
+	if [ "$be_own" = "$BE_RANGE_PRIO" ]; then
+		ok "and at priority $BE_RANGE_PRIO, the one that range carries"
+	else
+		fail "r3 reads priority '$be_own' for $BE_PRIO_RANGE/16, want $BE_RANGE_PRIO"
+		dprint "$(pimctl r3 show rp)"
+	fi
+	# The control beside it: the range written without a priority is at
+	# the rp-candidate one, so the number above is that range's own and
+	# not one number arriving twice.
+	be_wide=$(rp_prio r3 224.0.0.0/4 "$BE_R1_ADDR")
+	if [ "$be_wide" = "$BE_CRP_PRIO" ]; then
+		ok "while 224.0.0.0/4 is at $BE_CRP_PRIO, the rp-candidate priority"
+	else
+		fail "r3 reads priority '$be_wide' for 224.0.0.0/4, want $BE_CRP_PRIO"
+		dprint "$(pimctl r3 show rp)"
+	fi
+	# And the candidate itself says what it asked for, which is the only
+	# place that does before a BSR has any of it.
+	if pimctl r1 show status 2>/dev/null | \
+			grep -qE "^Cand-RP group ranges +:.*$BE_PRIO_RANGE/16 \($BE_RANGE_PRIO\)"; then
+		ok "r1's own status names the range and the priority it advertises"
+	else
+		fail "r1's status does not name $BE_PRIO_RANGE/16 at $BE_RANGE_PRIO"
+		dprint "$(pimctl r1 show status | grep -i cand)"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# A candidacy with no group-prefix line at all is one for the whole
+	# of 224.0.0.0/4, and it has to say so: RFC 5059 sec. 4.2 forbids the
+	# Prefix Count of zero pimd used to send for it, which only another
+	# pimd read as the default range.  The new priority is what tells the
+	# message that arrived from the entry the step above left in the set.
+	cat <<-EOF > "$WORKDIR/r1.conf"
+	# R1: the same Candidate-BSR, and a Candidate-RP for everything
+	bsr-candidate ${EP}112a priority $BE_HIGH_PRIO interval $BE_INTERVAL
+	rp-candidate ${EP}112a priority $BE_DFLT_PRIO interval 10
+	rp-set-limit $BE_RP_SET_LIMIT
+	EOF
+	pimctl r1 restart >/dev/null 2>&1 || fail "r1 did not reload"
+	if wait_for 90 rp_prio_is r3 224.0.0.0/4 "$BE_R1_ADDR" "$BE_DFLT_PRIO"; then
+		ok "r1 with no group-prefix line advertises 224.0.0.0/4, now at $BE_DFLT_PRIO"
+	else
+		fail "r3 reads priority '$(rp_prio r3 224.0.0.0/4 "$BE_R1_ADDR")' for 224.0.0.0/4, want $BE_DFLT_PRIO"
+		dprint "$(pimctl r3 show rp)"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

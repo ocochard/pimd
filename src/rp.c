@@ -70,7 +70,6 @@ uint16_t                 my_cand_rp_adv_period; /* The locally configured
 						 * Cand-RP adv. period. */
 uint16_t                 pim_cand_rp_adv_timer;
 uint8_t                  cand_rp_flag  = FALSE;  /* Candidate RP flag */
-struct cand_rp_adv_message_ cand_rp_adv_message;
 uint32_t                 rp_my_ipv4_hashmask;
 
 

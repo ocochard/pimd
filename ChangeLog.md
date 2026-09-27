@@ -7,6 +7,25 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- A `group-prefix` of an `rp-candidate` may carry a `priority` of its own, so
+  that one router is the preferred RP for some groups and the last resort for
+  others.  A range written without one takes the priority of the
+  `rp-candidate` line, whichever order the two keywords appear in.  RFC 5059
+  sec. 4.1 has the bootstrap router keep a priority per RP per group range
+  while sec. 4.2 gives a whole Candidate-RP-Advertisement one priority, so
+  pimd now sends one advertisement per priority in use; a BSR that is not
+  pimd sees several ordinary advertisements from the same candidate.
+  `pimctl show status` lists the ranges this router advertises and the
+  priority of each, which nothing said before a BSR had them.
+- A Candidate-RP-Advertisement always names at least one group range now.  A
+  candidacy with no `group-prefix` line is one for the whole of 224.0.0.0/4,
+  and pimd used to say so by sending a Prefix Count of zero -- which RFC 5059
+  sec. 4.2 says a C-RP MUST NOT send, and which only another pimd read as the
+  default range.  A foreign BSR is within its rights to drop such a message,
+  and the shipped `pimd.conf` is exactly that configuration.  The default
+  range is one list entry like any other now, so the count cannot be zero by
+  construction; the receiving side still takes a zero count as the default
+  range, an older pimd being on the other end of it
 - `pimctl -j` prints the reply as JSON, for a script that would otherwise
   read columns.  Each table is an array of objects named after the table,
   `show status` is one object of the same values, and a key is the column

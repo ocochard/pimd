@@ -679,8 +679,6 @@ static void cleanup(void)
     if (grplist)
 	free(grplist);
 
-    if (cand_rp_adv_message.buffer)
-	free(cand_rp_adv_message.buffer);
 
     if (pim_recv_buf)
 	free(pim_recv_buf);

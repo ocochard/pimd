@@ -159,6 +159,31 @@ struct anycast_rp {
 #define ANYCAST_RP_MAX_ENTRIES 255
 
 /*
+ * One group-prefix of this router's Candidate-RP candidacy, and the
+ * priority it is advertised at.  RFC 5059 sec. 4.2 gives a whole
+ * Candidate-RP-Advertisement one Priority, so a router advertising two
+ * ranges at two priorities sends one message per priority; what makes
+ * that worth doing is the Bootstrap the BSR builds out of them, where
+ * every RP carries a priority per group range (sec. 4.1).
+ *
+ * A prefix written without one takes the priority of the rp-candidate
+ * line, which may come later in the file: `given' says which, and the
+ * rest are filled in once the file has been read.
+ */
+struct cand_rp_prefix {
+    struct cand_rp_prefix *next;
+
+    uint32_t  group;		/* Network byte order */
+    uint32_t  masklen;
+    uint8_t   priority;
+    int       given;		/* Priority came off this line */
+};
+
+/* The Prefix Count of an advertisement is one byte (sec. 4.2), so no
+ * message can name more than this many ranges however they are grouped */
+#define CAND_RP_MAX_PREFIXES 255
+
+/*
  * Global settings
  */
 uint16_t pim_timer_hello_interval = PIM_TIMER_HELLO_INTERVAL;
@@ -195,6 +220,7 @@ static uint32_t          lineno;
 static struct ssm_range *ssm_list = NULL;
 static struct reg_acl   *reg_acl_list = NULL;
 static struct anycast_rp *anycast_rp_list = NULL;
+static struct cand_rp_prefix *cand_rp_prefix_list = NULL;
 
 
 /*
@@ -838,6 +864,99 @@ static void validate_prefix_len(uint32_t *len)
     }
 }
 
+/*
+ * The Candidate-RP group prefixes, and the accessors src/pim_proto.c
+ * builds the advertisements out of.  Kept as a list rather than as the
+ * one pre-built message this used to be, because the message a prefix
+ * goes in depends on the priority beside it.
+ */
+static void reset_cand_rp_prefixes(void)
+{
+    struct cand_rp_prefix *pfx, *next;
+
+    for (pfx = cand_rp_prefix_list; pfx; pfx = next) {
+	next = pfx->next;
+	free(pfx);
+    }
+
+    cand_rp_prefix_list = NULL;
+}
+
+static int add_cand_rp_prefix(uint32_t group, uint32_t masklen, int priority, int given)
+{
+    struct cand_rp_prefix *pfx, *last = NULL;
+    size_t num = 0;
+
+    for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next) {
+	num++;
+	last = pfx;
+    }
+
+    if (num >= CAND_RP_MAX_PREFIXES) {
+	logit(LOG_WARNING, 0, "Too many Cand-RP group prefixes configured, at most %d",
+	      CAND_RP_MAX_PREFIXES);
+	return FALSE;
+    }
+
+    pfx = calloc(1, sizeof(*pfx));
+    if (!pfx) {
+	logit(LOG_WARNING, 0, "Out of memory when adding Cand-RP group prefix %s/%u",
+	      inet_fmt(group, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+    pfx->group    = group;
+    pfx->masklen  = masklen;
+    pfx->priority = (uint8_t)priority;
+    pfx->given    = given;
+
+    /* Appended rather than pushed, so that a message carries the ranges
+     * in the order the file names them */
+    if (last)
+	last->next = pfx;
+    else
+	cand_rp_prefix_list = pfx;
+
+    return TRUE;
+}
+
+/* The prefixes this router advertises at priority $1, in file order.
+ * Walked once per priority per advertisement, which is a list of at most
+ * 255 entries a few times a minute. */
+size_t cand_rp_prefix_count(uint8_t priority)
+{
+    struct cand_rp_prefix *pfx;
+    size_t num = 0;
+
+    for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next) {
+	if (pfx->priority == priority)
+	    num++;
+    }
+
+    return num;
+}
+
+/* The index'th of those, %FALSE when there is no such prefix */
+int cand_rp_prefix_at(uint8_t priority, size_t index, uint32_t *group, uint32_t *masklen)
+{
+    struct cand_rp_prefix *pfx;
+
+    for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next) {
+	if (pfx->priority != priority)
+	    continue;
+
+	if (index-- > 0)
+	    continue;
+
+	*group   = pfx->group;
+	*masklen = pfx->masklen;
+
+	return TRUE;
+    }
+
+    return FALSE;
+}
+
 static void reset_ssm_ranges(void)
 {
     struct ssm_range *range, *next;
@@ -930,6 +1049,47 @@ int is_ssm_group(uint32_t group)
  * below it there, a table of one column in JSON: the text form is prose
  * rather than a table, so there is nothing to declare once for both.
  */
+/*
+ * What this router advertises as a Candidate-RP, one range and its
+ * priority each: the ranges are in the RP set of every router in the
+ * domain once a BSR has them, and this is the only place that says what
+ * this one asked for.
+ */
+void dump_cand_rp_prefixes(FILE *fp)
+{
+    struct cand_rp_prefix *pfx;
+
+    if (!cand_rp_flag || !cand_rp_prefix_list)
+	return;
+
+    if (ipc_json()) {
+	ipc_table(fp, "Cand-RP group ranges", "cand_rp_range");
+	for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next) {
+	    char buf[32];
+
+	    snprintf(buf, sizeof(buf), "%s/%u",
+		     inet_fmt(pfx->group, s1, sizeof(s1)), pfx->masklen);
+
+	    struct ipc_field row[] = {
+		IPC_STR("Range",     -18, buf),
+		IPC_NUM("Priority",    8, pfx->priority),
+		IPC_END
+	    };
+
+	    ipc_row(fp, row);
+	}
+	ipc_table_end(fp);
+
+	return;
+    }
+
+    fprintf(fp, "Cand-RP group ranges :");
+    for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next)
+	fprintf(fp, " %s/%u (%u)", inet_fmt(pfx->group, s1, sizeof(s1)),
+		pfx->masklen, pfx->priority);
+    fprintf(fp, "\n");
+}
+
 void dump_ssm_ranges(FILE *fp)
 {
     struct ssm_range *range;
@@ -1866,17 +2026,24 @@ static int parse_rp_candidate(char *s)
  * @s: String token
 
  * Syntax:
- * group-prefix <group>[/<masklen>]
- *              <group> [masklen <masklen>]
+ * group-prefix <group>[/<masklen>] [priority <0-255>]
+ *              <group> [masklen <masklen>] [priority <0-255>]
+ *
+ * A priority here is this range's alone, and the ranges written without
+ * one take the priority of the rp-candidate line.  RFC 5059 sec. 4.1
+ * has the BSR keep a priority per RP per group range, so a router may
+ * be the preferred RP for one range and the last resort for another.
  *
  * Returns:
  * %TRUE if the parsing was successful, o.w. %FALSE
  */
 static int parse_group_prefix(char *s)
 {
-    char *w;
+    uint32_t masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
     uint32_t group_addr;
-    uint32_t  masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+    uint32_t priority = 0;
+    int given = FALSE;
+    char *w;
 
     w = next_word(&s);
     if (EQUAL(w, "")) {
@@ -1892,28 +2059,47 @@ static int parse_group_prefix(char *s)
 	return FALSE;
     }
 
-    /* Was if (!(~(*cand_rp_adv_message.prefix_cnt_ptr))) which Arm GCC 4.4.2 dislikes:
-     *  --> "config.c:693: warning: promoted ~unsigned is always non-zero"
-     * The prefix_cnt_ptr is a uint8_t so it seems this check was to prevent overruns.
-     * I've changed the check to see if we've already read 255 entries, if so the cnt
-     * is maximized and we need to tell the user. --Joachim Wiberg 2010-01-16 */
-    if (*cand_rp_adv_message.prefix_cnt_ptr == 255) {
-	WARN("Too many multicast groups configured!");
-	return FALSE;
-    }
+    while (!EQUAL((w = next_word(&s)), "")) {
+	if (EQUAL(w, "masklen")) {
+	    w = next_word(&s);
+	    if (sscanf(w, "%u", &masklen) != 1)		/* EOF, see parse_prefix_len() */
+		masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
 
-    if (EQUAL((w = next_word(&s)), "masklen")) {
-	w = next_word(&s);
-	if (sscanf(w, "%u", &masklen) != 1)		/* EOF, see parse_prefix_len() */
-	    masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
+	    continue;
+	}
+
+	if (EQUAL(w, "priority")) {
+	    w = next_word(&s);
+	    if (sscanf(w, "%u", &priority) != 1) {
+		WARN("Invalid Cand-RP group prefix priority '%s', taking the rp-candidate one", w);
+		continue;
+	    }
+
+	    if (priority > PIM_MAX_CAND_RP_PRIORITY) {
+		WARN("Too high Cand-RP group prefix priority %u, defaulting to %d",
+		     priority, PIM_MAX_CAND_RP_PRIORITY);
+		priority = PIM_MAX_CAND_RP_PRIORITY;
+	    }
+
+	    given = TRUE;
+	    continue;
+	}
+
+	WARN("Invalid group-prefix option '%s'", w);
+	return FALSE;
     }
 
     validate_prefix_len(&masklen);
 
-    PUT_EGADDR(group_addr, (uint8_t)masklen, 0, cand_rp_adv_message.insert_data_ptr);
-    (*cand_rp_adv_message.prefix_cnt_ptr)++;
+    if (!add_cand_rp_prefix(group_addr, masklen, priority, given))
+	return FALSE;
 
-    logit(LOG_INFO, 0, "Adding Cand-RP group prefix %s/%d", inet_fmt(group_addr, s1, sizeof(s1)), masklen);
+    if (given)
+	logit(LOG_INFO, 0, "Adding Cand-RP group prefix %s/%d, priority %u",
+	      inet_fmt(group_addr, s1, sizeof(s1)), masklen, priority);
+    else
+	logit(LOG_INFO, 0, "Adding Cand-RP group prefix %s/%d",
+	      inet_fmt(group_addr, s1, sizeof(s1)), masklen);
 
     return TRUE;
 }
@@ -2930,26 +3116,6 @@ void config_vifs_from_file(void)
     error_flag = FALSE;
     lineno = 0;
 
-    /* TODO: HARDCODING!!! */
-    if (!cand_rp_adv_message.buffer)
-	cand_rp_adv_message.buffer = malloc(4 + sizeof(pim_encod_uni_addr_t) +
-					    255 * sizeof(pim_encod_grp_addr_t));
-
-    if (!cand_rp_adv_message.buffer)
-	logit(LOG_ERR, errno, "Ran out of memory in config_vifs_from_file()");
-
-    memset(cand_rp_adv_message.buffer, 0, 4 + sizeof(pim_encod_uni_addr_t) +
-					  255 * sizeof(pim_encod_grp_addr_t));
-
-    cand_rp_adv_message.prefix_cnt_ptr  = cand_rp_adv_message.buffer;
-    /* By default, if no group-prefix configured, then prefix_cnt == 0
-     * implies group-prefix = 224.0.0.0 and masklen = 4.
-     */
-    *cand_rp_adv_message.prefix_cnt_ptr = 0;
-    cand_rp_adv_message.insert_data_ptr = cand_rp_adv_message.buffer;
-    /* TODO: XXX: HARDCODING!!! */
-    cand_rp_adv_message.insert_data_ptr += (4 + 6);
-
     /* set a sensible defaults */
     my_bsr_adv_period = PIM_BOOTSTRAP_PERIOD;
     my_cand_rp_adv_period = PIM_DEFAULT_CAND_RP_ADV_PERIOD;
@@ -2970,6 +3136,7 @@ void config_vifs_from_file(void)
     reset_ssm_ranges();
     reset_reg_acl();
     reset_anycast_rp();
+    reset_cand_rp_prefixes();
 
     fp = priv_fopen_conf();
     if (!fp) {
@@ -3109,19 +3276,29 @@ void config_vifs_from_file(void)
 
     recommended_rp_holdtime = 2.5 * my_bsr_adv_period; /* RFC5059 section 3.3 SHOULD BE value */
 
-    cand_rp_adv_message.message_size = cand_rp_adv_message.insert_data_ptr - cand_rp_adv_message.buffer;
     if (cand_rp_flag != FALSE) {
+	struct cand_rp_prefix *pfx;
+
 	/* Prepare the RP info */
 	my_cand_rp_holdtime = 2.5 * my_cand_rp_adv_period;
 	/* Is holdtime in MUST BE interval? (RFC5059 section 3.3) */
 	if (my_cand_rp_holdtime <= my_bsr_adv_period)
 	    	my_cand_rp_holdtime = recommended_rp_holdtime;
 
-	/* TODO: HARDCODING! */
-	data_ptr = cand_rp_adv_message.buffer + 1;
-	PUT_BYTE(my_cand_rp_priority, data_ptr);
-	PUT_HOSTSHORT(my_cand_rp_holdtime, data_ptr);
-	PUT_EUADDR(my_cand_rp_address, data_ptr);
+	/* A group-prefix written without a priority of its own takes this
+	 * router's, which the rp-candidate line may only now have set:
+	 * either order of the two keywords in the file says the same. */
+	for (pfx = cand_rp_prefix_list; pfx; pfx = pfx->next) {
+	    if (!pfx->given)
+		pfx->priority = my_cand_rp_priority;
+	}
+
+	/* A candidacy with no group-prefix line is one for every group,
+	 * which is a range like any other from here on: an advertisement
+	 * naming no range at all is what RFC 5059 sec. 4.2 forbids. */
+	if (!cand_rp_prefix_list)
+	    add_cand_rp_prefix(htonl(ALL_MCAST_GROUPS_ADDR), ALL_MCAST_GROUPS_LEN,
+			       my_cand_rp_priority, FALSE);
     }
 
     check_igmp_timers();

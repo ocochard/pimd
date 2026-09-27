@@ -2,7 +2,7 @@
 .\" First parameter, NAME, should be all caps
 .\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
 .\" other parameters are allowed: see man(7), man(1)
-.Dd Oct 17, 2020
+.Dd Sep 27, 2026
 .Dt PIMD.CONF 5
 .Os
 .Sh NAME
@@ -530,7 +530,7 @@ denotes higher priority, c.f.
 .Cm rp-candidate
 where it's the reverese.
 .El
-.It Cm rp-candidate Oo Ar address | Ar ifname Oc Oo Cm priority Ar <0-255> Oc Oo Cm interval Ar <10-16384> Oc Oo Cm group-prefix Ar group Ns / Ns Ar len | Cm masklen Ar len Oc
+.It Cm rp-candidate Oo Ar address | Ar ifname Oc Oo Cm priority Ar <0-255> Oc Oo Cm interval Ar <10-16384> Oc Oo Cm group-prefix Ar group Ns / Ns Ar len | Cm masklen Ar len Oo Cm priority Ar <0-255> Oc Oc
 The
 .Cm rp-candidate
 (CRP) setting is enabled in the default configuration file.  It can be
@@ -550,11 +550,14 @@ A smaller numeric value denotes higher priorty, c.f.
 .Cm bsr-candidate
 where it's the reverse.  If the priority is omitted
 .Nm pimd
-and Cisco IOS default to 0, the standard says 192 for RP.
+and Cisco IOS default to 0, the standard says 192 for RP.  This is the
+priority of every group range that does not carry one of its own, see
+.Cm group-prefix
+below.
 .It Cm interval Ar <10-16383>
 The advertisement interval in seconds for this CRP.  The default value
 is 30 seconds.  Use a lower value for faster convergence.
-.It Cm group-prefix Oo Oo Ar group Ns / Ns Ar len Oc | Oo Ar group Cm masklen Ar len Oc Oc
+.It Cm group-prefix Oo Oo Ar group Ns / Ns Ar len Oc | Oo Ar group Cm masklen Ar len Oc Oc Oo Cm priority Ar <0-255> Oc
 The
 .Cm group-prefix
 option is the set of multicast groups that the CRP will advertise to
@@ -567,6 +570,21 @@ will handle.
 Optional number of groups, in prefix length format. Remember that a
 multicast address is a Class D and has a netmask of 240.0.0.0, which
 means its length is 4.
+.It Cm priority Ar <0-255>
+This range's own priority, for a router that is to be the preferred RP
+for some groups and the last resort for others.  A range written without
+one takes the priority of the
+.Cm rp-candidate
+line above.
+.Pp
+The bootstrap router keeps a priority per RP per group range (RFC 5059
+sec. 4.1), while one Candidate-RP-Advertisement carries a single
+priority for every range in it (sec. 4.2), so
+.Nm pimd
+sends one advertisement per priority in use.  Nothing else about the
+protocol changes, and a BSR that is not
+.Nm pimd
+sees several ordinary advertisements from the same candidate.
 .El
 .Pp
 Multiple lines of
@@ -574,6 +592,9 @@ Multiple lines of
 may be given, but the maximum number of records supported in
 .Nm pimd
 is 255.
+.Pp
+.Cm pimctl show status
+lists the ranges this router advertises and the priority of each.
 .El
 .It Cm rp-address Ar address Oo Ar group-addr Ns / Ns Ar len | Ar group-addr Cm masklen Ar len Oc
 This setting is for static rendezvous point (RP) configurations.  It
