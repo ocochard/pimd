@@ -38,5 +38,9 @@ stamp-h1
 *.gcov
 /coverage/
 
+# A core dump one of the test tools left behind.  pimsend.core was
+# committed by accident once, 12 MB of it, which is the reason for this.
+*.core
+
 # AI working directory: project docs, memory, specs and plans, see AGENTS.md
 aidd_docs/
