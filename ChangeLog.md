@@ -12,7 +12,10 @@ issue of this repository is written out in full.
   is a stranger's to create.  Ranges beyond it are refused and the fact is
   logged once, and `pimctl show status` reports "RP set group ranges" as a
   count against the limit.  Default 1024, which is well inside what one
-  Bootstrap message can carry
+  Bootstrap message can carry.  It counts ranges, and a range holds up to 255
+  RPs, so the ceiling is the limit times 255 group-to-RP entries at about 180
+  bytes each -- some 44 MB at the default, against 40 kB for a domain of fifty
+  ranges with four RPs apiece.  `man pimd.conf` has the arithmetic
 - `pimctl show igmp groups` has a version column, the compatibility mode of
   each group rather than of the interface: an older membership report puts
   one group back a version without touching the others, and a timer of its

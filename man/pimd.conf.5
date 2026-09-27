@@ -218,6 +218,16 @@ refused and the fact is logged once;
 has the count.  A Bootstrap is not fragmented (RFC 5059 sec. 3.2 is not
 implemented), so an RP set larger than one message holds is cut short when the
 message is built, whatever this is set to.  Default: 1024.
+.Pp
+What this counts is group ranges, and a range may hold up to 255 RPs -- the
+count of them in a Bootstrap is a byte -- so the ceiling it sets is
+.Ar <limit>
+ranges and
+.Ar <limit>
+times 255 group-to-RP entries.  Measured at about 180 bytes an entry, so the
+default allows some 44 MB of RP set in the worst an unauthenticated domain can
+produce, and a real one of fifty ranges with four RPs apiece costs 40 kB.
+Raising this raises both numbers by the same factor.
 .It Cm assert-preference Oo Cm configured | Cm rib Oc
 Where the metric preference of a PIM Assert comes from.  RFC 7761
 sec. 4.6.3 says it is the administrative distance of the routing
