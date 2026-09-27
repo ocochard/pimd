@@ -524,8 +524,11 @@ The multicast groups a host on this interface may join.  A membership
 report for any other group is ignored: no group state, no shared tree,
 and nothing for a host on a stub LAN to make this router hold by asking.
 An empty list accepts every group, which is what earlier versions always
-did, and the groups of 224.0.0.0/24 are never filtered, being the link
-local control groups this daemon and its neighbours use.
+did.  Three sets of groups are never filtered: 224.0.0.0/24, the link
+local control groups this daemon and its neighbours use, and Auto-RP's
+224.0.1.39 and 224.0.1.40, which every router in a domain running Auto-RP
+joins \(em refusing a neighbour's membership for those would be refusing
+to carry that protocol through this router.
 .Pp
 Multiple ranges may be given, on one line or on several
 .Cm phyint

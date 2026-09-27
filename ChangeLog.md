@@ -11,8 +11,11 @@ issue of this repository is written out in full.
   that link may join.  A membership report for any other group is ignored: no
   group state, no shared tree, nothing a host on a stub LAN can make this
   router hold by asking.  An empty list accepts every group, so a
-  configuration without the keyword behaves as before, and 224.0.0.0/24 is
-  never filtered.  This is not `scoped`, the RFC 2365 boundary beside it on the
+  configuration without the keyword behaves as before.  Never filtered:
+  224.0.0.0/24, the link local control groups, and Auto-RP's 224.0.1.39 and
+  224.0.1.40, which every router in a domain running Auto-RP joins -- a list
+  that refused a neighbour's membership for those would refuse to carry that
+  protocol through this router.  This is not `scoped`, the RFC 2365 boundary beside it on the
   same line: that says where the traffic may go and drops the packets while
   keeping the membership.  No RFC asks for this one -- it is the control other
   implementations spell `ip igmp access-group` -- and `pimctl show igmp

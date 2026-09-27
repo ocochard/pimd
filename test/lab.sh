@@ -9578,6 +9578,18 @@ check_igmp_compat() {
 		fail "r4 never saw $IC_DENY_GROUP either, so nothing was refused"
 	fi
 
+	# Auto-RP's own two groups are never filtered: every router in the
+	# domain joins 224.0.1.40 to hear the Discovery, so a list that
+	# refused a neighbour's membership for it would refuse to carry
+	# Auto-RP through this router.  Which is what the first version of
+	# this did, and what the once-per-interface warning above went to.
+	if wait_for 30 has_igmp_group r3 224.0.1.40; then
+		ok "r3 keeps 224.0.1.40, Auto-RP's own group, whatever the list says"
+	else
+		fail "r3 refused a membership for 224.0.1.40, so Auto-RP stops here"
+		dprint "$(pimctl r3 show igmp groups)"
+	fi
+
 	# The filter is visible, which is where an operator looks for it
 	if [ "$(iface_igmp_accept r3 "$SL_R3_IF")" = 1 ]; then
 		ok "r3's 'show igmp interface' counts the one range it accepts"

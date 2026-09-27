@@ -41,6 +41,7 @@
  */
 
 #include "defs.h"
+#include "autorp.h"		/* The two groups Auto-RP itself uses */
 
 typedef struct {
     vifi_t  vifi;
@@ -73,12 +74,24 @@ uint32_t igmp_querier_timeout = IGMP_OTHER_QUERIER_PRESENT_INTERVAL;
  * May a host on this interface join $2?  The list is a list of group
  * prefixes from igmp-accept-groups, and an empty one accepts everything,
  * which is what a pimd.conf without the keyword leaves.
+ *
+ * Two groups are never filtered, whatever the list says: 224.0.1.39 and
+ * 224.0.1.40 are Auto-RP's own, and the routers of a domain -- pimd
+ * included -- join them to hear the Announcements and the Discovery.
+ * Refusing a neighbour's membership for those is refusing to carry the
+ * protocol through this router, which is not what an operator naming the
+ * groups its hosts may join is asking for.  The link local groups below
+ * 224.0.0.255 need no exception: accept_group_report() returns before
+ * this for them.
  */
 static int group_accepted_on(struct uvif *v, uint32_t group)
 {
     struct vif_acl *acl;
 
     if (!v->uv_grp_acl)
+	return TRUE;
+
+    if (group == htonl(AUTORP_ANNOUNCE_GROUP) || group == htonl(AUTORP_DISCOVERY_GROUP))
 	return TRUE;
 
     for (acl = v->uv_grp_acl; acl; acl = acl->acl_next) {

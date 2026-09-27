@@ -196,6 +196,7 @@ void init_vifs(void)
  */
 void zero_vif(struct uvif *v, int t)
 {
+    struct vif_acl *acl, *acl_next;
     struct phaddr *pa, *next;
 
     /* Extra subnets are allocated, and init_vifs() runs again on restart */
@@ -208,6 +209,16 @@ void zero_vif(struct uvif *v, int t)
     for (pa = v->uv_nbr_acl; pa; pa = next) {
 	next = pa->pa_next;
 	free(pa);
+    }
+
+    /* And the groups a host on this link may join.  Freed here rather than
+     * only in stop_vif(), which is what uv_acl above does and which leaks
+     * on every path that zeroes a VIF without stopping it -- the teardown
+     * of test/fuzz/fuzz_config.c frees that one by hand for exactly that
+     * reason, and LeakSanitizer caught this list doing it. */
+    for (acl = v->uv_grp_acl; acl; acl = acl_next) {
+	acl_next = acl->acl_next;
+	free(acl);
     }
 
     v->uv_flags		= 0;	/* Default to IGMPv3 */
