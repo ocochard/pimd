@@ -59,14 +59,22 @@
  */
 /*
  * Contributed by Marian Stagarescu <marian@bile.cidera.com>
- * adapted from mrouted: check for scoped multicast addresses
- * install null oif if matched
+ * adapted from mrouted: an interface configured as an administrative
+ * boundary for the group, RFC 2365 and `scoped' in pimd.conf, is not an
+ * outgoing interface for it.
+ *
+ * That interface and no other.  This cleared the entry's whole oif list as
+ * soon as any vif of the router was a boundary for the group, so one
+ * boundary stopped the group being forwarded out of every other interface
+ * as well -- a router with a member behind a boundary and a member on an
+ * ordinary link served neither, and man/pimd.conf.5 says the boundary is
+ * the interface's.
  */
 #define APPLY_SCOPE(g, mp) {			\
 	vifi_t i;				\
 	for (i = 0; i < numvifs; i++)		\
 	    if (scoped_addr(i, g))              \
-		PIMD_VIFM_CLRALL((mp)->oifs);	\
+		PIMD_VIFM_CLR(i, (mp)->oifs);	\
     }
 
 /*
@@ -1659,8 +1667,13 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 
 		add_kernel_cache(mrp, mfc_source, group, 0);
 
-		/* marian: not sure if we reach here with our scoped traffic? */
-		APPLY_SCOPE(group, mrt);
+		/* The oif list going down to the kernel is mrp's, so mrp is
+		 * what a boundary has to be applied to: this scoped mrt and
+		 * installed mrp, which left every boundary on this path -- the
+		 * (*,G) or (*,*,RP) one, reached when an (S,G) packet arrives
+		 * on the shared tree's interface -- with nothing to do.
+		 */
+		APPLY_SCOPE(group, mrp);
 		k_chg_mfc(igmp_socket, mfc_source, group, iif, mrp->oifs, mrt->group->rpaddr);
 	    }
 	}

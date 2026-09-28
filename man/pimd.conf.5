@@ -549,7 +549,9 @@ neither installs nor requires a security association.
 Optional scoping of multicast groups.  This allows interfaces to be
 configured as an administrative boundary for the specified group(s),
 RFC 2365.  Multicast streams belonging to the scoped groups will not be
-forwarded.
+forwarded out of that interface.  Other interfaces of the same router,
+including ones with members of the same group, are unaffected: the
+boundary belongs to the interface it is configured on.
 .Pp
 .Sy Note:
 this is about where the traffic may go and not about what a host may ask

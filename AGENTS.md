@@ -283,11 +283,15 @@ receiver's link, where a scoped group is joined and not forwarded, which is what
 the `igmp-accept-groups` of `igmp-compat`, where the report is refused and no membership exists at
 all.  A neighbour is what says an altnet was installed rather than only parsed, `find_vif_direct()`
 walking a VIF's altnets before it asks the kernel, and that step runs last: the Hello that proves
-it makes its sender the DR of that link and stops everything else in the scenario.  Note that
-`APPLY_SCOPE()` (`src/route.c`) clears every oif of an entry as soon as any vif of the router
-scopes the group rather than the scoped vif's alone, so the scenario cannot tell per-interface
-scoping from router-wide, and its second call site clears one entry's oifs and installs another's
-(`src/route.c:1663`), which nothing reaches, `ifnew`, `ifgone` and
+it makes its sender the DR of that link and stops everything else in the scenario.  Step 6b is
+where the boundary is shown to be the interface's rather than the router's -- `APPLY_SCOPE()`
+(`src/route.c`) cleared an entry's whole oif list as soon as any vif of the router scoped the
+group, so one boundary stopped the group leaving every other interface too, and the step puts a
+boundary on R3's link towards R2, which is that router's incoming interface and nothing's outgoing
+one, so a receiver behind it has to be served all the same (0 replies before the fix, 40 after).
+What no test here settles is whether a packet arriving *on* a boundary interface should be dropped
+for having crossed it; pimd consults a boundary when it chooses outgoing interfaces and nowhere
+else, `ifnew`, `ifgone` and
 `renumber` the only ones about what pimd does when the interfaces change underneath it -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the

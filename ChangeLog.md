@@ -613,6 +613,24 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- An administrative boundary, `phyint ... scoped`, applies to the interface it
+  is configured on and no longer to every interface of the router.
+  `APPLY_SCOPE()` (`src/route.c`) cleared an entry's whole outgoing interface
+  list as soon as any vif of the router was a boundary for the group, so one
+  boundary stopped that group being forwarded out of every other link as well:
+  a router with a member behind a boundary and a member on an ordinary link
+  served neither, and a boundary on a router's upstream link -- an incoming
+  interface, and nothing's outgoing one -- stopped the group reaching anybody
+  at all.  `man/pimd.conf.5` says which interface the boundary belongs to now.
+  Step 6b of the new `altnet` scenario is the regression test, and it fails on
+  the old code: a receiver behind a boundary on R3's *other* link got 0 of 40
+  packets before the fix and all 40 after, while the group inside the boundary
+  on its own link stays blocked either way
+- The second of the two places a boundary is applied scoped one entry and then
+  installed another one's outgoing interfaces (`src/route.c`, under a comment
+  wondering whether scoped traffic reached it), so a boundary on the path an
+  (S,G) packet takes when it arrives on the shared tree's interface had nothing
+  to do.  It applies to the entry whose list goes down to the kernel
 - One group range takes at most 255 RPs, which is what a Bootstrap can say it
   holds: the count is a byte on the wire (RFC 5059 sec. 4.1) and a byte in
   `grp_mask_t`, and each Candidate-RP Advertisement names one RP, so 256

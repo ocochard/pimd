@@ -1268,6 +1268,15 @@ SCP_BADNET=${SCP_BADNET:-239.4.0.0}
 SCP_GROUP=${SCP_GROUP:-239.1.1.1}
 SCP_GROUP2=${SCP_GROUP2:-239.2.1.1}
 
+# And a third boundary, on R3's link towards R2 rather than towards the
+# receiver, with $SCP_GROUP3 inside it.  That link is the incoming interface
+# for everything the receiver asks for and an outgoing interface for nothing,
+# so a boundary on it must leave the receiver's traffic alone: it is the one
+# configuration on a chain that tells a boundary which removes its own
+# interface from the outgoing set from one which empties the set.
+SCP_NET3=${SCP_NET3:-239.3.0.0/16}
+SCP_GROUP3=${SCP_GROUP3:-239.3.1.1}
+
 # alias, the Address List half: a second address on R1's link to R2, in the
 # same subnet as the first, and R2's route back to the sender pointed at it.
 # The only next hop in any lab that is a router's secondary address, so the
@@ -2590,6 +2599,7 @@ write_configs() {
 		cat <<-EOF > "$WORKDIR/r3.conf"
 		# R3: last hop router, with the receiver LAN inside two boundaries
 		phyint ${EP}203a scoped $SCP_NET1 scoped $SCP_NET2 masklen 16
+		phyint ${EP}123b scoped $SCP_NET3
 		phyint ${EP}203a scoped $SCP_HOSTBITS
 		phyint ${EP}203a scoped $SCP_BADNET masklen 0
 		phyint ${EP}203a scoped $SCP_BADNET masklen 200
@@ -8477,6 +8487,39 @@ check_altnet() {
 		ok "nothing of $SCP_GROUP reached ED2, the boundary holds"
 	else
 		fail "$replies replies came back for $SCP_GROUP, the boundary forwarded it"
+	fi
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	# The other half of "the boundary is the interface's", and the one
+	# configuration on a chain that can tell it from "the boundary is the
+	# router's".  $SCP_NET3 is on R3's link towards R2, which is the
+	# incoming interface for everything the receiver asks for and an
+	# outgoing interface for nothing, so removing it from an outgoing set
+	# removes nothing and the receiver has to be served.  APPLY_SCOPE()
+	# (src/route.c) cleared the whole set as soon as any vif was a boundary
+	# for the group, and this is what said so.
+	#
+	# What it does not say is whether a packet that arrives on a boundary
+	# interface ought to be dropped for having crossed it.  RFC 2365 can be
+	# read that way; pimd consults a boundary when it chooses outgoing
+	# interfaces and nowhere else, man/pimd.conf.5 says as much, and
+	# changing that is not this scenario's to decide.
+	print "6b. A boundary on another interface of the same router leaves it alone"
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP3" \
+		>"$WORKDIR/receiver-upstream.log" 2>&1 &
+	receiver=$!
+	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP3"; then
+		fail "r3 has no membership for $SCP_GROUP3, the receiver never joined"
+	fi
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 40 -w 60 "$SCP_GROUP3" \
+		>"$WORKDIR/sender-upstream.log" 2>&1 || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender-upstream.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED1 -> $SCP_GROUP3 -> ED2, $replies replies, past a boundary on r3's other link"
+	else
+		fail "only $replies replies for $SCP_GROUP3: a boundary on ${EP}123b took the receiver's interface out of the oif list too"
 	fi
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
