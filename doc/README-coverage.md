@@ -56,14 +56,26 @@ What it says today
 Measured on FreeBSD with clang, `--enable-coverage CFLAGS="-O0 -g"`, on the
 tree as of 2026-09-28:
 
-  - the lab suite, 31 scenarios green at `-j 12` in 8m06s on 16 cores,
-    reaches **72.2%** of the 12992 instrumented lines of `src/` and `lib/`;
+  - the lab suite, 31 scenarios green at `-j 12` in 8m34s on 16 cores,
+    reaches **72.3%** of the 12993 instrumented lines of `src/` and `lib/`;
   - the fuzz corpus replay reaches **33.1%** of the 10060 its own build
     instruments -- fewer files, `main.c`, `ipc.c` and `pimctl.c` not being
     linked into the harnesses at all.  That half was last measured over 23
     lab scenarios and has not been re-run since.
 
-It was 71.5% of the same 12992 before the `altnet` scenario, which is the
+It was 72.2% of 12992 before the three administrative-boundary commits, and
+that pair is the clearest illustration in this file of what the number is not.
+Those commits fixed a boundary that applied to every interface of a router
+rather than to its own, made it survive the entry being reinstalled, and added
+the inbound direction; they came with three lab steps and a second receiver
+LAN, and one of those steps fails two assertions on the old code.  All of that
+moved the table by ten lines and a tenth of a point -- the boundary conditions
+are a handful of lines, and what the steps buy is telling two readings of them
+apart, which no line count can see.  The denominator moved by one line in the
+same commits, `src/kern.c` gaining three and `src/route.c` losing two with the
+macro that went.
+
+Before them it was 71.5% of 12992, and the `altnet` scenario is the
 whole of the difference: it writes the two `phyint` keywords about addresses,
 `altnet` and `scoped`, that no other scenario writes, and it took `config.c`
 from 630 unreached lines to 555 -- 75 of the 84 the suite gained, with 3 more
@@ -104,7 +116,7 @@ and moves on.  Nothing in the table is missing because of it.
 
 The top of that table, and what it settles:
 
-  - `src/pim_proto.c`: 647 lines, 77.5%, and still the largest block in the
+  - `src/pim_proto.c`: 642 lines, 77.7%, and still the largest block in the
     table.  This is the one worth reading the ranges of, being the file
     every attacker-supplied PIM message is parsed in.  About a hundred of
     those lines cannot be reached at all: they are the (\*,\*,RP) handling
