@@ -54,31 +54,58 @@ What it says today
 ------------------
 
 Measured on FreeBSD with clang, `--enable-coverage CFLAGS="-O0 -g"`, on the
-tree as of this writing:
+tree as of 2026-09-28:
 
-  - the lab suite, 23 scenarios green at `-j 12` in 7m44s on 16 cores,
-    reaches **67.3%** of the 11442 instrumented lines of `src/` and `lib/`;
+  - the lab suite, 30 scenarios green at `-j 12` in 8m16s on 16 cores,
+    reaches **71.1%** of the 12992 instrumented lines of `src/` and `lib/`;
   - the fuzz corpus replay reaches **33.1%** of the 10060 its own build
     instruments -- fewer files, `main.c`, `ipc.c` and `pimctl.c` not being
-    linked into the harnesses at all.
+    linked into the harnesses at all.  That half was last measured over 23
+    lab scenarios and has not been re-run since.
 
-The instrumentation costs the labs little: the same 23 scenarios take about
+The previous measurement, over the 23 scenarios of the day, was 67.3% of
+11442 lines.  Both halves of that moved, so the two are not one number
+minus the other: seven scenarios were added, and so was the code some of
+them are about -- `src/autorp.c` alone is 698 lines that did not exist.
+What the comparison says is that the suite grew faster than the tree, not
+that 3.8 points of previously unreached code are now reached.
+
+The instrumentation costs the labs little: the same scenarios take about
 seven minutes at `-j 14` without it.  What a coverage build does cost is a
 scenario's margin, every assertion in the lab being a poll against a
 deadline, so read a number from a green run and re-run a scenario that
 tripped on its own before believing it.
 
+One scenario skips a step rather than failing it on this host, and that is
+by design: `shared-lan` step 13 wants the protocol that installed a route,
+which only the netlink backend can name, so a routing socket build says so
+and moves on.  Nothing in the table is missing because of it.
+
 The top of that table, and what it settles:
 
+  - `src/pim_proto.c`: 696 lines, 75.8%, and the largest block in the
+    table.  This is the one worth reading the ranges of, being the file
+    every attacker-supplied PIM message is parsed in.
+  - `src/config.c`: 630 lines, 63.6%, the second largest, and mostly single
+    lines rather than blocks -- allocation failures, `logit(LOG_ERR)` arms,
+    and keywords no scenario writes into a `pimd.conf`.  It grew with the
+    keywords added since the last measurement.
+  - `src/debug.c`: 343 lines, 22.2%, and the third largest -- which is the
+    clearest illustration of why this table is not a ranking.  Those lines
+    are the DVMRP and mtrace arms of `packet_kind()` and `log_level()`, two
+    switch tables over messages nothing sends, plus the `show compat` dumps
+    of `dump_vifs()` and `dump_mrt()`, which the `ipc_row()` tables
+    superseded and `solo` step 7 asserts the replacement of.  A wrong line
+    there misaligns a column or prints "unknown".  Not a test worth
+    writing.
   - `src/trace.c` (277 lines): 0% from every lab scenario, 23% from the
     fuzz corpus.  mtrace is a message no lab sends, and the harness is the
-    only thing that reaches the file at all.
-  - `src/dvmrp_proto.c` (26 lines): 0% from both.  Legacy interop stubs.
-  - `src/config.c`: 526 lines, the second largest block after
-    `pim_proto.c`, and mostly single lines rather than blocks --
-    allocation failures, `logit(LOG_ERR)` arms, and keywords no scenario
-    writes into a `pimd.conf`.
-  - `src/privsep.c`: 47.7%, and that number is a floor rather than a
+    only thing that reaches the file at all.  Unlike `debug.c` above this
+    one is a parser walking a network buffer, which is what makes its 0%
+    worth something.
+  - `src/dvmrp_proto.c` (26 lines): 0% from both.  Legacy interop stubs,
+    and the reason half of `debug.c`'s switch arms are unreachable.
+  - `src/privsep.c`: 49.3%, and that number is a floor rather than a
     finding, for the reason in the next section.
 
 
@@ -131,6 +158,14 @@ The table is sorted by unreached lines, so the top of it is the answer to
 "what does no test reach".  `coverage/<name>-uncovered.txt` has the line
 ranges per file, which is what says whether a file at 40% is half a parser
 nobody drives or one large error path.
+
+Sorted by unreached lines is not sorted by what matters, and nothing in the
+table can be: a line's weight is what a wrong one would cost, which gcov
+does not know.  Read it in that order by hand -- the parsers first
+(`pim_proto.c`, `igmp_proto.c`, `trace.c`, `config.c`, which read what a
+neighbour or an operator supplies), then the kernel and socket error paths
+(`kern.c`, `routesock.c`, `netlink.c`), and last the output code, where
+`debug.c`'s 343 lines sit and where a wrong line misaligns a column.
 
 A file at 0% is the interesting case, and there are two honest reasons for
 one: the code is legacy that nothing runs (`src/dvmrp_proto.c`), or it is
