@@ -71,6 +71,7 @@
  *
  *   -x COUNT   flip COUNT bytes of the message before sending it
  *   -S SEED    what those flips are drawn from, default 1
+ *   -t LEN     cut the message to LEN bytes before summing it
  *   -b FILE    send the bytes of FILE as the message, verbatim
  *   -o FILE    write the message to FILE instead of sending it
  *
@@ -87,6 +88,17 @@
  * different mutants where a process per packet would send a thousand of the
  * same one, and the same -S draws the same thousand on any machine: a lab
  * that fails this way has an input somebody can send again.
+ *
+ * -t is the other half of that argument, and the half -x cannot make: a
+ * message that stops in the middle.  Every receive_pim_*() that reads past
+ * its header tests the length it was handed first, and no lab of pimds can
+ * reach one of those tests -- pimd builds whole messages.  The cut is made
+ * before the checksum rather than after, so the short message carries a
+ * checksum that is correct over what is left of it and dies at the length
+ * test rather than ahead of it, which is the same reason -x sums after the
+ * flips.  Cut below the four byte header there is no checksum field left to
+ * carry one, and nothing is summed: a message that short is pim.c's to
+ * refuse before any parser sees it.
  *
  * -b is the other direction: a corpus file, or a crasher an in-process
  * harness found (test/fuzz/), put on the wire as it stands.  Nothing is
@@ -141,6 +153,11 @@
 
 #define PIM_VERSION			2
 #define PIM_ALL_ROUTERS			"224.0.0.13"
+
+/* Version and type in one byte, then reserved and the checksum: the header
+ * pim.c refuses a message shorter than, and the least -t can cut to and
+ * still leave a checksum field to write into. */
+#define PIM_HDR_LEN			4
 
 #define PIM_HELLO			0
 #define PIM_REGISTER			1
@@ -693,6 +710,9 @@ static int usage(int rc)
 		"  -H TIME    Holdtime, default per message type\n"
 		"\n"
 		"Bytes nobody wrote on purpose:\n"
+		"  -t LEN     Cut the message to LEN bytes, summed over what is left so\n"
+		"             that it reaches a parser's own length test rather than the\n"
+		"             checksum test ahead of it\n"
 		"  -x COUNT   Flip COUNT bytes of the message body before sending,\n"
 		"             leaving version, type and checksum alone; the checksum\n"
 		"             is computed after the flips, so the mutant reaches a\n"
@@ -728,7 +748,7 @@ static void setsum(uint8_t *b, size_t len, int type, const struct opts *o)
 	b[2] = 0;
 	b[3] = 0;
 
-	sum = cksum(b, type == PIM_REGISTER ? 8 : len);
+	sum = cksum(b, type == PIM_REGISTER && len > 8 ? 8 : len);
 	if (o->corrupt && type != PIM_REGISTER)
 		sum = ~sum;
 
@@ -750,6 +770,7 @@ int main(int argc, char *argv[])
 	size_t len;
 	int sd, c, on = 1, rec_set = 0;
 	unsigned count = 1, n, mutate = 0, tries;
+	long trunc = -1;			/* -1 until -t cuts it */
 	uint32_t seed = 1;
 	uint8_t orig[BUFSZ];
 
@@ -791,7 +812,7 @@ int main(int argc, char *argv[])
 	optind++;
 
 	while ((c = getopt(argc, argv,
-			  "0A:Bb:C:c:D:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:u:V:wx:X:Z")) != -1) {
+			  "0A:Bb:C:c:D:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:t:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'b': rawfile = optarg;				break;
@@ -821,6 +842,7 @@ int main(int argc, char *argv[])
 		case 'R': o.rpt = 1;					break;
 		case 'r': o.rp = addr(optarg, "RP address");		break;
 		case 'T': o.type = num(optarg, "message type");		break;
+		case 't': trunc = num(optarg, "truncated length");	break;
 		case 'u': o.upstream = addr(optarg, "upstream address");	break;
 		case 'V': o.version = num(optarg, "version");		break;
 		case 'w': o.wildcard = 1;				break;
@@ -889,7 +911,21 @@ int main(int argc, char *argv[])
 		}
 
 		len = (size_t)(p - buf);
-		setsum(buf, len, type, &o);
+
+		/* Before the checksum, so that what is left of the message
+		 * carries one that is correct over it.  A cut below the
+		 * header leaves no checksum field to write into, and the
+		 * zero put_short() left there stands: such a message is
+		 * refused for its length by pim.c, which looks at neither.
+		 */
+		if (trunc >= 0) {
+			if ((size_t)trunc > len)
+				errx(1, "-t %ld is longer than the %zu byte message",
+				     trunc, len);
+			len = (size_t)trunc;
+		}
+		if (len >= PIM_HDR_LEN)
+			setsum(buf, len, type, &o);
 	}
 
 	/* xorshift32 cannot start from zero, and -S 0 is a seed somebody

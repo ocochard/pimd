@@ -164,6 +164,27 @@ Cand-RP messages + Cand-BSR messages and the election of the BSR.
 same host as the RP for the multicast group (probably was fixed with alpha6,
 because I cannot reproduce it anymore)
 
+** Delete the (*,*,RP) receive and encode code
+
+RFC 7761 removed (*,*,RP) State and the PMBR it existed for (Appendix A,
+doc/rfc7761.txt:7567), and this tree carries the RFC 4601 receive side of it
+still: the suppression half of receive_pim_join_prune() reads a group set of
+224.0.0.0/4 and pack_and_send_jp_message() can encode one.
+
+None of it can run.  Every branch works on rpentry->mrtlink, the (*,*,RP)
+entry, and create_mrtentry() (src/mrt.c:884) returns NULL for flags that are
+neither MRTF_SG nor MRTF_WC, so that pointer is never set: the reads at
+src/pim_proto.c:2959 and :3003 are always NULL, join_or_prune() answers
+PIM_ACTION_NOTHING, and about a hundred lines behind it are unreachable.  The
+coverage table of doc/README-coverage.md shows them unreached, and step 4b of
+crafted in test/lab.sh puts the message on the wire and leaves them unreached.
+
+What the step asserts is the part that has to keep working after a deletion:
+the parser walks the shape, builds nothing from it, and goes on acting on the
+next well-formed Join.  Note also the stale comment at src/pim_proto.c:2181-2182
+promising a second pass there is none of, and the PMBR comment at :891-895 that
+doc/rfc7761-compliance.md already says to delete.
+
 ** Do more precise error check for the received PIM messages. In most cases,
 the whole message must be parsed completely before starting processing it.
 

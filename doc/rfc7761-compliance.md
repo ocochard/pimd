@@ -942,10 +942,22 @@ Checked, no action
 - **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  The
   promise of a second pass in the comment at `src/pim_proto.c:2181-2182` is
   stale — there is no second pass — but the resulting behaviour is correct.  The
-  suppression half of the same function still has live (\*,\*,RP) handling, and
-  `pack_and_send_jp_message()` can still encode such a group set, though no
-  caller asks it to.  *Check: Appendix A, `doc/rfc7761.txt:7567`, which is where
-  RFC 4601's (\*,\*,RP) support was removed.*
+  suppression half of the same function still reads such a group set, and
+  `pack_and_send_jp_message()` can still encode one, though no caller asks it
+  to; what that suppression code can do, however, is nothing.  Every branch of
+  it works on `rpentry->mrtlink`, the (\*,\*,RP) entry, and nothing in this tree
+  ever sets it: `create_mrtentry()` returns NULL for flags that are neither
+  `MRTF_SG` nor `MRTF_WC` (`src/mrt.c:884`), so the pointer read at
+  `src/pim_proto.c:2959` and `:3003` is always NULL, `join_or_prune()` answers
+  `PIM_ACTION_NOTHING` for it, and the hundred lines past that cannot execute.
+  Measured rather than read: those lines are unreached by the whole lab suite in
+  `doc/README-coverage.md`'s table, and they stay unreached with a (\*,\*,RP)
+  message on the wire.  The right change is deletion, which is a separate
+  question from conformance and belongs in `doc/TODO.org`.  *Check: Appendix A,
+  `doc/rfc7761.txt:7567`, which is where RFC 4601's (\*,\*,RP) support was
+  removed.  Test: step 4b of `crafted` in `test/lab.sh`, which sends the shape
+  three ways -- addressed to R1, overheard, and as a Prune -- and asserts the
+  parser walks it, builds nothing, and goes on acting on the Join after it.*
 - **Sec. 4.5.6's compound Join(\*,G)+Prune(S,G,rpt) is implemented**, through
   `MRTF_RP` entries pulled into the same group set (`src/route.c:1933-1952`) and
   the RPT bit set from that flag.  The triggered half of sec. 4.5.7 beside it

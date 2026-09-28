@@ -7,6 +7,33 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `test/pimsend.c` can cut a message short, `-t LEN`, and the `crafted`
+  scenario asserts what the Join/Prune parser does with one.  Every
+  `receive_pim_*()` that reads past its header tests the length it was handed
+  first, and nothing had ever reached one of those tests: pimd builds whole
+  messages, so a lab of pimds cannot ask, and `-x` flips bytes without
+  shortening.  The cut is made before the checksum rather than after, so the
+  short message carries one that is correct over what is left of it and dies
+  at the length test instead of ahead of it.  Two cuts are asserted, because
+  two files make the test -- `pim.c` refuses a message with no room for the
+  PIM header at all, the Join/Prune parser one with no room for the fields
+  `PIM_JOIN_PRUNE_MINLEN` names -- with the well-formed Join beside them as
+  the control.  This is the bound whose absence in `receive_pim_assert()` the
+  security notes of `.github/CONTRIBUTING.md`'s neighbourhood are written
+  about; it is now asserted rather than read
+- Three more `crafted` steps, all of them shapes no pimd sends: a (\*,\*,RP)
+  Join/Prune, which RFC 7761 removed (Appendix A) and which this tree still
+  parses -- the step asserts the parser walks it, builds nothing from it and
+  goes on acting on the next Join, since the (\*,\*,RP) code behind it turns
+  out to be unreachable, `create_mrtentry()` never making the entry every
+  branch of it works on (written up in `doc/rfc7761-compliance.md` and
+  `doc/TODO.org`); an (S,G) Prune on a link with one PIM neighbour, the half
+  of RFC 7761 sec. 4.5.1 that excuses the Prune-Pending Timer and the
+  PruneEcho where there is nobody to override and nobody to echo to, step 9
+  beside it being the two-neighbour half; and a shared tree Prune for a group
+  in the SSM range, the other direction of the sec. 4.8.1 rule 4 refusal the
+  scenario already asserted for a Join, with a Prune outside the range as its
+  control
 - `pimctl show status` reports how long the last pass of `age_routes()` took
   and the longest one since start-up, in microseconds.  That pass walks every
   group and every (S,G) once per 5 second tick, which `doc/TODO.org` has long

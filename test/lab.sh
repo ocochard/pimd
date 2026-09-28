@@ -1595,6 +1595,26 @@ CRAFT_PRIO=${CRAFT_PRIO:-200}
 # ages has visibly moved.
 CRAFT_FAR_SRC=${CRAFT_FAR_SRC:-10.0.3.10}
 
+# crafted step 2b, the two lengths a message is cut to.  $CRAFT_SHORT_JP is
+# below PIM_JOIN_PRUNE_MINLEN (src/pim_proto.c), which is 14 -- the header,
+# the encoded upstream address and the four bytes after it -- and even, so
+# that pimsend and pimd sum the same bytes the same way.  $CRAFT_SHORT_HDR
+# is below the four byte PIM header itself, which is pim.c's test to make
+# and not a parser's.
+CRAFT_SHORT_JP=${CRAFT_SHORT_JP:-12}
+CRAFT_SHORT_HDR=${CRAFT_SHORT_HDR:-2}
+
+# crafted step 4b: the group and mask length that make a group set a
+# (*,*,RP) one, 224.0.0.0/4 -- CLASSD_PREFIX and STAR_STAR_RP_MSKLEN in
+# src/pim_proto.c.  RFC 7761 removed the entry kind, so nothing here can
+# act on one; the step is about the parser walking it safely.
+CRAFT_PMBR_GROUP=${CRAFT_PMBR_GROUP:-224.0.0.0}
+CRAFT_PMBR_MSKLEN=${CRAFT_PMBR_MSKLEN:-4}
+
+# crafted steps 4b and 4c: a group of their own, so that building it and
+# tearing it down again disturbs no other step's state.
+CRAFT_PRUNE_GROUP=${CRAFT_PRUNE_GROUP:-225.1.9.9}
+
 # crafted, the Join suppression steps.  $SUPP_ADDR is a second router on
 # R1's link to R2, $R1_UP_ADDR R1's own end of that link.  $SUPP_WINDOW has
 # to hold at least two of R1's periodic Joins, $SUPP_PERIOD apart, so an R1
@@ -6233,6 +6253,32 @@ check_crafted() {
 		fail "r1 acted on a group mask length of $CRAFT_BADLEN"
 	fi
 
+	# A message that stops in the middle, which no pimd sends and which no
+	# lab of pimds could ask for one of.  Every receive_pim_*() that reads
+	# past the header tests the length it was handed first -- that is what
+	# PIM_JOIN_PRUNE_MINLEN is for, and the bug that made the tree's
+	# security notes was receive_pim_assert() reading 26 bytes out of a
+	# message with 4 guaranteed -- and until pimsend learned -t, nothing
+	# had ever reached one of those tests.  Two cuts, because two files
+	# make the test: pim.c refuses a message with no room for the PIM
+	# header at all, the Join/Prune parser one with no room for the fields
+	# its own minimum names.  pimsend sums what is left of the message
+	# rather than what it was going to be, so each dies for its length
+	# instead of at the checksum test ahead of it.
+	print "2b. A Join/Prune that stops short of its own fields is refused"
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -t "$CRAFT_SHORT_JP"
+	if wait_for 10 logged r1 "Too short Join/Prune message ($CRAFT_SHORT_JP bytes)"; then
+		ok "r1 refused a ${CRAFT_SHORT_JP}-byte Join/Prune, which ends inside its own upstream address"
+	else
+		fail "r1 parsed a Join/Prune shorter than PIM_JOIN_PRUNE_MINLEN"
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -t "$CRAFT_SHORT_HDR"
+	if wait_for 10 logged r1 "IP data field too short ($CRAFT_SHORT_HDR bytes) for PIM header"; then
+		ok "r1 refused a ${CRAFT_SHORT_HDR}-byte message before any parser saw it"
+	else
+		fail "r1 handed a message with no PIM header in it to a parser"
+	fi
+
 	# The control.  Without it every assertion above is satisfied by a
 	# parser that drops Join/Prunes altogether.
 	print "3. And the same Join, correctly formed, is acted on"
@@ -6281,6 +6327,70 @@ check_crafted() {
 	fi
 
 	# RFC 7761 sec. 4.5.4, T2 of doc/rfc7761-compliance.md: a router that
+	# RFC 7761 removed (*,*,RP): Appendix A lists "(*,*,RP) State" among
+	# the features taken out of RFC 4601 for want of deployment
+	# experience, along with the PMBR the entry kind existed for.  This
+	# tree still carries the receive side of it -- a group set whose group
+	# is 224.0.0.0 with a mask length of 4 is read as one, CLASSD_PREFIX
+	# and STAR_STAR_RP_MSKLEN in src/pim_proto.c -- and nothing can act on
+	# it: create_mrtentry() (src/mrt.c) returns NULL for flags that are
+	# neither MRTF_SG nor MRTF_WC, so rpentry->mrtlink, the entry all
+	# those branches work on, is never set and everything past
+	# join_or_prune() is unreachable.
+	#
+	# So what is asserted here is not the protocol, which is gone.  It is
+	# that the parser walks a shape nothing sends and comes out the other
+	# side: the source list of a group set is walked either way, and a
+	# count off the wire says how long it is.  Four messages, because four
+	# loops read those bytes: a Join and a Prune naming R1 as the upstream
+	# neighbour, which is the branch that would act, and a Join and a Prune
+	# naming R2, which is the suppression branch a router applies to a
+	# message it merely overhears.  A Join carries no pruned sources and a
+	# Prune no joined ones, so one of each is what reaches both loops of
+	# either branch.
+	print "4b. A (*,*,RP) Join/Prune is walked, ignored and builds nothing"
+	m1=$(log_lines r1)
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_PMBR_GROUP" -m "$CRAFT_PMBR_MSKLEN" -w -r "$RP_ADDR"
+	craft "$SRC_ADDR" join -u "$RP_ADDR" -g "$CRAFT_PMBR_GROUP" -m "$CRAFT_PMBR_MSKLEN" -w -r "$RP_ADDR"
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_PMBR_GROUP" -m "$CRAFT_PMBR_MSKLEN" -w -r "$RP_ADDR"
+	craft "$SRC_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_PMBR_GROUP" -m "$CRAFT_PMBR_MSKLEN" -w -r "$RP_ADDR"
+	if wait_for 10 log_since r1 "$m1" "Received PIM JOIN from $SRC_ADDR to group $CRAFT_PMBR_GROUP"; then
+		ok "r1 parsed a (*,*,RP) Join/Prune rather than refusing it for a field"
+	else
+		fail "r1 refused every (*,*,RP) message outright, so nothing here reached that code"
+	fi
+	if has_mrt r1 "$CRAFT_PMBR_GROUP"; then
+		fail "r1 holds state for $CRAFT_PMBR_GROUP, which RFC 7761 has no entry kind for"
+	else
+		ok "r1 built no state for $CRAFT_PMBR_GROUP"
+	fi
+	# The control, and the state step 4c needs: a well-formed Join after
+	# those three is still acted on, so the parser did not come out of the
+	# (*,*,RP) loops confused about where it was.
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_PRUNE_GROUP" -s "$CRAFT_FAR_SRC"
+	if wait_for 15 sg_forwards_on r1 "${EP}101b" "$CRAFT_FAR_SRC" "$CRAFT_PRUNE_GROUP"; then
+		ok "and the well-formed Join after them was acted on"
+	else
+		fail "r1 stopped acting on Join/Prunes once it had seen a (*,*,RP) one"
+		return 1
+	fi
+
+	# sec. 4.5.1 arms the Prune-Pending Timer so that another router on the
+	# link can override a Prune, and excuses both it and the PruneEcho
+	# where there is nobody to override and nobody to echo to:
+	# prune_pending_delay() (src/pim_proto.c) returns 0 for a link with one
+	# PIM neighbour and the interface leaves the joined set on receipt.
+	# That is this link, until step 9 makes $CRAFT_ADDR a second
+	# neighbour on it -- which is why this runs here and not after it, and
+	# step 9 is the same sentence's other half, timed.
+	print "4c. An (S,G) Prune with nobody to wait for is acted on at once"
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_PRUNE_GROUP" -s "$CRAFT_FAR_SRC"
+	if wait_for 10 sg_pruned_off r1 "${EP}101b" "$CRAFT_FAR_SRC" "$CRAFT_PRUNE_GROUP"; then
+		ok "r1 took $CRAFT_FAR_SRC off the LAN with no Prune-Pending interval to wait out"
+	else
+		fail "r1 still forwards $CRAFT_FAR_SRC on a link where the only neighbour pruned it"
+	fi
+
 	# sees another router on its upstream interface send the Join(*,G) it
 	# was about to send holds its own back, for t_suppressed or the HoldTime
 	# of the Join it saw, whichever is shorter.  pimd computed the guards
@@ -6981,6 +7091,33 @@ check_crafted() {
 		fail "r1 holds $(pimctl r1 show mrt 2>/dev/null | awk -v g="$SSM_GROUP" '$2 == g { print $1 }' | tr '\n' ' ')for $SSM_GROUP, which calc_oifs() would merge into every (S,G)"
 	else
 		ok "r1 built no state for $SSM_GROUP at all"
+	fi
+
+	# The other direction of the same rule, and the arm sec. 4.8.1 rule 4
+	# needs as much: a Prune carrying the RP bit is a shared tree Prune,
+	# and a group in the SSM range has no shared tree to take anything off.
+	# Refusing the Join and acting on the Prune would tear down (S,G) state
+	# a router built the SSM way, the RP bit being what tells the two entry
+	# kinds apart.
+	print "23b. And no shared tree is torn down for one either"
+	m1=$(log_lines r1)
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$SSM_GROUP" -w -r "$SSM_VIRTUAL_RP"
+	if wait_for 10 log_since r1 "$m1" "shared tree Prune for SSM group $SSM_GROUP"; then
+		ok "r1 refused a (*,$SSM_GROUP) Prune naming $SSM_VIRTUAL_RP"
+	else
+		fail "r1 acted on a (*,G) Prune for an SSM group, sec. 4.8.1 rule 4"
+	fi
+	# And the control beside it: the same shape outside the range is not
+	# refused for being in it, or the assertion above is satisfied by a
+	# parser that refuses every (*,G) Prune there is.
+	m1=$(log_lines r1)
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_PRUNE_GROUP" -w -r "$RP_ADDR"
+	if ! wait_for 10 log_since r1 "$m1" "Received PIM PRUNE from $SRC_ADDR to group $CRAFT_PRUNE_GROUP"; then
+		fail "r1 logged no (*,$CRAFT_PRUNE_GROUP) Prune at all, the control says nothing"
+	elif log_since r1 "$m1" "shared tree Prune for SSM group" >/dev/null 2>&1; then
+		fail "r1 called $CRAFT_PRUNE_GROUP an SSM group, the range test is not the range"
+	else
+		ok "and the same Prune for $CRAFT_PRUNE_GROUP was not refused for the range"
 	fi
 
 	print "24. And a Register for one is answered, not merely dropped"
