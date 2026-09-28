@@ -56,15 +56,25 @@ What it says today
 Measured on FreeBSD with clang, `--enable-coverage CFLAGS="-O0 -g"`, on the
 tree as of 2026-09-28:
 
-  - the lab suite, 30 scenarios green at `-j 12` in 8m07s on 16 cores,
-    reaches **71.5%** of the 12992 instrumented lines of `src/` and `lib/`;
+  - the lab suite, 31 scenarios green at `-j 12` in 8m06s on 16 cores,
+    reaches **72.2%** of the 12992 instrumented lines of `src/` and `lib/`;
   - the fuzz corpus replay reaches **33.1%** of the 10060 its own build
     instruments -- fewer files, `main.c`, `ipc.c` and `pimctl.c` not being
     linked into the harnesses at all.  That half was last measured over 23
     lab scenarios and has not been re-run since.
 
-It was 71.1% of the same 12992 the measurement before it, and that pair *is*
-subtractable, the tree not having moved between them: four steps added to
+It was 71.5% of the same 12992 before the `altnet` scenario, which is the
+whole of the difference: it writes the two `phyint` keywords about addresses,
+`altnet` and `scoped`, that no other scenario writes, and it took `config.c`
+from 630 unreached lines to 555 -- 75 of the 84 the suite gained, with 3 more
+in `vif.c`, where `find_vif_direct()` walks a VIF's altnets, and 3 in
+`route.c`, where `scoped_addr()` answers the boundary test.  All but four lines
+of `parse_phyint()`'s altnet and scoped block now execute; the four are the two
+`WARN` arms that `return FALSE` and abort the whole configuration read, which
+no scenario can carry beside a working one, and two allocation failures.
+
+Before that it was 71.1% of the same 12992, and that pair *is* subtractable
+too, the tree not having moved between them: four steps added to
 `crafted` -- a Join/Prune cut short of its own fields, a (\*,\*,RP) one, an
 (S,G) Prune with nobody to wait for, and a shared tree Prune for an SSM group
 -- reached 61 lines nothing had reached before, 49 of them in `pim_proto.c`
@@ -101,10 +111,11 @@ The top of that table, and what it settles:
     RFC 7761 removed, working on an entry `create_mrtentry()` never makes,
     and `doc/rfc7761-compliance.md` and `doc/TODO.org` say so with the
     evidence.
-  - `src/config.c`: 630 lines, 63.6%, the second largest, and mostly single
+  - `src/config.c`: 555 lines, 67.9%, the second largest, and mostly single
     lines rather than blocks -- allocation failures, `logit(LOG_ERR)` arms,
-    and keywords no scenario writes into a `pimd.conf`.  It grew with the
-    keywords added since the last measurement.
+    and keywords no scenario writes into a `pimd.conf`.  `altnet` and
+    `scoped` were the largest of those and are written now; what is left is
+    the same shape, one keyword at a time.
   - `src/debug.c`: 343 lines, 22.2%, and the third largest -- which is the
     clearest illustration of why this table is not a ranking.  Those lines
     are the DVMRP and mtrace arms of `packet_kind()` and `log_level()`, two

@@ -206,7 +206,7 @@ tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 `_FORTIFY_SOURCE` wraps what ASan interposes, while the aliasing flag is in that set without being
 hardening. `run all` walks its
 scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
-`shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `ifnew`, `ifgone`,
+`shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `altnet`, `ifnew`, `ifgone`,
 `renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
 `anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
@@ -274,7 +274,20 @@ forwarding (`ssm-range` moves the SSM range off 232/8 from `pimd.conf` and asser
 the replacement), `alias` the only one where an interface carries more than one address, so the only
 one that reaches the alias branch of `config_vifs_from_kernel()`, the only one whose sender sits
 on a subnet the VIF does not own, and the only one where a next hop is a router's secondary
-address, reached through the Hello Address List of RFC 7761 sec. 4.3.4, `ifnew`, `ifgone` and
+address, reached through the Hello Address List of RFC 7761 sec. 4.3.4, `altnet` the only one that
+writes the two `phyint` keywords that are about addresses rather than about PIM -- `altnet`, a
+subnet the interface has no address in and pimd treats as on the link anyway, which is what `alias`
+gets from the kernel said in a configuration file instead, in each of the three forms the keyword
+has and five ways of getting it wrong; and `scoped`, the RFC 2365 forwarding boundary, on the
+receiver's link, where a scoped group is joined and not forwarded, which is what separates it from
+the `igmp-accept-groups` of `igmp-compat`, where the report is refused and no membership exists at
+all.  A neighbour is what says an altnet was installed rather than only parsed, `find_vif_direct()`
+walking a VIF's altnets before it asks the kernel, and that step runs last: the Hello that proves
+it makes its sender the DR of that link and stops everything else in the scenario.  Note that
+`APPLY_SCOPE()` (`src/route.c`) clears every oif of an entry as soon as any vif of the router
+scopes the group rather than the scoped vif's alone, so the scenario cannot tell per-interface
+scoping from router-wide, and its second call site clears one entry's oifs and installs another's
+(`src/route.c:1663`), which nothing reaches, `ifnew`, `ifgone` and
 `renumber` the only ones about what pimd does when the interfaces change underneath it -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the

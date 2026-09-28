@@ -64,6 +64,8 @@
 # link to close the chain into a triangle; the two gif ones add a tunnel and
 # take R2 out of PIM entirely; the two shared segment ones rebuild the two
 # right hand links as bridged segments and hang two more routers off them;
+# altnet says a subnet is on a link without giving the interface an address in
+# it, and scopes a group range off another link;
 # alias gives one interface a second address and moves the sender onto it;
 # ifnew, ifgone and renumber change a link under a pimd that is already
 # running:
@@ -423,6 +425,44 @@
 #               first hop.  Linux cannot show this, netlink.c answers a
 #               connected lookup with the destination as its own RPF
 #               neighbour.
+#   altnet      The rpt topology with the two phyint keywords that are
+#               about addresses rather than about PIM, one at each end of
+#               the chain: "altnet" on R1's link to the sender and
+#               "scoped" on R3's link to the receiver.  The only scenario
+#               that writes either into a pimd.conf, so the only one that
+#               reaches parse_phyint()'s largest block (src/config.c).
+#
+#                 ED1 ------------ R1 --- R2 --- R3 ------------ ED2
+#                 10.0.101.50 (in   3     (BSR    239.1.0.0/16   member of
+#                 an altnet)     altnets  + RP)   239.2.0.0/16   a scoped
+#                 10.0.109.50 (in  + 5                           group and
+#                 none)            bad                           of $GROUP
+#
+#               An altnet is a subnet the interface has no address in and
+#               pimd treats as being on the link anyway: what the alias
+#               scenario gets from the kernel, said in a configuration
+#               file instead, ending in the same install_altnet().  Three
+#               well formed ones, the keyword having three shapes -- a
+#               length in the token, a "masklen" word after it, and
+#               neither, which means the interface netmask -- and five
+#               malformed ones, a configuration file being operator input
+#               and every arm that warns and carries on being a line
+#               nothing had executed.  What tells an altnet that was
+#               installed from one that was only parsed is a neighbour:
+#               ED1 plays two routers with pimsend, one inside an altnet
+#               and one inside none, and R1 has to take the first and
+#               refuse the second -- which is also why that step runs
+#               last, a Hello from an address above R1's own making its
+#               sender the DR and stopping everything else in the
+#               scenario.
+#
+#               "scoped" is the RFC 2365 forwarding boundary, and the
+#               receiver LAN is the only place to watch one work: the
+#               membership is created and the traffic is not forwarded,
+#               which is what separates it from "igmp-accept-groups" in
+#               the igmp-compat scenario, where the report is refused and
+#               there is no membership at all.  $GROUP, outside every
+#               boundary, is the control.
 #
 #               R1 has a second address on its link to R2 as well, and
 #               R2's route back to the sender names that one, so it is
@@ -820,7 +860,7 @@
 # where scenario is "rpt" (default), "keepalive", "rp-lasthop",
 # "rp-offpath", "gif-tunnel", "gif-tunnel-staticrp", "shared-lan",
 # "shared-lan-spt", "assert-recover", "igmp-compat", "ssm", "ssm-range", "alias",
-# "ifnew", "ifgone", "renumber", "register-filter", "crafted", "fuzz",
+# "altnet", "ifnew", "ifgone", "renumber", "register-filter", "crafted", "fuzz",
 # "static-rp", "anycast", "anycast-dr", or "all"
 # for run.
 #
@@ -952,11 +992,11 @@ SCENARIO=${SCENARIO:-rpt}
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent
-	   autorp-listener anycast anycast-dr scale"
+	   autorp-listener anycast anycast-dr altnet scale"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range autorp-listener solo privsep scale"
+		     renumber ssm-range autorp-listener altnet solo privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -1185,6 +1225,48 @@ ALIAS_IF=${EP}101b
 ALIAS_ADDR=10.0.101.1
 ALIAS_NET=10.0.101.0/24
 ALIAS_SRC_ADDR=10.0.101.10
+
+# altnet: what R1's phyint line claims as extra subnets on its link to ED1,
+# one per form parse_phyint() takes.  $ALT_NET1 carries its length in the
+# token, $ALT_NET2 has "masklen 24" after it, and $ALT_NET3 has neither, so it
+# falls back to the interface netmask -- three code paths for one keyword, and
+# the third is the one that regressed once already, an altnet without a length
+# inheriting the previous altnet's.
+ALT_NET1=${ALT_NET1:-10.0.101.0/24}
+ALT_NET2=${ALT_NET2:-10.0.102.0}
+ALT_NET3=${ALT_NET3:-10.0.103.0}
+
+# And the malformed ones, each of which has to warn and leave the rest of the
+# configuration standing.  $ALT_HOSTBITS is a prefix with host bits set, which
+# is a warning and an altnet all the same; $ALT_BADNET is the address the
+# refused masklens are written against, so a masklen that is refused leaves no
+# altnet behind and the assertion can say which.
+ALT_HOSTBITS=${ALT_HOSTBITS:-10.0.106.7/24}
+ALT_BADNET=${ALT_BADNET:-10.0.104.0}
+
+# A router inside $ALT_NET1 and one inside no altnet at all, both played by
+# pimsend from ED1.  find_vif_direct() (src/vif.c) walks a VIF's altnets
+# before it asks the kernel, so the first is on the link as far as R1 is
+# concerned and the second is nowhere: that pair is what tells an altnet that
+# was installed from one that was merely parsed.
+ALT_NBR=${ALT_NBR:-10.0.101.50}
+ALT_STRANGER=${ALT_STRANGER:-10.0.109.50}
+
+# The boundaries R3 puts on its link to the receiver, in the same two forms,
+# and the malformed ones beside them.  RFC 2365 scoping drops the traffic and
+# leaves the membership, which is what separates it from
+# `igmp-accept-groups' -- see the igmp-compat scenario, which is the other
+# half of that comparison.
+SCP_NET1=${SCP_NET1:-239.1.0.0/16}
+SCP_NET2=${SCP_NET2:-239.2.0.0}
+SCP_HOSTBITS=${SCP_HOSTBITS:-239.5.1.1/16}
+SCP_BADNET=${SCP_BADNET:-239.4.0.0}
+
+# A group inside $SCP_NET1, which must not be forwarded to the receiver, and
+# one inside $SCP_NET2, which says the second form took as well.  $GROUP is
+# the control: outside every boundary, and forwarded.
+SCP_GROUP=${SCP_GROUP:-239.1.1.1}
+SCP_GROUP2=${SCP_GROUP2:-239.2.1.1}
 
 # alias, the Address List half: a second address on R1's link to R2, in the
 # same subnet as the first, and R2's route back to the sender pointed at it.
@@ -1932,7 +2014,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|scale)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2471,6 +2553,50 @@ write_configs() {
 
 		: > "$WORKDIR/r2.conf"
 		: > "$WORKDIR/r3.conf"
+		return
+	fi
+
+	if [ "$SCENARIO" = altnet ]; then
+		# Every form of "altnet" parse_phyint() takes, on R1's link to
+		# ED1, and every way of getting one wrong.  One keyword per
+		# line where the malformed one has to be the last token on it:
+		# a bare "altnet" in the middle of a line takes whatever
+		# follows as its address, so "missing" is only reachable at the
+		# end.  Several phyint lines for one interface are how that is
+		# written -- parse_phyint() matches a line to a vif by local
+		# address and keeps no state between lines, so each is read on
+		# its own.
+		cat <<-EOF > "$WORKDIR/r1.conf"
+		# R1: first hop router, three well-formed altnets and five bad ones
+		phyint ${EP}101b altnet $ALT_NET1 altnet $ALT_NET2 masklen 24 altnet $ALT_NET3
+		phyint ${EP}101b altnet $ALT_HOSTBITS
+		phyint ${EP}101b altnet $ALT_BADNET masklen 200
+		phyint ${EP}101b altnet $ALT_BADNET masklen abc
+		phyint ${EP}101b altnet $ALT_BADNET masklen
+		phyint ${EP}101b altnet
+		EOF
+
+		cat <<-EOF > "$WORKDIR/r2.conf"
+		# R2: bootstrap router and rendezvous point for all of 224.0.0.0/4
+		# Epair112b is spelled with an uppercase letter on purpose, see renames()
+		bsr-candidate ${EPU}112b priority 1 interval 10
+		rp-candidate ${EPU}112b priority 20 interval 10
+		group-prefix 224.0.0.0 masklen 4
+		EOF
+
+		# The boundaries go on the last hop router's link to the
+		# receiver, which is the only place a scoped group can be
+		# watched being dropped with its membership still standing.
+		cat <<-EOF > "$WORKDIR/r3.conf"
+		# R3: last hop router, with the receiver LAN inside two boundaries
+		phyint ${EP}203a scoped $SCP_NET1 scoped $SCP_NET2 masklen 16
+		phyint ${EP}203a scoped $SCP_HOSTBITS
+		phyint ${EP}203a scoped $SCP_BADNET masklen 0
+		phyint ${EP}203a scoped $SCP_BADNET masklen 200
+		phyint ${EP}203a scoped $SCP_BADNET masklen xyz
+		phyint ${EP}203a scoped $SCP_BADNET masklen
+		phyint ${EP}203a scoped
+		EOF
 		return
 	fi
 
@@ -4511,6 +4637,7 @@ check() {
 	ssm)        check_ssm; return $? ;;
 	ssm-range)  check_ssm_range; return $? ;;
 	alias)      check_alias; return $? ;;
+	altnet)     check_altnet; return $? ;;
 	ifnew)      check_ifnew; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	renumber)   check_renumber; return $? ;;
@@ -8194,6 +8321,216 @@ check_alias() {
 		dprint "--- $r: pimctl show pim detail ---"
 		pimctl "$r" show pim detail 2>&1 | tail -40 || true
 	done
+	return 1
+}
+
+# altnet: the two phyint keywords that say something about addresses rather
+# than about PIM, "altnet" and "scoped", which no other scenario writes into a
+# pimd.conf -- so parse_phyint()'s largest block (src/config.c) was the largest
+# unreached one in doc/README-coverage.md's table, and doc/TODO.org has asked
+# twice for work on the altnet parser nobody could see running.
+#
+# The rpt chain, with the two keywords at the two ends of it:
+#
+#   ED1 ------------------- R1 --- R2 --- R3 ------------------- ED2
+#   10.0.1.10/24            altnet (BSR   scoped 239.1.0.0/16    member
+#   10.0.101.50/24 (altnet)  x3    + RP)  scoped 239.2.0.0/16
+#   10.0.109.50/24 (neither)              and five bad ones
+#
+# An altnet is a subnet the interface has no address in and pimd is told to
+# treat as being on the link anyway.  It is how a pimd.conf says what the
+# alias scenario gets from the kernel, and the same install_altnet() ends up
+# holding both, so what is new here is the parser and not the effect.  Three
+# well formed ones, because the keyword has three shapes -- a length in the
+# token, a "masklen" word after it, and neither, which means the interface
+# netmask -- and five malformed ones, because a configuration file is operator
+# input and every arm of it that warns and carries on is a line nothing had
+# ever executed.
+#
+# What says an altnet was installed rather than merely parsed is a neighbour:
+# find_vif_direct() (src/vif.c) walks a VIF's altnets before it asks the
+# kernel, and receive_pim_hello() refuses a Hello whose source it cannot place
+# on a link.  So ED1 plays two routers with pimsend, one inside an altnet and
+# one inside none, and R1 has to take the first and refuse the second.
+#
+# "scoped" is the RFC 2365 forwarding boundary, and the receiver LAN is the
+# only place to watch one work: the membership is created and the traffic is
+# not forwarded, which is exactly what separates it from
+# `igmp-accept-groups' (the igmp-compat scenario), where the report is
+# refused and no membership exists at all.
+#
+# Two things about the implementation are worth knowing before reading the
+# assertions, and neither is this scenario's to fix:
+#
+#   - APPLY_SCOPE() (src/route.c) clears every oif of the entry as soon as any
+#     vif of the router scopes the group, rather than the scoped vif's alone.
+#     Here only R3 scopes anything and only towards the receiver, so the
+#     assertion below cannot tell the two apart; on a router with a member on
+#     an unscoped interface as well it would matter.
+#   - Its second call site clears the oifs of one entry and then installs the
+#     oif list of another (src/route.c:1663, "marian: not sure if we reach
+#     here with our scoped traffic?").  Nothing here reaches it.
+check_altnet() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# netname() prints the masked address and the length, and prints no
+	# length at all where the mask is the natural one for the class -- so
+	# every altnet here is a /24 out of 10/8, which is never that.
+	print "2. R1 took an altnet in each of the three forms the keyword has"
+	for net in "${ALT_NET1%/*}/24" "${ALT_NET2}/24" "${ALT_NET3}/24"; do
+		if logged r1 "ALTNET: $net"; then
+			ok "r1 installed $net as an altnet of ${EP}101b"
+		else
+			fail "r1 never logged an altnet for $net, see $WORKDIR/r1.log"
+		fi
+	done
+
+	print "3. And warned about each malformed one without losing the rest"
+	if logged r1 "Extra subnet $ALT_HOSTBITS has host bits set"; then
+		ok "r1 warned about host bits in $ALT_HOSTBITS"
+	else
+		fail "r1 took $ALT_HOSTBITS without a word about its host bits"
+	fi
+	if logged r1 "ALTNET: ${ALT_HOSTBITS%.*/*}.0/24"; then
+		ok "and installed it masked, which is what the warning is for"
+	else
+		fail "r1 warned about $ALT_HOSTBITS and then installed nothing"
+	fi
+	for msg in "Too large (200) altnet masklen" \
+		   "Invalid altnet masklen 'abc'" \
+		   "Missing ALTNET masklen for phyint" \
+		   "Missing ALTNET for phyint"; do
+		if logged r1 "$msg"; then
+			ok "r1 refused an altnet: $msg"
+		else
+			fail "r1 said nothing about \"$msg\", that arm never ran"
+		fi
+	done
+	# The control: a refused masklen must leave no altnet behind, or the
+	# warnings above are decoration over an altnet that was installed
+	# anyway.
+	if logged r1 "ALTNET: $ALT_BADNET"; then
+		fail "r1 installed $ALT_BADNET, whose every masklen it refused"
+	else
+		ok "no altnet was installed for $ALT_BADNET, whose masklens were all refused"
+	fi
+
+	print "4. R3 took a boundary in both forms and warned about the bad ones"
+	for net in "${SCP_NET1%/*}" "$SCP_NET2"; do
+		if logged r3 "SCOPED $net/"; then
+			ok "r3 installed a boundary for $net on ${EP}203a"
+		else
+			fail "r3 never logged a boundary for $net, see $WORKDIR/r3.log"
+		fi
+	done
+	if logged r3 "Boundary spec $SCP_HOSTBITS has host bits set"; then
+		ok "r3 warned about host bits in $SCP_HOSTBITS"
+	else
+		fail "r3 took $SCP_HOSTBITS without a word about its host bits"
+	fi
+	for msg in "Too small (0) scoped masklen" \
+		   "Too large (200) scoped masklen" \
+		   "Invalid scoped masklen 'xyz'" \
+		   "Missing SCOPED masklen for phyint" \
+		   "Missing SCOPED for phyint"; do
+		if logged r3 "$msg"; then
+			ok "r3 refused a boundary: $msg"
+		else
+			fail "r3 said nothing about \"$msg\", that arm never ran"
+		fi
+	done
+
+	print "5. PIM converges, so the shared tree exists to be scoped"
+	for r in $ROUTERS; do
+		if wait_for 90 has_rp "$r" "$RP_ADDR"; then
+			ok "$r learned RP $RP_ADDR"
+		else
+			fail "$r never learned RP $RP_ADDR (BSR/cand-RP path)"
+			return 1
+		fi
+	done
+
+	# The membership is the half a boundary leaves alone.  It is read while
+	# the receiver is up, since mping's join goes away with it.
+	print "6. A group inside a boundary is joined and not forwarded"
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-scoped.log" 2>&1 &
+	receiver=$!
+	if wait_for 30 has_igmp_group r3 "$SCP_GROUP"; then
+		ok "r3 holds the membership for $SCP_GROUP, which a boundary does not refuse"
+	else
+		fail "r3 has no membership for $SCP_GROUP, the receiver never joined"
+	fi
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 20 -w 30 "$SCP_GROUP" \
+		>"$WORKDIR/sender-scoped.log" 2>&1 || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender-scoped.log")
+	replies=${replies:-0}
+	if [ "$replies" -eq 0 ]; then
+		ok "nothing of $SCP_GROUP reached ED2, the boundary holds"
+	else
+		fail "$replies replies came back for $SCP_GROUP, the boundary forwarded it"
+	fi
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	# And the control, without which a receiver that never worked would
+	# satisfy the assertion above.
+	print "7. And the same traffic outside every boundary is forwarded"
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1 &
+	receiver=$!
+	sleep 2
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 40 -w 60 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1 || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "ED1 -> $GROUP -> ED2, $replies replies"
+	else
+		fail "only $replies replies for $GROUP, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
+	fi
+	kill "$receiver" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+
+	# Last, and that is not tidiness.  What says an altnet was installed
+	# rather than merely parsed is that R1 accepts a Hello from inside one,
+	# and a Hello makes its sender a candidate in the DR election of sec.
+	# 4.3.2: $ALT_NBR is numerically above R1's own address on that link,
+	# so from here on R1 is not the DR for ED1's subnet, does not register
+	# what ED1 sends, and nothing is forwarded anywhere.  Every assertion
+	# above wants R1 to be that DR, so this one goes after all of them.
+	print "8. A router inside an altnet is on the link, one outside it is not"
+	box_addr_add ed1 "${EP}101a" "$ALT_NBR/24" 2>/dev/null || \
+		die "failed adding $ALT_NBR to ${EP}101a on ed1"
+	box_addr_add ed1 "${EP}101a" "$ALT_STRANGER/24" 2>/dev/null || \
+		die "failed adding $ALT_STRANGER to ${EP}101a on ed1"
+	craft_on ed1 "$ALT_NBR" hello -H 105
+	craft_on ed1 "$ALT_STRANGER" hello -H 105
+	if wait_for 30 has_neighbor r1 "$ALT_NBR"; then
+		ok "r1 took $ALT_NBR, which is in $ALT_NET1, as a neighbour"
+	else
+		fail "r1 refused a Hello from $ALT_NBR, the altnet is parsed but not installed"
+	fi
+	if has_neighbor r1 "$ALT_STRANGER"; then
+		fail "r1 took $ALT_STRANGER as a neighbour and it is in no altnet of ${EP}101b"
+	else
+		ok "and refused $ALT_STRANGER, which is in none of them"
+	fi
+
+	result && return 0
+
+	dprint "--- r1: show interface ---"
+	pimctl r1 show interface 2>&1 || true
+	dprint "--- r3: show igmp groups ---"
+	pimctl r3 show igmp groups 2>&1 || true
 	return 1
 }
 

@@ -7,6 +7,27 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- An `altnet` scenario in `test/lab.sh` for the two `phyint` keywords that say
+  something about addresses rather than about PIM, neither of which any
+  scenario wrote into a `pimd.conf` before: `altnet`, a subnet the interface
+  has no address in and pimd treats as being on the link anyway -- what the
+  `alias` scenario gets from the kernel, said in a configuration file instead
+  -- in each of the three forms the keyword has, a length in the token, a
+  `masklen` word after it, and neither, which means the interface netmask; and
+  `scoped`, the RFC 2365 forwarding boundary, on the receiver's link, where a
+  group inside it is joined and not forwarded, which is what separates it from
+  `igmp-accept-groups`, where the report is refused and no membership exists at
+  all.  Five malformed altnets and five malformed boundaries beside them, since
+  a configuration file is operator input and every arm that warns and carries
+  on was a line nothing had ever run: `parse_phyint()` was the largest
+  unreached block of `src/config.c` in `doc/README-coverage.md`'s table, and
+  `doc/TODO.org` has twice asked for work on a parser nobody could watch
+  running.  What says an altnet was installed rather than only parsed is a
+  neighbour -- `find_vif_direct()` walks a VIF's altnets before it asks the
+  kernel, so a Hello from inside one is accepted and one from outside every
+  altnet is not -- and that step runs last, a Hello from an address above R1's
+  own making its sender the DR of the link and stopping everything else in the
+  scenario
 - `test/pimsend.c` can cut a message short, `-t LEN`, and the `crafted`
   scenario asserts what the Join/Prune parser does with one.  Every
   `receive_pim_*()` that reads past its header tests the length it was handed
