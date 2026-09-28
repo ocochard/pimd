@@ -433,10 +433,22 @@
 #               reaches parse_phyint()'s largest block (src/config.c).
 #
 #                 ED1 ------------ R1 --- R2 --- R3 ------------ ED2
-#                 10.0.101.50 (in   3     (BSR    239.1.0.0/16   member of
-#                 an altnet)     altnets  + RP)   239.2.0.0/16   a scoped
-#                 10.0.109.50 (in  + 5                           group and
-#                 none)            bad                           of $GROUP
+#                 10.0.101.50 (in   3     (BSR      |  239.1/16  member of
+#                 an altnet)     altnets  + RP)     |  239.2/16  a scoped
+#                 10.0.109.50 (in  + 5              |            group and
+#                 none)            bad              |            of $GROUP
+#                                                   +----------- ED3
+#                                       239.3/16 on this          10.0.30.10,
+#                                       the link to R2            no boundary
+#
+#               The second receiver LAN and ED3 are here and nowhere else in
+#               this file, and they are what a boundary needs to be readable
+#               at all: on a chain a last hop router has one interface a
+#               member can sit behind, so "take the boundary interface out of
+#               the outgoing list" and "forward nothing at all" are the same
+#               observation.  With members on both LANs and the group scoped
+#               on ED2's link only, the two readings disagree and step 6d
+#               says which one this is.
 #
 #               An altnet is a subnet the interface has no address in and
 #               pimd treats as being on the link anyway: what the alias
@@ -456,13 +468,19 @@
 #               sender the DR and stopping everything else in the
 #               scenario.
 #
-#               "scoped" is the RFC 2365 forwarding boundary, and the
-#               receiver LAN is the only place to watch one work: the
-#               membership is created and the traffic is not forwarded,
-#               which is what separates it from "igmp-accept-groups" in
-#               the igmp-compat scenario, where the report is refused and
-#               there is no membership at all.  $GROUP, outside every
-#               boundary, is the control.
+#               "scoped" is the RFC 2365 forwarding boundary: the membership
+#               is created and the traffic is not forwarded, which is what
+#               separates it from "igmp-accept-groups" in the igmp-compat
+#               scenario, where the report is refused and there is no
+#               membership at all.  $GROUP, outside every boundary, is the
+#               control.  Four steps for three rules -- the boundary blocks
+#               (6), it survives the entry being reinstalled under it (6c,
+#               which needs a membership that can be withdrawn and so a v2
+#               report and leave from test/igmpv3 rather than a kernel
+#               join), it drops what arrives on it as well as what would
+#               leave by it (6b, on R3's link to R2), and it belongs to its
+#               own interface rather than to the router (6d, the two LANs
+#               above).
 #
 #               R1 has a second address on its link to R2 as well, and
 #               R2's route back to the sender names that one, so it is
@@ -1151,6 +1169,11 @@ SHARED_EPAIRS="$BR_UPSTREAM_EPAIRS $BR_RECEIVER_EPAIRS ${EP}510"
 # on the path the traffic takes once the shortest path tree is up.
 OFFPATH_EPAIRS="$DEFAULT_EPAIRS ${EP}113"
 
+# altnet: the three router chain plus a second end device on a LAN of its own
+# behind R3, see ALT_ED3_ADDR
+ALTNET_BOXES="ed1 r1 r2 r3 ed2 ed3"
+ALTNET_EPAIRS="$DEFAULT_EPAIRS ${EP}304"
+
 # solo: one router, an end device on each of its two LANs and nothing else.
 # The link to the receiver is numbered 104 rather than 102 or 103, which
 # would read as a link to a second or third router; there is none here.
@@ -1267,6 +1290,18 @@ SCP_BADNET=${SCP_BADNET:-239.4.0.0}
 # the control: outside every boundary, and forwarded.
 SCP_GROUP=${SCP_GROUP:-239.1.1.1}
 SCP_GROUP2=${SCP_GROUP2:-239.2.1.1}
+
+# altnet: a second receiver LAN behind R3, so that one router has two
+# outgoing interfaces for one group and a boundary on one of them can be told
+# from a boundary on the router.  Every other topology here is a chain, where a
+# last hop router has exactly one interface a member can be behind and the two
+# readings of a boundary look identical.
+ALT_EP=${EP}304
+ALT_R3_IF=${ALT_EP}a
+ALT_ED3_IF=${ALT_EP}b
+ALT_R3_ADDR=${ALT_R3_ADDR:-10.0.30.1}
+ALT_ED3_ADDR=${ALT_ED3_ADDR:-10.0.30.10}
+ALT_ED3_NET=${ALT_ED3_NET:-10.0.30.0/24}
 
 # And a third boundary, on R3's link towards R2 rather than towards the
 # receiver, with $SCP_GROUP3 inside it.  That link is the incoming interface
@@ -2055,6 +2090,11 @@ set_scenario() {
 		ROUTERS=$DEFAULT_ROUTERS
 		EPAIRS=$OFFPATH_EPAIRS
 		ED2_IF=$DEFAULT_ED2_IF
+	elif [ "$SCENARIO" = altnet ]; then
+		BOXES=$ALTNET_BOXES
+		ROUTERS=$DEFAULT_ROUTERS
+		EPAIRS=$ALTNET_EPAIRS
+		ED2_IF=$DEFAULT_ED2_IF
 	else
 		BOXES=$DEFAULT_BOXES
 		ROUTERS=$DEFAULT_ROUTERS
@@ -2172,6 +2212,18 @@ ifaces() {
 		return
 	fi
 
+	if [ "$SCENARIO" = altnet ]; then
+		case $1 in
+		ed1) echo "${EP}101a" ;;
+		r1)  echo "${EP}101b ${EP}112a" ;;
+		r2)  echo "${EP}112b ${EP}123a" ;;
+		r3)  echo "${EP}123b ${EP}203a $ALT_R3_IF" ;;
+		ed2) echo "${EP}203b" ;;
+		ed3) echo "$ALT_ED3_IF" ;;
+		esac
+		return
+	fi
+
 	case $1 in
 	ed1) echo "${EP}101a" ;;
 	r1)  echo "${EP}101b ${EP}112a" ;;
@@ -2266,6 +2318,18 @@ addrs() {
 		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
 		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24" ;;
 		ed2) echo "${EP}203b 10.0.3.10/24" ;;
+		esac
+		return
+	fi
+
+	if [ "$SCENARIO" = altnet ]; then
+		case $1 in
+		ed1) echo "${EP}101a 10.0.1.10/24" ;;
+		r1)  echo "${EP}101b 10.0.1.1/24 ${EP}112a 10.0.12.1/24" ;;
+		r2)  echo "${EPU}112b 10.0.12.2/24 ${EP}123a 10.0.23.2/24" ;;
+		r3)  echo "${EP}123b 10.0.23.3/24 ${EP}203a 10.0.3.1/24 $ALT_R3_IF $ALT_R3_ADDR/24" ;;
+		ed2) echo "${EP}203b 10.0.3.10/24" ;;
+		ed3) echo "$ALT_ED3_IF $ALT_ED3_ADDR/24" ;;
 		esac
 		return
 	fi
@@ -2424,6 +2488,20 @@ routes() {
 		esac
 		return ;;
 	esac
+
+	if [ "$SCENARIO" = altnet ]; then
+		# The rpt routes plus the second receiver LAN, which the
+		# sender's replies have to come back over
+		case $1 in
+		ed1) echo "default 10.0.1.1" ;;
+		r1)  echo "10.0.23.0/24 10.0.12.2 10.0.3.0/24 10.0.12.2 $ALT_ED3_NET 10.0.12.2" ;;
+		r2)  echo "10.0.1.0/24 10.0.12.1 10.0.3.0/24 10.0.23.3 $ALT_ED3_NET 10.0.23.3" ;;
+		r3)  echo "10.0.1.0/24 10.0.23.2 10.0.12.0/24 10.0.23.2" ;;
+		ed2) echo "default 10.0.3.1" ;;
+		ed3) echo "default $ALT_R3_ADDR" ;;
+		esac
+		return
+	fi
 
 	case $1 in
 	ed1) echo "default 10.0.1.1" ;;
@@ -8538,21 +8616,14 @@ check_altnet() {
 	kill "$sender" 2>/dev/null || true
 	wait "$sender" 2>/dev/null || true
 
-	# The other half of "the boundary is the interface's", and the one
-	# configuration on a chain that can tell it from "the boundary is the
-	# router's".  $SCP_NET3 is on R3's link towards R2, which is the
-	# incoming interface for everything the receiver asks for and an
-	# outgoing interface for nothing, so removing it from an outgoing set
-	# removes nothing and the receiver has to be served.  APPLY_SCOPE()
-	# (src/route.c) cleared the whole set as soon as any vif was a boundary
-	# for the group, and this is what said so.
-	#
-	# What it does not say is whether a packet that arrives on a boundary
-	# interface ought to be dropped for having crossed it.  RFC 2365 can be
-	# read that way; pimd consults a boundary when it chooses outgoing
-	# interfaces and nowhere else, man/pimd.conf.5 says as much, and
-	# changing that is not this scenario's to decide.
-	print "6b. A boundary on another interface of the same router leaves it alone"
+	# The boundary is the edge of the zone in both directions: a packet that
+	# arrived on one has crossed it already, and the group is forwarded
+	# nowhere at all rather than out of every interface but that one.  RFC
+	# 2365 reads that way and so does the `ip multicast boundary' this
+	# keyword is modelled on.  $SCP_NET3 is on R3's link towards R2, which
+	# is its incoming interface for everything the receiver asks for, so
+	# this is the direction the receiver's own link cannot show.
+	print "6b. A boundary on the interface a packet arrives on drops it"
 	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP3" \
 		>"$WORKDIR/receiver-upstream.log" 2>&1 &
 	receiver=$!
@@ -8563,13 +8634,55 @@ check_altnet() {
 		>"$WORKDIR/sender-upstream.log" 2>&1 || true
 	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender-upstream.log")
 	replies=${replies:-0}
-	if [ "$replies" -ge "$MIN_REPLIES" ]; then
-		ok "ED1 -> $SCP_GROUP3 -> ED2, $replies replies, past a boundary on r3's other link"
+	if [ "$replies" -eq 0 ]; then
+		ok "nothing of $SCP_GROUP3 crossed the boundary on r3's link towards r2"
 	else
-		fail "only $replies replies for $SCP_GROUP3: a boundary on ${EP}123b took the receiver's interface out of the oif list too"
+		fail "$replies replies for $SCP_GROUP3: r3 forwarded a group that arrived on a boundary interface"
 	fi
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
+
+	# And the interface half of it, which needs a router with two outgoing
+	# interfaces for one group: a boundary on one of them has to take that
+	# one out and leave the other serving.  Every other topology in this
+	# file is a chain, where a last hop router has exactly one interface a
+	# member can sit behind and "take that interface out" and "forward
+	# nothing at all" are the same observation -- which is how
+	# APPLY_SCOPE() cleared the whole list for years.  ED3 is the second
+	# LAN, $SCP_GROUP is scoped on ED2's link and on neither of the others,
+	# and the two receivers run at once off one sender.
+	print "6d. A boundary on one outgoing interface leaves the others serving"
+	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-scoped2.log" 2>&1 &
+	receiver=$!
+	box_run ed3 "$MPING" -r -i "$ALT_ED3_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-ed3.log" 2>&1 &
+	receiver3=$!
+	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP"; then
+		fail "r3 has no membership for $SCP_GROUP, neither receiver joined"
+	fi
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 40 -w 60 "$SCP_GROUP" \
+		>"$WORKDIR/sender-two-oifs.log" 2>&1 || true
+	replies=$(awk '/packets transmitted/ { print $4 }' "$WORKDIR/sender-two-oifs.log")
+	replies=${replies:-0}
+	if [ "$replies" -ge "$MIN_REPLIES" ]; then
+		ok "$ALT_ED3_ADDR answered $replies times for $SCP_GROUP, its link is no boundary"
+	else
+		fail "only $replies replies for $SCP_GROUP: the boundary on ${EP}203a stopped ed3's link too"
+	fi
+	if mfc_forwards_on r3 "$SRC_ADDR" "$SCP_GROUP" "$(vif_index r3 "${EP}203a")"; then
+		fail "the kernel forwards $SCP_GROUP on ${EP}203a, which is the boundary"
+	else
+		ok "and ${EP}203a, the boundary, is not an oif of that entry"
+	fi
+	if ! mfc_forwards_on r3 "$SRC_ADDR" "$SCP_GROUP" "$(vif_index r3 "$ALT_R3_IF")"; then
+		fail "the kernel does not forward $SCP_GROUP on $ALT_R3_IF either, both oifs went"
+	else
+		ok "while $ALT_R3_IF is one"
+	fi
+	kill "$receiver" "$receiver3" 2>/dev/null || true
+	wait "$receiver" 2>/dev/null || true
+	wait "$receiver3" 2>/dev/null || true
 
 	# And the control, without which a receiver that never worked would
 	# satisfy the assertion above.

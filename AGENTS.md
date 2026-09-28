@@ -296,9 +296,14 @@ it is asked for in `k_chg_mfc()` (`src/kern.c`) now, the one place an oif list r
 That step needs a membership that can be withdrawn, so it uses a v2 report and a v2 leave from
 `test/igmpv3` rather than `mping`: a receiver that joined with a socket answers every
 group-specific query and the membership never leaves, which is how a first attempt at it saw
-nothing.  What no test here settles is whether a packet arriving *on* a boundary interface should
-be dropped for having crossed it; pimd consults a boundary when it chooses outgoing interfaces and
-nowhere else, `ifnew`, `ifgone` and
+nothing.  Step 6b is the other direction, which pimd did not have: a boundary is the edge of the
+zone both ways, so a packet that arrives on one has crossed it and is forwarded nowhere, where
+before a group scoped on a router's upstream link was carried into the zone and delivered to every
+member in it.  It is also why this scenario has a second receiver LAN and `ed3`, which no other
+scenario on the chain has: with inbound dropping in place, a one-oif router cannot tell "take the
+boundary interface out of the list" from "forward nothing at all", so step 6d puts members on two
+LANs behind R3 and scopes the group on one of them -- the only place in this file where a router
+has two outgoing interfaces for one group, `ifnew`, `ifgone` and
 `renumber` the only ones about what pimd does when the interfaces change underneath it -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the

@@ -613,6 +613,16 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- An administrative boundary, `phyint ... scoped`, is the edge of the zone in
+  both directions: a packet of a scoped group that arrives on a boundary
+  interface has crossed it already, so it is forwarded nowhere at all rather
+  than out of every interface except that one.  pimd consulted a boundary only
+  when it chose outgoing interfaces, so a group scoped on a router's upstream
+  link was carried into the zone and delivered to every member inside it, which
+  is the direction a boundary on the receiver's own link cannot show.  That is
+  how the keyword's model elsewhere behaves, one boundary filtering a group in
+  and out, and `man/pimd.conf.5` says so.  Step 6b of the `altnet` scenario is
+  the regression test
 - An administrative boundary, `phyint ... scoped`, applies to the interface it
   is configured on and no longer to every interface of the router.
   `APPLY_SCOPE()` (`src/route.c`) cleared an entry's whole outgoing interface
@@ -622,10 +632,13 @@ issue of this repository is written out in full.
   served neither, and a boundary on a router's upstream link -- an incoming
   interface, and nothing's outgoing one -- stopped the group reaching anybody
   at all.  `man/pimd.conf.5` says which interface the boundary belongs to now.
-  Step 6b of the new `altnet` scenario is the regression test, and it fails on
-  the old code: a receiver behind a boundary on R3's *other* link got 0 of 40
-  packets before the fix and all 40 after, while the group inside the boundary
-  on its own link stays blocked either way
+  Step 6d of the new `altnet` scenario is the regression test, and it needs the
+  second receiver LAN that scenario grew for it: on a chain a last hop router
+  has one interface a member can sit behind, so "take that interface out of the
+  list" and "forward nothing at all" are the same observation, which is how this
+  survived.  With members on two LANs behind R3 and a boundary on one of them,
+  the unscoped LAN is served and the scoped one is not; under the old reading
+  both went, which is what the step reports (2 assertions, measured)
 - And it survives the state changing under it.  A boundary was applied by a
   macro at two of the seven places that install a kernel MFC entry, so an entry
   any of the other five reinstalled went in with the boundary interface

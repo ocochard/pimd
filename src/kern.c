@@ -645,6 +645,7 @@ int k_del_mfc(int socket, uint32_t source, uint32_t group)
 int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *oifs, uint32_t rp_addr __attribute__((unused)))
 {
     char           input[IFNAMSIZ], output[MAXVIFS * (IFNAMSIZ + 2)] = "";
+    int		   scoped_iif = FALSE;
     vifi_t	   vifi;
     struct uvif   *v;
     struct mfcctl  mc;
@@ -667,9 +668,21 @@ int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *
      * other five went in with the boundary interface forwarding again.  The
      * caller's list is not modified, so the tree pimctl shows keeps the
      * interface and the packets still stop here.
+     *
+     * The boundary is the edge of the zone in both directions, so a packet
+     * that arrived on one has already crossed it and is forwarded nowhere at
+     * all -- which is what the keyword is modelled on, `ip multicast
+     * boundary' filtering a group in and out.  Nothing to forward on is how
+     * that is said to the kernel: the entry goes in with an empty oif list,
+     * so what arrives is dropped there rather than sent up as an upcall per
+     * packet.  The entry itself is left alone, here as above; a boundary is
+     * not a reason for the router to forget the group exists.
      */
+    if (scoped_addr(iif, group))
+	scoped_iif = TRUE;
+
     for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
-	if (PIMD_VIFM_ISSET(vifi, oifs) && !scoped_addr(vifi, group)) {
+	if (PIMD_VIFM_ISSET(vifi, oifs) && !scoped_iif && !scoped_addr(vifi, group)) {
 	    mc.mfcc_ttls[vifi] = v->uv_threshold;
 	    if (output[0] != 0)
 		strlcat(output, ", ", sizeof(output));

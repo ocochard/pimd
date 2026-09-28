@@ -553,12 +553,22 @@ forwarded out of that interface.  Other interfaces of the same router,
 including ones with members of the same group, are unaffected: the
 boundary belongs to the interface it is configured on.
 .Pp
+The boundary is the edge of the zone in both directions.  A packet of a scoped
+group that arrives on a boundary interface has crossed it already, so it is
+forwarded nowhere at all rather than out of every interface except that one.
+This is the behaviour
+.Nm
+is modelled on elsewhere, where one boundary filters a group both in and out.
+.Pp
 The boundary is applied where the outgoing interface list is handed to the
 kernel, so it holds however the entry came to be installed.  The entry's own
 list is not changed and
 .Nm pimctl
 still shows the interface: the boundary drops the packets, it does not prune
-the tree.
+the tree.  A membership inside a boundary is learned, holds state on this
+router and builds a shared tree all the same; see
+.Cm igmp-accept-groups
+below for the keyword that refuses the membership instead.
 .Pp
 .Sy Note:
 this is about where the traffic may go and not about what a host may ask
