@@ -746,6 +746,7 @@ extern pim_nbr_entry_t *find_pim_nbr	(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr_on_vif (vifi_t vifi, uint32_t addr);
 extern pim_nbr_entry_t *find_pim_nbr_nexthop (vifi_t vifi, uint32_t addr);
 extern int	pim_nbr_accepted	(vifi_t vifi, uint32_t addr);
+extern int	scoped_addr		(vifi_t vifi, uint32_t addr);
 extern void	recalc_local_members	(vifi_t vifi);
 extern int	add_sg_oif		(mrtentry_t *mrtentry_ptr, vifi_t vifi, uint16_t holdtime, int update_holdtime);
 extern void	add_leaf		(vifi_t vifi, uint32_t source, uint32_t group);

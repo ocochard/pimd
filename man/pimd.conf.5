@@ -553,6 +553,13 @@ forwarded out of that interface.  Other interfaces of the same router,
 including ones with members of the same group, are unaffected: the
 boundary belongs to the interface it is configured on.
 .Pp
+The boundary is applied where the outgoing interface list is handed to the
+kernel, so it holds however the entry came to be installed.  The entry's own
+list is not changed and
+.Nm pimctl
+still shows the interface: the boundary drops the packets, it does not prune
+the tree.
+.Pp
 .Sy Note:
 this is about where the traffic may go and not about what a host may ask
 for.  A membership for a scoped group is still learned, still holds state

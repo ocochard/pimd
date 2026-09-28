@@ -8491,6 +8491,53 @@ check_altnet() {
 	kill "$receiver" 2>/dev/null || true
 	wait "$receiver" 2>/dev/null || true
 
+	# A boundary has to survive the state changing under it, and it did not.
+	# Only two of the seven places that install a kernel MFC entry applied
+	# one, so an entry any of the other five reinstalled went in with the
+	# boundary interface forwarding again: change_interfaces()
+	# (src/route.c) recomputes an oif list and installs it, which is what a
+	# membership going away and coming back makes it do.
+	#
+	# The membership is a v2 report from test/igmpv3 and not a kernel join,
+	# which is the whole reason this step can exist: a receiver that joined
+	# with a socket answers every group-specific query, so the membership
+	# never leaves and nothing is reinstalled.  The sender runs throughout,
+	# or the (S,G) ages out between the leave and the report and the
+	# question becomes a different one.
+	#
+	# Read off the kernel rather than off pimd: the boundary is applied
+	# where the oif list reaches the kernel, and the entry's own list -- what
+	# "pimctl show mrt" prints -- deliberately still names the interface.
+	print "6c. And it survives the membership going away and coming back"
+	sc_vif=$(vif_index r3 "${EP}203a")
+	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 400 -w 200 "$SCP_GROUP" \
+		>"$WORKDIR/sender-rejoin.log" 2>&1 &
+	sender=$!
+	group_report "$SCP_GROUP" -v 2
+	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP" || \
+	   ! wait_for 30 has_mfc r3 "$SCP_GROUP"; then
+		fail "r3 built no membership and MFC entry for $SCP_GROUP from a v2 report"
+		kill "$sender" 2>/dev/null || true
+		wait "$sender" 2>/dev/null || true
+		return 1
+	fi
+	group_report "$SCP_GROUP" -L
+	if ! wait_for 30 igmp_group_gone r3 "$SCP_GROUP"; then
+		fail "the membership for $SCP_GROUP outlived the v2 leave, nothing was reinstalled"
+	fi
+	group_report "$SCP_GROUP" -v 2
+	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP"; then
+		fail "r3 did not take the second report for $SCP_GROUP"
+	elif ! wait_for 30 has_mfc r3 "$SCP_GROUP"; then
+		fail "r3 installed no MFC entry for $SCP_GROUP again, there is nothing to ask about"
+	elif mfc_forwards_on r3 "$SRC_ADDR" "$SCP_GROUP" "$sc_vif"; then
+		fail "the kernel forwards $SCP_GROUP on vif $sc_vif after the rejoin, the boundary was not reapplied"
+	else
+		ok "the boundary is back on the reinstalled entry, vif $sc_vif is not an oif"
+	fi
+	kill "$sender" 2>/dev/null || true
+	wait "$sender" 2>/dev/null || true
+
 	# The other half of "the boundary is the interface's", and the one
 	# configuration on a chain that can tell it from "the boundary is the
 	# router's".  $SCP_NET3 is on R3's link towards R2, which is the

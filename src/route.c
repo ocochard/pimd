@@ -58,26 +58,6 @@
  * are about to install a route for it).
  */
 /*
- * Contributed by Marian Stagarescu <marian@bile.cidera.com>
- * adapted from mrouted: an interface configured as an administrative
- * boundary for the group, RFC 2365 and `scoped' in pimd.conf, is not an
- * outgoing interface for it.
- *
- * That interface and no other.  This cleared the entry's whole oif list as
- * soon as any vif of the router was a boundary for the group, so one
- * boundary stopped the group being forwarded out of every other interface
- * as well -- a router with a member behind a boundary and a member on an
- * ordinary link served neither, and man/pimd.conf.5 says the boundary is
- * the interface's.
- */
-#define APPLY_SCOPE(g, mp) {			\
-	vifi_t i;				\
-	for (i = 0; i < numvifs; i++)		\
-	    if (scoped_addr(i, g))              \
-		PIMD_VIFM_CLR(i, (mp)->oifs);	\
-    }
-
-/*
  * Global variables
  */
 
@@ -149,8 +129,24 @@ void init_route(void)
     rpentry_save.cand_rp    = NULL;
 }
 
-/* from mrouted. Contributed by Marian Stagarescu <marian@bile.cidera.com>*/
-static int scoped_addr(vifi_t vifi, uint32_t addr)
+/*
+ * Is @addr inside an administrative boundary configured on @vifi, RFC 2365
+ * and `scoped' in pimd.conf?  From mrouted, contributed by Marian Stagarescu
+ * <marian@bile.cidera.com>.
+ *
+ * Asked by k_chg_mfc() (src/kern.c) of every interface of every MFC entry it
+ * installs, which is the one place an outgoing interface list reaches the
+ * kernel and so the one place a boundary has to be applied.  It used to be
+ * applied by a macro at two of the seven places that install one, which left
+ * the other five to reinstall an entry without it: change_interfaces() alone
+ * put a scoped group back on a boundary interface whenever a membership went
+ * away and came back.
+ *
+ * The entry's own oif list is left alone, and pimctl still shows the
+ * interface: the boundary drops the packets, it does not prune the tree.
+ * man/pimd.conf.5 says the same.
+ */
+int scoped_addr(vifi_t vifi, uint32_t addr)
 {
     struct vif_acl *acl;
 
@@ -1639,7 +1635,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 
 	    add_kernel_cache(mrt, mfc_source, group, MFC_MOVE_FORCE);
 
-	    APPLY_SCOPE(group, mrt);
 	    k_chg_mfc(igmp_socket, mfc_source, group, iif, mrt->oifs, rp_addr);
 
 	}
@@ -1667,13 +1662,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 
 		add_kernel_cache(mrp, mfc_source, group, 0);
 
-		/* The oif list going down to the kernel is mrp's, so mrp is
-		 * what a boundary has to be applied to: this scoped mrt and
-		 * installed mrp, which left every boundary on this path -- the
-		 * (*,G) or (*,*,RP) one, reached when an (S,G) packet arrives
-		 * on the shared tree's interface -- with nothing to do.
-		 */
-		APPLY_SCOPE(group, mrp);
 		k_chg_mfc(igmp_socket, mfc_source, group, iif, mrp->oifs, mrt->group->rpaddr);
 	    }
 	}

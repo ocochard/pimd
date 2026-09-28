@@ -626,11 +626,24 @@ issue of this repository is written out in full.
   the old code: a receiver behind a boundary on R3's *other* link got 0 of 40
   packets before the fix and all 40 after, while the group inside the boundary
   on its own link stays blocked either way
-- The second of the two places a boundary is applied scoped one entry and then
-  installed another one's outgoing interfaces (`src/route.c`, under a comment
-  wondering whether scoped traffic reached it), so a boundary on the path an
-  (S,G) packet takes when it arrives on the shared tree's interface had nothing
-  to do.  It applies to the entry whose list goes down to the kernel
+- And it survives the state changing under it.  A boundary was applied by a
+  macro at two of the seven places that install a kernel MFC entry, so an entry
+  any of the other five reinstalled went in with the boundary interface
+  forwarding again: `change_interfaces()` (`src/route.c`) recomputes an
+  outgoing interface list and installs it, which is what a membership going
+  away and coming back makes it do, and a scoped group was then forwarded out
+  of the boundary for as long as that entry lived.  The boundary is asked for
+  in `k_chg_mfc()` (`src/kern.c`) now, the one place such a list reaches the
+  kernel, so it holds however the entry was installed; the entry's own list is
+  left alone, so `pimctl show mrt` still names the interface, the boundary
+  being a filter on the packets rather than a prune of the tree.  Step 6c of
+  the `altnet` scenario is the regression test, and it needs a membership that
+  can be withdrawn -- a v2 report from `test/igmpv3` and a v2 leave, since a
+  receiver that joined with a socket answers every group-specific query and
+  never leaves, which is why a first attempt with `mping` saw nothing.  One of
+  the two places that used to apply it had a second bug of its own, scoping one
+  entry and installing another one's list, under a comment wondering whether
+  scoped traffic reached it at all; both are gone with the macro
 - One group range takes at most 255 RPs, which is what a Bootstrap can say it
   holds: the count is a byte on the wire (RFC 5059 sec. 4.1) and a byte in
   `grp_mask_t`, and each Candidate-RP Advertisement names one RP, so 256

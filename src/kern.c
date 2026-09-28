@@ -659,8 +659,17 @@ int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *
      */
     PIMD_VIFM_CLR(mc.mfcc_parent, oifs);
 
+    /* An interface configured as an administrative boundary for the group,
+     * RFC 2365 and `scoped' in pimd.conf, is not one the kernel may forward
+     * it out of.  Asked here rather than by the callers because this is the
+     * one place an outgoing interface list reaches the kernel, and only two
+     * of the seven callers ever asked: an entry reinstalled by any of the
+     * other five went in with the boundary interface forwarding again.  The
+     * caller's list is not modified, so the tree pimctl shows keeps the
+     * interface and the packets still stop here.
+     */
     for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
-	if (PIMD_VIFM_ISSET(vifi, oifs)) {
+	if (PIMD_VIFM_ISSET(vifi, oifs) && !scoped_addr(vifi, group)) {
 	    mc.mfcc_ttls[vifi] = v->uv_threshold;
 	    if (output[0] != 0)
 		strlcat(output, ", ", sizeof(output));

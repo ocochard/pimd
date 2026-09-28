@@ -289,9 +289,16 @@ where the boundary is shown to be the interface's rather than the router's -- `A
 group, so one boundary stopped the group leaving every other interface too, and the step puts a
 boundary on R3's link towards R2, which is that router's incoming interface and nothing's outgoing
 one, so a receiver behind it has to be served all the same (0 replies before the fix, 40 after).
-What no test here settles is whether a packet arriving *on* a boundary interface should be dropped
-for having crossed it; pimd consults a boundary when it chooses outgoing interfaces and nowhere
-else, `ifnew`, `ifgone` and
+Step 6c is the other bug that scenario found: a boundary was applied at two of the seven places
+that install a kernel MFC entry, so an entry any of the other five reinstalled forwarded the scoped
+group again -- `change_interfaces()` does that whenever a membership goes away and comes back -- and
+it is asked for in `k_chg_mfc()` (`src/kern.c`) now, the one place an oif list reaches the kernel.
+That step needs a membership that can be withdrawn, so it uses a v2 report and a v2 leave from
+`test/igmpv3` rather than `mping`: a receiver that joined with a socket answers every
+group-specific query and the membership never leaves, which is how a first attempt at it saw
+nothing.  What no test here settles is whether a packet arriving *on* a boundary interface should
+be dropped for having crossed it; pimd consults a boundary when it chooses outgoing interfaces and
+nowhere else, `ifnew`, `ifgone` and
 `renumber` the only ones about what pimd does when the interfaces change underneath it -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the
