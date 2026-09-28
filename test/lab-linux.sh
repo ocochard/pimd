@@ -78,6 +78,15 @@ box_exists() { [ -e "/run/netns/$(nsname "$1")" ]; }
 
 box_run() { j=$1; shift; ${SUDO} ip netns exec "$(nsname "$j")" "$@"; }
 
+# The same for a command a scenario starts in the background and signals
+# later.  A background job of a shell function is a fork of the shell, so $!
+# names that fork rather than the command, and a kill stops the intermediate
+# while the command runs on: that is how a receiver's kernel join outlived
+# its kill in altnet step 6c and went on answering the group-specific
+# queries of a membership the step had just withdrawn.  The subshell execs,
+# and ip netns exec execs in turn, so $! is the command itself.
+box_bg() { j=$1; shift; ( exec ${SUDO} ip netns exec "$(nsname "$j")" "$@" ) & }
+
 # sh execs into ip netns exec, which execs into the command without a fork
 # of its own, so the PID written is the daemon's, as daemon(8) -p writes it
 box_daemon() {

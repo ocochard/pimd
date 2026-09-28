@@ -4185,8 +4185,8 @@ queriers_settled() {
 # towards the source, which is the state router A shows in #243.
 run_stream_and_sample() {
 	regs_before=$(registers_seen)
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
-		>"$WORKDIR/sender.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1
 	sender=$!
 
 	sg_seen=
@@ -4328,15 +4328,15 @@ check_assert_metric() {
 		return 0
 	fi
 
-	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/joiner-metric.log" 2>&1 &
+	box_bg ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/joiner-metric.log" 2>&1
 	joiner=$!
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver-metric.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver-metric.log" 2>&1
 	receiver=$!
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
 		-w "$SL_METRIC_PKTS" "$GROUP" \
-		>"$WORKDIR/sender-metric.log" 2>&1 &
+		>"$WORKDIR/sender-metric.log" 2>&1
 	sender=$!
 
 	if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
@@ -4408,15 +4408,15 @@ check_assert_preference() {
 		return 0
 	fi
 
-	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/joiner-pref.log" 2>&1 &
+	box_bg ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/joiner-pref.log" 2>&1
 	joiner=$!
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver-pref.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver-pref.log" 2>&1
 	receiver=$!
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$SL_METRIC_PKTS" \
 		-w "$SL_METRIC_PKTS" "$GROUP" \
-		>"$WORKDIR/sender-pref.log" 2>&1 &
+		>"$WORKDIR/sender-pref.log" 2>&1
 	sender=$!
 
 	if wait_for "$SL_METRIC_WAIT" sl_lan_is_held_by r4; then
@@ -4569,14 +4569,14 @@ check_assert_recover() {
 	# not the entry's iif, so the stream underneath all of this is not
 	# scenery: a LAN nobody is sending to keeps whatever it decided last,
 	# and every step below would read the previous step's answer.
-	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
-		>"$WORKDIR/joiner-recover.log" 2>&1 &
+	box_bg ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 900 "$GROUP" \
+		>"$WORKDIR/joiner-recover.log" 2>&1
 	joiner=$!
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
-		>"$WORKDIR/receiver-recover.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 900 "$GROUP" \
+		>"$WORKDIR/receiver-recover.log" 2>&1
 	receiver=$!
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
-		>"$WORKDIR/sender-recover.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$AR_PKTS" -w "$AR_PKTS" "$GROUP" \
+		>"$WORKDIR/sender-recover.log" 2>&1
 	sender=$!
 
 	print "3. An assert election settles the shared LAN on r4"
@@ -4811,8 +4811,8 @@ check() {
 	fi
 
 	print "5. Multicast is forwarded from ED1 to ED2 through the RP"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	sleep 2
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
@@ -4861,12 +4861,12 @@ check() {
 	# source whose Register-Stop already came.  A group of its own, so
 	# none of the state above is what answers this.
 	print "8. A receiver joining after the stream started is caught up"
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$LATE_GROUP" \
-		>"$WORKDIR/late-sender.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$LATE_GROUP" \
+		>"$WORKDIR/late-sender.log" 2>&1
 	late_sender=$!
 	sleep "$LATE_DELAY"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$LATE_GROUP" \
-		>"$WORKDIR/late-receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$LATE_GROUP" \
+		>"$WORKDIR/late-receiver.log" 2>&1
 	late_receiver=$!
 	wait "$late_sender" 2>/dev/null || true
 	kill "$late_receiver" 2>/dev/null || true
@@ -5230,8 +5230,8 @@ check_anycast() {
 	# leave exactly this, so the source has to be seen to register to R2,
 	# or the silence at ED2 below would be a lab that never registered.
 	print "3. Without a set, a receiver behind R3 hears nothing of the source"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
-		>"$WORKDIR/anycast-control-receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/anycast-control-receiver.log" 2>&1
 	receiver=$!
 	sleep 5
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
@@ -5273,8 +5273,8 @@ check_anycast() {
 	fi
 
 	print "5. A source registering to R2 is copied to R3"
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c $((ANY_REFRESH + 120)) -w $((ANY_REFRESH + 150)) \
-		"$ANY_GROUP" >"$WORKDIR/anycast-sender.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c $((ANY_REFRESH + 120)) -w $((ANY_REFRESH + 150)) \
+		"$ANY_GROUP" >"$WORKDIR/anycast-sender.log" 2>&1
 	sender=$!
 	copy="Copy PIM Register from $ANY_DR for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
 	if wait_for 30 logged r2 "$copy"; then
@@ -5521,8 +5521,8 @@ check_anycast_dr() {
 	# control has to show the source reached R1, or the silence is a lab
 	# that never sent.
 	print "3. Without a set, a receiver behind R3 hears nothing of the source"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
-		>"$WORKDIR/anycast-dr-control-receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/anycast-dr-control-receiver.log" 2>&1
 	receiver=$!
 	sleep 5
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 20 -w 30 "$GROUP" \
@@ -5565,8 +5565,8 @@ check_anycast_dr() {
 
 	print "5. R1 registers its own source to R3, from its member address"
 	stops=$(register_stops r1)
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 180 -w 210 "$ANY_GROUP" \
-		>"$WORKDIR/anycast-dr-sender.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c 180 -w 210 "$ANY_GROUP" \
+		>"$WORKDIR/anycast-dr-sender.log" 2>&1
 	sender=$!
 	reg="Send PIM Register for ($SRC_ADDR, $ANY_GROUP) to Anycast-RP member $ANY_R3"
 	if wait_for 30 logged r1 "$reg, data"; then
@@ -8295,8 +8295,8 @@ check_alias() {
 	# Keepalive Timer's worth of time on steps 6 to 8 would otherwise
 	# read a source that is back to being register encapsulated and call
 	# it a missing Join.
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	sleep 2
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
@@ -8549,8 +8549,8 @@ check_altnet() {
 	# The membership is the half a boundary leaves alone.  It is read while
 	# the receiver is up, since mping's join goes away with it.
 	print "6. A group inside a boundary is joined and not forwarded"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
-		>"$WORKDIR/receiver-scoped.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-scoped.log" 2>&1
 	receiver=$!
 	if wait_for 30 has_igmp_group r3 "$SCP_GROUP"; then
 		ok "r3 holds the membership for $SCP_GROUP, which a boundary does not refuse"
@@ -8588,8 +8588,8 @@ check_altnet() {
 	# "pimctl show mrt" prints -- deliberately still names the interface.
 	print "6c. And it survives the membership going away and coming back"
 	sc_vif=$(vif_index r3 "${EP}203a")
-	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 400 -w 200 "$SCP_GROUP" \
-		>"$WORKDIR/sender-rejoin.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 400 -w 200 "$SCP_GROUP" \
+		>"$WORKDIR/sender-rejoin.log" 2>&1
 	sender=$!
 	group_report "$SCP_GROUP" -v 2
 	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP" || \
@@ -8624,8 +8624,8 @@ check_altnet() {
 	# is its incoming interface for everything the receiver asks for, so
 	# this is the direction the receiver's own link cannot show.
 	print "6b. A boundary on the interface a packet arrives on drops it"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP3" \
-		>"$WORKDIR/receiver-upstream.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP3" \
+		>"$WORKDIR/receiver-upstream.log" 2>&1
 	receiver=$!
 	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP3"; then
 		fail "r3 has no membership for $SCP_GROUP3, the receiver never joined"
@@ -8652,11 +8652,11 @@ check_altnet() {
 	# LAN, $SCP_GROUP is scoped on ED2's link and on neither of the others,
 	# and the two receivers run at once off one sender.
 	print "6d. A boundary on one outgoing interface leaves the others serving"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
-		>"$WORKDIR/receiver-scoped2.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-scoped2.log" 2>&1
 	receiver=$!
-	box_run ed3 "$MPING" -r -i "$ALT_ED3_IF" -t 5 -W 300 "$SCP_GROUP" \
-		>"$WORKDIR/receiver-ed3.log" 2>&1 &
+	box_bg ed3 "$MPING" -r -i "$ALT_ED3_IF" -t 5 -W 300 "$SCP_GROUP" \
+		>"$WORKDIR/receiver-ed3.log" 2>&1
 	receiver3=$!
 	if ! wait_for 30 has_igmp_group r3 "$SCP_GROUP"; then
 		fail "r3 has no membership for $SCP_GROUP, neither receiver joined"
@@ -8687,8 +8687,8 @@ check_altnet() {
 	# And the control, without which a receiver that never worked would
 	# satisfy the assertion above.
 	print "7. And the same traffic outside every boundary is forwarded"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	sleep 2
 	box_run ed1 "$MPING" -s -i "${EP}101a" -t 5 -c 40 -w 60 "$GROUP" \
@@ -9461,8 +9461,8 @@ check_rp_lasthop() {
 	fi
 
 	print "3. ED2's membership reaches the RP it is directly attached to"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
 		ok "r3 has a ($GROUP) entry for its directly connected member"
@@ -9536,8 +9536,8 @@ check_rp_lasthop() {
 # runs, because killing the receiver expires the membership and the (S,G)
 # with it.
 run_stream_and_sample_offpath() {
-	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
-		>"$WORKDIR/sender.log" 2>&1 &
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1
 	sender=$!
 
 	sg_first=
@@ -9623,8 +9623,8 @@ check_rp_offpath() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. ED2's membership gives the last hop router a group entry"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
 		ok "r3 has a ($GROUP) entry for its directly connected member"
@@ -9745,8 +9745,8 @@ check_gif_tunnel() {
 	fi
 
 	print "5. ED2's membership reaches the RP it is directly attached to"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
 		ok "r3 has a ($GROUP) entry for its directly connected member"
@@ -9843,8 +9843,8 @@ check_gif_staticrp() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. ED2's membership reaches the RP it is directly attached to"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 60 has_mrt r3 "$GROUP"; then
 		ok "r3 has a ($GROUP) entry for its directly connected member"
@@ -10004,8 +10004,8 @@ check_passive() {
 	# router as usual.  Counted in mping replies rather than in tables --
 	# the receiver answers each packet, so a reply is a packet that made
 	# the whole round trip through the passive interface both ways.
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 120 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 120 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	sleep 3
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$STREAM_PKTS" -w 90 "$GROUP" \
@@ -10761,8 +10761,8 @@ check_shared_lan() {
 	# trigger PIM joins" - a deliberate deviation, and the reason this
 	# scenario needs a downstream router to get its second forwarder.
 	print "6. An IGMP report on the LAN is taken by the DR and by nobody else"
-	box_run ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/joiner.log" 2>&1 &
+	box_bg ed3 "$MPING" -r -i ${EP}603b -p "$SL_JOIN_PORT" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/joiner.log" 2>&1
 	joiner=$!
 	if wait_for 60 has_mrt r4 "$GROUP"; then
 		ok "r4, the DR, created a ($GROUP) entry for ED3's report"
@@ -10781,8 +10781,8 @@ check_shared_lan() {
 	# neighbour is R3, so its Join names R3, and R3 is the one router on
 	# the LAN that may act on it.
 	print "7. A downstream Join gives the non-DR an oif on the same LAN"
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 90 joined_on r3 "$SL_R3_IF" "$GROUP"; then
 		ok "r3 joined $GROUP towards the LAN on r5's behalf"
@@ -11294,8 +11294,8 @@ check_privsep() {
 privsep_stream() {
 	ps_what=$1
 
-	box_run ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	ps_receiver=$!
 	sleep 2
 	box_run ed1 "$MPING" -s -i ${EP}101a -t 5 -c 40 -w 60 "$GROUP" \
@@ -11355,8 +11355,8 @@ check_solo() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "4. A report on one LAN becomes a leaf, and the stream crosses"
-	box_run ed2 "$MPING" -r -i "$SOLO_ED2_IF" -t 5 -W 90 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	box_bg ed2 "$MPING" -r -i "$SOLO_ED2_IF" -t 5 -W 90 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 	if wait_for 60 has_mrt r1 "$GROUP"; then
 		ok "r1 built ($GROUP) state from ED2's report"

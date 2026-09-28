@@ -189,6 +189,12 @@ box_exists() { jls -j "$(jname "$1")" jid >/dev/null 2>&1; }
 
 box_run() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
 
+# A box_run whose PID a scenario signals later.  The subshell execs and so
+# does jexec, so $! is the command and not a fork of the shell -- see box_bg
+# in test/lab-linux.sh, where that fork is what a kill was stopping instead
+# of the command.
+box_bg() { j=$1; shift; ( exec ${SUDO} jexec "$(jname "$j")" "$@" ) & }
+
 # daemon(8) opens the log with O_APPEND, so a box restarted in the middle of
 # a scenario adds to what the first incarnation logged
 box_daemon() {
