@@ -56,15 +56,26 @@ What it says today
 Measured on FreeBSD with clang, `--enable-coverage CFLAGS="-O0 -g"`, on the
 tree as of 2026-09-28:
 
-  - the lab suite, 30 scenarios green at `-j 12` in 8m16s on 16 cores,
-    reaches **71.1%** of the 12992 instrumented lines of `src/` and `lib/`;
+  - the lab suite, 30 scenarios green at `-j 12` in 8m07s on 16 cores,
+    reaches **71.5%** of the 12992 instrumented lines of `src/` and `lib/`;
   - the fuzz corpus replay reaches **33.1%** of the 10060 its own build
     instruments -- fewer files, `main.c`, `ipc.c` and `pimctl.c` not being
     linked into the harnesses at all.  That half was last measured over 23
     lab scenarios and has not been re-run since.
 
-The previous measurement, over the 23 scenarios of the day, was 67.3% of
-11442 lines.  Both halves of that moved, so the two are not one number
+It was 71.1% of the same 12992 the measurement before it, and that pair *is*
+subtractable, the tree not having moved between them: four steps added to
+`crafted` -- a Join/Prune cut short of its own fields, a (\*,\*,RP) one, an
+(S,G) Prune with nobody to wait for, and a shared tree Prune for an SSM group
+-- reached 61 lines nothing had reached before, 49 of them in `pim_proto.c`
+and 3 in `pim.c`, the rest falling out in `route.c` and `rp.c` behind the
+prune paths.  Two files moved the other way by a handful of lines,
+`autorp.c` and `routesock.c`: that is run-to-run variance in timing-dependent
+paths and not a regression, and it is the reason to read a file's number as a
+range rather than a value.
+
+The measurement before those two, over the 23 scenarios of the day, was 67.3%
+of 11442 lines.  Both halves of that moved, so the two are not one number
 minus the other: seven scenarios were added, and so was the code some of
 them are about -- `src/autorp.c` alone is 698 lines that did not exist.
 What the comparison says is that the suite grew faster than the tree, not
@@ -83,9 +94,13 @@ and moves on.  Nothing in the table is missing because of it.
 
 The top of that table, and what it settles:
 
-  - `src/pim_proto.c`: 696 lines, 75.8%, and the largest block in the
+  - `src/pim_proto.c`: 647 lines, 77.5%, and still the largest block in the
     table.  This is the one worth reading the ranges of, being the file
-    every attacker-supplied PIM message is parsed in.
+    every attacker-supplied PIM message is parsed in.  About a hundred of
+    those lines cannot be reached at all: they are the (\*,\*,RP) handling
+    RFC 7761 removed, working on an entry `create_mrtentry()` never makes,
+    and `doc/rfc7761-compliance.md` and `doc/TODO.org` say so with the
+    evidence.
   - `src/config.c`: 630 lines, 63.6%, the second largest, and mostly single
     lines rather than blocks -- allocation failures, `logit(LOG_ERR)` arms,
     and keywords no scenario writes into a `pimd.conf`.  It grew with the
