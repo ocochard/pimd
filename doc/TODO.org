@@ -262,17 +262,24 @@ half that was measured and found cheap.
 ** igmp_proto.c:
    - accept_group_report():
      * add a leaf if DR or forwarder (currently only if DR)???
-     * The first source of an SSM group nobody had yet gets a membership and
-       no forwarding state.  The add_leaf() call is on the path where the
-       group already exists; the path that creates the group returns before
-       it, so (S,G) state waits for a later report.  Found 2026-09-29 while
-       trying to write a lab step for the SSM leaf fix, and it is one of the
-       two reasons that step could not be made to discriminate.
-     * An SSM membership that arrives before the router can resolve the group
-       builds no (S,G) at all -- find_route() answers NULL and add_leaf()
-       returns -- and nothing retries it: resync_leaves() deliberately skips
-       the SSM range, so the membership sits in uv_groups with no forwarding
-       state behind it until the host reports again.  Same date, same reason.
+     * An SSM membership can be taken and leave no forwarding state behind.
+       Measured on the ssm lab, 2026-09-29, with -d igmp,mrt: both sources of
+       a two-source report reach add_leaf() -- "SSM group order from" for the
+       one that creates the group and "Add leaf" for the one that finds it --
+       and neither reaches the "Adding oif" line a few statements later, so
+       find_route(source, group, MRTF_SG, CREATE) answered NULL both times and
+       pimctl show mrt stays empty while show igmp holds both memberships.
+       Reproduce by settling the lab, reporting allow{SSM_SRC1,SSM_SRC2} from
+       ed2 and reading both.  Not every run does it: entries with an RP column
+       of "SSM" and an incoming interface have been seen on the same scenario,
+       so something about the router's state decides it.
+       The cause is NOT established.  The suspicion is S1 of
+       doc/rfc7761-compliance.md, the RP pimd invents for an SSM range: it is
+       169.254.0.1, k_req_incoming() calls that address not routable, and an
+       RP entry with no route is something find_route() may refuse to build a
+       group on.  Confirm or kill that before writing any fix, and note what
+       it means for the labs -- ssm and ssm-range assert IGMP state only, so
+       nothing here asserts that an SSM group is forwarded at all.
    - accept_leave_message():
      * send immediately PIM prune message if the last member has left
      * A blocked SSM source keeps its outgoing interface.  The membership goes

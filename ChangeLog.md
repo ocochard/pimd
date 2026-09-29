@@ -661,8 +661,9 @@ issue of this repository is written out in full.
   a leave for one source took the link away from the others, whose members were
   still there and still asking, with nothing to restore it before their next
   report -- `resync_leaves()` skips the SSM range.  Reasoned from the code and
-  the RFC rather than reproduced: `doc/TODO.org` records the two further bugs in
-  the IGMP path that stopped a lab scenario from telling the fix from the bug
+  the RFC rather than reproduced: `doc/TODO.org` records what stopped a lab
+  scenario from telling the fix from the bug, which is that an SSM membership
+  can be taken and leave no forwarding state behind at all
 - A neighbour that goes away no longer leaves a freed pointer in the RP entry
   that was reaching the RP through it.  `set_incoming()` (`src/route.c`) has four
   returns and three of them clear `upstream`; the fourth, taken when the kernel
