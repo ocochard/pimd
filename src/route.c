@@ -328,6 +328,21 @@ int set_incoming(srcentry_t *src, int type)
 		IF_DEBUG(DEBUG_RPF)
 		    logit(LOG_DEBUG, 0, "NO ROUTE found for %s", inet_fmt(src_addr, s1, sizeof(s1)));
 	    }
+
+	    /* Leave no upstream behind.  This was the one return of the four
+	     * that kept whatever was there, and delete_pim_nbr() calls us to
+	     * replace a neighbor it is about to free (src/pim_proto.c): the
+	     * source loop there deletes an entry we answer FALSE for, but the
+	     * RP loop keeps its rpentry_t deliberately -- there is no route to
+	     * the RP, and remapping on that rather than waiting for the
+	     * Bootstrap would tear down every (*,G) on it -- so what it kept
+	     * was a pointer to freed memory, which find_route() then copies
+	     * into each new (*,G) (src/mrt.c) and add_jp_entry() dereferences
+	     * on its first line.  Losing that neighbor is often what removed the
+	     * route, so this is the common case and not the corner.
+	     */
+	    src->upstream = NULL;
+
 	    return FALSE;
 	}
 

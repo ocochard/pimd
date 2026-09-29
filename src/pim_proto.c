@@ -581,8 +581,14 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 
 	rp = cand_rp->rpentry;
 
-	/* Reset the RP entry iif
-	 * TODO: check if error setting the iif! */
+	/* Reset the RP entry iif.  A FALSE from set_incoming() needs no
+	 * action of its own, unlike the source loop above: there is no route
+	 * to the RP, and remapping its groups on that rather than waiting for
+	 * the Bootstrap mechanism would tear down every (*,G) on it, which is
+	 * the same reading age_routes() applies (src/route.c).  What it does
+	 * need is that the entry keep no pointer to the neighbor freed below,
+	 * and set_incoming() clears it on every return.
+	 */
 	if (local_address(rp->address) == NO_VIF) {
 	    set_incoming(rp, PIM_IIF_RP);
 	} else {

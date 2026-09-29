@@ -631,6 +631,20 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A neighbour that goes away no longer leaves a freed pointer in the RP entry
+  that was reaching the RP through it.  `set_incoming()` (`src/route.c`) has four
+  returns and three of them clear `upstream`; the fourth, taken when the kernel
+  has no route to the address at all, kept whatever was there.  `delete_pim_nbr()`
+  (`src/pim_proto.c`) calls it to replace a neighbour it is about to free, and its
+  RP loop keeps the `rpentry_t` deliberately -- remapping every group of an RP
+  because the route to it went away would tear down the shared trees that a
+  Bootstrap is about to repair -- so what it kept was a pointer to freed memory.
+  `find_route()` (`src/mrt.c`) then copies it into each new (\*,G) of that RP, and
+  `add_jp_entry()` dereferences it on its first line.  Losing the neighbour is usually what removed
+  the route, so this was the common case: destroying a router's upstream interface
+  and reporting one group behind it is enough, and AddressSanitizer answers
+  `heap-use-after-free` in `add_jp_entry()` freed by `stop_vif()`.  Same shape as
+  the `mrtentry_t` half fixed for troglobit/pimd#22, one struct up
 - The directory the unprivileged half is confined to is checked and used as one
   open descriptor.  `priv_do_chroot()` (`src/privsep.c`) resolved
   `PRIVSEP_CHROOT` twice, once for the `stat()` that has to find a directory
