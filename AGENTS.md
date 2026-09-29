@@ -207,7 +207,7 @@ tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 hardening. `run all` walks its
 scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `altnet`, `ifnew`, `ifgone`,
-`renumber`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
+`renumber`, `rp-nbr-gone`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
 `anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
@@ -307,7 +307,12 @@ has two outgoing interfaces for one group, `ifnew`, `ifgone` and
 `renumber` the only ones about what pimd does when the interfaces change underneath it -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the
-second and given a new address in the third -- `crafted` the only one whose messages pimd did not build, driving
+second and given a new address in the third --, `rp-nbr-gone` the only one about what an RP entry
+holds after the link it was reaching the RP by has gone, where `set_incoming()` used to leave the
+freed neighbour behind on its no-route return and every new (\*,G) of that RP inherited it; it is
+also the one scenario whose verdict is a sanitizer build and not the wire, since a plain build
+passes it with the bug in place, and the one place the chroot of the unprivileged half is shown to
+swallow an ASan report -- `crafted` the only one whose messages pimd did not build, driving
 `test/pimsend.c` to assert what the parsers refuse -- the whole packet format section of
 `doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules

@@ -600,6 +600,45 @@
 #               -- and another interface's is dropped in its place.  Takes
 #               about 50s.
 #
+#   rp-nbr-gone The rpt topology once more, and the only scenario about what
+#               an RP entry holds after the link it was reaching the RP by
+#               has gone.  R1 is given the RP in its own pimd.conf rather
+#               than learning it, two hops away so that the route to it
+#               leaves by the link this destroys, and configured so that the
+#               entry cannot age out of the window the step needs it in: a
+#               learned RP set goes 25s after the Bootstrap stops arriving,
+#               and it is the rpentry_t surviving the neighbour that the
+#               question is about.
+#
+#               set_incoming() (src/route.c) has four returns and only the
+#               one taken when the kernel has no route at all used to leave
+#               `upstream' as it found it.  delete_pim_nbr()
+#               (src/pim_proto.c) calls it to replace a neighbour it then
+#               frees and keeps the rpentry_t whatever the answer -- on
+#               purpose, remapping every group of an RP because the route
+#               went away tears down shared trees a Bootstrap is about to
+#               repair -- so the entry was left pointing into freed memory,
+#               find_route() (src/mrt.c) copied that into every new (*,G) of
+#               the RP, and add_jp_entry() dereferenced it.  One IGMP report
+#               for a group R1 did not already hold is the whole trigger.
+#
+#               Its verdict is SANITIZE=yes, and that was measured both
+#               ways rather than assumed.  Against the unfixed daemon a
+#               plain build passes every assertion here -- a freed 72-byte
+#               block that nothing has reused reads back as itself -- and a
+#               sanitizer build fails, because the ASan runtime aborts the
+#               process and step 5 finds pimd gone.  Note what does *not*
+#               catch it: the unprivileged half is chroot()ed, so the
+#               runtime cannot create the log_path the lab hands it, and
+#               the scenario's own "no sanitizer report" assertion stays
+#               green while the daemon dies underneath it.  Re-run the
+#               sequence by hand with --no-privsep to read the trace, which
+#               is add_jp_entry() under send_pim_join() under add_leaf(),
+#               freed by stop_vif().  doc/README-coverage.md records the
+#               same blindness for .gcda files.
+#
+#               Runs last of its own accord -- it ends by taking R1's only
+#               upstream away, so nothing can follow it.  Takes about 90s.
 #   register-filter
 #               The rpt topology with nobody joining the group, and the
 #               only scenario about who an RP will accept a Register from:
@@ -1009,12 +1048,12 @@ SCENARIO=${SCENARIO:-rpt}
 # scenario in the list was picked up last.
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
-	   ifnew ifgone renumber register-filter crafted fuzz static-rp autorp autorp-agent
+	   ifnew ifgone renumber rp-nbr-gone register-filter crafted fuzz static-rp autorp autorp-agent
 	   autorp-listener anycast anycast-dr altnet scale"
 SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range autorp-listener altnet solo privsep scale"
+		     renumber ssm-range autorp-listener altnet solo rp-nbr-gone privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -1896,6 +1935,16 @@ REGF_PKTS=${REGF_PKTS:-20}
 # step 9 of register-filter
 REGF_SUPP_WAIT=${REGF_SUPP_WAIT:-100}
 
+# rp-nbr-gone: R1's own upstream link, the RP it reaches through it, and the
+# groups the two halves of the step report.  The RP is R3's address on the far
+# link, so the route to it is the one that goes with RPNG_UP_IF, and it is
+# configured rather than learned so the entry outlives the neighbour.
+RPNG_UP_IF=${RPNG_UP_IF:-${EP}112a}
+RPNG_NBR=${RPNG_NBR:-10.0.12.2}
+RPNG_RP_ADDR=${RPNG_RP_ADDR:-10.0.23.3}
+RPNG_GRP_BEFORE=${RPNG_GRP_BEFORE:-225.4.4.4}
+RPNG_GRP_AFTER=${RPNG_GRP_AFTER:-225.7.7.7}
+
 # ifgone: the link that is destroyed under R1, named from both ends
 # because an epair can only be destroyed from the jail that owns an end,
 # and both ends of this one live in jails.  IFGONE_KEPT is the address on
@@ -2058,7 +2107,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -3414,6 +3463,15 @@ write_configs() {
 	# R1: first hop router for $SRC_ADDR, no BSR/RP role
 	EOF
 
+	# rp-nbr-gone asks what R1's RP entry holds once the link it reaches
+	# that RP by has gone, so the entry has to outlive the link: a learned
+	# one goes 25s after the Bootstrap stops arriving, a configured one has
+	# no holdtime at all.  $RPNG_RP_ADDR is two hops away, so the route to
+	# it leaves by the link the scenario destroys.
+	if [ "$SCENARIO" = rp-nbr-gone ]; then
+		printf 'rp-address %s\n' "$RPNG_RP_ADDR" >> "$WORKDIR/r1.conf"
+	fi
+
 	cat <<-EOF > "$WORKDIR/r2.conf"
 	# R2: bootstrap router and rendezvous point for all of 224.0.0.0/4
 	# Epair112b is spelled with an uppercase letter on purpose, see renames()
@@ -4729,6 +4787,7 @@ check() {
 	ifnew)      check_ifnew; return $? ;;
 	ifgone)     check_ifgone; return $? ;;
 	renumber)   check_renumber; return $? ;;
+	rp-nbr-gone) check_rp_nbr_gone; return $? ;;
 	register-filter) check_register_filter; return $? ;;
 	crafted)    check_crafted; return $? ;;
 	fuzz)       check_fuzz; return $? ;;
@@ -9155,6 +9214,141 @@ check_ifgone() {
 		fail "r1: $IFGONE_DUP_IF got a VIF on a subnet $IFGONE_NEW_IF still owns"
 	else
 		ok "r1: no VIF on $IFGONE_DUP_IF"
+	fi
+
+	result
+}
+
+# One IGMP report from ED1, which is on the source side of this chain rather
+# than the receiver side: what the step needs is (*,G) state on R1, and R1 is
+# the only PIM router on that LAN and so its DR.
+rpng_report() {
+	box_run ed1 "$IGMPV3" -i "$SRC_ADDR" -g "$1" -v 2 || \
+		die "failed sending an IGMPv2 report for $1 from ed1"
+}
+
+# set_incoming() (src/route.c) logs one line per RPF lookup under -d rpf, and
+# the success path is the one that does not end in "NOT A PIM ROUTER".  That
+# line is the only view there is of rp->upstream: no pimctl dump prints it, and
+# nothing else pimd does distinguishes an RP entry with a bound upstream from
+# one without.  Anchored at the end for that reason.
+rpng_upstream_bound() {
+	${SUDO} grep -qE "For src $RPNG_RP_ADDR, iif is $RPNG_UP_IF, next hop router is $RPNG_NBR\$" \
+		"$WORKDIR/r1.log" 2>/dev/null
+}
+
+# For wait_for(), which needs a command with a status.  A helper rather than
+# an inline "! has_neighbor", which wait_for() cannot take.
+rpng_nbr_gone() { ! has_neighbor r1 "$RPNG_NBR"; }
+
+# A (*,G) on router $1.  R2 has no local member for any of these groups, so a
+# (*,G) there came from R1's Join and nothing else.
+rpng_has_group() {
+	pimctl "$1" show mrt 2>/dev/null | awk -v g="$2" '$1 == "ANY" && $2 == g { found = 1 } END { exit !found }'
+}
+
+# What an RP entry holds after the link it was reaching the RP by has gone.
+# See the scenario's entry in the header for the bug and for why the verdict
+# is SANITIZE=yes.
+check_rp_nbr_gone() {
+	print "1. pimd is alive on every router"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+
+	print "2. R1 holds the configured RP and reaches it through R2"
+	if wait_for 30 has_static_rp r1 "$RPNG_RP_ADDR"; then
+		ok "r1: $RPNG_RP_ADDR is its RP, from r1.conf and not from a Bootstrap"
+	else
+		fail "r1: no configured RP $RPNG_RP_ADDR, see $WORKDIR/r1.conf"
+		return 1
+	fi
+	if wait_for 60 has_neighbor r1 "$RPNG_NBR"; then
+		ok "r1: R2 ($RPNG_NBR) is the neighbour on $RPNG_UP_IF"
+	else
+		fail "r1: no adjacency with R2, nothing for the RP entry to point at"
+		return 1
+	fi
+
+	# The control, and the precondition in one: an unbound upstream is a
+	# NULL that was always safe, so without this the step below proves
+	# nothing.  R1's own iif is no evidence of it -- set_incoming()
+	# assigns `incoming' before it looks for the neighbour and leaves it
+	# set on the path where it finds none, so a (*,G) can point out of
+	# this link with a NULL upstream behind it.  A first version of this
+	# step read the iif, was satisfied in under a second, destroyed the
+	# link before the bind and passed against the unfixed daemon.
+	#
+	# So the bind is read where pimd states it, and the debug is turned on
+	# here rather than in DEBUG at the top because this is the only
+	# scenario that needs it.  It can take a whole
+	# UCAST_ROUTING_CHECK_INTERVAL (20s, src/pimd.h) to arrive: the first
+	# set_incoming() for the RP runs from add_static_rp(), before R2's
+	# Hello, and only age_routes() retries.
+	print "3. R1's RP entry has R2 as its upstream"
+	pimctl r1 debug rpf >/dev/null 2>&1 || die "failed enabling rpf debug on r1"
+	if wait_for 45 rpng_upstream_bound; then
+		ok "r1: RPF to $RPNG_RP_ADDR is $RPNG_UP_IF via $RPNG_NBR, upstream bound"
+	else
+		fail "r1: nothing bound $RPNG_RP_ADDR to a neighbour in 45s, see $WORKDIR/r1.log"
+		return 1
+	fi
+
+	# And a group reported while that neighbour is alive, so that step 5's
+	# "created after it went" has its before beside it.
+	up_vif=$(vif_index r1 "$RPNG_UP_IF")
+	[ -n "$up_vif" ] || { fail "r1: no VIF on $RPNG_UP_IF"; return 1; }
+	rpng_report "$RPNG_GRP_BEFORE"
+	if wait_for 20 rpng_has_group r1 "$RPNG_GRP_BEFORE"; then
+		ok "r1: (*,$RPNG_GRP_BEFORE) created while R2 was still there"
+	else
+		fail "r1: no (*,$RPNG_GRP_BEFORE), the report reached no RP entry"
+		return 1
+	fi
+	if route_iif_is r1 ANY "$RPNG_GRP_BEFORE" "$up_vif"; then
+		ok "r1: it comes in on $RPNG_UP_IF, vif $up_vif"
+	else
+		fail "r1: (*,$RPNG_GRP_BEFORE) reads iif $(route_iif r1 ANY "$RPNG_GRP_BEFORE")," \
+		     "expected $up_vif"
+	fi
+
+	print "4. The link to the RP is destroyed under pimd"
+	box_if_destroy r1 "$RPNG_UP_IF" || die "failed destroying $RPNG_UP_IF on r1"
+	# age_vifs() polls every TIMER_INTERVAL (5s), src/defs.h, and the
+	# neighbour goes with the VIF rather than on its own holdtime
+	if wait_for 30 iface_not_up r1 "$RPNG_UP_IF"; then
+		ok "r1: $RPNG_UP_IF taken out of service"
+	else
+		fail "r1: $RPNG_UP_IF still reads $(iface_state r1 "$RPNG_UP_IF")"
+		return 1
+	fi
+	if wait_for 30 rpng_nbr_gone; then
+		ok "r1: R2 is gone from the neighbour table, its entry freed"
+	else
+		fail "r1: still holds R2, nothing was freed and the step proves nothing"
+		return 1
+	fi
+
+	# The trigger.  This group has no state on R1 yet, so the report makes
+	# a (*,G) that takes its upstream from the RP entry -- which, until
+	# set_incoming() learned to clear it, was the neighbour freed above.
+	print "5. A group reported afterwards does not reach a freed neighbour"
+	rpng_report "$RPNG_GRP_AFTER"
+	if wait_for 20 rpng_has_group r1 "$RPNG_GRP_AFTER"; then
+		ok "r1: (*,$RPNG_GRP_AFTER) created after the neighbour went"
+	else
+		fail "r1: no (*,$RPNG_GRP_AFTER), the report reached no RP entry and nothing was asked"
+	fi
+	if pimd_is_up r1; then
+		ok "r1: pimd still answers, having built that entry off the RP"
+	else
+		fail "r1: pimd died building (*,$RPNG_GRP_AFTER), see $WORKDIR/r1.log"
+		return 1
 	fi
 
 	result

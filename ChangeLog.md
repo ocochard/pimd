@@ -644,7 +644,9 @@ issue of this repository is written out in full.
   the route, so this was the common case: destroying a router's upstream interface
   and reporting one group behind it is enough, and AddressSanitizer answers
   `heap-use-after-free` in `add_jp_entry()` freed by `stop_vif()`.  Same shape as
-  the `mrtentry_t` half fixed for troglobit/pimd#22, one struct up
+  the `mrtentry_t` half fixed for troglobit/pimd#22, one struct up.  The
+  `rp-nbr-gone` scenario of `test/lab.sh` is the regression test, and it needs
+  `SANITIZE=yes`: against the unfixed daemon a plain build passes it
 - The directory the unprivileged half is confined to is checked and used as one
   open descriptor.  `priv_do_chroot()` (`src/privsep.c`) resolved
   `PRIVSEP_CHROOT` twice, once for the `stat()` that has to find a directory
