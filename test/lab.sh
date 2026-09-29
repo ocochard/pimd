@@ -1041,6 +1041,9 @@ GROUP=${GROUP:-225.1.2.3}
 # R3's side of the receiver LAN, which the last assertion of the default
 # scenario destroys to see whether the oif lists follow.
 RPT_RCV_IF=${RPT_RCV_IF:-${EP}203a}
+# and a group of its own for that assertion, so that it does not depend on
+# membership state an earlier one happened to leave behind.
+DVFM_GROUP=${DVFM_GROUP:-225.1.2.11}
 GROUP_DEFAULT=$GROUP
 SCENARIO=${SCENARIO:-rpt}
 
@@ -5000,14 +5003,27 @@ check() {
 	# towards the source being on the other side of the router, so a bit
 	# that is still set is the bug and not a table that emptied.
 	print "9. A destroyed interface leaves the oif lists too"
-	if route_oif_has r3 "$RPT_RCV_IF" ANY "$LATE_GROUP"; then
-		ok "r3 forwards (*,$LATE_GROUP) onto $RPT_RCV_IF"
+	# A receiver and a group of its own, and the receiver stays up for the
+	# rest of the step.  The first version of this read the oif list the
+	# assertion above had left behind, which passed on FreeBSD and failed
+	# the Linux job: assertion 8 kills its receiver, and a closing socket
+	# sends the IGMPv2 leave that a jail's does not, so R3 had already
+	# dropped the oif there.  No traffic is needed either way -- an IGMP
+	# report is what puts the interface in the list.
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 120 "$DVFM_GROUP" \
+		>"$WORKDIR/dvfm-receiver.log" 2>&1
+	dvfm_rcv=$!
+	if wait_for 60 route_oif_has r3 "$RPT_RCV_IF" ANY "$DVFM_GROUP"; then
+		ok "r3 forwards (*,$DVFM_GROUP) onto $RPT_RCV_IF"
 	else
-		fail "r3 does not forward (*,$LATE_GROUP) onto $RPT_RCV_IF," \
+		fail "r3 does not forward (*,$DVFM_GROUP) onto $RPT_RCV_IF," \
 		     "so there is no oif for the next assertion to lose"
+		kill "$dvfm_rcv" 2>/dev/null || true
 		return 1
 	fi
 
+	# Which takes ED2's end of the link with it, so the receiver above is
+	# done whatever happens next.
 	box_if_destroy r3 "$RPT_RCV_IF" || die "failed destroying $RPT_RCV_IF on r3"
 	# age_vifs() polls every TIMER_INTERVAL (5s), src/defs.h
 	if wait_for 30 iface_not_up r3 "$RPT_RCV_IF"; then
@@ -5016,12 +5032,13 @@ check() {
 		fail "r3: $RPT_RCV_IF still reads $(iface_state r3 "$RPT_RCV_IF")"
 		return 1
 	fi
-	if wait_for 15 route_oif_gone r3 "$RPT_RCV_IF" ANY "$LATE_GROUP"; then
-		ok "and $RPT_RCV_IF is out of the oif list of (*,$LATE_GROUP)"
+	if wait_for 15 route_oif_gone r3 "$RPT_RCV_IF" ANY "$DVFM_GROUP"; then
+		ok "and $RPT_RCV_IF is out of the oif list of (*,$DVFM_GROUP)"
 	else
-		fail "r3 still forwards (*,$LATE_GROUP) onto $RPT_RCV_IF," \
+		fail "r3 still forwards (*,$DVFM_GROUP) onto $RPT_RCV_IF," \
 		     "an interface the kernel no longer has"
 	fi
+	kill "$dvfm_rcv" 2>/dev/null || true
 
 	echo
 	if [ "$FAILED" -eq 0 ]; then
