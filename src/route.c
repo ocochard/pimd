@@ -1444,11 +1444,102 @@ int change_interfaces(mrtentry_t *mrt,
 }
 
 
-/* TODO: implement it. Required to allow changing of the physical interfaces
- * configuration without need to restart pimd.
+/*
+ * One entry's state on an interface that has gone out of service.  Every set
+ * the interface can be in, every per-interface timer, and the Assert state
+ * pim_proto.c keeps beside them; the incoming interface is deliberately left
+ * alone, see delete_vif_from_mrt() below.
  */
-int delete_vif_from_mrt(vifi_t vifi __attribute__((unused)))
+static void delete_vif_from_mrtentry(mrtentry_t *mrt, vifi_t vifi)
 {
+    uint8_t new_joined[MAXVIFS];
+    uint8_t new_pruned[MAXVIFS];
+    uint8_t new_leaves[MAXVIFS];
+    uint8_t new_asserted[MAXVIFS];
+
+    if (!mrt)
+	return;
+
+    /* The sets change_interfaces() does not take as arguments, and which it
+     * reads back off the entry: the subset of joined_oifs a Join(S,G) made,
+     * the two Prune-Pending states and the (S,G,rpt) Prune state. */
+    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
+    PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
+
+    /* The deadlines that went with them.  Each is a per-vif array, and a
+     * stale one is a timer that fires for an interface that is not there. */
+    if (mrt->vif_timers)
+	mrt->vif_timers[vifi] = 0;
+    if (mrt->pp_expires)
+	mrt->pp_expires[vifi] = 0;
+    if (mrt->rpt_expires)
+	mrt->rpt_expires[vifi] = 0;
+    if (mrt->rpt_pp_expires)
+	mrt->rpt_pp_expires[vifi] = 0;
+
+    /* And the Assert election held on it, which clears asserted_oifs too */
+    assert_vif_gone(mrt, vifi);
+
+    PIMD_VIFM_COPY(mrt->joined_oifs, new_joined);
+    PIMD_VIFM_COPY(mrt->pruned_oifs, new_pruned);
+    PIMD_VIFM_COPY(mrt->leaves, new_leaves);
+    PIMD_VIFM_COPY(mrt->asserted_oifs, new_asserted);
+    PIMD_VIFM_CLR(vifi, new_joined);
+    PIMD_VIFM_CLR(vifi, new_pruned);
+    PIMD_VIFM_CLR(vifi, new_leaves);
+    PIMD_VIFM_CLR(vifi, new_asserted);
+
+    change_interfaces(mrt, mrt->incoming, new_joined, new_pruned,
+		      new_leaves, new_asserted, 0);
+}
+
+
+/*
+ * An interface has gone out of service, so nothing in the routing table may
+ * be left pointing at it.  stop_vif() (src/vif.c) calls this, and until it
+ * was written it did nothing at all: neither this file nor mrt.c tests
+ * VIFF_DOWN anywhere, so the interface stayed in every set of every entry
+ * after its VIF was stopped and its kernel vif deleted.  calc_oifs() went on
+ * offering the slot, which kept join_desired() true for a group whose only
+ * outgoing interface had gone -- so this router went on asking its upstream
+ * for traffic it could no longer deliver -- and the bits were still there
+ * for whatever interface took the slot next.
+ *
+ * Called before k_del_vif(), which is what lets change_interfaces() push the
+ * new oif lists down: the kernel vif is still there to be updated.
+ *
+ * The incoming interface is left as it is, and that is not an oversight:
+ * an entry whose iif this was has no upstream any more, and which entries
+ * then survive is a question about routes rather than about interfaces.
+ * age_routes() asks it every UCAST_ROUTING_CHECK_INTERVAL, re-running
+ * set_incoming() per source and deleting what has become unroutable, and the
+ * route through a destroyed interface goes with the interface.
+ */
+int delete_vif_from_mrt(vifi_t vifi)
+{
+    grpentry_t *grp, *grp_next;
+    mrtentry_t *mrt, *mrt_next;
+
+    if (vifi >= numvifs)
+	return FALSE;
+
+    /* Every mrtentry_t is either a group's grp_route or on its mrtlink, so
+     * this pair of loops is the whole table -- the same walk
+     * assert_neighbor_gone() (src/pim_proto.c) makes, and the next pointers
+     * are saved for its reason: change_interfaces() can delete the entry. */
+    for (grp = grplist; grp; grp = grp_next) {
+	grp_next = grp->next;
+
+	delete_vif_from_mrtentry(grp->grp_route, vifi);
+
+	for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
+	    mrt_next = mrt->grpnext;
+	    delete_vif_from_mrtentry(mrt, vifi);
+	}
+    }
+
     return TRUE;
 }
 

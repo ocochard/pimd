@@ -4766,6 +4766,24 @@ static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr,
     }
 }
 
+/*
+ * The Assert state of one entry on an interface that has gone out of service,
+ * for delete_vif_from_mrt() (src/route.c).  Unconditional, where
+ * assert_clear() refuses while this router is the winner: that refusal is
+ * there to keep the resend of Actions A3 and the AssertCancel of A4 that a
+ * won interface still owes, and an interface the kernel no longer has owes
+ * nothing to anybody.  The oif lists are the caller's to recompute, so
+ * nothing here ends in change_interfaces().
+ */
+void assert_vif_gone(mrtentry_t *mrt, vifi_t vifi)
+{
+    if (!mrt || vifi >= numvifs)
+	return;
+
+    PIMD_VIFM_CLR(vifi, mrt->asserted_oifs);
+    assert_noinfo(mrt, vifi);
+}
+
 static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
 {
     grpentry_t *grp, *grp_next;

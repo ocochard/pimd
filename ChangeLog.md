@@ -656,6 +656,22 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- An interface that goes out of service leaves the routing table as well as the
+  kernel.  `delete_vif_from_mrt()` (`src/route.c`) was a stub that returned TRUE,
+  and neither `route.c` nor `mrt.c` tests `VIFF_DOWN` anywhere, so a stopped VIF
+  stayed in every interface set of every entry after `stop_vif()` had deleted its
+  kernel vif: `calc_oifs()` went on offering the slot, which kept
+  `join_desired()` true for a group whose only outgoing interface had gone, so
+  the router asked its upstream for traffic it could no longer deliver -- and the
+  bits were still set for whatever interface took the slot next.  It now clears
+  the interface from all nine of an entry's interface sets, zeroes its slot in
+  the four per-interface timer arrays, and drops the Assert election held on it
+  (`assert_vif_gone()`, `src/pim_proto.c`, which unlike `assert_clear()` does not
+  spare a link this router won, an interface the kernel no longer has owing
+  nothing to anybody), then recomputes the outgoing list.  The incoming interface
+  is deliberately left to `age_routes()`, which re-runs `set_incoming()` per
+  source and deletes what has become unroutable.  Step 9 of the default scenario
+  in `test/lab.sh` is the regression test
 - A membership pimd is already holding is offered to PIM again when an adjacency
   comes up, and an SSM group is offered one per source.  `find_route()` cannot
   build an entry for a source whose RPF neighbour is not a PIM neighbour yet --

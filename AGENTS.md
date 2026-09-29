@@ -312,7 +312,10 @@ scenario on the chain has: with inbound dropping in place, a one-oif router cann
 boundary interface out of the list" from "forward nothing at all", so step 6d puts members on two
 LANs behind R3 and scopes the group on one of them -- the only place in this file where a router
 has two outgoing interfaces for one group, `ifnew`, `ifgone` and
-`renumber` the only ones about what pimd does when the interfaces change underneath it -- one
+`renumber` the only ones about what pimd does when the interfaces change underneath it, though
+the last assertion of `rpt` is about that too -- it destroys the receiver's link and reads the
+oif list of the group R3 was forwarding, `delete_vif_from_mrt()` having been a stub that left a
+stopped VIF in every interface set of every entry -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
 it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the
 second and given a new address in the third --, `rp-nbr-gone` the only one about what an RP entry

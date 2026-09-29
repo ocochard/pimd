@@ -759,6 +759,7 @@ extern int	join_desired		(mrtentry_t *mrtentry_ptr);
 extern int	prune_desired_rpt	(mrtentry_t *mrtentry_ptr);
 extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
+extern void	assert_vif_gone		(mrtentry_t *mrt, vifi_t vifi);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
 /* How long the last pass of it took, and the longest one so far, in

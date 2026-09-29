@@ -1038,6 +1038,9 @@ esac
 WORKDIR_PINNED=${WORKDIR:+yes}
 WORKDIR=${WORKDIR:-/tmp/pimd-test$TAG}
 GROUP=${GROUP:-225.1.2.3}
+# R3's side of the receiver LAN, which the last assertion of the default
+# scenario destroys to see whether the oif lists follow.
+RPT_RCV_IF=${RPT_RCV_IF:-${EP}203a}
 GROUP_DEFAULT=$GROUP
 SCENARIO=${SCENARIO:-rpt}
 
@@ -4979,6 +4982,45 @@ check() {
 		ok "ED2 joined $LATE_GROUP ${LATE_DELAY}s late and still got $replies of $STREAM_PKTS"
 	else
 		fail "only $replies replies for $LATE_GROUP, want >= $MIN_REPLIES, see $WORKDIR/late-sender.log"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# An interface that goes away has to leave the routing table as well as
+	# the kernel.  delete_vif_from_mrt() (src/route.c) was a stub that
+	# returned TRUE, and nothing in route.c or mrt.c tests VIFF_DOWN, so a
+	# stopped VIF stayed in every interface set of every entry: calc_oifs()
+	# went on offering the slot, which kept join_desired() true for a group
+	# whose only outgoing interface had gone -- this router asking its
+	# upstream for traffic it could no longer deliver -- and the bits were
+	# still there for whatever interface took the slot next.
+	#
+	# Read off the oif list of the (*,G) R3 is forwarding on, and it runs
+	# last because it takes the receiver's link away.  The entry itself
+	# outlives the interface either way: nothing deletes it here, the route
+	# towards the source being on the other side of the router, so a bit
+	# that is still set is the bug and not a table that emptied.
+	print "9. A destroyed interface leaves the oif lists too"
+	if route_oif_has r3 "$RPT_RCV_IF" ANY "$LATE_GROUP"; then
+		ok "r3 forwards (*,$LATE_GROUP) onto $RPT_RCV_IF"
+	else
+		fail "r3 does not forward (*,$LATE_GROUP) onto $RPT_RCV_IF," \
+		     "so there is no oif for the next assertion to lose"
+		return 1
+	fi
+
+	box_if_destroy r3 "$RPT_RCV_IF" || die "failed destroying $RPT_RCV_IF on r3"
+	# age_vifs() polls every TIMER_INTERVAL (5s), src/defs.h
+	if wait_for 30 iface_not_up r3 "$RPT_RCV_IF"; then
+		ok "r3: $RPT_RCV_IF taken out of service"
+	else
+		fail "r3: $RPT_RCV_IF still reads $(iface_state r3 "$RPT_RCV_IF")"
+		return 1
+	fi
+	if wait_for 15 route_oif_gone r3 "$RPT_RCV_IF" ANY "$LATE_GROUP"; then
+		ok "and $RPT_RCV_IF is out of the oif list of (*,$LATE_GROUP)"
+	else
+		fail "r3 still forwards (*,$LATE_GROUP) onto $RPT_RCV_IF," \
+		     "an interface the kernel no longer has"
 	fi
 
 	echo
