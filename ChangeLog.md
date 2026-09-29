@@ -631,6 +631,17 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- The directory the unprivileged half is confined to is checked and used as one
+  open descriptor.  `priv_do_chroot()` (`src/privsep.c`) resolved
+  `PRIVSEP_CHROOT` twice, once for the `stat()` that has to find a directory
+  owned by root and writable by nobody else and once for the `chdir()` that
+  trusts what it found, so anything able to replace that path between the two
+  chose where the half of the daemon that parses the wire lives -- which is the
+  one thing the check exists to prevent.  It opens the directory once with
+  `O_DIRECTORY` now, tests it with `fstat()` and moves into it with `fchdir()`,
+  so there is no second lookup to race, and the descriptor is closed rather
+  than left as a way back out of the new root.  Reaching it wanted write access
+  to the parent directory, so root already; found by Coverity, CID 1680252
 - An administrative boundary, `phyint ... scoped`, is the edge of the zone in
   both directions: a packet of a scoped group that arrives on a boundary
   interface has crossed it already, so it is forwarded nowhere at all rather

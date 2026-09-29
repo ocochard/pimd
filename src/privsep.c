@@ -306,15 +306,18 @@ static int msg_recv(int sd, void *buf, size_t len, int *fd)
  * One request, one reply.  Anything that goes wrong on the socket means
  * the parent is gone, and a child that cannot reach it cannot keep
  * forwarding: say so once and exit rather than run on blind.
+ *
+ * priv_sock is a live descriptor here whatever a call site did: every
+ * wrapper below returns early on !priv_enabled(), which is this socket,
+ * and that is what lets config.c, vif.c, ipc.c and main.c call them
+ * without asking first.
  */
 static int priv_call(struct priv_req *req, struct priv_rep *rep, int *fd)
 {
     if (msg_send(priv_sock, req, sizeof(*req), -1) ||
 	msg_recv(priv_sock, rep, sizeof(*rep), fd)) {
-	if (priv_sock >= 0) {
-	    priv_sock = -1;    /* Stop priv_log() from recursing into this */
-	    logit(LOG_ERR, errno, "Lost the privileged helper, exiting");
-	}
+	priv_sock = -1;	       /* Stop priv_log() from recursing into this */
+	logit(LOG_ERR, errno, "Lost the privileged helper, exiting");
 
 	exit(1);
     }
@@ -387,30 +390,45 @@ static void priv_do_chroot(void)
 {
     const char *dir = PRIVSEP_CHROOT;
     struct stat st;
+    int fd;
 
     if (!dir[0])
 	return;		       /* Configured off */
 
-    if (stat(dir, &st) < 0) {
-	if (errno != ENOENT || mkdir(dir, 0555) < 0 || stat(dir, &st) < 0) {
+    /* One descriptor, checked and then used.  The tests below and the
+     * chroot() that trusts them have to be about the same directory, and
+     * resolving the path a second time is a second chance to be given a
+     * different one -- which is the whole check undone, the point of it
+     * being that the child must not be confined somewhere writable. */
+    fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+	if (errno != ENOENT || mkdir(dir, 0555) < 0 ||
+	    (fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
 	    logit(LOG_NOTICE, errno, "No %s to confine the unprivileged half to", dir);
 	    return;
 	}
     }
 
-    if (!S_ISDIR(st.st_mode) || st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH))) {
+    if (fstat(fd, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 ||
+	(st.st_mode & (S_IWGRP | S_IWOTH))) {
 	logit(LOG_WARNING, 0, "%s is not a directory owned by root and writable by nobody else,"
 	      " leaving the unprivileged half unconfined", dir);
+	close(fd);
 	return;
     }
 
-    /* chdir() first and chroot(".") after it, so that the working
-     * directory is inside the new root rather than a way back out of it. */
-    if (chdir(dir) < 0 || chroot(".") < 0 || chdir("/") < 0) {
-	logit(LOG_WARNING, errno, "Failed confining the unprivileged half to %s", dir);
+    /* fchdir() to the directory that was checked and chroot(".") after it,
+     * so that the working directory is inside the new root rather than a
+     * way back out of it. */
+    if (fchdir(fd) < 0 || chroot(".") < 0 || chdir("/") < 0) {
+	int err = errno;       /* Before close() has an errno of its own */
+
+	close(fd);
+	logit(LOG_WARNING, err, "Failed confining the unprivileged half to %s", dir);
 	return;
     }
 
+    close(fd);
     strlcpy(priv_chroot_path, dir, sizeof(priv_chroot_path));
 }
 
