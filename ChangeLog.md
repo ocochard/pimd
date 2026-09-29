@@ -7,6 +7,23 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- A sanitizer report from the half of a separated pimd that parses the wire is no
+  longer thrown away.  `SANITIZE=yes` in `test/lab.sh` gave each daemon an
+  `ASAN_OPTIONS=log_path`, and the unprivileged half is `chroot()`ed into a
+  directory that is root-owned and unwritable by design, so the runtime printed
+  `ERROR: Can't open file` and died *instead of* printing its finding, while
+  `check_sanitizer()` found an empty directory and reported no sanitizer output:
+  every memory error in the daemon's parser was invisible to the weekly
+  `sanitize.yml` run, and invisible in the way that looks like a clean result.
+  There is no `log_path` now -- stderr needs no path, being open on the daemon's
+  own log before either the `chroot()` or the uid drop -- and the check reads the
+  logs, matching UBSan's `runtime error:` as well as each runtime's banner.  What
+  the chroot still costs is the symbolizer the runtime would have to `exec()`, so
+  frames from that half are addresses: the new `SAN_NO_PRIVSEP=yes` trades the
+  split for a readable trace, as `COVERAGE=yes` already trades it for `.gcda`
+  files, and the check prints both ways out when it sees raw frames.  Found by
+  the `rp-nbr-gone` scenario, whose report was the first that had to come back
+  from that half
 - A process a lab scenario stops is the one it started.  `test/lab.sh` and the
   two interop scripts started a command inside a jail or a network namespace
   through a shell function and kept `$!`, which names the shell's fork of the

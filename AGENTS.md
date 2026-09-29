@@ -197,7 +197,15 @@ it asks `pimctl show status` which backend the daemon has rather than trust the 
 does the same for a tree built `-fsanitize=address,undefined` (asking the binary for the runtime) and
 fails any scenario whose daemons wrote a sanitizer report, which is how the reload use-after-free of
 `c721f76` and the undefined shifts of `8b0c103` were found; leak checking is off unless
-`SAN_ASAN_OPTIONS` asks for it, and on Linux alone, LeakSanitizer being Linux only.
+`SAN_ASAN_OPTIONS` asks for it, and on Linux alone, LeakSanitizer being Linux only.  The reports are
+read out of each daemon's own log, on the runtimes' default stderr and with no `log_path` set,
+because the unprivileged half is `chroot()`ed into a directory that is unwritable by design: a
+runtime told to write a path it cannot create prints `Can't open file` and dies *instead of* printing
+the report, so every finding in the half that parses the wire used to be lost, and lost silently --
+an empty directory reads exactly like a clean run.  What the chroot still costs is the symbolizer,
+which the runtime would have to `exec()`: frames from that half come back as addresses, and
+`SAN_NO_PRIVSEP=yes` trades the split for a readable trace (never on the `privsep` scenario, where
+the split is the subject), the way `COVERAGE=yes` already trades it for `.gcda` files.
 `.github/workflows/sanitize.yml` is that run automated, weekly on Linux and in a FreeBSD VM -- the
 only sanitizer coverage `routesock.c` and the `kern.c` BSD branches get, the Linux job compiling
 `netlink.c` instead -- and by `workflow_dispatch` for a scenario or two by hand.  It configures that
@@ -311,8 +319,7 @@ second and given a new address in the third --, `rp-nbr-gone` the only one about
 holds after the link it was reaching the RP by has gone, where `set_incoming()` used to leave the
 freed neighbour behind on its no-route return and every new (\*,G) of that RP inherited it; it is
 also the one scenario whose verdict is a sanitizer build and not the wire, since a plain build
-passes it with the bug in place, and the one place the chroot of the unprivileged half is shown to
-swallow an ASan report -- `crafted` the only one whose messages pimd did not build, driving
+passes it with the bug in place -- `crafted` the only one whose messages pimd did not build, driving
 `test/pimsend.c` to assert what the parsers refuse -- the whole packet format section of
 `doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules

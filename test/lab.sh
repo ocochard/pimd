@@ -626,16 +626,17 @@
 #               ways rather than assumed.  Against the unfixed daemon a
 #               plain build passes every assertion here -- a freed 72-byte
 #               block that nothing has reused reads back as itself -- and a
-#               sanitizer build fails, because the ASan runtime aborts the
-#               process and step 5 finds pimd gone.  Note what does *not*
-#               catch it: the unprivileged half is chroot()ed, so the
-#               runtime cannot create the log_path the lab hands it, and
-#               the scenario's own "no sanitizer report" assertion stays
-#               green while the daemon dies underneath it.  Re-run the
-#               sequence by hand with --no-privsep to read the trace, which
-#               is add_jp_entry() under send_pim_join() under add_leaf(),
-#               freed by stop_vif().  doc/README-coverage.md records the
-#               same blindness for .gcda files.
+#               sanitizer build fails, at step 5 and with the report:
+#               add_jp_entry() under send_pim_join() under add_leaf(),
+#               freed by stop_vif().  This scenario is why no log_path is
+#               set any more -- it was the first report the unprivileged
+#               half had to hand back, and the runtime could not create a
+#               file from inside the chroot, so it printed "Can't open
+#               file" and died with the finding unwritten while
+#               check_sanitizer() reported an empty directory.  The frames
+#               come back as addresses for the same reason, the symbolizer
+#               being outside that root; SAN_NO_PRIVSEP=yes is the way to
+#               read one.
 #
 #               Runs last of its own accord -- it ends by taking R1's only
 #               upstream away, so nothing can follow it.  Takes about 90s.
@@ -1096,23 +1097,41 @@ fi
 # asks the binary whether it really is one rather than take the tree on
 # trust, the way the NETLINK knob above does.
 #
-# Each daemon is given a log of its own to write reports to, because the
-# two sanitizers behave differently and neither is any use inside the pimd
-# log alone: ASan stops the daemon at its first error, which the assertions
-# notice by themselves, while UBSan prints and carries on -- so its
-# findings would leave with the work directory of a scenario that passed.
+# The reports land in each daemon's own log, on the runtimes' default
+# stderr, and no log_path is set.  That is not a preference: pimd separates
+# privileges by default and the unprivileged half -- the one that parses the
+# wire, so the one a report is usually about -- is chroot()ed into a
+# directory that is root-owned and unwritable by design (priv_do_chroot() in
+# src/privsep.c refuses anything else).  A runtime told to write a path it
+# cannot create prints "ERROR: Can't open file" and dies *instead of*
+# printing the report, so every finding in that half used to be lost, and
+# lost silently: check_sanitizer() found an empty directory and said so
+# while the daemon was dying underneath it.  stderr needs no path, being
+# already open on the log before either the chroot or the uid drop, and
+# box_daemon() points it there on both systems.
+#
+# Which is why the check below reads the logs, and why it matches UBSan's
+# "runtime error:" as well as the "ERROR: ...Sanitizer" banner: ASan stops
+# the daemon at its first error, which the assertions notice by themselves,
+# while UBSan prints and carries on, so its findings would otherwise leave
+# with the work directory of a scenario that passed.
 #
 # Leak checking is off by default, ASan turning it on at exit on Linux:
 # what leaks in a daemon that is being torn down is a hunt of its own.
 # SAN_ASAN_OPTIONS="detect_leaks=1" asks for it, and then "run" is the
 # command to use -- the daemons have to exit for a leak report to exist,
 # which "run" sees to before it looks and "check" on a running lab cannot.
-# The log_path is the lab's to set, the reports going to the work
-# directory beside the logs of the run that made them.
 SANITIZE=${SANITIZE:-no}
-SAN_DIR=$WORKDIR/sanitizer
 SAN_ASAN_OPTIONS=${SAN_ASAN_OPTIONS:-detect_leaks=0}
 SAN_UBSAN_OPTIONS=${SAN_UBSAN_OPTIONS:-print_stacktrace=1}
+# Run the scenarios unseparated, so that a report is symbolized as it is
+# printed.  Off by default: the split is how pimd ships, and a report from the
+# half that parses the wire is the one worth having.  See set_scenario().
+SAN_NO_PRIVSEP=${SAN_NO_PRIVSEP:-no}
+# Every shape of report the runtimes print, as one regular expression: the
+# banner each sanitizer announces itself with, and UBSan's per-finding line,
+# which has no banner at all.
+SAN_REPORT_RE=${SAN_REPORT_RE:-'ERROR: (Address|Leak|Memory|Thread)Sanitizer|runtime error:'}
 
 # COVERAGE=yes runs the scenarios against a pimd built --enable-coverage,
 # so that what they reach can be counted rather than read.  It does not
@@ -1144,8 +1163,8 @@ COVERAGE=${COVERAGE:-no}
 # rather than exported here; see box_daemon() in the backends.
 PIMD_ENV=
 if [ "$SANITIZE" = yes ]; then
-	PIMD_ENV="ASAN_OPTIONS=$SAN_ASAN_OPTIONS:log_path=$SAN_DIR/asan"
-	PIMD_ENV="$PIMD_ENV UBSAN_OPTIONS=$SAN_UBSAN_OPTIONS:log_path=$SAN_DIR/ubsan"
+	PIMD_ENV="ASAN_OPTIONS=$SAN_ASAN_OPTIONS"
+	PIMD_ENV="$PIMD_ENV UBSAN_OPTIONS=$SAN_UBSAN_OPTIONS"
 fi
 
 # How long the "pimd is alive" step of a scenario waits for a daemon to
@@ -2188,7 +2207,14 @@ set_scenario() {
 	# separated child being unable to write a .gcda at all -- except for
 	# the privsep scenario, where the separation is the thing under test
 	# and starting it unseparated would assert nothing.
-	if [ "$COVERAGE" = yes ] && [ "$SCENARIO" != privsep ]; then
+	#
+	# SAN_NO_PRIVSEP=yes does the same for the same kind of reason, and
+	# check_sanitizer() names it: a report the chroot()ed child prints
+	# carries addresses and no function names, because symbolizing means
+	# exec()ing llvm-symbolizer and it cannot.  Reports are captured either
+	# way now, so this is for reading one, not for finding it.
+	if { [ "$COVERAGE" = yes ] || [ "$SAN_NO_PRIVSEP" = yes ]; } && \
+	   [ "$SCENARIO" != privsep ]; then
 		PIMD_ARGS="--no-privsep"
 	else
 		PIMD_ARGS=
@@ -3711,7 +3737,6 @@ start() {
 	# Owned by the invoking user: pimd runs as root and can still drop its
 	# PID file and control socket in here, but mping is built unprivileged.
 	mkdir -p "$WORKDIR"
-	[ "$SANITIZE" = no ] || mkdir -p "$SAN_DIR"
 
 	print "Building mping (multicast ping) from the pimd tree ..."
 	cc -O2 -o "$MPING" "$PIMD_SRC/test/mping.c" || \
@@ -11182,8 +11207,12 @@ check_sanitizer() {
 	echo
 	print "Sanitizer reports"
 
+	# In the daemons' own logs, for the reason the SANITIZE block at the
+	# top of this file gives.  -a because a log a sanitizer wrote into is
+	# not always text all the way through, and grep that decides a file is
+	# binary prints one line and no report.
 	# shellcheck disable=SC2046
-	set -- $(${SUDO} find "$SAN_DIR" -type f 2>/dev/null | sort)
+	set -- $(${SUDO} grep -alE "$SAN_REPORT_RE" "$WORKDIR"/*.log 2>/dev/null | sort)
 	if [ $# -eq 0 ]; then
 		ok "no sanitizer report from any pimd in this scenario"
 		return 0
@@ -11191,10 +11220,24 @@ check_sanitizer() {
 
 	for f in "$@"; do
 		dprint "--- ${f##*/} ---"
-		${SUDO} sed -n 1,40p "$f" 2>/dev/null || true
+		${SUDO} grep -aE -A 30 "$SAN_REPORT_RE" "$f" 2>/dev/null | sed -n 1,40p || true
 	done
 
-	print "RESULT: FAIL ($# sanitizer report(s), whatever the result above says)"
+	# A report out of the unprivileged half carries addresses and no
+	# function names: the runtime symbolizes by exec()ing llvm-symbolizer
+	# when it prints, and that half is chroot()ed with the symbolizer and
+	# the binary both outside its root, and on Linux behind a seccomp
+	# filter as well.  Nothing in ASAN_OPTIONS can reach past that, so say
+	# how to finish the job rather than leave a column of hex.
+	if ${SUDO} grep -aqE "^ *#[0-9]+ 0x[0-9a-f]+ +\($PIMD_SRC" "$@" 2>/dev/null; then
+		print "The frames above are unsymbolized, the unprivileged half being chroot()ed."
+		print "Resolve them with:"
+		print "  llvm-symbolizer --obj=$PIMD -p <<< '<address> ...'"
+		print "or re-run the scenario against a daemon that does not separate, which"
+		print "symbolizes as it prints:  SAN_NO_PRIVSEP=yes"
+	fi
+
+	print "RESULT: FAIL ($# log(s) with a sanitizer report, whatever the result above says)"
 	return 1
 }
 

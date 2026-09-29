@@ -118,18 +118,27 @@ jobs:
           sudo env $knobs sh test/lab.sh $jobs run "$@" || rc=$?
 
           # A scenario that tripped keeps its work directory: a pimd log per
-          # router, the traffic captures, and sanitizer/ with the reports,
-          # of which check_sanitizer() prints only the first forty lines.
-          # The runner goes with the job, so print them here or a failed run
+          # router and the traffic captures.  A sanitizer report is in the
+          # log of the daemon that made it, there being no log_path to send
+          # it to -- see the SANITIZE block of test/lab.sh -- and
+          # check_sanitizer() prints only the first forty lines of one.  The
+          # runner goes with the job, so print them here or a failed run
           # leaves nothing but the assertion that tripped.  The slot is part
           # of the name, slot 0 being /tmp/pimd-test, so the glob has to
           # reach past it.
+          #
+          # The tail is the end of each log, where an ASan report is: it
+          # stops the daemon as it prints.  A UBSan finding does not, so any
+          # report is grepped out of the middle as well.
           for d in /tmp/pimd-test*.*.failed; do
                   test -d "$d" || continue
-                  for f in "$d"/sanitizer/* "$d"/*.log; do
+                  for f in "$d"/*.log; do
                           test -f "$f" || continue
                           echo "===== $f ====="
                           sudo tail -n 200 "$f"
+                          sudo grep -aE -A 30 \
+                              'ERROR: (Address|Leak|Memory|Thread)Sanitizer|runtime error:' \
+                              "$f" || true
                   done
           done
 
