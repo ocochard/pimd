@@ -44,10 +44,12 @@
  * Helper macros
  */
 #define is_uv_subnet(src, v) \
-    (src & v->uv_subnetmask) == v->uv_subnet && ((v->uv_subnetmask == 0xffffffff) || (src != v->uv_subnetbcast))
+    ((((src) & (v)->uv_subnetmask) == (v)->uv_subnet) && \
+     (((v)->uv_subnetmask == 0xffffffff) || ((src) != (v)->uv_subnetbcast)))
 
-#define is_pa_subnet(src, v) \
-    (src & p->pa_subnetmask) == p->pa_subnet && ((p->pa_subnetmask == 0xffffffff) || (src != p->pa_subnetbcast))
+#define is_pa_subnet(src, p) \
+    ((((src) & (p)->pa_subnetmask) == (p)->pa_subnet) && \
+     (((p)->pa_subnetmask == 0xffffffff) || ((src) != (p)->pa_subnetbcast)))
 
 /*
  * Exported variables.
@@ -545,8 +547,7 @@ static void stop_vif(vifi_t vifi)
 	v->uv_pim_neighbor_dr = NULL;
     }
 
-    /* TODO: currently not used */
-   /* The Access Control List (list with the scoped addresses) */
+    /* The `scoped' RFC 2365 forwarding boundaries, read by scoped_addr() */
     while (v->uv_acl) {
 	acl = v->uv_acl;
 	v->uv_acl = acl->acl_next;
@@ -1039,10 +1040,12 @@ vifi_t find_vif_direct(uint32_t src)
 	if (is_uv_subnet(src, v))
 	    return vifi;
 
-	/* Check the extra subnets for this vif */
-	/* TODO: don't think currently pimd can handle extra subnets */
+	/* Check the extra subnets for this vif: the aliases
+	 * config_vifs_from_kernel() found on the interface and the
+	 * `altnet' subnets pimd.conf named, either of which puts a
+	 * source on this link without the VIF owning its subnet. */
 	for (p = v->uv_addrs; p; p = p->pa_next) {
-	    if (is_pa_subnet(src, v))
+	    if (is_pa_subnet(src, p))
 		return vifi;
 	}
 
@@ -1072,7 +1075,7 @@ vifi_t local_address(uint32_t src)
     struct uvif *v;
 
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
-	/* TODO: XXX: what about VIFF_TUNNEL? */
+	/* No VIFF_TUNNEL test, and none needed: see vif.h, nothing sets it */
 	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER))
 	    continue;
 
@@ -1103,7 +1106,7 @@ vifi_t find_vif_direct_local(uint32_t src, int rib)
     struct rpfctl rpf;
 
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
-	/* TODO: XXX: what about VIFF_TUNNEL? */
+	/* The VIFF_TUNNEL below is vestigial: see vif.h, nothing sets it */
 	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_TUNNEL))
 	    continue;
 
@@ -1113,10 +1116,12 @@ vifi_t find_vif_direct_local(uint32_t src, int rib)
 	if (is_uv_subnet(src, v))
 	    return vifi;
 
-	/* Check the extra subnets for this vif */
-	/* TODO: don't think currently pimd can handle extra subnets */
+	/* Check the extra subnets for this vif: the aliases
+	 * config_vifs_from_kernel() found on the interface and the
+	 * `altnet' subnets pimd.conf named, either of which puts a
+	 * source on this link without the VIF owning its subnet. */
 	for (p = v->uv_addrs; p; p = p->pa_next) {
-	    if (is_pa_subnet(src, v))
+	    if (is_pa_subnet(src, p))
 		return vifi;
 	}
 
@@ -1148,8 +1153,8 @@ uint32_t max_local_address(void)
     uint32_t max_address = 0;
 
     for (vifi = 0, v = uvifs; vifi < numvifs; ++vifi, ++v) {
-	/* Count vif if not DISABLED or DOWN */
-	/* TODO: XXX: What about VIFF_TUNNEL? */
+	/* Count vif if not DISABLED, DOWN or the register vif.  No
+	 * VIFF_TUNNEL test, and none needed: see vif.h, nothing sets it */
 	if (v->uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER))
 	    continue;
 

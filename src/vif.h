@@ -241,7 +241,15 @@ struct uvif {
     int             uv_ifindex;     /* because RTNETLINK returns only index */
 };
 
-/* TODO: define VIFF_KERNEL_FLAGS */
+/* The kernel's own vif flags, as opposed to the daemon's private ones below.
+ * Neither is reachable here: nothing in pimd ever sets VIFF_TUNNEL on a
+ * uv_flags -- there is no tunnel keyword in pimd.conf, and the kernels that
+ * still define the flag call it a no-op -- and VIFF_SRCRT is obsolete, so
+ * uvif_to_vifctl() in kern.c hands the kernel neither.  Every
+ * `uv_flags & VIFF_TUNNEL' in this tree is therefore false, and the filters
+ * that name it exclude nothing.  The macro has no users; it is kept here
+ * beside the flags it names.
+ */
 #define VIFF_KERNEL_FLAGS	(VIFF_TUNNEL | VIFF_SRCRT)
 #ifndef VIFF_REGISTER
 #define VIFF_REGISTER           0x000004       /* Missing on OpenBSD        */
