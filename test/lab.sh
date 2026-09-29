@@ -7710,7 +7710,13 @@ check_fuzz() {
 	fi
 
 	print "5. It is still the same process"
-	if wait_for 10 pimd_is_up r1; then
+	# 30s, the budget every other liveness check in this file gets, and
+	# not the 10 this one had: the answer comes from a daemon that has
+	# just been handed four thousand mutants, and under a sanitizer in a
+	# VM inside a runner that is where the scheduled Sanitizers run of
+	# 2026-09-24 failed -- with no sanitizer report from any daemon, and
+	# not reproducible on a workstation at that commit or at any since.
+	if wait_for 30 pimd_is_up r1; then
 		ok "r1: pimd still answers on its pimctl socket"
 	else
 		fail "r1: pimd stopped answering, see $WORKDIR/r1.log"
