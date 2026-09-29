@@ -103,21 +103,32 @@ static int group_accepted_on(struct uvif *v, uint32_t group)
 }
 
 /*
- * add_leaf() builds (*,G) state only for a group that maps to an RP, so a
- * report for a group with none is recorded in uv_groups and goes no
- * further, and nothing offered that membership to PIM again until the host
- * happened to report once more -- up to a whole query interval, 125
- * seconds, later.  RFC 7761 sec. 4.5.6 has JoinDesired(*,G) follow
- * immediate_olist(*,G), local members included, the moment RP(G) exists.
- * A router that has just started is in exactly that position: its startup
- * query draws the reports within seconds, and the RP set can take a
- * Bootstrap period longer to arrive.
+ * A membership can be held with no routing entry behind it, and until this
+ * ran nothing ever came back to it: the host's next report was the only
+ * repair, up to a whole query interval, 125 seconds, away.  Two ways in, and
+ * a caller for each.
  *
- * So when a group range gains an RP, add_rp_grp_entry() calls this, and
- * every ASM membership is offered to add_leaf() again, which ignores the
- * ones it already holds.  From a zero-delay callout rather than at once,
- * because the caller is in the middle of parsing a Bootstrap, and the Joins
- * a new leaf sends would go out through the same send buffer.
+ * add_leaf() builds (*,G) state only for a group that maps to an RP, so a
+ * report for a group with none is recorded in uv_groups and goes no further.
+ * RFC 7761 sec. 4.5.6 has JoinDesired(*,G) follow immediate_olist(*,G),
+ * local members included, the moment RP(G) exists.  A router that has just
+ * started is in exactly that position: its startup query draws the reports
+ * within seconds, and the RP set can take a Bootstrap period longer to
+ * arrive.  So add_rp_grp_entry() calls this when a group range gains an RP.
+ *
+ * The other way in wants no RP at all.  find_route() cannot build an entry
+ * for a source whose RPF neighbour is not a PIM neighbour yet --
+ * create_srcentry() (src/mrt.c) refuses while set_incoming() has nobody to
+ * make the upstream -- so a report that arrives before the first Hello from
+ * the router towards the source leaves the membership with nothing behind
+ * it.  So receive_pim_hello() calls this when an adjacency comes up.
+ *
+ * Every membership is offered to add_leaf() again, which ignores the ones it
+ * already holds, and an SSM group is offered one per source, a source being
+ * what such a membership names and what (S,G) state is built from.  From a
+ * zero-delay callout rather than at once, because a caller can be in the
+ * middle of parsing a Bootstrap or a Hello, and the Joins a new leaf sends
+ * would go out through the same send buffer.
  */
 static void resync_leaves(void *arg __attribute__((unused)))
 {
@@ -130,8 +141,15 @@ static void resync_leaves(void *arg __attribute__((unused)))
 	    continue;
 
 	for (g = v->uv_groups; g; g = g->al_next) {
-	    if (IN_PIM_SSM_RANGE(g->al_addr))
+	    if (IN_PIM_SSM_RANGE(g->al_addr)) {
+		struct listaddr *s;
+
+		for (s = g->al_sources; s; s = s->al_next)
+		    add_leaf(vifi, s->al_addr, g->al_addr);
+
 		continue;
+	    }
+
 	    add_leaf(vifi, INADDR_ANY_N, g->al_addr);
 	}
     }

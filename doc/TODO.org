@@ -263,41 +263,25 @@ half that was measured and found cheap.
    - accept_group_report():
      * add a leaf if DR or forwarder (currently only if DR)???
      * An SSM membership reported before the RPF neighbour toward the source is
-       up leaves no forwarding state behind, and pimd never retries it.  The
-       membership is taken, add_leaf() is called for it, and
-       find_route(source, group, MRTF_SG, CREATE) answers NULL, so there is no
-       (S,G) and no oif: show igmp holds the source while show mrt is empty.
-       Measured on the ssm lab 2026-09-29 with -d igmp,mrt,rpf, the two lines
-       being consecutive:
-
-         For src 10.0.1.10, iif is epair123b, next hop router is 10.0.23.2: NOT A PIM ROUTER
-         find_route: no source entry for 10.0.1.10, return NULL
-
-       So it is create_srcentry() (src/mrt.c) giving up because
-       set_incoming(node, PIM_IIF_SOURCE) answered FALSE, and that FALSE is
-       the last of its four returns: the route to the source is there and its
-       next hop is known, and that next hop is not a PIM neighbour *yet* --
-       show neighbor is empty at that instant, the report having arrived
-       before the first Hello from R2.
-       Nothing then rebuilds it.  resync_leaves() (src/igmp_proto.c) is the
-       only thing that re-offers a held membership to PIM and it skips the SSM
-       range by name; a new neighbour runs refresh_upstream_joins(), which
-       walks the entries that exist, and there is none.  What recovers it is
-       the host reporting again, which a real host does on every General Query
-       -- so the cost in the field is up to a query interval of no traffic,
-       not a permanent hole.  In the labs it is permanent, test/igmpv3.c
-       sending one report and stopping, which is why nothing here has ever
-       asserted that an SSM group is forwarded: ssm and ssm-range assert IGMP
-       state only.
-       S1 of doc/rfc7761-compliance.md was the suspicion and is NOT the cause:
-       the invented 169.254.0.1 RP is unroutable, but the refusal above is the
-       source entry and not the RP, and find_route()'s "no RP for group" line
-       never fires for these groups.  Do not re-suspect it.
-       The fix to weigh is letting resync_leaves() re-offer SSM memberships,
-       per source, and calling it when an adjacency comes up rather than only
-       when a prefix gains its first RP.  That also gives the ssm scenario a
-       way to assert forwarding, which is what a test for the (S,G) leaf fix
-       of 2026-09-29 needed and could not get.
+       up used to leave no forwarding state behind, and pimd never came back to
+       it: find_route(..., MRTF_SG, CREATE) answered NULL because
+       create_srcentry() gives up on a FALSE from set_incoming(), which had no
+       PIM neighbour to make the upstream, and resync_leaves() -- the one thing
+       that re-offers a held membership -- skipped the SSM range by name.
+       Fixed 2026-09-29: resync_leaves() offers an SSM group one membership per
+       source, and receive_pim_hello() calls it when an adjacency comes up, not
+       only add_rp_grp_entry() when a range gains an RP.  Step 8 of the ssm
+       scenario is the regression test and it discriminates: it stops R2's pimd
+       so R3 loses the neighbour while keeping the route, reports one source,
+       asserts the membership is held with nothing forwarded, and then brings R2
+       back and asserts the state appears with no second report -- which failed
+       before the fix and passes after it.
+       S1 of doc/rfc7761-compliance.md was the suspicion and was NOT the cause:
+       the invented 169.254.0.1 RP is unroutable, but the refusal was the source
+       entry and never the RP.  Do not re-suspect it.
+       Still open beside it: the same hole for an ASM membership reported before
+       the adjacency, which the same two callers now cover, and which nothing
+       asserts.
    - accept_leave_message():
      * send immediately PIM prune message if the last member has left
      * A blocked SSM source keeps its outgoing interface.  The membership goes

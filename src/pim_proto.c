@@ -430,6 +430,15 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
     /* A new neighbour has come up, let it know we exist too */
     trigger_hello(vifi, new_nbr);
 
+    /* And offer it the memberships this router already holds.  One that
+     * was reported before this neighbour existed may have no routing
+     * entry at all: find_route() cannot build one for a source whose RPF
+     * neighbour is not a PIM neighbour yet, and until now nothing came
+     * back to such a membership -- the host's next report was the only
+     * repair.  resync_leaves() (src/igmp_proto.c) has the argument.
+     */
+    igmp_resync_leaves();
+
   election:
     if (restart_dr_election(v)) {
 	/* I was the DR, but not anymore. Remove all register_vif from
@@ -459,8 +468,12 @@ int receive_pim_hello(uint32_t src, uint32_t dst __attribute__((unused)), char *
     }
 
     /*
-     * TODO: XXX: does a new neighbor change any routing entries info?
-     * Need to trigger joins?
+     * It does change routing entry info, and both halves are handled above
+     * rather than here: a membership that had no entry to go with it is
+     * offered again by the igmp_resync_leaves() after the triggered Hello,
+     * and an entry that exists is re-Joined by the refresh_upstream_joins()
+     * on the path that brought us here, which is what RFC 7761 sec. 4.5.4
+     * asks for when RPF'(*,G)'s GenID changes.
      */
 
     return TRUE;

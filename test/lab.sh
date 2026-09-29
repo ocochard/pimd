@@ -1600,6 +1600,18 @@ SETTLE=${SETTLE:-45}
 # forwarding.
 SSM_QUERY_INTERVAL=${SSM_QUERY_INTERVAL:-5}
 SSM_TIMEOUT=${SSM_TIMEOUT:-25}
+# R3's side of the receiver LAN, the interface the (S,G) entries forward
+# onto, and a third source used by the last step alone so that it starts
+# from a membership nothing else in the scenario has touched.
+SSM_RCV_IF=${SSM_RCV_IF:-${EP}203a}
+# R2's address on the R3 link: the PIM neighbour R3 reaches every source
+# through, and the one the last step takes away and gives back.
+SSM_UP_NBR=${SSM_UP_NBR:-10.0.23.2}
+# ... and a group of its own with it: assertion 5 fills $GROUP's source list
+# to IGMP_MAX_SOURCES on purpose, so a source added to that group after it
+# is refused by the cap rather than by anything this is about.
+SSM_SRC3=${SSM_SRC3:-10.0.1.12}
+SSM_GRP3=${SSM_GRP3:-232.1.1.3}
 SSM_SRC1=${SSM_SRC1:-10.0.1.10}
 SSM_SRC2=${SSM_SRC2:-10.0.1.11}
 SSM_MAX_SOURCES=${SSM_MAX_SOURCES:-256}
@@ -3988,6 +4000,11 @@ route_iif() {
 # call, which is what wait_for() needs.
 route_iif_is() { [ "$(route_iif "$1" "$2" "$3")" = "$4" ]; }
 route_oif_has() { map_isset "$1" "$2" "$(route_oifs "$1" "$3" "$4")"; }
+
+# Its negative, spelled out because wait_for() takes a command and not a "!".
+# An entry that does not exist answers yes, route_oifs() printing nothing for
+# it, which is what "forwards nothing for this source" has to mean here.
+route_oif_gone() { ! route_oif_has "$1" "$2" "$3" "$4"; }
 
 # PIM registers R3 has decapsulated so far.  One per data packet means the
 # RP never got off the register vif; a handful means it register-stopped
@@ -8104,6 +8121,59 @@ check_ssm() {
 	else
 		ok "r1 keeps the register vif out of the oifs of an SSM source"
 	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# A membership can be taken with nothing behind it, and the router has
+	# to come back to it by itself.  R3 reaches every source of this
+	# scenario through R2, so stopping R2's pimd takes away the PIM
+	# neighbour that set_incoming() needs as the upstream while leaving the
+	# route to the sources in place, and find_route() then refuses to build
+	# an (S,G) at all -- create_srcentry() (src/mrt.c) gives up on that
+	# FALSE.  The report below is therefore held as a membership and
+	# forwards nothing, which is the control.
+	#
+	# What used to happen next is nothing: resync_leaves()
+	# (src/igmp_proto.c) skipped the SSM range, so the only repair was the
+	# host reporting again -- up to a query interval away for a real host,
+	# and never for test/igmpv3.c, which sends one report and stops.  That
+	# is why one report is all this sends: a second would build the state
+	# whether or not the daemon can do it on its own.
+	#
+	# R2 going away is deliberate rather than the startup race that turned
+	# this up.  pimd says goodbye with a zero-holdtime Hello on the way out
+	# (cleanup(), src/main.c), so R3 drops the neighbour at once instead of
+	# waiting out the holdtime, and the window is the membership timeout.
+	print "8. A membership held with no upstream neighbour is built when one appears"
+	stop_one_pimd r2
+	if wait_for 30 ssm_nbr_gone; then
+		ok "R3 lost its PIM neighbour $SSM_UP_NBR, nothing left to be an upstream"
+	else
+		fail "R3 still has $SSM_UP_NBR, so find_route() would build the entry anyway"
+		start_pimd r2
+		return 1
+	fi
+
+	group_report "$SSM_GRP3" -t allow "$SSM_SRC3"
+	if wait_for 15 ssm_held_unforwarded "$SSM_SRC3" "$SSM_GRP3"; then
+		ok "R3 holds ($SSM_SRC3,$SSM_GRP3) as a membership and forwards nothing for it"
+	else
+		fail "R3 did not take the membership, or forwarded it with no upstream:" \
+		     "sources [$(group_sources "$SSM_GRP3" | tr '\n' ' ')]"
+		start_pimd r2
+		return 1
+	fi
+
+	start_pimd r2
+	if ! wait_for 30 pimd_is_up r2; then
+		fail "r2 did not come back, so nothing can bring the adjacency up"
+		return 1
+	fi
+	if wait_for 30 route_oif_has r3 "$SSM_RCV_IF" "$SSM_SRC3" "$SSM_GRP3"; then
+		ok "and forwards it onto $SSM_RCV_IF once the adjacency is back, with no second report"
+	else
+		fail "R3 never forwarded ($SSM_SRC3,$SSM_GRP3): the membership it was holding" \
+		     "was never offered to PIM again"
+	fi
 
 	result
 }
@@ -8208,6 +8278,14 @@ ssm_sources() {
 group_has_any() {
 	pimctl r3 -t show igmp 2>/dev/null | \
 		awk -v grp="$1" '$2 == grp && $3 == "ANY" { found = 1 } END { exit !found }'
+}
+
+# For wait_for(): R3 has lost the PIM neighbour towards the sources, and R3
+# holds a membership for a source without forwarding anything for it.
+ssm_nbr_gone() { ! has_neighbor r3 "$SSM_UP_NBR"; }
+ssm_held_unforwarded() {
+	group_sources "$2" | grep -qx "$1" && \
+	route_oif_gone r3 "$SSM_RCV_IF" "$1" "$2"
 }
 
 # For wait_for(), which needs a command that returns a status

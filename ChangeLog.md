@@ -656,6 +656,20 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A membership pimd is already holding is offered to PIM again when an adjacency
+  comes up, and an SSM group is offered one per source.  `find_route()` cannot
+  build an entry for a source whose RPF neighbour is not a PIM neighbour yet --
+  `create_srcentry()` gives up on that -- so a report that arrived before the
+  first Hello from the router towards the source was recorded as a membership
+  with no routing entry and no outgoing interface behind it.  Nothing then came
+  back to it: `resync_leaves()` was called only when a group range gained an RP,
+  and it skipped the SSM range by name, so the repair was the host reporting
+  again, up to a query interval later.  It now walks the sources of an SSM group,
+  and `receive_pim_hello()` calls it for a neighbour that is new or has rebooted,
+  which is half of the answer to the question left open at the end of that
+  function.  Step 8 of the `ssm` scenario in `test/lab.sh` is the regression
+  test, and the same gap for an any-source membership is covered by the same two
+  callers
 - A membership for one SSM source no longer decides what the router forwards for
   the others.  `add_leaf()` and `delete_leaf()` (`src/route.c`) finished by
   walking every (S,G) of the group and setting or clearing the receiving
