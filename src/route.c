@@ -404,8 +404,10 @@ int set_incoming(srcentry_t *src, int type)
 
 
 /*
- * TODO: XXX: currently `source` is not used. Will be used with IGMPv3 where
- * we have source-specific Join/Prune.
+ * One local membership, learned by igmp_proto.c.  `source' is INADDR_ANY for
+ * an any-source membership, which is (*,G) state every source of the group
+ * inherits, and a real address for a group in the SSM range, where it names
+ * the one (S,G) the membership is for and no other.
  */
 void add_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 {
@@ -491,10 +493,28 @@ void add_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 	}
     }
 
-    /* Check all (S,G) entries and set the inherited "leaf" flag.
-     * TODO: XXX: This won't work for IGMPv3, because there we don't know
-     * whether the (S,G) leaf oif was inherited from the (*,G) entry or
-     * was created by source specific IGMP join.
+    /* A membership in the SSM range named one source, and the entry it named
+     * is the one handled above.  RFC 7761 sec. 4.1.6 builds pim_include(S,G)
+     * from local_receiver_include(S,G,I), "local members on interface I
+     * desire to receive traffic sent specifically by S", so no other source's
+     * (S,G) may take this interface: the inheritance below is (*,G) state and
+     * would hand it to every source of the group, and install a kernel MFC
+     * entry for each, so traffic a LAN never asked for reached it and stayed
+     * until a leave.  What is wanted here is that MFC entry for this one
+     * source -- an (S,G) needs no cache miss to install one, unlike a group
+     * on the shared tree.
+     */
+    if (flags & MRTF_SG) {
+	add_kernel_cache(mrt, mrt->source->address, mrt->group->group, MFC_MOVE_FORCE);
+	k_chg_mfc(igmp_socket, mrt->source->address, mrt->group->group,
+		  mrt->incoming, mrt->oifs, mrt->source->address);
+
+	return;
+    }
+
+    /* Check all (S,G) entries and set the inherited "leaf" flag: a (*,G)
+     * membership asks for every source of the group, so each (S,G) of it
+     * forwards where the (*,G) does.
      */
     for (srcs = mrt->group->mrtlink; srcs; srcs = srcs->grpnext) {
 	PIMD_VIFM_COPY(srcs->leaves, new_leaves);
@@ -505,19 +525,12 @@ void add_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 			  srcs->pruned_oifs,
 			  new_leaves,
 			  srcs->asserted_oifs, 0);
-	/* In the case of SG entry we can create MFC directy without waiting for cache miss. */
-	if (flags & MRTF_SG) {
-	    add_kernel_cache(srcs, srcs->source->address, srcs->group->group, MFC_MOVE_FORCE);
-	    k_chg_mfc(igmp_socket, srcs->source->address, srcs->group->group,
-		      srcs->incoming, srcs->oifs, srcs->source->address);
-	}
     }
 }
 
 
 /*
- * TODO: XXX: currently `source` is not used. To be used with IGMPv3 where
- * we have source-specific joins/prunes.
+ * The membership above going away, `source' meaning what it means there.
  */
 void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 {
@@ -567,10 +580,17 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 	*/
     }
 
-    /* Check all (S,G) entries and clear the inherited "leaf" flag.
-     * TODO: XXX: This won't work for IGMPv3, because there we don't know
-     * whether the (S,G) leaf oif was inherited from the (*,G) entry or
-     * was created by source specific IGMP join.
+    /* The membership that went named one source, so the entry cleared above is
+     * the only one that may lose this interface; add_leaf() has the argument.
+     * Clearing every (S,G) of the group here took it away from sources that
+     * still had a member on this link, and nothing put it back before their
+     * next report -- resync_leaves() (src/igmp_proto.c) skips the SSM range.
+     */
+    if (IN_PIM_SSM_RANGE(group))
+	return;
+
+    /* Check all (S,G) entries and clear the inherited "leaf" flag, the
+     * counterpart of the (*,G) inheritance in add_leaf().
      */
     for (srcs = mrt->group->mrtlink; srcs; srcs = srcs->grpnext) {
 	PIMD_VIFM_COPY(srcs->leaves, new_leaves);

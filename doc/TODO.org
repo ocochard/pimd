@@ -262,8 +262,24 @@ half that was measured and found cheap.
 ** igmp_proto.c:
    - accept_group_report():
      * add a leaf if DR or forwarder (currently only if DR)???
+     * The first source of an SSM group nobody had yet gets a membership and
+       no forwarding state.  The add_leaf() call is on the path where the
+       group already exists; the path that creates the group returns before
+       it, so (S,G) state waits for a later report.  Found 2026-09-29 while
+       trying to write a lab step for the SSM leaf fix, and it is one of the
+       two reasons that step could not be made to discriminate.
+     * An SSM membership that arrives before the router can resolve the group
+       builds no (S,G) at all -- find_route() answers NULL and add_leaf()
+       returns -- and nothing retries it: resync_leaves() deliberately skips
+       the SSM range, so the membership sits in uv_groups with no forwarding
+       state behind it until the host reports again.  Same date, same reason.
    - accept_leave_message():
      * send immediately PIM prune message if the last member has left
+     * A blocked SSM source keeps its outgoing interface.  The membership goes
+       (pimctl show igmp loses the source) and the oif list of its (S,G) still
+       names the receiver's link, measured on the ssm lab 2026-09-29.  Whether
+       delete_leaf() is reached for that source at all is the thing to find
+       out first.
 
 ** main.c
    - main():

@@ -648,6 +648,21 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A membership for one SSM source no longer decides what the router forwards for
+  the others.  `add_leaf()` and `delete_leaf()` (`src/route.c`) finished by
+  walking every (S,G) of the group and setting or clearing the receiving
+  interface in all of them.  That is right for an any-source membership, which
+  is (\*,G) state every source of the group inherits, and wrong inside the SSM
+  range, where the membership names one source: RFC 7761 sec. 4.1.6 builds
+  `pim_include(S,G)` from `local_receiver_include(S,G,I)`, "local members on
+  interface I desire to receive traffic sent specifically by S".  So a join for
+  one source put every other source of the group onto that link, with a kernel
+  MFC entry each, and traffic nobody asked for was delivered until a leave; and
+  a leave for one source took the link away from the others, whose members were
+  still there and still asking, with nothing to restore it before their next
+  report -- `resync_leaves()` skips the SSM range.  Reasoned from the code and
+  the RFC rather than reproduced: `doc/TODO.org` records the two further bugs in
+  the IGMP path that stopped a lab scenario from telling the fix from the bug
 - A neighbour that goes away no longer leaves a freed pointer in the RP entry
   that was reaching the RP through it.  `set_incoming()` (`src/route.c`) has four
   returns and three of them clear `upstream`; the fourth, taken when the kernel
