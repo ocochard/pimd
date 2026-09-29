@@ -1041,8 +1041,8 @@ stream() {
 	st_group=$6
 	st_log=$7
 
-	box_run "$st_rbox" "$MPING" -r -i "$st_rif" -t 5 -W 300 "$st_group" \
-		> "$WORKDIR/receiver.log" 2>&1 &
+	box_bg "$st_rbox" "$MPING" -r -i "$st_rif" -t 5 -W 300 "$st_group" \
+		> "$WORKDIR/receiver.log" 2>&1
 	st_receiver=$!
 	sleep 2
 

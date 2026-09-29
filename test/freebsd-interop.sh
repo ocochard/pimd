@@ -810,6 +810,13 @@ set_scenario() {
 
 jname() { echo "$JAIL_PREFIX$1"; }
 jrun() { j=$1; shift; ${SUDO} jexec "$(jname "$j")" "$@"; }
+
+# A jrun whose PID is signalled later.  A background job of a shell function
+# is a fork of the shell, so $! would name that fork rather than the command,
+# and a kill would stop the intermediate while the command ran on.  The
+# subshell execs and so does jexec, so $! is the command itself -- see box_bg
+# in test/lab-linux.sh, where that fork outlived a kill.
+jbg() { j=$1; shift; ( exec ${SUDO} jexec "$(jname "$j")" "$@" ) & }
 pimctl() { j=$1; shift; jrun "$j" "$PIMCTL" -u "$WORKDIR/$j.sock" "$@"; }
 
 ifaces() {
@@ -2058,8 +2065,8 @@ check_pimd_rp() {
 	# router and EOS builds the Join.  The assertion is on R1's own
 	# outgoing list: the interface towards the Arista can only be in it
 	# because pimd believed a Join built by EOS.
-	jrun ed4 "$MPING" -r -i "$ED4_IF" -t 5 -W 180 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	jbg ed4 "$MPING" -r -i "$ED4_IF" -t 5 -W 180 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 
 	if wait_for 90 joined_on r1 ${EP}812b "$GROUP"; then
@@ -2193,11 +2200,11 @@ establish_election() {
 	# while data is arriving now, so the order no longer decides anything;
 	# it is kept because a sub-case that has to wait out an election it did
 	# not set up is slower and harder to read.
-	jrun ed6 "$MPING" -r -i "$AL_ED6_IF" -p "$AL_JOIN_PORT6" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
-		>"$WORKDIR/joiner6.log" 2>&1 &
+	jbg ed6 "$MPING" -r -i "$AL_ED6_IF" -p "$AL_JOIN_PORT6" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/joiner6.log" 2>&1
 	joiner6=$!
-	jrun ed2 "$MPING" -r -i "$AL_ED2_IF" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	jbg ed2 "$MPING" -r -i "$AL_ED2_IF" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 
 	# R3 has to know about ED6 before the first packet, or the SPTbit
@@ -2209,8 +2216,8 @@ establish_election() {
 		return 1
 	fi
 
-	jrun ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$AL_STREAM_PKTS" -w "$AL_STREAM_LIFE" "$GROUP" \
-		>"$WORKDIR/sender.log" 2>&1 &
+	jbg ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$AL_STREAM_PKTS" -w "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/sender.log" 2>&1
 	sender=$!
 
 	# The metric sub-cases need R3 on the shortest path tree before it is
@@ -2255,8 +2262,8 @@ establish_election() {
 	# Now the second forwarder.  add_leaf() (src/route.c) only lets the DR
 	# act on an IGMP report, and the Arista is the DR here, so ED3's report
 	# gives it a leaf and gives nobody else one.
-	jrun ed3 "$MPING" -r -i "$AL_ED3_IF" -p "$AL_JOIN_PORT" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
-		>"$WORKDIR/joiner.log" 2>&1 &
+	jbg ed3 "$MPING" -r -i "$AL_ED3_IF" -p "$AL_JOIN_PORT" -t 5 -W "$AL_STREAM_LIFE" "$GROUP" \
+		>"$WORKDIR/joiner.log" 2>&1
 	joiner=$!
 
 	if ! wait_for "$AL_FWD_WAIT" election_settled; then
@@ -2798,8 +2805,8 @@ check() {
 	# (*,G) Join up the shared tree.  The assertion is on the Arista's
 	# own mroute table: the oif can only be there because it believed a
 	# Join built by src/pim_proto.c.
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 180 "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	jbg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 180 "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
 
 	if wait_for 90 eos_has_mroute "$GROUP"; then
@@ -2868,12 +2875,12 @@ eos_has_sg() {
 # rather than from the sender's replies: a reply needs the way back as well,
 # and that is a second exchange with a set of its own to go wrong.
 an_stream() {
-	jrun "$4" timeout "$6" "$MPING" -r -i "$5" -t 5 -c 5 "$3" \
-		>"$WORKDIR/an-receiver-$3.log" 2>&1 &
+	jbg "$4" timeout "$6" "$MPING" -r -i "$5" -t 5 -c 5 "$3" \
+		>"$WORKDIR/an-receiver-$3.log" 2>&1
 	an_rcv=$!
 	sleep 3
-	jrun "$1" "$MPING" -s -i "$2" -t 5 -c "$STREAM_PKTS" -w 120 "$3" \
-		>"$WORKDIR/an-sender-$3.log" 2>&1 &
+	jbg "$1" "$MPING" -s -i "$2" -t 5 -c "$STREAM_PKTS" -w 120 "$3" \
+		>"$WORKDIR/an-sender-$3.log" 2>&1
 	an_snd=$!
 	an_rc=0
 	wait "$an_rcv" || an_rc=$?
@@ -3071,7 +3078,7 @@ eos_sg_anycast() {
 # Null-Register, empty for a data Register whose inner packet is the IP
 # header alone.
 an_pimsend() {
-	jrun ed4 timeout 30 "$MPING" -r -i "$ED4_IF" -t 5 -W 30 "$1" >/dev/null 2>&1 &
+	jrun ed4 timeout 30 "$MPING" -r -i "$ED4_IF" -t 5 -W 30 "$1" >/dev/null 2>&1
 	an_join=$!
 	sleep 5
 	# shellcheck disable=SC2086
@@ -3209,11 +3216,11 @@ check_rpt_override() {
 		fail "R3 never learned RP $RP_ADDR from the Arista"
 		return 1
 	fi
-	jrun ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W "$((RO_STREAM_PKTS + 60))" "$GROUP" \
-		>"$WORKDIR/receiver.log" 2>&1 &
+	jbg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W "$((RO_STREAM_PKTS + 60))" "$GROUP" \
+		>"$WORKDIR/receiver.log" 2>&1
 	receiver=$!
-	jrun ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$RO_STREAM_PKTS" \
-		-w "$((RO_STREAM_PKTS + 60))" "$GROUP" >"$WORKDIR/sender.log" 2>&1 &
+	jbg ed1 "$MPING" -s -i "$ED1_IF" -t 5 -c "$RO_STREAM_PKTS" \
+		-w "$((RO_STREAM_PKTS + 60))" "$GROUP" >"$WORKDIR/sender.log" 2>&1
 	sender=$!
 	# wait_for() counts attempts, and each of these takes $RO_WINDOW seconds
 	if wait_for 24 stream_reaches_r3; then
