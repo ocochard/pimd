@@ -449,8 +449,13 @@ owns. On FreeBSD (`ci-freebsd.yml`) it is the only thing in CI that puts a secon
 the routing socket and the jail backend, and it needs `net/frr10` 10.7.1_1 or newer, that being the
 revision of the port that builds FRR's pimd at all -- 10.7.1 installs the daemons in `sbin` without
 it. The job switches the VM from quarterly to the latest repository, asks `pkg version -t` what it
-got, and skips with a line saying so rather than failing on a package no commit here can move; it
-starts running by itself once the builders catch up.
+got, and skips with a line saying so rather than failing on a package no commit here can move. The
+builders have caught up: since 2026-09-29 the job installs `frr10-10.7.1_1` from that repository and
+runs all three scenarios, so what had only ever been asserted against FRR on Linux is asserted on
+the routing socket and the jail backend too -- `pimd-rp` there has FRR's own Registers decapsulated
+by a FreeBSD kernel, and `autorp` is pimd's Auto-RP against a parser that is not pimd's, in both the
+announcing and the mapping-agent role.  Keep the skip: a quarterly VM or a repository that moves
+backwards lands on it again, and nothing in this tree can move a package.
 
 Two things about FRR shape the rest: an FRR that is itself the BSR never puts its own Candidate-RP
 into the Bootstrap it originates (measured -- its database stays empty and the Bootstrap carries no
