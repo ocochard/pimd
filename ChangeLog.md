@@ -7,6 +7,14 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- `find_route()` says why it refused when it is asked to create an entry, as it
+  already did when it was not.  Five returns of `NULL` on the creating path --
+  no group entry, no RP for the group, no source entry, no (S,G), no (\*,G) --
+  were silent, so a caller that got nothing back had nothing to go on: an IGMP
+  membership accepted with no forwarding state behind it looked exactly like one
+  that had been forwarded, from the outside and from the logs.  One
+  `IF_DEBUG(DEBUG_MRT)` line each, and it is what identified the SSM case now in
+  `doc/TODO.org`
 - A sanitizer report from the half of a separated pimd that parses the wire is no
   longer thrown away.  `SANITIZE=yes` in `test/lab.sh` gave each daemon an
   `ASAN_OPTIONS=log_path`, and the unprivileged half is `chroot()`ed into a

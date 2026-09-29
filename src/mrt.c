@@ -211,8 +211,13 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 
     if (flags & (MRTF_SG | MRTF_WC)) {
 	grp = create_grpentry(group);
-	if (!grp)
+	if (!grp) {
+	    IF_DEBUG(DEBUG_MRT)
+		logit(LOG_DEBUG, 0, "%s: no group entry for %s, return NULL",
+		      __func__, inet_fmt(group, s1, sizeof(s1)));
+
 	    return NULL;
+	}
 
 	if (IN_PIM_SSM_RANGE(group)) {
 	    if (rp_match(group) == (rpentry_t *) NULL) {
@@ -229,6 +234,10 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	if (!grp->active_rp_grp) {
 	    rp_grp = rp_grp_match(group);
 	    if (!rp_grp) {
+		IF_DEBUG(DEBUG_MRT)
+		    logit(LOG_DEBUG, 0, "%s: no RP for group %s, return NULL",
+			  __func__, inet_fmt(group, s1, sizeof(s1)));
+
 		if (!grp->mrtlink && !grp->grp_route)
 		    /* New created grpentry. Delete it. */
 		    delete_grpentry(grp);
@@ -256,6 +265,10 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	/* Setup the (*,G) routing entry */
 	mrt_wc = create_mrtentry(NULL, grp, MRTF_WC);
 	if (!mrt_wc) {
+	    IF_DEBUG(DEBUG_MRT)
+		logit(LOG_DEBUG, 0, "%s: no (*,G) entry for (*,%s), return NULL",
+		      __func__, inet_fmt(group, s1, sizeof(s1)));
+
 	    if (!grp->mrtlink)
 		/* New created grpentry. Delete it. */
 		delete_grpentry(grp);
@@ -285,6 +298,10 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	/* Setup the (S,G) routing entry */
 	src = create_srcentry(source);
 	if (!src) {
+	    IF_DEBUG(DEBUG_MRT)
+		logit(LOG_DEBUG, 0, "%s: no source entry for %s, return NULL",
+		      __func__, inet_fmt(source, s2, sizeof(s2)));
+
 	    /* TODO: XXX: The MRTF_NEW flag check may be misleading?? check */
 	    if ((!grp->grp_route || (grp->grp_route && (grp->grp_route->flags & MRTF_NEW)))
 		&& !grp->mrtlink) {
@@ -297,6 +314,11 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 
 	mrt = create_mrtentry(src, grp, MRTF_SG);
 	if (!mrt) {
+	    IF_DEBUG(DEBUG_MRT)
+		logit(LOG_DEBUG, 0, "%s: no (S,G) entry for (%s,%s), return NULL",
+		      __func__, inet_fmt(source, s2, sizeof(s2)),
+		      inet_fmt(group, s1, sizeof(s1)));
+
 	    if ((!grp->grp_route
 		 || (grp->grp_route && (grp->grp_route->flags & MRTF_NEW)))
 		&& !grp->mrtlink) {
