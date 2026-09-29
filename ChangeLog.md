@@ -656,6 +656,20 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A cache miss for traffic that arrives on an interface this router forwards the
+  group out of sends the Assert that RFC 7761 sec. 4.6.1 asks for.  Its NoInfo
+  state answers "data arrives from S to G on I and CouldAssert(S,G,I)" by sending
+  one, and `process_cache_miss()` (`src/route.c`) did not: only
+  `process_wrong_iif()` did, and the kernel raises that upcall only once it has an
+  entry for the flow, so the Assert waited for a packet that follows one the
+  kernel had no entry for.  Both now use the same call and the same reading of
+  CouldAssert(S,G,I), an interface found in the entry's oif list, which
+  `calc_oifs()` never leaves the incoming interface in.  The window it closes is
+  narrow -- a router with an oif for the group has joined towards the source, so
+  it usually also receives the traffic on its own incoming interface, installs an
+  entry, and reaches the Assert through the wrong-iif upcall on the next packet --
+  and there is no test: which of the two copies arrives first is a race, so
+  nothing can hold the daemon to the earlier one
 - An interface that goes out of service leaves the routing table as well as the
   kernel.  `delete_vif_from_mrt()` (`src/route.c`) was a stub that returned TRUE,
   and neither `route.c` nor `mrt.c` tests `VIFF_DOWN` anywhere, so a stopped VIF

@@ -1768,7 +1768,23 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	return;			/* iif match */
     }
 
-    /* The iif doesn't match */
+    /* The iif doesn't match, and the interface it did arrive on may be one
+     * this router forwards the group out of -- two routers putting the same
+     * traffic onto one link, which is the "Data arrives from S to G on I and
+     * CouldAssert(S,G,I)" event of the NoInfo state of RFC 7761 sec. 4.6.1
+     * (`doc/rfc7761.txt:4320'), and the election is what decides which of
+     * them stops.  process_wrong_iif() answers the same event with the same
+     * call and the same approximation of CouldAssert(S,G,I) -- calc_oifs()
+     * always takes the incoming interface out of the oifs, so an interface
+     * found there is a downstream one -- and it used to be the only one that
+     * did.  A cache miss is the upcall for a packet the kernel has no entry
+     * for at all, so the Assert waited for a wrong-iif upcall, which the
+     * kernel raises only once an entry exists: one packet late for a stream,
+     * and never for a source that sent once.
+     */
+    if (PIMD_VIFM_ISSET(iif, mrt->oifs))
+	send_pim_assert(source, group, iif, mrt);
+
     if (mrt->flags & MRTF_SG) {
 	/* Arrived on wrong interface */
 	if (mrt->flags & MRTF_SPT)
