@@ -7,6 +7,24 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- A process a lab scenario stops is the one it started.  `test/lab.sh` and the
+  two interop scripts started a command inside a jail or a network namespace
+  through a shell function and kept `$!`, which names the shell's fork of the
+  function body rather than the command, so every `kill` stopped an
+  intermediate and left the command running: on Linux a receiver went on
+  holding its kernel join, and went on answering queries for a membership the
+  step had just withdrawn, until its own `-W` ran out.  Nothing asserted that a
+  process was gone until the `altnet` step that takes a boundary through a
+  membership going away and coming back, which withdraws one with an IGMPv2
+  leave and waits for it to expire -- R3 took the leave and sent the
+  group-specific query, the receiver of the step before answered it, and the
+  membership stayed.  `box_bg()` in `test/lab-linux.sh` and
+  `test/lab-freebsd.sh`, and `jbg()` in `test/freebsd-interop.sh`, which has a
+  `jrun()` of its own, background a subshell that `exec`s, `ip netns exec` and
+  `jexec` execing in turn, so `$!` is the command itself -- the chain
+  `box_daemon()` already documents for the PID file it writes.  46 call sites,
+  and not one of them was failing on FreeBSD, whose `/bin/sh` execs the single
+  command of a function body, which is the accident this stops relying on
 - An `altnet` scenario in `test/lab.sh` for the two `phyint` keywords that say
   something about addresses rather than about PIM, neither of which any
   scenario wrote into a `pimd.conf` before: `altnet`, a subnet the interface
