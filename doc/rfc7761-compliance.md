@@ -45,7 +45,7 @@ which the `rpt-bit` sub-case of `assert-lan` asks for, and the six of
 run is therefore a regression, not an expected result.
 
 Every entry below ends with a `Test:` note saying what reproduces it, and
-all but three of them say `none`: both fields of M4 are covered, so is the
+only S1's says `none`: both fields of M4 are covered, so is the
 half of A3 that pimd can be held to, by the `register-filter` scenario of
 `test/lab.sh`, and so are A4's two caps, by `crafted` and
 `keepalive`.  What the fixed entries are asserted by is named
@@ -65,9 +65,9 @@ S3 and S4 of the SSM one, T2's Join suppression, T1's override Join and
 T3's triggered Hello, R2's longer group range, R3's No-Forward bit, A1's
 neighbor list and M1's (S,G,rpt) state.
 
-What is left divides in two.  M7 and S1 are state pimd does not keep, each
-a structural change rather than a check: a traffic-driven Keepalive Timer,
-and SSM groups that carry no RP.  A3, A4 and the default half of M4
+What is left divides in two.  S1 is state pimd does not keep, a
+structural change rather than a check: SSM groups that carry no RP.  A3,
+A4 and the default half of M4
 are the ones that stay open on purpose: the first because the kernel
 decapsulates before the daemon is handed anything, the second because sec. 6.4
 describes rather than prescribes -- A4 is closed for data from a DR's own
@@ -208,7 +208,7 @@ state.*
 State machines pimd does not have
 ---------------------------------
 
-Thirteen entries this section held are fixed.  M3, the assert winner state,
+Fourteen entries this section held are fixed.  M3, the assert winner state,
 and M5, the kernel cache an assert used to be gated on, went together: the
 assert state is now per interface -- winner address, winner metric and
 Assert Timer per (S,G,I) and (\*,G,I), in `struct assert_state`
@@ -399,6 +399,46 @@ already rather than making one for every Prune(S,G) on the link; and "RPF'(S,G,r
 -> RPF'(\*,G)" has nothing to fire it, RPF'(S,G,rpt) being RPF'(\*,G) here.
 
 
+M7 is the fourteenth, and it is the one entry here that was measured before it
+was believed.  Sec. 4.2 restarts `KeepaliveTimer(S,G)` from arriving data, and
+every write to pimd's timer of that name -- `entry_timer` -- was a
+control-plane event or a kernel upcall.  Three of those cover most of the
+table between them, and the cases they cover are disjoint, which is why the
+`rpt` topology with `spt-threshold infinity` in all three `pimd.conf`s ran ten
+minutes of continuous traffic with no entry deleted on any router: a
+downstream neighbour's periodic Join refreshes an entry with an oif it asked
+for, the Register probe loop refreshes the DR's and the RP's, and an entry
+with an empty oif list has no MFC, so every packet of it is a cache miss that
+`process_cache_miss()` refreshes it from -- which is the path the `keepalive`
+scenario pins, at one upcall per packet for as long as the source sends.  What
+none of them covers is a last hop router's (S,G) whose only oif is a local
+member inherited from the (\*,G): nothing is joined downstream of it, nothing
+is registered, and it forwards in the kernel, so the only thing that ever
+restarted its timer was `switch_shortest_path()` being called again on the
+spt-threshold poll.  With an `interval` longer than `Keepalive_Period` the
+entry aged out under a source that had never stopped sending, `age_routes()`
+deleting it through its `PIMD_VIFM_LASTHOP_ROUTER` branch because those leaves
+are inherited -- no traffic lost, the (\*,G) going on forwarding and the entry
+coming back at the next poll, but the switch to the shortest path tree
+oscillating with the period of the poll.
+
+"On receipt of data" is answered without the packet, the way `check_sptbit()`
+already answered Update_SPTbit(S,G,iif): pimd forwards in the kernel, the
+kernel counts what it forwards and matches on the incoming interface of the
+entry holding the MFC, so a count that moved between two `age_routes()` passes
+on an entry whose iif is RPF_interface(S) is data from S received on
+RPF_interface(S).  One `k_get_sg_cnt()` per (S,G) per pass now answers both,
+in `check_data_from_source()` (`src/route.c`), and the order is sec. 4.2's own:
+`check_keepalive()` first, since `JoinDesired(S,G)` reads the Keepalive Timer
+and Update_SPTbit(S,G,iif) reads `JoinDesired(S,G)`.  Both of the section's
+rules are there -- a directly connected source, and `UpstreamJPState(S,G) ==
+Joined` with a non-empty `inherited_olist(S,G)`, which here are `join_desired()`
+and `calc_oifs()` -- and `MRTF_KAT` is set with the timer for the reason
+sec. 4.2.1 sets it in CheckSwitchToSpt(S,G).  Step 9 of `rpt` in `test/lab.sh`
+is the assertion: R3, where none of the three control-plane refreshes reaches,
+holds its entry timer at 205 for a minute of traffic where it used to sawtooth
+from 210 down to 155 between two polls.
+
 **M4.  The assert metric preference is a configured constant unless a
 pimd.conf asks for the routing protocol's.**  Sec. 4.6.3 and sec. 4.9.6 both
 say the metric preference and the
@@ -474,49 +514,6 @@ derives 1 against the Arista's 100, while `default-route-distance` in its own
 pimd.conf says 150 -- the number the `arista-wins` sub-case beside it shows
 pimd losing with, which is this one's control.  It needs a netlink build and
 skips itself on a routing socket one, saying so.*
-
-**M7.  The Keepalive Timer is not traffic-driven, and nothing in reach makes
-that cost anything.**  Sec. 4.2 sets `KeepaliveTimer(S,G)` from arriving data.
-Every write to `entry_timer` is a control-plane event or a kernel upcall;
-`check_spt_threshold()` reads the MFC counters and never refreshes the timer,
-and under `spt-threshold infinity` it returns before reading them at all
-(`src/route.c:1551`).
-
-Measured rather than reasoned about: the `rpt` topology of
-`test/lab.sh` with `spt-threshold infinity` in all three `pimd.conf`s,
-ten minutes of continuous traffic, no entry deleted on any router and no gap in
-the receiver's stream.  Three refreshes cover the entries between them, and the
-cases they cover are disjoint, so the timer never reaches zero while a source
-sends:
-
-- An entry with an oif some neighbour joined is refreshed by that neighbour's
-  periodic Join every 60 seconds (`src/pim_proto.c:2411`, `:2476`).  In the run
-  above `entry_timer` went back to 210 on the same tick as `jp_timer` wrapping
-  to 60, every time.
-- The DR and the RP refresh each other over the Register probe loop, also every
-  60 seconds: the Null-Register sets the RP's timer (`src/pim_proto.c:1031`) and
-  the Register-Stop the DR's, while a registered packet sets it at the DR
-  directly (`:1239`), which is the one refresh that is data-driven.  Stopping
-  pimd on the last hop router, so that no Join is ever sent again, left this
-  loop holding both entries up on its own.
-- An entry with an empty oif list has no MFC, so every packet is a cache miss
-  and refreshes the timer (`src/route.c:1283`).  That is the path the
-  `keepalive` scenario pins, and it costs one upcall per packet for as long as
-  the source sends, because pimd installs no negative cache entry (the TODO at
-  `src/route.c:1268`).
-
-One shape is left over: a last hop router's (S,G) whose only oif is a local
-member, with `spt-threshold interval` longer than 210 seconds, so that the poll
-calling `switch_shortest_path()` no longer refreshes it either.  `age_routes()`
-then deletes it through the `PIMD_VIFM_LASTHOP_ROUTER` branch
-(`src/route.c:2005`) precisely because those leaves are inherited from the
-(\*,G) -- which is also why no traffic is lost: the (\*,G) keeps forwarding and
-the entry returns at the next poll.  What that costs is the switch to the
-shortest path tree oscillating with the period of the poll interval.
-*Check: sec. 4.2, `doc/rfc7761.txt:1375` and `:1383`, where arriving data sets
-the timer; `Keepalive_Period` is sec. 4.11, `:7136`.  Effort: medium.  Test:
-none, and the run above says a lab here would be asserting that the three
-masks work rather than that the timer does.*
 
 
 RP discovery
@@ -662,7 +659,7 @@ sec. 4.11, `doc/rfc7761.txt:6895`, one table per timer name, and sec. 4.10,
 | Register\_Suppression\_Time | 60 s | 60 s | ok |
 | Register\_Probe\_Time | 5 s | 5 s | ok |
 | RST(S,G) | 25–85 s | 30–90 s, the probe-time term omitted | minor |
-| Keepalive\_Period | 210 s | `PIM_DATA_TIMEOUT` 210 s | M7 |
+| Keepalive\_Period | 210 s | `PIM_DATA_TIMEOUT` 210 s, set from the data | ok |
 | RP\_Keepalive\_Period | 185 s | 210 s, i.e. max(210, 185) | ok in effect |
 
 `TIMER_INTERVAL` is 5 seconds and `SET_TIMER`/`IF_TIMEOUT` count whole seconds,
@@ -1040,8 +1037,8 @@ Checked, no action
   pimd implements the full protocol rather than the subset, the (S,G,rpt)
   machines included, which that section lists among what an SSM-only router
   may leave out.  Of its two "treat it as" notes, the
-  Keepalive Timer is M7's subject, and the SPTbit ends up set on the first
-  packet of an SSM
+  Keepalive Timer is restarted by arriving data like any other, sec. 4.2,
+  and the SPTbit ends up set on the first packet of an SSM
   (S,G) rather than by construction: `update_sptbit()` (`src/route.c:653`),
   reached from the cache miss at `:1311`, finds `no_rpt_olist` true whenever
   the group has no (\*,G), which for an SSM group is the normal case.

@@ -7,6 +7,30 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- The (S,G) Keepalive Timer is restarted by the traffic it is about, RFC 7761
+  sec. 4.2 and deviation M7 of `doc/rfc7761-compliance.md`.  Every write to
+  pimd's timer of that name, `entry_timer`, was a control-plane event or a
+  kernel upcall, and three of those cover most of the table between them: a
+  downstream neighbour's periodic Join, the Register probe loop between a DR
+  and its RP, and, for an entry with an empty outgoing interface list, the
+  cache miss every one of its packets raises.  What none of them covers is a
+  last hop router's (S,G) whose only outgoing interface is a local member
+  inherited from the (\*,G).  Nothing is joined downstream of it, nothing is
+  registered, and it forwards in the kernel, so the only thing that ever
+  restarted its timer was the `spt-threshold` poll calling
+  `switch_shortest_path()` again -- and with `interval` longer than the 210
+  second Keepalive_Period the entry aged out under a source that had never
+  stopped sending, which cost no traffic, the shared tree going on forwarding,
+  but made the switch to the shortest path tree oscillate with the period of
+  the poll.  pimd forwards in the kernel and never sees the packet, so "on
+  receipt of data" is answered the way `check_sptbit()` already answered
+  Update_SPTbit: the kernel counts what it forwards and matches on the
+  incoming interface of the entry holding the MFC, so a count that moved
+  between two `age_routes()` passes on an entry whose incoming interface is
+  RPF_interface(S) is data from S received on RPF_interface(S).  One kernel
+  call per (S,G) per pass now answers the Keepalive Timer and the SPTbit both,
+  in sec. 4.2's own order.  Step 9 of the `rpt` scenario of `test/lab.sh` is
+  the assertion
 - `find_route()` says why it refused when it is asked to create an entry, as it
   already did when it was not.  Five returns of `NULL` on the creating path --
   no group entry, no RP for the group, no source entry, no (S,G), no (\*,G) --

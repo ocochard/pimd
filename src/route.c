@@ -97,6 +97,8 @@ static void   process_cache_miss  (struct igmpmsg *igmpctl);
 static void   process_wrong_iif   (struct igmpmsg *igmpctl);
 static void   process_whole_pkt   (char *buf, size_t len);
 static void   check_spt_threshold (mrtentry_t *mrt);
+static void   check_keepalive     (mrtentry_t *mrt);
+static void   check_sptbit        (mrtentry_t *mrt);
 
 /*
  * Init some timers
@@ -864,46 +866,39 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 
 
 /*
- * The other half of that trigger.  Sec. 4.2.2 runs the check above on receipt
- * of every data packet from S, and pimd forwards in the kernel, so the only
- * packets it ever sees are the ones the kernel hands up.  Once an MFC entry is
- * installed with the incoming interface the (S,G) already wants there are
- * none: no further cache miss, and no wrong-iif upcall either, since those
- * carry an iif that is not RPF_interface(S) and update_sptbit() rejects them
- * on its second line.  Whatever was true at that first upcall is what the
- * entry keeps, and the window is narrow: an (S,G) that acquires an outgoing
- * interface a moment after its first packet, or one that switch_shortest_path()
- * creates under a (*,G) and inherits the kernel cache of, never sets the bit at
- * all.  It then asserts as an RPT forwarder for as long as it lives, since
- * CouldAssert(S,G,I) is false without the bit and sec. 4.6.1 compares the bit
- * before either metric.
+ * The other half of that trigger, and of the Keepalive Timer below.
+ * Sec. 4.2 runs both on receipt of every data packet from S, and pimd
+ * forwards in the kernel, so the only packets it ever sees are the ones the
+ * kernel hands up.  Once an MFC entry is installed with the incoming
+ * interface the (S,G) already wants there are none: no further cache miss,
+ * and no wrong-iif upcall either, since those carry an iif that is not
+ * RPF_interface(S) and update_sptbit() rejects them on its second line.
  *
- * So run the check once per age_routes() pass as well.  "On receipt of data" is
- * the part that has to be answered without the packet: the kernel counts what
- * it forwards, and it matches packets on the incoming interface of the entry
- * holding the MFC, so a count that moved between two passes on an entry whose
- * iif is RPF_interface(S) is data from S received on RPF_interface(S).  Only an
- * entry with a kernel cache of its own is asked.  One still forwarding through
- * the (*,G) it was created under is matched on the shared tree's interface, and
- * there a packet from S on RPF_interface(S) is a wrong-iif upcall that
- * process_wrong_iif() already answers.
+ * "On receipt of data" is therefore the part that has to be answered without
+ * the packet: the kernel counts what it forwards, and it matches packets on
+ * the incoming interface of the entry holding the MFC, so a count that moved
+ * between two age_routes() passes on an entry whose iif is RPF_interface(S)
+ * is data from S received on RPF_interface(S).  Only an entry with a kernel
+ * cache of its own is asked.  One still forwarding through the (*,G) it was
+ * created under is matched on the shared tree's interface, and there a packet
+ * from S on RPF_interface(S) is a wrong-iif upcall that process_wrong_iif()
+ * already answers.
+ *
+ * One kernel call per entry per pass answers both questions, and the order is
+ * the one sec. 4.2 sets out: the Keepalive Timer first, since JoinDesired(S,G)
+ * reads it and Update_SPTbit(S,G,iif) reads JoinDesired(S,G).
  */
-static void check_sptbit(mrtentry_t *mrt)
+static void check_data_from_source(mrtentry_t *mrt)
 {
     struct sg_count count;
     kernel_cache_t *kc;
+    uint32_t prev;
 
-    if (!(mrt->flags & MRTF_SG) || (mrt->flags & MRTF_SPT))
+    if (!(mrt->flags & MRTF_SG) || !mrt->source)
 	return;
 
-    if (!mrt->source || mrt->incoming != mrt->source->incoming)
+    if (mrt->incoming != mrt->source->incoming)
 	return;			/* Not RPF_interface(S) */
-
-    /* JoinDesired(S,G) is false, so update_sptbit() would return without
-     * setting anything.  Answered here so the kernel call below is only made
-     * for an entry that can use the answer. */
-    if (!join_desired(mrt))
-	return;
 
     kc = mrt->kernel_cache;
     if (!(mrt->flags & MRTF_KERNEL_CACHE) || !kc)
@@ -920,12 +915,93 @@ static void check_sptbit(mrtentry_t *mrt)
      * kernel cache entry because check_spt_threshold() uses that one as its own
      * previous value, over its own much longer period.
      */
-    if (!mrt->spt_pktcnt || mrt->spt_pktcnt == count.pktcnt) {
-	mrt->spt_pktcnt = count.pktcnt;
+    prev = mrt->data_pktcnt;
+    mrt->data_pktcnt = count.pktcnt;
+    if (!prev || prev == count.pktcnt)
+	return;
+
+    check_keepalive(mrt);
+    check_sptbit(mrt);
+}
+
+
+/*
+ * KeepaliveTimer(S,G), RFC 7761 sec. 4.2, for data that has just arrived on
+ * RPF_interface(S):
+ *
+ *   if( DirectlyConnected(S) == TRUE AND iif == RPF_interface(S) ) {
+ *        set KeepaliveTimer(S,G) to Keepalive_Period
+ *   }
+ *   if( iif == RPF_interface(S) AND UpstreamJPState(S,G) == Joined AND
+ *      inherited_olist(S,G) != NULL ) {
+ *         set KeepaliveTimer(S,G) to Keepalive_Period
+ *   }
+ *
+ * pimd's `entry_timer` is that timer, and until this every write to it was a
+ * control-plane event or a kernel upcall -- deviation M7 of
+ * doc/rfc7761-compliance.md.  Three of those cover most of the table between
+ * them: a downstream neighbour's periodic Join refreshes an entry with an oif
+ * it asked for, the Register probe loop refreshes the DR's and the RP's, and
+ * an entry with an empty oif list has no MFC, so every packet of it is a cache
+ * miss that process_cache_miss() refreshes it from.  What none of them covers
+ * is a last hop router's (S,G) whose only oif is a local member inherited from
+ * the (*,G): nothing is joined downstream of it, nothing is registered, and it
+ * forwards in the kernel, so the only thing that ever refreshed it was
+ * switch_shortest_path() being called again on the spt-threshold poll.  With
+ * `interval` longer than PIM_DATA_TIMEOUT the entry aged out under a source
+ * that had never stopped sending, age_routes() deleting it through its
+ * PIMD_VIFM_LASTHOP_ROUTER branch, and the switch to the shortest path tree
+ * then oscillated with the period of the poll.
+ *
+ * UpstreamJPState(S,G) == Joined is join_desired(), which is what drives that
+ * machine here, and inherited_olist(S,G) is calc_oifs().  MRTF_KAT is set with
+ * the timer for the reason sec. 4.2.1 sets it in CheckSwitchToSpt(S,G):
+ * JoinDesired(S,G) reads the Keepalive Timer, so an entry kept alive by data
+ * goes on asking its upstream for that data once the Join or the membership
+ * that first made the list non-empty has gone, until the timer runs out.
+ */
+static void check_keepalive(mrtentry_t *mrt)
+{
+    uint8_t oifs[MAXVIFS];
+
+    /* DirectlyConnected(S) */
+    if (!mrt->source->upstream) {
+	SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
+	mrt->flags |= MRTF_KAT;
 	return;
     }
 
-    mrt->spt_pktcnt = count.pktcnt;
+    if (!join_desired(mrt))
+	return;
+
+    calc_oifs(mrt, oifs);
+    if (PIMD_VIFM_ISEMPTY(oifs))
+	return;
+
+    SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
+    mrt->flags |= MRTF_KAT;
+}
+
+
+/*
+ * Update_SPTbit(S,G,iif) for the same arriving data.  Its own window is
+ * narrow without this: an (S,G) that acquires an outgoing interface a moment
+ * after its first packet, or one that switch_shortest_path() creates under a
+ * (*,G) and inherits the kernel cache of, never sets the bit at all, and then
+ * asserts as an RPT forwarder for as long as it lives, since CouldAssert(S,G,I)
+ * is false without the bit and sec. 4.6.1 compares the bit before either
+ * metric.
+ */
+static void check_sptbit(mrtentry_t *mrt)
+{
+    if (mrt->flags & MRTF_SPT)
+	return;
+
+    /* JoinDesired(S,G) is false, so update_sptbit() would return without
+     * setting anything. */
+    if (!join_desired(mrt))
+	return;
+
     update_sptbit(mrt, mrt->incoming);
 
     if (mrt->flags & MRTF_SPT) {
@@ -2744,10 +2820,10 @@ static void age_routes_pass(void)
 		    if (rate_flag == TRUE)
 			check_spt_threshold(mrt_srcs);
 
-		    /* Sec. 4.2.2 decides SPTbit on receipt of data, which pimd
-		     * only sees when the kernel hands it a packet.  Ask the
-		     * kernel instead. */
-		    check_sptbit(mrt_srcs);
+		    /* Sec. 4.2 sets the Keepalive Timer and decides SPTbit on
+		     * receipt of data, which pimd only sees when the kernel
+		     * hands it a packet.  Ask the kernel instead. */
+		    check_data_from_source(mrt_srcs);
 
 		    /* Join/Prune timer */
 		    jp_timer_expire_sg(mrt_srcs, rp, grp_action, now);

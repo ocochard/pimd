@@ -316,9 +316,11 @@ typedef struct mrtentry {
 					 * ours to advertise -- see RFC 7761
 					 * sec. 4.6.3.
 					 */
-    uint32_t		 spt_pktcnt;	/* Kernel packet count the SPTbit was
-					 * last checked at, see check_sptbit()
-					 */
+    uint32_t		 data_pktcnt;	/* Kernel packet count this entry was
+					 * last seen forwarding at, which is
+					 * how "on receipt of data from S" is
+					 * answered without the packet; see
+					 * check_data_from_source()	    */
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint64_t		*pp_expires;	/* The Prune-Pending Timer of each
 					 * vif set in prune_pending_oifs,

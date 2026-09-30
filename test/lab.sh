@@ -71,7 +71,12 @@
 # running:
 #
 #   rpt         R2 is BSR and RP, ED2 joins, traffic has to reach it over
-#               the shared tree.  Takes about 90s.
+#               the shared tree.  It is also where the (S,G) Keepalive Timer
+#               of RFC 7761 sec. 4.2 is read, on the one router none of
+#               pimd's control-plane refreshes reaches: R3 is the last hop
+#               router, nothing is joined downstream of it and it registers
+#               nothing, so only the data itself can restart its timer.
+#               Takes about 4 minutes.
 #   keepalive   R1 is BSR and RP for its own directly connected source and
 #               nobody joins the group, which is the setup of
 #               https://github.com/troglobit/pimd/issues/251.  The (S,G)
@@ -1057,9 +1062,9 @@ SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunne
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber rp-nbr-gone register-filter crafted fuzz static-rp autorp autorp-agent
 	   autorp-listener anycast anycast-dr altnet scale"
-SCENARIOS_BY_LENGTH="keepalive anycast shared-lan assert-recover anycast-dr shared-lan-spt
+SCENARIOS_BY_LENGTH="keepalive anycast rpt shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
-		     rpt register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
+		     register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
 		     renumber ssm-range autorp-listener altnet solo rp-nbr-gone privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
@@ -1841,6 +1846,25 @@ CRP_LOSER_PRIO=${CRP_LOSER_PRIO:-30}
 # https://github.com/troglobit/pimd/issues/192
 LATE_GROUP=${LATE_GROUP:-225.1.2.9}
 LATE_DELAY=${LATE_DELAY:-2}
+
+# rpt: the group the Keepalive Timer assertion drives, how long it watches
+# the timer, the lowest value the timer may take while the source is
+# sending, and how long R3 is given to hold the entry at all.
+# Keepalive_Period is 210s (PIM_DATA_TIMEOUT) and age_routes() counts the
+# entry down by TIMER_INTERVAL in the same pass that restarts it, so a timer
+# the data drives reads 205 and never less.  One the spt-threshold poll
+# drives instead falls by 5 a tick between polls, which are
+# SPT_THRESHOLD_DEFAULT_INTERVAL (100s) apart -- and the watch begins the
+# moment R3 has the entry, which is a poll, so the whole window is one run
+# of that decay and the next poll cannot mask it: 210 down to
+# $((210 - KAT_WATCH)) against a floor of $KAT_FLOOR.  R3 has no (S,G) for
+# the source until switch_shortest_path() makes one on that same poll, so
+# $KAT_SETTLE is longer than one of them, and the sender outlives both waits.
+KAT_GROUP=${KAT_GROUP:-225.1.2.12}
+KAT_WATCH=${KAT_WATCH:-60}
+KAT_FLOOR=${KAT_FLOOR:-200}
+KAT_SETTLE=${KAT_SETTLE:-120}
+KAT_PKTS=${KAT_PKTS:-210}
 SUPP_GROUP=${SUPP_GROUP:-225.1.4.4}
 SUPP_PERIOD=${SUPP_PERIOD:-60}
 SUPP_WINDOW=${SUPP_WINDOW:-140}
@@ -4992,6 +5016,58 @@ check() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	# RFC 7761 sec. 4.2 restarts KeepaliveTimer(S,G) from the data itself,
+	# and every write to pimd's timer of that name used to be a
+	# control-plane event or a kernel upcall -- deviation M7 of
+	# doc/rfc7761-compliance.md.  R3 is where that shows.  It is the last
+	# hop router, so no neighbour's periodic Join refreshes its (S,G); it
+	# registers nothing, so the Register probe loop does not either; and it
+	# forwards in the kernel with a non-empty oif list, so no cache miss
+	# reaches it.  The only thing that ever restarted the timer was
+	# switch_shortest_path() being called again on the spt-threshold poll,
+	# SPT_THRESHOLD_DEFAULT_INTERVAL apart, and between two polls the timer
+	# counted down under a source that had not stopped sending.  Give that
+	# poll an interval longer than Keepalive_Period and age_routes() deletes
+	# the entry through its PIMD_VIFM_LASTHOP_ROUTER branch while the stream
+	# runs, and the switch to the shortest path tree oscillates with the
+	# period of the poll.
+	#
+	# So the timer is what is sampled, not the entry: a timer the data
+	# drives never leaves Keepalive_Period, and one the poll drives
+	# sawtooths.  The stream is the positive control -- a source that
+	# stopped sending, or an (S,G) that never reached R3, fails here the
+	# same way the deviation does.
+	print "9. The (S,G) Keepalive Timer is restarted by the traffic itself"
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W $((KAT_PKTS + 30)) "$KAT_GROUP" \
+		>"$WORKDIR/kat-receiver.log" 2>&1
+	kat_rcv=$!
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c "$KAT_PKTS" -w $((KAT_PKTS + 30)) "$KAT_GROUP" \
+		>"$WORKDIR/kat-sender.log" 2>&1
+	kat_snd=$!
+	if wait_for "$KAT_SETTLE" has_sg r3 "$SRC_ADDR" "$KAT_GROUP"; then
+		ok "r3 holds ($SRC_ADDR,$KAT_GROUP), the entry the timer belongs to"
+	else
+		fail "r3 never got an (S,G) for $KAT_GROUP, nothing to sample"
+	fi
+
+	if [ "$FAILED" -eq 0 ]; then
+		kat_floor=$(route_timer_floor r3 "$SRC_ADDR" "$KAT_GROUP" "$KAT_WATCH" \
+			2>"$WORKDIR/kat-timers.log")
+		kat_seen=$(tr '\n' ' ' < "$WORKDIR/kat-timers.log")
+		if [ -z "$kat_floor" ]; then
+			fail "r3: ($SRC_ADDR,$KAT_GROUP) went away while its source was sending: $kat_seen"
+		elif [ "$kat_floor" -ge "$KAT_FLOOR" ]; then
+			ok "r3: the entry timer stayed at $kat_floor and above for ${KAT_WATCH}s of traffic"
+		else
+			fail "r3: the entry timer fell to $kat_floor, below $KAT_FLOOR, so the data is not restarting it: $kat_seen"
+		fi
+	fi
+
+	kill "$kat_snd" "$kat_rcv" 2>/dev/null || true
+	wait "$kat_snd" 2>/dev/null || true
+	wait "$kat_rcv" 2>/dev/null || true
+	[ "$FAILED" -eq 0 ] || return 1
+
 	# An interface that goes away has to leave the routing table as well as
 	# the kernel.  delete_vif_from_mrt() (src/route.c) was a stub that
 	# returned TRUE, and nothing in route.c or mrt.c tests VIFF_DOWN, so a
@@ -5006,7 +5082,7 @@ check() {
 	# outlives the interface either way: nothing deletes it here, the route
 	# towards the source being on the other side of the router, so a bit
 	# that is still set is the bug and not a table that emptied.
-	print "9. A destroyed interface leaves the oif lists too"
+	print "10. A destroyed interface leaves the oif lists too"
 	# A receiver and a group of its own, and the receiver stays up for the
 	# rest of the step.  The first version of this read the oif list the
 	# assertion above had left behind, which passed on FreeBSD and failed
@@ -5290,6 +5366,31 @@ route_timer() {
 		want && /^TIMERS/  { hdr = 1; next }
 		hdr		   { print $n; exit }
 	'
+}
+
+# The lowest value the entry timer of ($2,$3) on $1 takes over $4 seconds,
+# sampled once a TIMER_INTERVAL, and the samples themselves on stderr so a
+# failure can print the shape it saw rather than one number.  Nothing at all
+# when a sample finds no entry: an entry that was deleted and recreated has
+# to fail here the same way a timer counting down does.
+route_timer_floor() {
+	rtf_floor=
+	rtf_end=$(($(date +%s) + $4))
+	while [ "$(date +%s)" -lt "$rtf_end" ]; do
+		rtf_now=$(route_timer "$1" "$2" "$3" 1)
+		case $rtf_now in
+		''|*[!0-9]*)
+			echo "$rtf_now" >&2
+			return 1
+			;;
+		esac
+		echo "$rtf_now" >&2
+		if [ -z "$rtf_floor" ] || [ "$rtf_now" -lt "$rtf_floor" ]; then
+			rtf_floor=$rtf_now
+		fi
+		sleep 5
+	done
+	echo "$rtf_floor"
 }
 
 # The largest per-vif timer of ($2,$3) on $1, off the same line: which vif
