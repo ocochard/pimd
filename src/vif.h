@@ -314,7 +314,6 @@ struct listaddr {
     } al_alu;
     uint8_t	     al_pv;		/* router protocol version	    */
     uint8_t	     al_mv;		/* router mrouted version	    */
-    uint8_t	     al_old;            /* time since heard old report      */
     uint8_t	     al_index;		/* neighbor index		    */
     int		     al_timerid;        /* timer for group membership	    */
     int		     al_query;		/* timer for repeated leave query   */

@@ -1443,6 +1443,10 @@ IC_DENY_GROUP=${IC_DENY_GROUP:-225.1.9.9}
 IC_QUERY_INTERVAL=${IC_QUERY_INTERVAL:-5}
 IC_QUERIER_TIMEOUT=${IC_QUERIER_TIMEOUT:-20}
 IC_VER_TIMEOUT=$((3 * IC_QUERY_INTERVAL + 10))
+# How long to give a group-specific query and its unanswered retransmits
+# before the membership is gone: IGMP_LAST_MEMBER_QUERY_INTERVAL times
+# IGMP_LAST_MEMBER_QUERY_COUNT + 1, src/igmpv2.h, plus a tick.
+IC_LAST_MEMBER_WAIT=${IC_LAST_MEMBER_WAIT:-8}
 
 # bsr-elect: two Candidate-BSRs on the chain, R1 and R2.  The priorities are
 # what the first half of the scenario turns on -- higher wins, RFC 5059
@@ -10936,31 +10940,60 @@ check_igmp_compat() {
 	fi
 
 	# The v1 group is read on R5 rather than R3 because this half is the
-	# querier's: a v1 report sets al_old, "old hosts present", and a leave
-	# for a group in that state is ignored -- RFC 2236 gives a v1 host no
-	# way to send one, so the leave cannot have come from every member.
-	# al_old is aged in query_groups() (src/igmp_proto.c), which only the
-	# querier runs, so R5 forgets the old host within a query interval or
-	# two and R3 never does.
+	# querier's: a leave for a group a v1 host reported is ignored, RFC 2236
+	# giving a v1 host no way to send one, so the leave cannot have come
+	# from every member.  How long it is ignored for is RFC 3376 sec. 7.3.2's
+	# Older Version Host Present Interval, ${IC_VER_TIMEOUT}s here, and that
+	# is also what takes the group back to v2 -- one timer, so the leave is
+	# ignored for exactly as long as the group is in v1 mode and there is no
+	# window where it is both ignored and answered at v1.
+	#
+	# The wait is what this asserts.  pimd used to keep a second, broken
+	# memory of its own beside the version: al_old, set to 2 by
+	# DVMRP_OLD_AGE_THRESHOLD and aged by TIMER_INTERVAL, 5, so the first
+	# ageing pass zeroed it and a v1 host was forgotten after one query
+	# interval.  A leave sent between that and the real timeout was acted
+	# on, tearing down a group a v1 host was still a member of.  So this
+	# waits past the old lifetime and well short of the real one, and the
+	# membership has to survive.
 	ic_report "$IC_GROUP_V1" v1
 	wait_for 20 igmp_group_is_version r5 "$IC_GROUP_V1" 1 || true
-	ic_report "$IC_GROUP_V1" leave
-	sleep 3
-	if igmp_group_is_version r5 "$IC_GROUP_V1" 1; then
-		ok "the v1 group is untouched by the same leave while an old host is remembered"
-	else
-		fail "$IC_GROUP_V1 reads '$(igmp_group_version r5 "$IC_GROUP_V1")' after a leave an old host's group must ignore"
-	fi
-
-	# And once it is forgotten the same leave is acted on, with the query
-	# at the group's own version -- the one place a v1 query is sent at
-	# all, now that no interface can be pinned to v1.
 	sleep $((IC_QUERY_INTERVAL * 2 + 2))
 	ic_report "$IC_GROUP_V1" leave
-	if wait_for 20 logged r5 "Sending IGMP v1 query (al_pv=1)"; then
-		ok "and asked at v1 once it was, which is the version the group is in"
+	sleep $((IC_LAST_MEMBER_WAIT))
+	if has_igmp_group r5 "$IC_GROUP_V1"; then
+		ok "the v1 group survived a leave $((IC_QUERY_INTERVAL * 2 + 2))s in, an old host still being present"
 	else
-		fail "r5 sent no v1 group-specific query for a group in v1 mode"
+		fail "$IC_GROUP_V1 is gone: the leave was acted on while a v1 host was still remembered"
+	fi
+	if igmp_group_is_version r5 "$IC_GROUP_V1" 1; then
+		ok "and is still in v1 mode, which is what says the host is remembered"
+	else
+		fail "$IC_GROUP_V1 reads '$(igmp_group_version r5 "$IC_GROUP_V1")', not 1"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	# And once the interval has run out the group is back in v2 mode and the
+	# same leave is answered: the group-specific query goes out at v2, gets
+	# no reply from a one-shot reporter, and the membership goes.
+	#
+	# Held up with v3 reports meanwhile, as assertion 5 holds its groups and
+	# for the same reason: the membership timeout and the version timer are
+	# both igmp_group_membership_timeout(), so a group left alone expires at
+	# the instant it would have climbed and there is nothing to read.  A v3
+	# report refreshes the membership without re-arming the version timer.
+	if ic_hold_v3 "$IC_GROUP_V1" $((IC_VER_TIMEOUT + 15)) \
+	   igmp_group_is_version r5 "$IC_GROUP_V1" 2; then
+		ok "$IC_GROUP_V1 climbed back to v2 after ${IC_VER_TIMEOUT}s with no v1 report"
+	else
+		fail "$IC_GROUP_V1 stayed at '$(igmp_group_version r5 "$IC_GROUP_V1")' past ${IC_VER_TIMEOUT}s"
+		return 1
+	fi
+	ic_report "$IC_GROUP_V1" leave
+	if wait_for $((IC_LAST_MEMBER_WAIT + 10)) igmp_group_gone r5 "$IC_GROUP_V1"; then
+		ok "and the leave was acted on once no v1 host was left to ignore it for"
+	else
+		fail "$IC_GROUP_V1 outlived a leave sent with no v1 host present"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

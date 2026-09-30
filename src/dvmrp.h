@@ -160,8 +160,6 @@
 #define DVMRP_GRAFT_TIMEOUT_VAL	        5 /* retransmission time for grafts  */
 #define	DVMRP_PRUNE_REXMIT_VAL	       3 /* initial time for prune rexmission*/
 
-#define DVMRP_OLD_AGE_THRESHOLD	       2 /* # of query intervals to remember */
-					 /* presence of IGMPv1 member	     */
 					 /* XXX NOTE that this technically   */
 					 /* violates IGMPv2 draft as the     */
 					 /* timer is 5 seconds too short     */

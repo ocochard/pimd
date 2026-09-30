@@ -656,6 +656,22 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A group an IGMPv1 host reported ignores a Leave for as long as RFC 3376
+  sec. 7.3.2 says, rather than for one query interval.  RFC 2236 gives a v1 host
+  no way to send a Leave, so one for such a group cannot have come from every
+  member and must be ignored while a v1 host is present -- and pimd kept a memory
+  of its own for that beside the group's compatibility mode: `al_old`, set to 2 by
+  `DVMRP_OLD_AGE_THRESHOLD` and aged by `TIMER_INTERVAL`, 5, in `query_groups()`.
+  The first ageing pass therefore zeroed it whatever the constant meant to say,
+  and the comment on it said "# of query intervals" while the arithmetic said
+  seconds, so a v1 host was forgotten after one query interval -- 125s against the
+  385s the RFC asks for with pimd's own constants -- and a Leave arriving in
+  between tore down a group a v1 host was still a member of.  The test that
+  reproduces it is asked of the mode the daemon already keeps correctly, `al_pv`
+  and its per-version Older Version Host Present timer, and `al_old` and the
+  constant are gone.  Step 6 of the `igmp-compat` scenario is the regression test:
+  a Leave sent two query intervals in has to leave the membership standing, and
+  the same Leave once the interval has run out has to take it away
 - A cache miss for traffic that arrives on an interface this router forwards the
   group out of sends the Assert that RFC 7761 sec. 4.6.1 asks for.  Its NoInfo
   state answers "data arrives from S to G on I and CouldAssert(S,G,I)" by sending

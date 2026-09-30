@@ -165,7 +165,6 @@ void igmp_resync_leaves(void)
  */
 void query_groups(struct uvif *v)
 {
-    struct listaddr *g;
 
     if (v->uv_stquery_cnt)
 	v->uv_stquery_cnt--;
@@ -209,16 +208,6 @@ void query_groups(struct uvif *v)
 		  code, 0, datalen);
     }
 
-    /*
-     * Decrement the old-hosts-present timer for each
-     * active group on that vif.
-     */
-    for (g = v->uv_groups; g != NULL; g = g->al_next) {
-	if (g->al_old > TIMER_INTERVAL)
-	    g->al_old -= TIMER_INTERVAL;
-	else
-	    g->al_old = 0;
-    }
 }
 
 
@@ -305,7 +294,6 @@ void accept_membership_query(int ifi, uint32_t src, uint32_t dst, uint32_t group
 		v->uv_querier->al_timer = 0;
 		v->uv_querier->al_genid = 0;
 		v->uv_querier->al_mv = 0;
-		v->uv_querier->al_old = 0;
 		v->uv_querier->al_index = 0;
 		v->uv_querier->al_timerid = 0;
 		v->uv_querier->al_query = 0;
@@ -447,7 +435,6 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 	    int old_report = 0;
 
 	    if (igmp_report_type == IGMP_V1_MEMBERSHIP_REPORT) {
-		g->al_old = DVMRP_OLD_AGE_THRESHOLD;
 		old_report = 1;
 
 		if (g->al_pv > 1) {
@@ -550,7 +537,6 @@ void accept_group_report(int ifi, uint32_t igmp_src, uint32_t ssm_src, uint32_t 
 
 	g->al_addr = group;
 	if (igmp_report_type == IGMP_V1_MEMBERSHIP_REPORT) {
-	    g->al_old = DVMRP_OLD_AGE_THRESHOLD;
 	    IF_DEBUG(DEBUG_IGMP)
 		logit(LOG_DEBUG, 0, "Change IGMP compatibility mode to v1 for group %s", s3);
 	    g->al_pv = 1;
@@ -646,10 +632,24 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 
 	if (group == g->al_addr) {
 	    IF_DEBUG(DEBUG_IGMP)
-		logit(LOG_DEBUG, 0, "%s(): old=%d query=%d", __func__, g->al_old, g->al_query);
+		logit(LOG_DEBUG, 0, "%s(): pv=%d query=%d", __func__, g->al_pv, g->al_query);
 
-	    /* Ignore the leave message if there are old hosts present */
-	    if (g->al_old)
+	    /* Ignore the leave if a version 1 host is present: RFC 2236 gives
+	     * one no way to send a Leave, so this cannot have come from every
+	     * member of the group.  How long one is remembered for is RFC 3376
+	     * sec. 7.3.2's Older Version Host Present Interval, which al_pv and
+	     * its timer already keep -- switch_version() takes the group back
+	     * to v2 when it runs out.  So a group in v1 mode never reaches the
+	     * query below, and that query's qver == 1 arm is there for the shape
+	     * of the thing rather than for a packet pimd sends.
+	     *
+	     * This read al_old, which was mrouted's: DVMRP_OLD_AGE_THRESHOLD set
+	     * it to 2 and query_groups() aged it by TIMER_INTERVAL, 5, so the
+	     * first ageing pass zeroed it whatever the constant meant to say and
+	     * a v1 host was forgotten after one query interval rather than the
+	     * 3 * interval + response the RFC asks for.
+	     */
+	    if (g->al_pv == 1)
 		return;
 
 	    /* still waiting for a reply to a query, ignore the leave */
