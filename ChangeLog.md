@@ -656,6 +656,16 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A host on the link can no longer make pimd write a syslog line per packet.
+  `dvmrp_accept_neighbors()` (`src/dvmrp_proto.c`) logged every DVMRP neighbour
+  list it dropped at `LOG_INFO` and unconditionally, so one IGMP type 0x13 code 4
+  per packet from anywhere on the segment was one line per packet; both its
+  siblings were already behind `IF_DEBUG(DEBUG_PKT)`.  The two dispatch defaults
+  of `accept_igmp()` (`src/igmp.c`), for a DVMRP code and an IGMP type nothing
+  claims, were the same shape and are behind the flag too.  This is the policy the
+  file already states where it drops a query of no version: anyone on the link can
+  produce the line at will, and dropping the packet is the whole of what happens,
+  so an operator who has not asked for packet debugging has nothing to do with it
 - A group an IGMPv1 host reported ignores a Leave for as long as RFC 3376
   sec. 7.3.2 says, rather than for one query interval.  RFC 2236 gives a v1 host
   no way to send a Leave, so one for such a group cannot have come from every

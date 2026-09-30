@@ -345,8 +345,12 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		    return;
 
 		default:
-		    logit(LOG_INFO, 0, "Ignoring unknown DVMRP message code %u from %s to %s",
-			  igmp->igmp_code, inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
+		    /* Behind the flag, as the handlers above are and for the
+		     * same reason: see the query of no version further up. */
+		    IF_DEBUG(DEBUG_PKT)
+			logit(LOG_DEBUG, 0, "Ignoring unknown DVMRP message code %u from %s to %s",
+			      igmp->igmp_code, inet_fmt(src, s1, sizeof(s1)),
+			      inet_fmt(dst, s2, sizeof(s2)));
 		    return;
 	    }
 
@@ -361,8 +365,11 @@ void accept_igmp(int ifi, ssize_t recvlen)
 	    return;
 
 	default:
-	    logit(LOG_INFO, 0, "Ignoring unknown IGMP message type %x from %s to %s",
-		  igmp->igmp_type, inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
+	    /* And the same for a type nothing above claimed */
+	    IF_DEBUG(DEBUG_IGMP)
+		logit(LOG_DEBUG, 0, "Ignoring unknown IGMP message type %x from %s to %s",
+		      igmp->igmp_type, inet_fmt(src, s1, sizeof(s1)),
+		      inet_fmt(dst, s2, sizeof(s2)));
 	    return;
     }
 }

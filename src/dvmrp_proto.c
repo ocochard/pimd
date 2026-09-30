@@ -74,6 +74,20 @@ void dvmrp_accept_info_request(uint32_t src __attribute__((unused)),
 
 
 /*
+ * The rest of the DVMRP message types, which pimd does not implement: it
+ * speaks PIM, and only the two ASK_NEIGHBORS codes are answered, by trace.c,
+ * for mrinfo.  Every handler below therefore drops what it is given.
+ *
+ * All of them log behind IF_DEBUG(DEBUG_PKT), for the reason accept_igmp()
+ * gives in full where it drops a query of no version (src/igmp.c): anyone on
+ * the link can produce one of these lines at will, and dropping the packet is
+ * the whole of what happens, so an operator who has not asked for packet
+ * debugging has nothing to do with it.  dvmrp_accept_neighbors() was the one
+ * that did not, and one IGMP type 0x13 code 4 per packet was one syslog line
+ * per packet from anywhere on the segment.
+ */
+
+/*
  * Process an incoming info reply message.
  */
 void dvmrp_accept_info_reply(uint32_t src,
@@ -96,8 +110,9 @@ void dvmrp_accept_neighbors(uint32_t src,
                             int datalen __attribute__((unused)),
                             uint32_t level __attribute__((unused)))
 {
-    logit(LOG_INFO, 0, "ignoring spurious DVMRP neighbor list from %s to %s",
-          inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
+    IF_DEBUG(DEBUG_PKT)
+        logit(LOG_DEBUG, 0, "ignoring spurious DVMRP neighbor list from %s to %s",
+              inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 }
 
 
