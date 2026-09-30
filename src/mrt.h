@@ -321,6 +321,9 @@ typedef struct mrtentry {
 					 * how "on receipt of data from S" is
 					 * answered without the packet; see
 					 * check_data_from_source()	    */
+    uint32_t		 spt_pktcnt;	/* The same count as the SPTbit last
+					 * read it, which is not the same
+					 * baseline -- see check_sptbit()    */
     uint16_t		*vif_timers;	/* vifs timer list		    */
     uint64_t		*pp_expires;	/* The Prune-Pending Timer of each
 					 * vif set in prune_pending_oifs,

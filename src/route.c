@@ -97,8 +97,8 @@ static void   process_cache_miss  (struct igmpmsg *igmpctl);
 static void   process_wrong_iif   (struct igmpmsg *igmpctl);
 static void   process_whole_pkt   (char *buf, size_t len);
 static void   check_spt_threshold (mrtentry_t *mrt);
-static void   check_keepalive     (mrtentry_t *mrt);
-static void   check_sptbit        (mrtentry_t *mrt);
+static void   check_keepalive     (mrtentry_t *mrt, const struct sg_count *count);
+static void   check_sptbit        (mrtentry_t *mrt, const struct sg_count *count);
 
 /*
  * Init some timers
@@ -886,13 +886,14 @@ static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
  *
  * One kernel call per entry per pass answers both questions, and the order is
  * the one sec. 4.2 sets out: the Keepalive Timer first, since JoinDesired(S,G)
- * reads it and Update_SPTbit(S,G,iif) reads JoinDesired(S,G).
+ * reads it and Update_SPTbit(S,G,iif) reads JoinDesired(S,G).  The call is
+ * shared and the baselines are not -- each keeps its own previous count, for
+ * the reason written at check_sptbit() below.
  */
 static void check_data_from_source(mrtentry_t *mrt)
 {
     struct sg_count count;
     kernel_cache_t *kc;
-    uint32_t prev;
 
     if (!(mrt->flags & MRTF_SG) || !mrt->source)
 	return;
@@ -907,21 +908,8 @@ static void check_data_from_source(mrtentry_t *mrt)
     if (k_get_sg_cnt(udp_socket, kc->source, kc->group, &count))
 	return;
 
-    /* The kernel counter runs from the moment the MFC entry was installed, and
-     * an entry whose incoming interface changed since kept it, so the value on
-     * its own says nothing about the interface the packets came in on.  The
-     * difference between two passes does, which is why the first pass only
-     * takes a baseline.  It is kept on the routing entry rather than in the
-     * kernel cache entry because check_spt_threshold() uses that one as its own
-     * previous value, over its own much longer period.
-     */
-    prev = mrt->data_pktcnt;
-    mrt->data_pktcnt = count.pktcnt;
-    if (!prev || prev == count.pktcnt)
-	return;
-
-    check_keepalive(mrt);
-    check_sptbit(mrt);
+    check_keepalive(mrt, &count);
+    check_sptbit(mrt, &count);
 }
 
 
@@ -960,9 +948,23 @@ static void check_data_from_source(mrtentry_t *mrt)
  * goes on asking its upstream for that data once the Join or the membership
  * that first made the list non-empty has gone, until the timer runs out.
  */
-static void check_keepalive(mrtentry_t *mrt)
+static void check_keepalive(mrtentry_t *mrt, const struct sg_count *count)
 {
     uint8_t oifs[MAXVIFS];
+    uint32_t prev;
+
+    /* The kernel counter runs from the moment the MFC entry was installed, and
+     * an entry whose incoming interface changed since kept it, so the value on
+     * its own says nothing about the interface the packets came in on.  The
+     * difference between two passes does, which is why the first pass only
+     * takes a baseline.  It is kept on the routing entry rather than in the
+     * kernel cache entry because check_spt_threshold() uses that one as its own
+     * previous value, over its own much longer period.
+     */
+    prev = mrt->data_pktcnt;
+    mrt->data_pktcnt = count->pktcnt;
+    if (!prev || prev == count->pktcnt)
+	return;
 
     /* DirectlyConnected(S) */
     if (!mrt->source->upstream) {
@@ -992,7 +994,7 @@ static void check_keepalive(mrtentry_t *mrt)
  * is false without the bit and sec. 4.6.1 compares the bit before either
  * metric.
  */
-static void check_sptbit(mrtentry_t *mrt)
+static void check_sptbit(mrtentry_t *mrt, const struct sg_count *count)
 {
     if (mrt->flags & MRTF_SPT)
 	return;
@@ -1002,6 +1004,23 @@ static void check_sptbit(mrtentry_t *mrt)
     if (!join_desired(mrt))
 	return;
 
+    /* A baseline of its own, taken only on a pass this entry could have set
+     * the bit on, and not one shared with the Keepalive Timer above.  The two
+     * answer different questions: the timer asks whether the source is still
+     * sending, which every pass with a kernel cache can see, while the bit asks
+     * whether data arrived *since the entry became a candidate for it*.  Let
+     * the timer's baseline serve both and an entry that has been forwarding all
+     * along sets the bit on the first pass `join_desired()` turns true, where
+     * this takes a pass longer -- a difference of one TIMER_INTERVAL in when a
+     * router starts asserting from the shortest path tree, which decides an
+     * assert election on a shared segment.  Keep them apart.
+     */
+    if (!mrt->spt_pktcnt || mrt->spt_pktcnt == count->pktcnt) {
+	mrt->spt_pktcnt = count->pktcnt;
+	return;
+    }
+
+    mrt->spt_pktcnt = count->pktcnt;
     update_sptbit(mrt, mrt->incoming);
 
     if (mrt->flags & MRTF_SPT) {
