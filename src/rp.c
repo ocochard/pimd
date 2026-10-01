@@ -63,6 +63,7 @@ static int               bootstrap_truncated_said = FALSE;
 
 uint8_t                  cand_bsr_flag = FALSE; /* Set to TRUE if I am
 						 * a candidate BSR */
+uint8_t                  cand_bsr_configured = FALSE;
 uint32_t                 my_cand_rp_address;
 uint8_t                  my_cand_rp_priority;
 uint16_t                 my_cand_rp_holdtime;
@@ -70,6 +71,7 @@ uint16_t                 my_cand_rp_adv_period; /* The locally configured
 						 * Cand-RP adv. period. */
 uint16_t                 pim_cand_rp_adv_timer;
 uint8_t                  cand_rp_flag  = FALSE;  /* Candidate RP flag */
+uint8_t                  cand_rp_configured = FALSE;
 uint32_t                 rp_my_ipv4_hashmask;
 
 
@@ -88,6 +90,134 @@ static void       delete_rp_entry       (cand_rp_t **used_cand_rp_list,
 					 grp_mask_t **used_grp_mask_list,
 					 cand_rp_t *cand_rp_ptr);
 static void       remap_covered_groups  (grp_mask_t *mask_ptr);
+
+/* Set once the two elections below have been started, which is what tells a
+ * candidacy resolved at config time from one resolved while pimd runs */
+static int        rp_and_bsr_inited = FALSE;
+
+/*
+ * Take up the Candidate-BSR role at @addr, the way init_rp_and_bsr() does at
+ * startup: this router is the BSR until it hears a better one, which is how
+ * the election of RFC 5059 sec. 3.1 is entered.  Declaring ourselves and
+ * being corrected on the wire is what a candidate that starts beside an
+ * inferior BSR does anyway -- the alternative, waiting for the elected one to
+ * time out, leaves a better candidate silent for BS_Timeout.
+ */
+static void cand_bsr_start(void)
+{
+    curr_bsr_fragment_tag = RANDOM();
+    curr_bsr_priority     = my_bsr_priority;
+    curr_bsr_address      = my_bsr_address;
+    curr_bsr_hash_mask    = my_bsr_hash_mask;
+    SET_TIMER(pim_bootstrap_timer, bootstrap_initial_delay());
+}
+
+/*
+ * And give it up, for a candidacy whose address has gone: back to the state
+ * init_rp_and_bsr() gives a router that is not a candidate, which is to
+ * accept a Bootstrap from anyone.  Only where we were the elected BSR -- if
+ * somebody else holds the role, nothing about them has changed.
+ */
+static void cand_bsr_stop(void)
+{
+    if (curr_bsr_address != my_bsr_address)
+	return;
+
+    curr_bsr_fragment_tag = 0;
+    curr_bsr_priority     = 0;		  /* Lowest priority */
+    curr_bsr_address      = INADDR_ANY_N; /* Lowest priority */
+    MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, curr_bsr_hash_mask);
+    SET_TIMER(pim_bootstrap_timer, my_bsr_timeout);
+}
+
+/*
+ * The Candidate-BSR address, once pimd is running: @addr is what the
+ * `bsr-candidate' line resolves to now, and INADDR_ANY_N that it resolves to
+ * nothing -- the interface it names has not appeared yet, or has gone.
+ *
+ * config_resolve_addrs() (src/config.c) calls this from the interface rescan,
+ * so a candidacy written against an interface that is negotiated rather than
+ * configured -- PPP, L2TP, a tunnel -- is taken up when the address arrives
+ * instead of being resolved once and wrongly at startup.
+ */
+void cand_bsr_address_set(uint32_t addr)
+{
+    if (!rp_and_bsr_inited || addr == my_bsr_address)
+	return;
+
+    if (addr == INADDR_ANY_N) {
+	if (!cand_bsr_flag)
+	    return;
+
+	logit(LOG_NOTICE, 0, "Cand-BSR address %s is gone, standing down",
+	      inet_fmt(my_bsr_address, s1, sizeof(s1)));
+	cand_bsr_flag = FALSE;
+	cand_bsr_stop();
+	my_bsr_address = INADDR_ANY_N;
+
+	return;
+    }
+
+    logit(LOG_NOTICE, 0, "Cand-BSR address is %s now, was %s",
+	  inet_fmt(addr, s1, sizeof(s1)),
+	  cand_bsr_flag ? inet_fmt(my_bsr_address, s2, sizeof(s2)) : "unresolved");
+
+    /* An address that moved under an election we are winning moves the
+     * election with it: same router, same priority, new address, and a
+     * fragment tag that says the set is being sent again. */
+    cand_bsr_stop();
+    my_bsr_address = addr;
+    cand_bsr_flag  = TRUE;
+
+    /* Claim the role only where nobody better holds it.  init_rp_and_bsr()
+     * claims it unconditionally and is right to -- a router that has just
+     * started has heard nothing -- but by now a Bootstrap may have, and the
+     * comparison is receive_pim_bootstrap()'s: the higher priority, and the
+     * higher address where the priorities are equal (RFC 5059 sec. 3.1).
+     * Where a better BSR holds it there is nothing to do; the Bootstrap
+     * Timer is its timeout, and this router is a candidate from now on. */
+    if (curr_bsr_address == INADDR_ANY_N ||
+	my_bsr_priority > curr_bsr_priority ||
+	(my_bsr_priority == curr_bsr_priority &&
+	 ntohl(my_bsr_address) > ntohl(curr_bsr_address)))
+	cand_bsr_start();
+}
+
+/*
+ * The same for the Candidate-RP address of the `rp-candidate' line.  There is
+ * no election to enter here, only an advertisement to start sending; the BSR
+ * ages the address we stop advertising out at its own holdtime, which is what
+ * RFC 5059 sec. 4.1 leaves it to do.
+ */
+void cand_rp_address_set(uint32_t addr)
+{
+    if (!rp_and_bsr_inited || addr == my_cand_rp_address)
+	return;
+
+    if (addr == INADDR_ANY_N) {
+	if (!cand_rp_flag)
+	    return;
+
+	logit(LOG_NOTICE, 0, "Cand-RP address %s is gone, standing down",
+	      inet_fmt(my_cand_rp_address, s1, sizeof(s1)));
+	cand_rp_flag = FALSE;
+	my_cand_rp_address = INADDR_ANY_N;
+
+	return;
+    }
+
+    logit(LOG_NOTICE, 0, "Cand-RP address is %s now, was %s",
+	  inet_fmt(addr, s1, sizeof(s1)),
+	  cand_rp_flag ? inet_fmt(my_cand_rp_address, s2, sizeof(s2)) : "unresolved");
+
+    my_cand_rp_address = addr;
+    cand_rp_flag       = TRUE;
+    MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, rp_my_ipv4_hashmask);
+
+    /* At once rather than after an interval, as init_rp_and_bsr() does not:
+     * a candidacy that has just become able to speak has waited long enough */
+    SET_TIMER(pim_cand_rp_adv_timer, 1);
+}
 
 
 void init_rp_and_bsr(void)
@@ -113,11 +243,7 @@ void init_rp_and_bsr(void)
 	MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, curr_bsr_hash_mask);
 	SET_TIMER(pim_bootstrap_timer, my_bsr_timeout);
     } else {
-	curr_bsr_fragment_tag = RANDOM();
-	curr_bsr_priority = my_bsr_priority;
-	curr_bsr_address = my_bsr_address;
-	curr_bsr_hash_mask = my_bsr_hash_mask;
-	SET_TIMER(pim_bootstrap_timer, bootstrap_initial_delay());
+	cand_bsr_start();
     }
 
     if (cand_rp_flag != FALSE) {
@@ -125,6 +251,8 @@ void init_rp_and_bsr(void)
 	/* Setup the Cand-RP-Adv-Timer */
 	SET_TIMER(pim_cand_rp_adv_timer, RANDOM() % my_cand_rp_adv_period);
     }
+
+    rp_and_bsr_inited = TRUE;
 }
 
 

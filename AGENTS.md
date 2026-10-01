@@ -321,7 +321,11 @@ pimd's control-plane refreshes reaches -- last hop, nothing joined downstream of
 nothing -- so its entry timer sits at 205 under traffic only if the data itself restarts it, and
 sawtoothed from 210 down to 155 between two `spt-threshold` polls before it did -- one
 appears in the first, and has to become a VIF, take the settings of a `phyint` line written before
-it existed, and keep its slot when it goes and comes back; one it has a VIF on is destroyed in the
+it existed, resolve the `bsr-candidate` and `rp-candidate` lines that named it where an address was
+wanted -- read as `Pending` in `show status` while it does not exist and enabled on its address
+once it does, which is what a candidacy on an interface that is negotiated rather than configured
+needs and what `max_local_address()` used to be substituted for, silently -- and keep its slot when
+it goes and comes back; one it has a VIF on is destroyed in the
 second and given a new address in the third --, `rp-nbr-gone` the only one about what an RP entry
 holds after the link it was reaching the RP by has gone, where `set_incoming()` used to leave the
 freed neighbour behind on its no-route return and every new (\*,G) of that RP inherited it; it is

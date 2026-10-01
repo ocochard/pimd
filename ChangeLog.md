@@ -7,6 +7,30 @@ issue of this repository is written out in full.
 ------------
 
 ### Changes
+- An address a `pimd.conf` names by interface is resolved again on every
+  interface scan, so `bsr-candidate`, `rp-candidate`, `autorp announce` and
+  `autorp mapping-agent` may name an interface that does not exist, or has no
+  address, when pimd reads its configuration.  pimd has taken an interface
+  that appears under a running daemon since the `ifnew` work -- it gives it a
+  VIF and applies the `phyint` lines naming it -- but these four resolved a
+  name to an address exactly once, at parse time, through a table that was
+  whatever the kernel had at startup.  The two candidacies then did the worst
+  possible thing with the failure: `max_local_address()`, silently, so a
+  router configured `bsr-candidate ng0` came up as a Candidate-BSR on the
+  highest address of some other interface and stayed there until a reload.
+  That is the ordinary case on anything negotiated rather than configured --
+  PPP, L2TP, a tunnel, a VLAN added to a router in service -- and the only way
+  round it was to start pimd from a script that polls for the address.  The
+  token written in the file is kept now and resolved again from
+  `rescan_vifs()`, the candidacy is held rather than misdirected while it
+  resolves to nothing, and it is taken up when the address appears, follows it
+  when it moves, and is given up when it goes.  `pimctl show status` reports a
+  candidacy in that state as `Pending`.  A Candidate-BSR taking its role up
+  mid-flight claims the election only where nobody better holds it, the
+  comparison being `receive_pim_bootstrap()`'s.  Written out as an address
+  rather than as a name, the four behave the same way, and the keyword written
+  with no address at all still picks the highest local address once.  Steps 3
+  and 10 of the `ifnew` scenario of `test/lab.sh` are the assertion
 - The (S,G) Keepalive Timer is restarted by the traffic it is about, RFC 7761
   sec. 4.2 and deviation M7 of `doc/rfc7761-compliance.md`.  Every write to
   pimd's timer of that name, `entry_timer`, was a control-plane event or a

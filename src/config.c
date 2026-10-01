@@ -231,6 +231,117 @@ static void	 reset_anycast_rp (void);
 static void	 check_anycast_rp (void);
 static uint32_t	 ifname2addr	(char *s);
 
+/*
+ * What a pimd.conf line wrote where an address was wanted, kept as written.
+ *
+ * `bsr-candidate', `rp-candidate' and the two Auto-RP roles take an interface
+ * name as well as an address, and the name is the useful form: the address of
+ * a link is a thing an operator renumbers and the name is not.  Resolving it
+ * once, as parsing does, is wrong wherever the interface is negotiated rather
+ * than configured -- PPP, L2TP, a tunnel that comes up, a VLAN added to a
+ * router in service -- because at the moment pimd reads its configuration
+ * there is no VIF of that name for ifname2addr() to find, and there was
+ * nothing to do about it but start the daemon after the link, from a script
+ * that polls for the address.
+ *
+ * So keep the token.  config_resolve_addrs() below resolves it again on every
+ * interface rescan, which is what rescan_vifs() (src/vif.c) already does for
+ * the `phyint' lines naming an interface that did not exist yet.
+ */
+struct addr_spec {
+    char     spec[IFNAMSIZ];	/* an interface name or an address, verbatim */
+    uint32_t addr;		/* what it last resolved to, 0 for nothing   */
+    int      local;		/* whether an address written out has to be
+				 * one of ours: the two candidacies source
+				 * their messages from it and Auto-RP, which
+				 * never asked, is left as it was	     */
+};
+
+static struct addr_spec cand_bsr_spec;
+static struct addr_spec cand_rp_spec;
+
+/* The same for the two Auto-RP roles, which take three numbers beside the
+ * address and so have to carry them until the address resolves */
+static struct autorp_role {
+    struct addr_spec as;
+    int		     configured;
+    int		     interval;
+    int		     holdtime;
+    int		     ttl;
+} autorp_announce_role, autorp_agent_role;
+
+/*
+ * An interface name first, so that an interface whose name happens to parse
+ * as an address is still read as a name, which is the order every caller of
+ * ifname2addr() already uses.  An address has to be one of ours: pimd sources
+ * its own messages from it.
+ */
+static uint32_t spec2addr(const char *spec, int local)
+{
+    char buf[IFNAMSIZ];
+    uint32_t addr;
+
+    strlcpy(buf, spec, sizeof(buf));
+
+    addr = ifname2addr(buf);
+    if (!addr)
+	addr = inet_parse(buf, 4);
+
+    if (!inet_valid_host(addr))
+	return INADDR_ANY_N;
+
+    if (local && local_address(addr) == NO_VIF)
+	return INADDR_ANY_N;
+
+    return addr;
+}
+
+/*
+ * Remember @spec for @as and resolve it now.  An empty @spec is the keyword
+ * written with no address at all, which means the highest local address and
+ * is answered once, here: it is a choice between the interfaces pimd has, not
+ * a reference to one of them, and re-making it on every rescan would move a
+ * BSR every time a better-numbered interface appeared.
+ */
+/*
+ * And resolve it again.  @active says whether the candidacy this belongs to
+ * is running on the last answer: a keyword written with no address picked the
+ * highest local one when it was read, and that choice is only re-made while
+ * nothing came of it -- a bare `bsr-candidate' must not move its router every
+ * time a better-numbered interface appears, but one that found no address at
+ * all has to be able to find one later.
+ */
+static uint32_t addr_spec_resolve(struct addr_spec *as, int active)
+{
+    if (!as->spec[0]) {
+	if (active)
+	    return as->addr;
+
+	as->addr = max_local_address();
+    } else {
+	as->addr = spec2addr(as->spec, as->local);
+    }
+
+    return as->addr;
+}
+
+static uint32_t addr_spec_set(struct addr_spec *as, const char *spec, int local)
+{
+    as->local = local;
+
+    if (!spec || !*spec) {
+	as->spec[0] = 0;
+	as->addr = max_local_address();
+
+	return as->addr;
+    }
+
+    strlcpy(as->spec, spec, sizeof(as->spec));
+    as->addr = spec2addr(as->spec, as->local);
+
+    return as->addr;
+}
+
 static LIST_HEAD(, iflist) il = LIST_HEAD_INITIALIZER();
 
 /*
@@ -2276,7 +2387,7 @@ static int parse_rp_candidate(char *s)
 {
     u_int time = PIM_DEFAULT_CAND_RP_ADV_PERIOD;
     u_int priority = PIM_DEFAULT_CAND_RP_PRIORITY;
-    char *w;
+    char *w, *spec = NULL;
     uint32_t local = INADDR_ANY_N;
 
     while (!EQUAL((w = next_word(&s)), "")) {
@@ -2323,32 +2434,28 @@ static int parse_rp_candidate(char *s)
 	    continue;
 	}
 
-	/* Cand-RP interface or address */
-	local = ifname2addr(w);
-	if (!local)
-	    local = inet_parse(w, 4);
-
-	if (!inet_valid_host(local)) {
-	    local = max_local_address();
-	    WARN("Invalid Cand-RP address '%s', defaulting to %s", w, inet_fmt(local, s1, sizeof(s1)));
-	} else if (local_address(local) == NO_VIF) {
-	    local = max_local_address();
-	    WARN("Cand-RP address '%s' is not local, defaulting to %s", w, inet_fmt(local, s1, sizeof(s1)));
-	}
+	/* Cand-RP interface or address, kept as written, as above */
+	local = addr_spec_set(&cand_rp_spec, w, TRUE);
+	spec  = w;
     }
 
-    if (local == INADDR_ANY_N) {
+    if (!spec) {
 	/* If address not provided, use the max. local */
-	local = max_local_address();
+	local = addr_spec_set(&cand_rp_spec, NULL, TRUE);
     }
 
     my_cand_rp_address = local;
     my_cand_rp_priority = priority;
     my_cand_rp_adv_period = time;
-    cand_rp_flag = TRUE;
+    cand_rp_configured = TRUE;
+    cand_rp_flag = local != INADDR_ANY_N;
 
-    logit(LOG_INFO, 0, "Local Cand-RP address %s, priority %u, interval %u sec",
-	  inet_fmt(local, s1, sizeof(s1)), priority, time);
+    if (cand_rp_flag)
+	logit(LOG_INFO, 0, "Local Cand-RP address %s, priority %u, interval %u sec",
+	      inet_fmt(local, s1, sizeof(s1)), priority, time);
+    else
+	logit(LOG_NOTICE, 0, "Cand-RP address '%s' has none of this router's"
+	      " addresses yet, waiting for it", cand_rp_spec.spec);
 
     return TRUE;
 }
@@ -2635,7 +2742,7 @@ static int parse_bsr_candidate(char *s)
 {
     u_int time = PIM_BOOTSTRAP_PERIOD;
     uint32_t priority = PIM_DEFAULT_BSR_PRIORITY;
-    char *w;
+    char *w, *spec = NULL;
     uint32_t local = INADDR_ANY_N;
 
     while (!EQUAL((w = next_word(&s)), "")) {
@@ -2683,37 +2790,32 @@ static int parse_bsr_candidate(char *s)
 	    continue;
 	}
 
-	/* Cand-BSR interface or address */
-	local = ifname2addr(w);
-	if (!local)
-	    local = inet_parse(w, 4);
-
-	if (!inet_valid_host(local)) {
-	    local = max_local_address();
-	    WARN("Invalid Cand-BSR address '%s', defaulting to %s", w, inet_fmt(local, s1, sizeof(s1)));
-	    continue;
-	}
-
-	if (local_address(local) == NO_VIF) {
-	    local = max_local_address();
-	    WARN("Cand-BSR address '%s' is not local, defaulting to %s", w, inet_fmt(local, s1, sizeof(s1)));
-	}
+	/* Cand-BSR interface or address, kept as written: an interface that
+	 * does not exist yet, or has no address yet, is resolved again on
+	 * every rescan rather than quietly replaced by another one here. */
+	local = addr_spec_set(&cand_bsr_spec, w, TRUE);
+	spec  = w;
     }
 
-    if (local == INADDR_ANY_N) {
+    if (!spec) {
 	/* If address not provided, use the max. local */
-	local = max_local_address();
+	local = addr_spec_set(&cand_bsr_spec, NULL, TRUE);
     }
 
     my_bsr_address  = local;
     my_bsr_priority = priority;
     MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, my_bsr_hash_mask);
     my_bsr_adv_period = time;
-    cand_bsr_flag   = TRUE;
+    cand_bsr_configured = TRUE;
+    cand_bsr_flag   = local != INADDR_ANY_N;
 
-    logit(LOG_INFO, 0,
-    		"Local Cand-BSR address %s, priority %u, interval %u sec",
-		inet_fmt(local, s1, sizeof(s1)), priority, time);
+    if (cand_bsr_flag)
+	logit(LOG_INFO, 0,
+	      "Local Cand-BSR address %s, priority %u, interval %u sec",
+	      inet_fmt(local, s1, sizeof(s1)), priority, time);
+    else
+	logit(LOG_NOTICE, 0, "Cand-BSR address '%s' has none of this router's"
+	      " addresses yet, waiting for it", cand_bsr_spec.spec);
 
     return TRUE;
 }
@@ -3188,17 +3290,18 @@ static int parse_autorp(char *s)
 	int interval = AUTORP_DEFAULT_INTERVAL;
 	int holdtime = -1;
 	int ttl = AUTORP_DEFAULT_SCOPE;
+	struct autorp_role *role;
 	uint32_t addr;
 	char *what = w;
 
 	w = next_word(&s);
-	addr = ifname2addr(w);
-	if (!addr)
-	    addr = inet_parse(w, 4);
-	if (!inet_valid_host(addr)) {
-	    WARN("Invalid autorp %s address '%s'", what, w);
+	if (EQUAL(w, "")) {
+	    WARN("Missing autorp %s address", what);
 	    return FALSE;
 	}
+
+	role = agent ? &autorp_agent_role : &autorp_announce_role;
+	addr = addr_spec_set(&role->as, w, FALSE);
 
 	while (!EQUAL((w = next_word(&s)), "")) {
 	    u_int n;
@@ -3239,15 +3342,24 @@ static int parse_autorp(char *s)
 	if (holdtime < 0)
 	    holdtime = 3 * interval;
 
-	if (agent) {
+	role->configured = TRUE;
+	role->interval   = interval;
+	role->holdtime   = holdtime;
+	role->ttl        = ttl;
+
+	if (agent)
 	    autorp_agent_set(addr, interval, holdtime, ttl);
-	    logit(LOG_INFO, 0, "Auto-RP mapping agent %s, interval %d, holdtime %d, scope %d",
-		  inet_fmt(addr, s1, sizeof(s1)), interval, holdtime, ttl);
-	} else {
+	else
 	    autorp_announce_set(addr, interval, holdtime, ttl);
-	    logit(LOG_INFO, 0, "Auto-RP announcing %s, interval %d, holdtime %d, scope %d",
+
+	if (addr != INADDR_ANY_N)
+	    logit(LOG_INFO, 0, "Auto-RP %s %s, interval %d, holdtime %d, scope %d",
+		  agent ? "mapping agent" : "announcing",
 		  inet_fmt(addr, s1, sizeof(s1)), interval, holdtime, ttl);
-	}
+	else
+	    logit(LOG_NOTICE, 0, "Auto-RP %s address '%s' has none of this router's"
+		  " addresses yet, waiting for it",
+		  agent ? "mapping agent" : "announce", role->as.spec);
 
 	return TRUE;
     }
@@ -3486,6 +3598,12 @@ void config_vifs_from_file(void)
     /* Reset flags on file (re)load */
     cand_rp_flag = FALSE;
     cand_bsr_flag = FALSE;
+    cand_rp_configured = FALSE;
+    cand_bsr_configured = FALSE;
+    memset(&cand_bsr_spec, 0, sizeof(cand_bsr_spec));
+    memset(&cand_rp_spec, 0, sizeof(cand_rp_spec));
+    memset(&autorp_announce_role, 0, sizeof(autorp_announce_role));
+    memset(&autorp_agent_role, 0, sizeof(autorp_agent_role));
     reset_ssm_ranges();
     reset_reg_acl();
     reset_anycast_rp();
@@ -3638,7 +3756,10 @@ void config_vifs_from_file(void)
 
     recommended_rp_holdtime = 2.5 * my_bsr_adv_period; /* RFC5059 section 3.3 SHOULD BE value */
 
-    if (cand_rp_flag != FALSE) {
+    /* Asked of the candidacy pimd.conf wrote rather than of the one that is
+     * running: a Cand-RP whose address has not turned up yet still needs its
+     * holdtime and its group ranges ready for when it does. */
+    if (cand_rp_configured != FALSE) {
 	struct cand_rp_prefix *pfx;
 
 	/* Prepare the RP info */
@@ -3670,6 +3791,57 @@ void config_vifs_from_file(void)
 	logit(LOG_INFO, 0, "IGMP query interval  : %u sec", igmp_query_interval);
 	logit(LOG_INFO, 0, "IGMP querier timeout : %u sec", igmp_querier_timeout);
     }
+}
+
+
+/*
+ * Resolve the addresses a pimd.conf named by interface again, from the
+ * interface rescan: rescan_vifs() (src/vif.c) calls this once the kernel's
+ * interface list has been read and the new VIFs started, so an interface
+ * that has just appeared, lost its address or changed it is already in
+ * uvifs[] by the time ifname2addr() is asked.
+ *
+ * Nothing happens for a keyword pimd.conf did not write, nor for one written
+ * with no address at all -- see addr_spec_set() for why that one is answered
+ * once.  The two setters do nothing before init_rp_and_bsr() has run and
+ * nothing when the answer has not changed, so the common case of this is a
+ * couple of string compares a minute.
+ */
+static void autorp_role_resolve(struct autorp_role *role,
+				void (*set)(uint32_t, int, int, int),
+				const char *what)
+{
+    uint32_t prev, addr;
+
+    if (!role->configured)
+	return;
+
+    prev = role->as.addr;
+    addr = addr_spec_resolve(&role->as, prev != INADDR_ANY_N);
+    if (addr == prev)
+	return;
+
+    if (addr != INADDR_ANY_N)
+	logit(LOG_NOTICE, 0, "Auto-RP %s address is %s now, was %s", what,
+	      inet_fmt(addr, s1, sizeof(s1)),
+	      prev != INADDR_ANY_N ? inet_fmt(prev, s2, sizeof(s2)) : "unresolved");
+    else
+	logit(LOG_NOTICE, 0, "Auto-RP %s address %s is gone, standing down", what,
+	      inet_fmt(prev, s1, sizeof(s1)));
+
+    set(addr, role->interval, role->holdtime, role->ttl);
+}
+
+void config_resolve_addrs(void)
+{
+    if (cand_bsr_configured)
+	cand_bsr_address_set(addr_spec_resolve(&cand_bsr_spec, cand_bsr_flag));
+
+    if (cand_rp_configured)
+	cand_rp_address_set(addr_spec_resolve(&cand_rp_spec, cand_rp_flag));
+
+    autorp_role_resolve(&autorp_announce_role, autorp_announce_set, "announce");
+    autorp_role_resolve(&autorp_agent_role, autorp_agent_set, "mapping agent");
 }
 
 

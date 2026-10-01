@@ -518,16 +518,28 @@
 #               multicast groups joined on it, and Hellos sourced from its
 #               address at both ends.
 #
-#               Two more things only this scenario has.  r1.conf names both
+#               Three more things only this scenario has.  r1.conf names both
 #               new interfaces in phyint lines written before either
 #               exists, one of them "disable", so the rescan has to consult
 #               pimd.conf and not only the kernel -- the disabled one gets
 #               no VIF while the other does, each the control for the
-#               other.  And the link is then destroyed and built again
+#               other.  It also names one of them where an *address* is
+#               wanted, in a bsr-candidate and an rp-candidate line, which
+#               is the other half of the same problem and the one the
+#               BSDRP router above actually hit: a phyint line is applied
+#               to a VIF, while a candidacy has to resolve a name to an
+#               address, and resolving it once at parse time gave the
+#               router max_local_address() instead -- a Candidate-BSR on
+#               an address nobody asked for, silently, until a reload.
+#               Step 3 reads both candidacies as Pending before the
+#               interface exists and step 10 reads them enabled on its
+#               address afterwards, off R1 and off the BSR, which can only
+#               have learned that address from an advertisement R1 sent.
+#               And the link is then destroyed and built again
 #               under the same name, which has to come back on the vif
 #               index it had: a rescan that appended a slot per flap would
 #               reach MAXVIFS on a router whose links come and go, which is
-#               every router this feature is for.  Takes about 70s.
+#               every router this feature is for.  Takes about 90s.
 #
 #   ifgone      The rpt topology again, but ED1's link is destroyed while
 #               pimd is running and the only question is what R1 does about
@@ -2096,7 +2108,11 @@ dprint() { printf "\033[2m%-76s\033[0m\n" "$1"; }
 FAILED=0
 XFAILED=0
 ok()   { printf "  \033[32mok\033[0m    %s\n" "$1"; }
-fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=$((FAILED + 1)); }
+# "$*" rather than "$1": a dozen call sites in this file pass a message in
+# two or three arguments, split over as many source lines, and every word
+# after the first was being dropped -- a failure that named a number and
+# then said which number it expected printed only the first half.
+fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$*"; FAILED=$((FAILED + 1)); }
 skip() { printf "  \033[33mSKIP\033[0m  %s\n" "$1"; }
 
 # A behaviour that is wrong but known to be wrong: pimd deviates from the
@@ -2928,11 +2944,24 @@ write_configs() {
 		# interface) and because it changes nothing else: the VIF
 		# runs PIM exactly as it would have.  "disable" is the
 		# control beside it.
+		#
+		# The two candidacies name the same interface, which is the
+		# other half of a configuration written before the
+		# interfaces it names exist: a phyint line is applied to a
+		# VIF, while these two have to resolve a *name* to an
+		# address that does not exist yet.  Both are given numbers
+		# that lose to R2's, so the BSR and the RP of the scenario
+		# do not move when R1 takes them up: for a BSR the higher
+		# priority wins (R2 has 1), for a Cand-RP the lower (R2 has
+		# 20).
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: first hop router for $SRC_ADDR, with phyint lines for
-		# two interfaces that appear only once it is running
+		# two interfaces that appear only once it is running, and
+		# two candidacies on one of them
 		phyint $IFNEW_IF igmpv2
 		phyint $IFNEW_OFF_IF disable
+		bsr-candidate $IFNEW_IF priority 0 interval 10
+		rp-candidate $IFNEW_IF priority 200 interval 10
 		EOF
 
 		cat <<-EOF > "$WORKDIR/r2.conf"
@@ -4190,6 +4219,21 @@ bsr_prio() {
 }
 
 bsr_is() { [ "$(bsr_addr "$1")" = "$2" ]; }
+
+# A field of the "Candidate BSR" or "Candidate RP" section of "show status"
+# on router $1: $2 is BSR or RP, $3 the field.  "State" is Enabled, Disabled
+# or Pending, the last being a candidacy pimd.conf asked for whose address
+# has not turned up yet -- see config_resolve_addrs() in src/config.c.
+cand_field() {
+	pimctl "$1" -t show status 2>/dev/null | \
+		awk -v sect="Candidate $2" -v key="$3" '
+			$0 == sect     { want = 1; next }
+			/^[A-Z]/       { want = 0 }
+			want && $1 == key { print $3; exit }
+		'
+}
+
+cand_is() { [ "$(cand_field "$1" "$2" "$3")" = "$4" ]; }
 
 all_bsr_is() {
 	for be_r in r1 r2 r3; do
@@ -9141,7 +9185,29 @@ check_ifnew() {
 	r2_vifs=$(iface_count r2)
 	dprint "r1 has $r1_vifs VIFs, r2 has $r2_vifs"
 
+	# The other half of the same question, and the control for the step
+	# that reads these again once the interface is there.  A candidacy
+	# whose address cannot be resolved used to be given
+	# max_local_address() instead, silently: pimd came up as a
+	# Candidate-BSR on an address nobody asked for and stayed there, so
+	# an operator had to start the daemon after the link, from a script
+	# that polls for the address.
 	print "3. Neither router has a VIF on an interface that does not exist"
+	for cand_what in BSR RP; do
+		if cand_is r1 "$cand_what" State Pending; then
+			ok "r1: the Cand-$cand_what on $IFNEW_IF is pending, its address is not there yet"
+		else
+			fail "r1: Cand-$cand_what State is '$(cand_field r1 "$cand_what" State)'," \
+			     "expected Pending"
+		fi
+		if [ "$(cand_field r1 "$cand_what" Address)" = "0.0.0.0" ]; then
+			ok "r1: and it holds no address"
+		else
+			fail "r1: Cand-$cand_what took the address $(cand_field r1 "$cand_what" Address)," \
+			     "which no line of r1.conf names"
+		fi
+	done
+
 	for i in "$IFNEW_IF" "$IFNEW_OFF_IF"; do
 		if has_iface r1 "$i"; then
 			fail "r1 already has a VIF on $i, which nothing has created"
@@ -9258,7 +9324,55 @@ check_ifnew() {
 		fail "r2: $IFNEW_PEER_IF runs IGMPv$(iface_igmp_version r2 "$IFNEW_PEER_IF"), expected the v3 default"
 	fi
 
-	print "10. The link the routers started with was not disturbed"
+	# And the candidacies: r1.conf named $IFNEW_IF where an address was
+	# wanted, and the interface exists now.  Read on both sides -- R1's
+	# own view, and the BSR's, which can only have learned the address
+	# from a Cand-RP-Adv R1 sent after it had resolved one.
+	print "10. The candidacies r1.conf named by interface are taken up"
+	for cand_what in BSR RP; do
+		if wait_for "$IFNEW_WAIT" cand_is r1 "$cand_what" State Enabled; then
+			ok "r1: the Cand-$cand_what is enabled now"
+		else
+			fail "r1: Cand-$cand_what State is still" \
+			     "'$(cand_field r1 "$cand_what" State)' with $IFNEW_IF up"
+		fi
+		if [ "$(cand_field r1 "$cand_what" Address)" = "$IFNEW_ADDR" ]; then
+			ok "r1: and it took $IFNEW_ADDR, the address of $IFNEW_IF"
+		else
+			fail "r1: Cand-$cand_what is at $(cand_field r1 "$cand_what" Address)," \
+			     "expected $IFNEW_ADDR"
+		fi
+	done
+
+	if wait_for 60 has_crp r2 "$IFNEW_ADDR"; then
+		ok "r2, the BSR, was told of a candidate RP at $IFNEW_ADDR"
+	else
+		fail "r2 holds no candidate RP at $IFNEW_ADDR, R1 advertised none:" \
+		     "$(pimctl r2 -t show crp 2>/dev/null | tr '\n' ' ')"
+	fi
+
+	# R1's numbers lose to R2's, so taking the candidacies up must not
+	# move either role: a candidate that claimed the election it has
+	# just joined would show here.
+	if bsr_is r1 "$RP_ADDR" && bsr_is r2 "$RP_ADDR"; then
+		ok "r2 ($RP_ADDR) is still the elected BSR on both routers"
+	else
+		fail "the BSR moved to '$(bsr_addr r1)' on r1 and '$(bsr_addr r2)' on r2," \
+		     "expected $RP_ADDR"
+	fi
+	# Waited for rather than read once: a Bootstrap carries the whole RP
+	# set, so a router whose own Cand-RP-Adv to itself is late under load
+	# sends one without itself in it and the set comes back at the next
+	# one.  Every other RP assertion in this file waits for the same
+	# reason; this one is about where the role ended up, not how many
+	# Bootstraps it took to say so.
+	if wait_for 60 has_rp r1 "$RP_ADDR"; then
+		ok "and $RP_ADDR is still the RP"
+	else
+		fail "r1's RP is no longer $RP_ADDR: $(pimctl r1 -t show rp 2>/dev/null | tr '\n' ' ')"
+	fi
+
+	print "11. The link the routers started with was not disturbed"
 	if has_neighbor r1 "$IFNEW_KEPT_ADDR"; then
 		ok "r1 still has R2 ($IFNEW_KEPT_ADDR) on the original link"
 	else
@@ -9276,7 +9390,7 @@ check_ifnew() {
 		fail "r1 has $(iface_count r1) VIFs, expected $((r1_vifs + 1))"
 	fi
 
-	print "11. The same link, destroyed and built again, comes back on its own slot"
+	print "12. The same link, destroyed and built again, comes back on its own slot"
 	box_if_destroy r2 "$IFNEW_PEER_IF" || die "failed destroying $IFNEW_PEER_IF on r2"
 	if wait_for "$IFNEW_WAIT" iface_not_up r1 "$IFNEW_IF"; then
 		ok "r1: $IFNEW_IF taken out of service"

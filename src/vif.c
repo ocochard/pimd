@@ -971,6 +971,11 @@ void rescan_vifs(void)
      * gone, come back or been renumbered while we were not looking, and
      * the register vif, which may have nothing to sit on until now. */
     check_vif_state();
+
+    /* And the addresses a pimd.conf named by interface rather than by
+     * value, which is the other half of applying a configuration written
+     * before the interfaces it names existed. */
+    config_resolve_addrs();
 }
 
 

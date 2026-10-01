@@ -128,6 +128,10 @@ static uint16_t	autorp_announce_interval = AUTORP_DEFAULT_INTERVAL;
 static uint16_t	autorp_announce_holdtime = AUTORP_DEFAULT_HOLDTIME;
 static uint8_t	autorp_announce_ttl	 = AUTORP_DEFAULT_SCOPE;
 static uint16_t	autorp_announce_timer	 = 0;
+/* Set once init_autorp() has armed the timers and joined the groups of the
+ * roles the configuration gave, which is what tells a role configured then
+ * from one that turned up later; see autorp_announce_set() */
+static int	autorp_inited		 = FALSE;
 static struct autorp_prefix *autorp_prefixes = NULL;
 
 /*
@@ -1291,6 +1295,8 @@ void init_autorp(void)
     if (autorp_agent_flag)
 	SET_TIMER(autorp_agent_timer, autorp_agent_interval);
 
+    autorp_inited = TRUE;
+
     if (register_input_handler(autorp_socket, autorp_read) < 0)
 	logit(LOG_ERR, 0, "Failed registering the Auto-RP handler");
 
@@ -1338,22 +1344,50 @@ void autorp_config_reset(void)
     autorp_listener_flag	= FALSE;
 }
 
+/*
+ * The two roles a pimd.conf can give this router, each at an address it may
+ * have named by interface -- so @addr is INADDR_ANY_N where that interface
+ * has not appeared yet, or has gone, and the role is off for as long as that
+ * lasts.  config_resolve_addrs() (src/config.c) calls these again from every
+ * interface rescan.
+ *
+ * Before init_autorp() these only record: it arms the timers of whichever
+ * roles the configuration gave, and joins the groups they need.  Afterwards
+ * there is nobody left to do that, so they do it themselves.
+ */
 void autorp_announce_set(uint32_t addr, int interval, int holdtime, int ttl)
 {
-    autorp_announce_flag     = TRUE;
+    int was = autorp_announce_flag;
+
+    autorp_announce_flag     = addr != INADDR_ANY_N;
     autorp_announce_addr     = addr;
     autorp_announce_interval = (uint16_t)interval;
     autorp_announce_holdtime = (uint16_t)holdtime;
     autorp_announce_ttl      = (uint8_t)ttl;
+
+    /* Nothing to join: an announcement is sent to the announce group, which
+     * only an agent has to be a member of. */
+    if (autorp_inited && autorp_announce_flag && !was)
+	SET_TIMER(autorp_announce_timer, 1);
 }
 
 void autorp_agent_set(uint32_t addr, int interval, int holdtime, int ttl)
 {
-    autorp_agent_flag     = TRUE;
+    int was = autorp_agent_flag;
+
+    autorp_agent_flag     = addr != INADDR_ANY_N;
     autorp_agent_addr     = addr;
     autorp_agent_interval = (uint16_t)interval;
     autorp_agent_holdtime = (uint16_t)holdtime;
     autorp_agent_ttl      = (uint8_t)ttl;
+
+    /* An agent resolves what the candidates announce, so it has to be a
+     * member of the announce group, which autorp_join() only adds for the
+     * roles that were configured by the time it ran. */
+    if (autorp_inited && autorp_agent_flag && !was) {
+	autorp_join();
+	SET_TIMER(autorp_agent_timer, autorp_agent_interval);
+    }
 }
 
 /*
@@ -1395,6 +1429,11 @@ int autorp_prefix_add(uint32_t group_addr, uint8_t masklen, int negative)
 void stop_autorp(void)
 {
     autorp_maps_clear();
+
+    /* A reload goes back through init_autorp(), which arms and joins for
+     * whatever the new configuration asks: until it has, the setters must
+     * only record, as they do at startup. */
+    autorp_inited = FALSE;
 
     if (autorp_socket > -1) {
 	close(autorp_socket);

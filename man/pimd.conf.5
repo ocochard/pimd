@@ -144,7 +144,11 @@ configured for them.
 Announce this router as a candidate RP over Auto-RP, to the mapping agents
 of the domain, with
 .Ar ADDR
-as the RP address; an interface name is taken as well.  What it is willing
+as the RP address; an interface name is taken as well, and is resolved
+again on every interface scan, so it may name one that does not exist or
+has no address yet \(em see
+.Cm bsr-candidate
+below.  What it is willing
 to serve is said in the
 .Cm autorp listener ,
 .Cm autorp group-prefix
@@ -215,7 +219,9 @@ inside the /8 says something new and survives.
 Be the mapping agent of the domain: listen to the candidate RPs on
 224.0.1.39, resolve what they claim, and send the result to 224.0.1.40
 every interval, from
-.Ar ADDR .
+.Ar ADDR ,
+which may be an interface name and is resolved again on every interface
+scan, as above.
 Defaults as above.
 .Pp
 Conflicts are resolved the way the specification asks: prefixes of
@@ -617,6 +623,24 @@ Optional local IPv4 address, or interface name to acquire address from.
 If both address and ifname is left out,
 .Nm pimd
 will default to the highest active IP address.
+.Pp
+An interface name is resolved again on every interface scan, so it may
+name an interface that does not exist, or has no address, when
+.Nm pimd
+reads its configuration: the candidacy is held until the address turns
+up and is taken up then, and it is given up again if the address goes
+away.
+.Nm pimctl Cm show status
+reports such a candidacy as
+.Ql Pending .
+This is what an interface that is negotiated rather than configured
+needs \(em PPP, L2TP, a tunnel that comes up, a VLAN added to a router
+in service \(em and it is why the name is the better form to write: the
+address of a link is a thing an operator renumbers, and the name is not.
+An address written out is handled the same way, but it has to be one of
+this router's: it is where
+.Nm pimd
+sources the messages of that role from.
 .It Cm priority Ar <0-255>
 How important this router is compared to others.  A larger numeric value
 denotes higher priority, c.f.
@@ -638,6 +662,24 @@ Optional local IPv4 address, or interface name to acquire address from.
 If both address and ifname is left out,
 .Nm pimd
 will default to the highest active IP address.
+.Pp
+An interface name is resolved again on every interface scan, so it may
+name an interface that does not exist, or has no address, when
+.Nm pimd
+reads its configuration: the candidacy is held until the address turns
+up and is taken up then, and it is given up again if the address goes
+away.
+.Nm pimctl Cm show status
+reports such a candidacy as
+.Ql Pending .
+This is what an interface that is negotiated rather than configured
+needs \(em PPP, L2TP, a tunnel that comes up, a VLAN added to a router
+in service \(em and it is why the name is the better form to write: the
+address of a link is a thing an operator renumbers, and the name is not.
+An address written out is handled the same way, but it has to be one of
+this router's: it is where
+.Nm pimd
+sources the messages of that role from.
 .It Cm priority Ar <0-255>
 A smaller numeric value denotes higher priorty, c.f.
 .Cm bsr-candidate

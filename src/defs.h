@@ -345,6 +345,11 @@ extern uint8_t           curr_bsr_priority;
 extern uint32_t          curr_bsr_address;
 extern uint32_t          curr_bsr_hash_mask;
 extern uint8_t		 cand_bsr_flag;		   /* candidate BSR flag */
+extern uint8_t		 cand_bsr_configured;	   /* ... and whether pimd.conf
+						    * asked for one at all,
+						    * which is not the same
+						    * while its address is
+						    * still unresolved    */
 extern uint8_t           my_bsr_priority;
 extern uint16_t          my_bsr_adv_period;        /* RFC5059: BS_Period */
 extern uint16_t          my_bsr_timeout;           /* RFC5059: BS_Timeout */
@@ -352,6 +357,7 @@ extern uint16_t          recommended_rp_holdtime;  /* RFC5059: RP_Holdtime */
 extern uint32_t          my_bsr_address;
 extern uint32_t          my_bsr_hash_mask;
 extern uint8_t           cand_rp_flag;              /* Candidate RP flag */
+extern uint8_t           cand_rp_configured;        /* as cand_bsr_configured */
 extern uint32_t          my_cand_rp_address;
 extern uint8_t           my_cand_rp_priority;
 extern uint16_t          my_cand_rp_holdtime;
@@ -479,6 +485,7 @@ extern int	timer_get		(int);
 
 /* config.c */
 extern void	config_vifs_from_kernel	(void);
+extern void	config_resolve_addrs	(void);
 extern vifi_t	config_vifs_rescan	(void);
 extern void	config_vifs_from_file	(void);
 extern void	config_phyints_from_file (vifi_t first);
@@ -784,6 +791,8 @@ extern const char *rpf_backend;
 /* rp.c */
 extern void	init_rp_and_bsr		(void);
 extern uint16_t	bootstrap_initial_delay (void);
+extern void	cand_bsr_address_set	(uint32_t addr);
+extern void	cand_rp_address_set	(uint32_t addr);
 extern rp_grp_entry_t *add_rp_grp_entry (cand_rp_t  **used_cand_rp_list,
                                          grp_mask_t **used_grp_mask_list,
                                          uint32_t rp_addr,

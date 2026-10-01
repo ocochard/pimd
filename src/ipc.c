@@ -47,6 +47,12 @@
 
 #define ENABLED(v) (v ? "Enabled" : "Disabled")
 
+/* A candidacy pimd.conf asked for whose address has not turned up yet is
+ * neither: it is configured, it is not speaking, and it starts on its own
+ * when the interface it names appears.  See config_resolve_addrs()
+ * (src/config.c). */
+#define CANDIDACY(on, configured) ((on) ? "Enabled" : (configured) ? "Pending" : "Disabled")
+
 static struct sockaddr_un sun;
 static int ipc_socket = -1;
 static int detail = 0;
@@ -1254,12 +1260,12 @@ static int show_status(FILE *fp)
 	ipc_kv_num(fp, "Hash Mask Length", len);
 
 	ipc_section(fp, "Candidate BSR");
-	ipc_kv_str(fp, "State", ENABLED(cand_bsr_flag));
+	ipc_kv_str(fp, "State", CANDIDACY(cand_bsr_flag, cand_bsr_configured));
 	ipc_kv_str(fp, "Address", inet_fmt(my_bsr_address, s1, sizeof(s1)));
 	ipc_kv_opt(fp, "Priority", my_bsr_priority, my_bsr_priority);
 
 	ipc_section(fp, "Candidate RP");
-	ipc_kv_str(fp, "State", ENABLED(cand_rp_flag));
+	ipc_kv_str(fp, "State", CANDIDACY(cand_rp_flag, cand_rp_configured));
 	ipc_kv_str(fp, "Address", inet_fmt(my_cand_rp_address, s1, sizeof(s1)));
 	ipc_kv_num(fp, "Priority", my_cand_rp_priority);
 	ipc_kv_secs(fp, "Holdtime", my_cand_rp_holdtime);
