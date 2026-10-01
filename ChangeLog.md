@@ -3,8 +3,8 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
-[UNRELEASED]
-------------
+[v3.2.0][] - 2026-10-01
+-----------------------
 
 ### Changes
 - An address a `pimd.conf` names by interface is resolved again on every
@@ -3641,7 +3641,8 @@ v2.1.0-alpha1 - 1997-08-26
 First alpha version of the "new, up to date" pimd.  RSRR and Solaris
 support added.  Many functions rewritten and/or modified.
 
-[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.1.0...HEAD
+[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.2.0...HEAD
+[v3.2.0]:     https://github.com/ocochard/pimd/compare/3.1.0...3.2.0
 [v3.1.0]:     https://github.com/ocochard/pimd/compare/3.0.0...3.1.0
 [v3.0.0]:     https://github.com/ocochard/pimd/compare/2.3.2...3.0.0
 [v2.3.2]:     https://github.com/troglobit/pimd/compare/2.3.1...2.3.2

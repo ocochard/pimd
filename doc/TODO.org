@@ -4,18 +4,19 @@ THIS LIST IS FAR AWAY FROM BEING COMPLETE, so these are the few things
 that came up at the right moment to be written down.
 
 
-* pimd 3.0 release:
+* Before any release:
 
-What is left before the tag.
+What is left before the tag, whichever tag it is.
 
 ** Update the ChangeLog and bump the version in configure.ac
 
 The release pass over the [UNRELEASED] section of ChangeLog.md, and
-AC_INIT, which still says 3.0-beta1.  Last thing before the tag, listed so
-it is not what everybody assumes somebody else did.
+AC_INIT, which carries a -beta1 of the release being prepared between one
+tag and the next.  Last thing before the tag, listed so it is not what
+everybody assumes somebody else did.
 
 
-* pimd 3.1 release:
+* Wanted, and not holding a release:
 ** Merge pimd-dense
 ** Add sparse-dense mode, triggered per group
  - Cisco relies on group joins by the router itself
