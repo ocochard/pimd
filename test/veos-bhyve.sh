@@ -16,10 +16,10 @@
 # is appended to the initrd to replace /bin/flashrom with a stub.
 #
 # bhyve exits when the guest reboots (exit code 0), so the VM runs inside a
-# restart loop the way ~/BSDRP/tools/BSDRP-lab-bhyve.sh does: anything other
-# than 0 - powered off (1), halted (2), triple fault (3), bhyve error (4) -
-# ends the loop.  Without it the first "reload" typed at the EOS CLI, and the
-# one "zerotouch disable" issues by itself, silently kill the VM.
+# restart loop: anything other than 0 - powered off (1), halted (2), triple
+# fault (3), bhyve error (4) - ends the loop.  Without it the first "reload"
+# typed at the EOS CLI, and the one "zerotouch disable" issues by itself,
+# silently kill the VM.
 #
 # A fresh vEOS-lab image has no startup-config, so it boots into Zero Touch
 # Provisioning and waits for a DHCP server that this lab does not have.  Two

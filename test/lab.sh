@@ -497,12 +497,12 @@
 #               interface that did not exist when pimd started appears
 #               under it.  A second link is created between R1 and R2 and
 #               addressed while both daemons run, which is a VLAN added to
-#               a router in service, a tunnel that comes up, or the ng(4)
-#               link mpd5 builds once PPP has negotiated -- the last is
-#               where this came from, a BSDRP router whose two PPP links
-#               were missing from "pimctl show interface" for the whole
-#               life of the daemon because pimd is started from rc(8) six
-#               seconds before they exist.
+#               a router in service, a tunnel that comes up, or the
+#               interface a PPP daemon builds once the link has negotiated
+#               -- the last is where this came from, a router whose two PPP
+#               links were missing from "pimctl show interface" for the
+#               whole life of the daemon because pimd is started by the
+#               system's own boot scripts a few seconds before they exist.
 #
 #               init_vifs() (src/vif.c) called config_vifs_from_kernel()
 #               once and nothing called it again, so the vif table was
@@ -526,7 +526,7 @@
 #               other.  It also names one of them where an *address* is
 #               wanted, in a bsr-candidate and an rp-candidate line, which
 #               is the other half of the same problem and the one the
-#               BSDRP router above actually hit: a phyint line is applied
+#               router above actually hit: a phyint line is applied
 #               to a VIF, while a candidacy has to resolve a name to an
 #               address, and resolving it once at parse time gave the
 #               router max_local_address() instead -- a Candidate-BSR on
