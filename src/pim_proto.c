@@ -4811,10 +4811,13 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
  * message.  Sec. 4.6.2 needs no more than this: the (*,G) machine may run
  * only if the (S,G) one held no state and did not move.  ASSERT_CANCELLED
  * is the one case where it may run anyway -- see receive_pim_assert().
+ * ASSERT_REFUSED is a machine that took the message and had nowhere to keep
+ * what it learned, which keeps the other one out just the same.
  */
 #define ASSERT_NOTHING	0
 #define ASSERT_MOVED	1
 #define ASSERT_CANCELLED	2
+#define ASSERT_REFUSED	3
 
 /*
  * One run of a per-interface Assert state machine: sec. 4.6.1's on an (S,G)
@@ -4835,7 +4838,8 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
  *
  * Returns ASSERT_MOVED if the machine took the message, which is what keeps
  * the (*,G) machine out of it, and ASSERT_CANCELLED if it took it by giving
- * the interface back, which does not.
+ * the interface back, which does not.  ASSERT_REFUSED where the message was
+ * this machine's and the state it would have kept had no entry to live on.
  */
 static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  uint32_t src, uint32_t source, uint32_t group,
@@ -4989,8 +4993,27 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	     * its own now.
 	     */
 	    own = find_route(source, group, MRTF_SG, CREATE);
-	    if (!own)
-		return ASSERT_NOTHING;
+	    if (!own) {
+		/* Nowhere to keep it: no unicast route to S, no RP for the
+		 * group, or an (S,G) refused for a limit.  The message is
+		 * this machine's all the same, it compared metrics and lost,
+		 * so it must not go on to the (*,G) machine: that one would
+		 * record one source's loss as the group's and take the
+		 * interface out of the olist every other source of G inherits
+		 * from it.  Measured on the assert-recover scenario of
+		 * test/lab.sh, one run in five: a renumbered interface leaves
+		 * the route to a source on that segment unresolvable for a
+		 * moment, and the DR then stopped forwarding the group for
+		 * Assert_Time over an Assert naming a source it was not
+		 * forwarding at all.
+		 */
+		IF_DEBUG(DEBUG_PIM_ASSERT)
+		    logit(LOG_DEBUG, 0, "Lost the Assert for (%s,%s) on %s, no (S,G) to keep it on",
+			  inet_fmt(source, s1, sizeof(s1)),
+			  inet_fmt(group, s2, sizeof(s2)), v->uv_name);
+
+		return ASSERT_REFUSED;
+	    }
 
 	    if (own->flags & MRTF_NEW) {
 		own->flags &= ~MRTF_NEW;
@@ -5266,7 +5289,11 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 
 	rc = assert_machine(sg ? sg : wc, sg, vifi, FALSE, src, source, group,
 			    assert_rptbit, assert_preference, assert_metric);
-	if (rc == ASSERT_MOVED)
+	/* ASSERT_REFUSED is the same answer as ASSERT_MOVED to sec. 4.6.2:
+	 * the message was this machine's, which is what keeps the (*,G) one
+	 * out of it, and the only difference is that nothing could be kept.
+	 */
+	if (rc == ASSERT_MOVED || rc == ASSERT_REFUSED)
 	    return TRUE;
 
 	/* The exception, and the whole of why the (S,G) machine returns its

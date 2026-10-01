@@ -1838,6 +1838,20 @@ CRAFT_PMBR_MSKLEN=${CRAFT_PMBR_MSKLEN:-4}
 # tearing it down again disturbs no other step's state.
 CRAFT_PRUNE_GROUP=${CRAFT_PRUNE_GROUP:-225.1.9.9}
 
+# crafted step 2c: a group of its own again, and two Assert metrics, one
+# worse than the metric r1 holds for the shared tree and one better.
+# $CRAFT_NO_ROUTE_SRC is an address no box on this chain has a route to --
+# there is no default route anywhere in the lab -- which is what leaves the
+# (S,G) Assert machine of RFC 7761 sec. 4.6.1 with nowhere to keep a Loser
+# state: find_route(..., CREATE) needs a source entry and an RPF lookup to
+# build one.
+CRAFT_ASSERT_GROUP=${CRAFT_ASSERT_GROUP:-225.1.5.5}
+CRAFT_NO_ROUTE_SRC=${CRAFT_NO_ROUTE_SRC:-198.51.100.7}
+CRAFT_ASSERT_WORSE_PREF=${CRAFT_ASSERT_WORSE_PREF:-200}
+CRAFT_ASSERT_WORSE_METRIC=${CRAFT_ASSERT_WORSE_METRIC:-65535}
+CRAFT_ASSERT_BETTER_PREF=${CRAFT_ASSERT_BETTER_PREF:-1}
+CRAFT_ASSERT_BETTER_METRIC=${CRAFT_ASSERT_BETTER_METRIC:-1}
+
 # crafted, the Join suppression steps.  $SUPP_ADDR is a second router on
 # R1's link to R2, $R1_UP_ADDR R1's own end of that link.  $SUPP_WINDOW has
 # to hold at least two of R1's periodic Joins, $SUPP_PERIOD apart, so an R1
@@ -4178,6 +4192,25 @@ assert_state_on() {
 
 	return 1
 }
+
+# The Assert state character interface $2 holds on router $1's ($3,$4)
+# entry, where $3 is ANY for a (*,G): 'W', 'L' or '.', and nothing at all
+# where there is no such entry.  assert_state_on() above answers for the
+# router over whichever entry carries the state, which is what most callers
+# want; crafted step 2c needs the two entries apart, the whole of what it
+# asserts being that a loss recorded on one is not recorded on the other.
+assert_char_of() {
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
+
+	map=$(route_assert_map "$1" "$3" "$4")
+	[ -n "$map" ] || return 1
+
+	printf '%s' "$map" | cut -c "$((idx + 1))"
+}
+
+# ... and whether it is $5, for wait_for()
+assert_char_is() { [ "$(assert_char_of "$1" "$2" "$3" "$4")" = "$5" ]; }
 
 # Has router $1 joined group $3 towards interface $2?  Re-read on every
 # call, so it can be polled with wait_for().
@@ -6805,6 +6838,84 @@ check_crafted() {
 
 	# The control.  Without it every assertion above is satisfied by a
 	# parser that drops Join/Prunes altogether.
+	print "2c. An Assert naming one source does not take the group off the interface"
+	# RFC 7761 sec. 4.6.2 lets the (*,G) Assert machine have a message only
+	# where the (S,G) machine held no state and did not move, and an (S,G)
+	# machine that loses keeps its Loser state on an (S,G) entry of its own,
+	# which assert_machine() (src/pim_proto.c) creates for the purpose.
+	# Where it cannot -- no unicast route to S, no RP for the group, an
+	# (S,G) refused by one of the limits -- it used to answer "not mine",
+	# and the (*,G) machine then recorded that one source's loss as the
+	# group's and emptied the olist every other source of G inherits from
+	# it, for Assert_Time.  No lab of pimds can ask this: pimd never sends
+	# an Assert naming a source the receiver has no route to, and a pimd
+	# that did would be the one that cannot keep the state.
+	# A (*,G) needs an RP, and this early in the scenario r1 may not have
+	# heard R2's Bootstrap yet: find_route() refuses with "no RP for group"
+	# and the Join below builds nothing at all.
+	if ! wait_for 90 has_rp r1 "$RP_ADDR"; then
+		fail "r1 learned no RP, a (*,$CRAFT_ASSERT_GROUP) cannot exist without one"
+		return 1
+	fi
+
+	# The crafted Hello is sent again rather than relied on: step 1's holds
+	# for 105s and sec. 4.6 has pimd discard an Assert from an address it
+	# has had no Hello from, so a step that outlived one would assert
+	# nothing, wherever in the scenario it is moved to.
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, nothing crafted below reaches a state machine"
+		return 1
+	fi
+	craft "$SRC_ADDR" join -w -r "$RP_ADDR" -g "$CRAFT_ASSERT_GROUP" -u "$R1_LAN_ADDR"
+	if wait_for 10 sg_forwards_on r1 "${EP}101b" ANY "$CRAFT_ASSERT_GROUP"; then
+		ok "r1 forwards (*,$CRAFT_ASSERT_GROUP) onto ${EP}101b"
+	else
+		fail "r1 took no Join(*,$CRAFT_ASSERT_GROUP), so there is nothing here to assert about"
+	fi
+
+	# The (*,G) machine working, which is also what gives the step below a
+	# Winner state to lose: an Assert carrying the RPT bit and a metric
+	# worse than r1's own, which sec. 4.6.2 has r1 answer with one of its
+	# own and keep the interface.
+	craft "$SRC_ADDR" assert -g "$CRAFT_ASSERT_GROUP" -R \
+	      -P "$CRAFT_ASSERT_WORSE_PREF" -C "$CRAFT_ASSERT_WORSE_METRIC"
+	if wait_for 10 assert_char_is r1 "${EP}101b" ANY "$CRAFT_ASSERT_GROUP" W; then
+		ok "r1 is the (*,G) Assert winner on ${EP}101b against a worse metric"
+	else
+		fail "r1 did not win the (*,G) election, so the assertion below asks nothing"
+	fi
+
+	# The message itself: RPT bit clear, so sec. 4.6.1's machine owns it, a
+	# better metric, so that machine loses, and a source r1 cannot route,
+	# so it has nowhere to keep the loss.  Nothing of the (*,G) may move.
+	craft "$SRC_ADDR" assert -g "$CRAFT_ASSERT_GROUP" -s "$CRAFT_NO_ROUTE_SRC" \
+	      -P "$CRAFT_ASSERT_BETTER_PREF" -C "$CRAFT_ASSERT_BETTER_METRIC"
+	sleep 2
+	ca_state=$(assert_char_of r1 "${EP}101b" ANY "$CRAFT_ASSERT_GROUP")
+	if [ "$ca_state" = W ] && sg_forwards_on r1 "${EP}101b" ANY "$CRAFT_ASSERT_GROUP"; then
+		ok "r1 kept (*,$CRAFT_ASSERT_GROUP) on ${EP}101b, an Assert for $CRAFT_NO_ROUTE_SRC is not the group's"
+	else
+		fail "r1 reads '$ca_state' on ${EP}101b: one source's lost Assert took every source of $CRAFT_ASSERT_GROUP off it"
+	fi
+
+	# And the control for it, the same Assert for a source r1 does have a
+	# route to: that one the (S,G) machine keeps, on an entry of its own,
+	# with the (*,G) untouched beside it.  Without this the assertion above
+	# would pass just as well on a daemon that ignores every Assert.
+	craft "$SRC_ADDR" assert -g "$CRAFT_ASSERT_GROUP" -s "$CRAFT_FAR_SRC" \
+	      -P "$CRAFT_ASSERT_BETTER_PREF" -C "$CRAFT_ASSERT_BETTER_METRIC"
+	if wait_for 10 assert_char_is r1 "${EP}101b" "$CRAFT_FAR_SRC" "$CRAFT_ASSERT_GROUP" L; then
+		ok "r1 recorded the loss for $CRAFT_FAR_SRC on an (S,G) of its own"
+	else
+		fail "r1 kept no (S,G) Loser state for $CRAFT_FAR_SRC, which it can route"
+	fi
+	if [ "$(assert_char_of r1 "${EP}101b" ANY "$CRAFT_ASSERT_GROUP")" = W ]; then
+		ok "and (*,$CRAFT_ASSERT_GROUP) is still r1's on ${EP}101b"
+	else
+		fail "the loss for $CRAFT_FAR_SRC was recorded on the (*,G) as well"
+	fi
+
 	print "3. And the same Join, correctly formed, is acted on"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "Received PIM JOIN/PRUNE from $SRC_ADDR"; then

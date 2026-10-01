@@ -704,6 +704,35 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- An Assert that names one source no longer takes the whole group off the
+  interface.  RFC 7761 sec. 4.6.2 lets the (\*,G) Assert machine run only where
+  the (S,G) one held no state and did not move, and `assert_machine()`
+  (`src/pim_proto.c`) reported one case as "not mine" that was: the (S,G)
+  machine that compared metrics, lost, and then could not create the (S,G)
+  entry its Loser state has to live on -- no unicast route to S, no RP for the
+  group, or an (S,G) refused by one of the limits.  `receive_pim_assert()` went
+  on to the (\*,G) machine with it, which recorded that one source's loss as the
+  group's and emptied the olist every other source of G inherits from it, for
+  `Assert_Time`.  The shape it was found in: a renumbered interface leaves the
+  route to a source on that segment unresolvable for a moment, so a DR that had
+  just been renumbered stopped forwarding the stream it was forwarding over an
+  Assert about a source it was not forwarding at all, while the router beside it
+  carried the LAN instead -- a kernel MFC with no incoming vif and no outgoing
+  interfaces, 90 seconds after the renumbering.  The machine says
+  `ASSERT_REFUSED` now, which is the same answer as `ASSERT_MOVED` to the
+  ordering of sec. 4.6.2 and differs only in having kept nothing.  Step 2c of the
+  `crafted` scenario of `test/lab.sh` is the assertion, and it is deterministic
+  where the bug was not: four messages from `test/pimsend.c`, a Join(\*,G) to
+  forward a group of its own, an Assert carrying the RPT bit and a worse metric so
+  that R1 holds the interface as the (\*,G) winner, then the one no pimd sends --
+  an Assert with the bit clear, a better metric and a source R1 has no route to --
+  which must leave that Winner state alone.  Two controls beside it, since a
+  daemon that ignored every Assert would pass the assertion on its own: the same
+  Assert for a source R1 can route, which is kept, and on an (S,G) of its own.  It
+  was found instead in step 8 of `assert-recover`, which reproduces it about one
+  run in five with eight scenarios in parallel -- and 0 in 8 with the fix -- the
+  way `shared-lan-spt` reproduces the SPTbit deviation of
+  `doc/rfc7761-compliance.md` only under `-j 4`
 - A Leave that arrives while the interface it came in on is going away no longer
   leaves pimd writing into freed memory.  `accept_leave_message()`
   (`src/igmp_proto.c`) answers a Leave with a group specific query and then
