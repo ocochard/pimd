@@ -704,6 +704,27 @@ issue of this repository is written out in full.
   rather than applying it
 
 ### Fixes
+- A Leave that arrives while the interface it came in on is going away no longer
+  leaves pimd writing into freed memory.  `accept_leave_message()`
+  (`src/igmp_proto.c`) answers a Leave with a group specific query and then
+  writes the group's three timers, and the send in between could take the group
+  out from under it: a `sendto()` that failed with `ENETDOWN` or `ENODEV` called
+  `check_vif_state()` from inside the send path, which takes the interface out of
+  service with `stop_vif()`, which frees every membership of that VIF -- so the
+  write landed in a freed `struct listaddr`.  Nothing about that is particular to
+  IGMP or to memberships.  `stop_vif()` also frees the VIF's querier, its PIM
+  neighbours and the routing entries that named it, and the callers a few frames
+  above every one of those four sends are receive paths holding exactly such a
+  pointer, so the shape was a class rather than one bug.  A failed send asks for
+  an interface scan with `rescan_vifs_request()` now, the same coalescing request
+  the kernel's own interface notifications take, and the scan runs from the timer
+  where no parser's state is on the stack.  Nothing is noticed later than it was:
+  `age_vifs()` calls `check_vif_state()` every `TIMER_INTERVAL` whatever a send
+  did, and the comment there says why it cannot be left to the send paths.  Found
+  by the `rpt` scenario of `test/lab.sh` under `SANITIZE=yes`, whose step 10
+  destroys an interface pimd is forwarding out of while a host on it leaves a
+  group, and found on the first run of it that could report at all -- the
+  sanitizer entry above, the one about a report thrown away, is why
 - A host on the link can no longer make pimd write a syslog line per packet.
   `dvmrp_accept_neighbors()` (`src/dvmrp_proto.c`) logged every DVMRP neighbour
   list it dropped at `LOG_INFO` and unconditionally, so one IGMP type 0x13 code 4

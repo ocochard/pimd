@@ -424,7 +424,7 @@ static void send_ip_frame(uint32_t src, uint32_t dst, int type, int code, char *
 	if (errno == EINTR)
 	    continue;		/* Received signal, retry syscall. */
 	if (errno == ENETDOWN || errno == ENODEV)
-	    check_vif_state();
+	    rescan_vifs_request();	/* not check_vif_state(), see vif.c */
 	else if (errno == EPERM || errno == EHOSTUNREACH)
 	    logit(LOG_WARNING, 0, "Not allowed to send IGMP message from %s to %s, possibly firewall"
 #ifdef __linux__

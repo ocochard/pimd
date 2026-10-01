@@ -818,6 +818,17 @@ static void check_vif_addrs(void)
  * including any non-multicast-capable interfaces that are in use as local
  * tunnel end-points.  Ignore interfaces that have been administratively
  * disabled.
+ *
+ * It takes an interface that has gone out of service with stop_vif(), which
+ * frees that VIF's group memberships and their sources, its querier, its PIM
+ * neighbours and the routing entries that named it, so it has to run where
+ * nothing holds a pointer to any of them: from age_vifs() and rescan_vifs(),
+ * both on the timer.  A send that fails with ENETDOWN or ENODEV is not such a
+ * place.  The sender is several frames below a receive path holding the very
+ * group or neighbour the teardown would free -- accept_leave_message() answers
+ * a Leave with a group specific query and then writes the group's timers, and
+ * that write landed in freed memory -- so those paths ask for a scan with
+ * rescan_vifs_request() and let the timer run it.
  */
 void check_vif_state(void)
 {

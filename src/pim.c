@@ -385,7 +385,7 @@ void send_pim(char *buf, uint32_t src, uint32_t dst, int type, size_t len)
 	    case ENETDOWN:
 	    case ENETUNREACH:
 	    case ENODEV:
-		check_vif_state();
+		rescan_vifs_request();	/* not check_vif_state(), see vif.c */
 		break;
 
 	    case EPERM:
@@ -549,7 +549,7 @@ static int send_frame(char *buf, size_t len, size_t frag __attribute__((unused))
 	    case ENETDOWN:
 	    case ENETUNREACH:
 	    case ENODEV:
-		check_vif_state();
+		rescan_vifs_request();	/* not check_vif_state(), see vif.c */
 		return -1;
 
 	    case EMSGSIZE:
@@ -639,7 +639,7 @@ static int send_frame(char *buf, size_t len, size_t frag, size_t mtu, struct soc
 	    case ENETDOWN:
 	    case ENETUNREACH:
 	    case ENODEV:
-		check_vif_state();
+		rescan_vifs_request();	/* not check_vif_state(), see vif.c */
 		break;
 
 	    case EMSGSIZE:
