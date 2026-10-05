@@ -4758,7 +4758,7 @@ static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr,
 	IF_DEBUG(DEBUG_PIM_ASSERT)
 	    logit(LOG_INFO, 0, "Assert winner %s on %s %s, resuming %s",
 		  inet_fmt(addr, s1, sizeof(s1)), uvifs[vifi].uv_name, why,
-		  inet_fmt(mrt->group ? mrt->group->group : INADDR_ANY_N, s2, sizeof(s2)));
+		  inet_fmt(mrt->group->group, s2, sizeof(s2)));
 
 	change_interfaces(mrt, mrt->incoming, mrt->joined_oifs,
 			  mrt->pruned_oifs, mrt->leaves,
