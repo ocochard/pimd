@@ -25,6 +25,13 @@
  *   proof_hello_addr   one Address List entry, anywhere a list can be
  *   proof_hello_addrs  the Address List check, for lists up to MAXLEN
  *   proof_hello        a whole Hello, for messages up to MAXLEN
+ *   proof_jp_hdr       a Join/Prune header, for any message
+ *   proof_jp_set       one group set, from any cursor on any message
+ *   proof_jp_srcs      the source check of one set, up to MAXLEN
+ *   proof_jp_group     the group set accessor, wherever a set can be
+ *   proof_jp_source    the source accessor, for any entry of any set
+ *   proof_jp           a whole Join/Prune, for messages up to MAXLEN,
+ *                      read back through the accessors as the caller does
  *
  * The first two have no loop and cover every length an IP datagram can
  * carry.  Beside memory safety, what they assert is the contract
@@ -37,7 +44,12 @@
  *     at, a known option of another length refusing the message;
  *   - an Address List the decoder keeps lies inside the message, is a
  *     whole number of entries, and every entry is IPv4;
- *   - pim_hello_addr() reads entry i and nothing else.
+ *   - pim_hello_addr() reads entry i and nothing else;
+ *   - a Join/Prune is refused unless every group set the header counts and
+ *     every source each set counts lies inside the message, with every
+ *     address IPv4 and every mask length one MASKLEN_TO_MASK() can take,
+ *     so that the accessors, walked the way receive_pim_join_prune()
+ *     walks them, never leave the message.
  */
 
 #include <stddef.h>
@@ -56,6 +68,7 @@
 
 size_t nondet_size_t(void);
 uint16_t nondet_uint16_t(void);
+uint32_t nondet_uint32_t(void);
 
 static uint8_t *message(size_t *len, size_t max)
 {
@@ -83,6 +96,12 @@ void proof_hello_opt(void);
 void proof_hello_addr(void);
 void proof_hello_addrs(void);
 void proof_hello(void);
+void proof_jp_hdr(void);
+void proof_jp_set(void);
+void proof_jp_srcs(void);
+void proof_jp_group(void);
+void proof_jp_source(void);
+void proof_jp(void);
 
 void proof_hello_opt(void)
 {
@@ -233,6 +252,181 @@ void proof_hello(void)
 	i = nondet_uint16_t();
 	__CPROVER_assume(i < opts.addr_list_len / PIM_ENCODE_UNI_ADDR_LEN);
 	(void)pim_hello_addr(&opts, i);
+    }
+    free(buf);
+}
+
+void proof_jp_hdr(void)
+{
+    struct pim_cursor c;
+    pim_jp_t jp;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    memset(&jp, 0, sizeof(jp));
+    rc = pim_parse_jp_hdr(&c, buf, len, &jp);
+
+    if (len < PIM_JOIN_PRUNE_MINLEN) {
+	__CPROVER_assert(rc == PIM_JP_SHORT, "a message without a header is refused");
+    } else if (rc == PIM_JP_OK) {
+	__CPROVER_assert(buf[4] == ADDRF_IPv4 && buf[5] == ADDRT_IPv4, "the upstream is IPv4");
+	__CPROVER_assert(memcmp(&jp.upstream, buf + 6, 4) == 0, "the upstream is bytes 6 to 9");
+	__CPROVER_assert(jp.num_groups == buf[11] && jp.num_groups > 0, "the group count is byte 11");
+	__CPROVER_assert(jp.holdtime == be16(buf + 12), "the holdtime is bytes 12 and 13");
+	__CPROVER_assert(c.p == buf + PIM_JOIN_PRUNE_MINLEN && c.p + c.left == buf + len &&
+			 jp.groups == c.p, "the cursor covers the rest of the message");
+    } else {
+	__CPROVER_assert(rc == PIM_JP_UPSTREAM || rc == PIM_JP_NOGROUPS, "a header ends in a verdict");
+    }
+    free(buf);
+}
+
+void proof_jp_set(void)
+{
+    struct pim_cursor c, before, srcs;
+    pim_jp_t jp;
+    uint8_t *buf;
+    size_t len, off, srclen;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    __CPROVER_assume(off <= len);
+    c.p    = buf + off;
+    c.left = len - off;
+    before = c;
+    memset(&jp, 0, sizeof(jp));
+
+    rc = pim_parse_jp_set(&c, &jp, &srcs);
+    __CPROVER_assert(c.p + c.left == buf + len, "the cursor stays on the message");
+
+    if (rc != PIM_JP_OK) {
+	__CPROVER_assert(rc == PIM_JP_TRUNCATED || rc == PIM_JP_GRP_MASKLEN ||
+			 rc == PIM_JP_GRP_FAMILY, "a set ends in a verdict");
+	if (before.left >= PIM_JP_GRP_SET_LEN && rc == PIM_JP_TRUNCATED)
+	    __CPROVER_assert(before.left - PIM_JP_GRP_SET_LEN <
+			     ((size_t)be16(before.p + 8) + be16(before.p + 10)) * 8,
+			     "only a set whose sources do not fit is truncated");
+	free(buf);
+	return;
+    }
+
+    srclen = ((size_t)be16(before.p + 8) + be16(before.p + 10)) * PIM_ENCODE_SRC_ADDR_LEN;
+    __CPROVER_assert(before.p[3] <= PIM_MAX_MSKLEN, "the group mask is one an address can have");
+    __CPROVER_assert(before.p[0] == ADDRF_IPv4 && before.p[1] == ADDRT_IPv4, "the group is IPv4");
+    __CPROVER_assert(srcs.p == before.p + PIM_JP_GRP_SET_LEN && srcs.left == srclen,
+		     "the sources are what the counts say, right behind the counts");
+    __CPROVER_assert(c.p == srcs.p + srclen, "and the next set is right behind them");
+    free(buf);
+}
+
+void proof_jp_srcs(void)
+{
+    struct pim_cursor srcs;
+    pim_jp_t jp;
+    uint8_t *buf;
+    size_t len, k;
+    int rc;
+
+    buf = message(&len, MAXLEN);
+    __CPROVER_assume(len % PIM_ENCODE_SRC_ADDR_LEN == 0);
+    srcs.p    = buf;
+    srcs.left = len;
+    memset(&jp, 0, sizeof(jp));
+
+    rc = pim_parse_jp_srcs(&srcs, &jp);
+    k = nondet_size_t();
+    __CPROVER_assume(k < len / PIM_ENCODE_SRC_ADDR_LEN);
+    if (rc == PIM_JP_OK)
+	__CPROVER_assert(buf[k * 8] == ADDRF_IPv4 && buf[k * 8 + 1] == ADDRT_IPv4 &&
+			 buf[k * 8 + 3] == SINGLE_SRC_MSKLEN,
+			 "every source taken is an IPv4 host");
+    else
+	__CPROVER_assert(rc == PIM_JP_SRC_FAMILY || rc == PIM_JP_SRC_MASKLEN,
+			 "a source list ends in a verdict");
+    free(buf);
+}
+
+void proof_jp_group(void)
+{
+    pim_jp_grp_t g;
+    const uint8_t *next;
+    uint8_t *buf;
+    size_t len, off;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    __CPROVER_assume(off <= len && len - off >= PIM_JP_GRP_SET_LEN);
+    __CPROVER_assume(((size_t)be16(buf + off + 8) + be16(buf + off + 10)) * 8 <=
+		     len - off - PIM_JP_GRP_SET_LEN);
+
+    next = pim_jp_group(buf + off, &g);
+    __CPROVER_assert(memcmp(&g.group, buf + off + 4, 4) == 0 && g.masklen == buf[off + 3],
+		     "the group and its mask are the Encoded-Group's");
+    __CPROVER_assert(g.num_j == be16(buf + off + 8) && g.num_p == be16(buf + off + 10),
+		     "the counts follow it");
+    __CPROVER_assert(g.srcs == buf + off + PIM_JP_GRP_SET_LEN &&
+		     next == g.srcs + ((size_t)g.num_j + g.num_p) * 8 && next <= buf + len,
+		     "and the next set is behind the sources, inside the message");
+    free(buf);
+}
+
+void proof_jp_source(void)
+{
+    pim_jp_grp_t g;
+    pim_jp_src_t e;
+    uint8_t *buf;
+    size_t len, off;
+    uint32_t i;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    g.num_j = nondet_uint16_t();
+    g.num_p = nondet_uint16_t();
+    i = nondet_uint32_t();
+    __CPROVER_assume(off <= len && ((size_t)g.num_j + g.num_p) * 8 <= len - off);
+    __CPROVER_assume(i < (uint32_t)g.num_j + g.num_p);
+    g.srcs = buf + off;
+
+    pim_jp_source(&g, i, &e);
+    __CPROVER_assert(e.flags == g.srcs[(size_t)i * 8 + 2] && e.masklen == g.srcs[(size_t)i * 8 + 3] &&
+		     memcmp(&e.addr, g.srcs + (size_t)i * 8 + 4, 4) == 0,
+		     "entry i is the eight bytes at i, flags, mask and address");
+    free(buf);
+}
+
+void proof_jp(void)
+{
+    const uint8_t *set;
+    pim_jp_grp_t g;
+    pim_jp_src_t e;
+    pim_jp_t jp;
+    uint8_t *buf, n;
+    size_t len;
+    uint32_t i;
+    int rc;
+
+    buf = message(&len, MAXLEN);
+    rc = pim_parse_jp(buf, len, &jp);
+    if (rc != PIM_JP_OK) {
+	free(buf);
+	return;
+    }
+
+    /* What receive_pim_join_prune() does with it, in its two passes */
+    set = jp.groups;
+    for (n = jp.num_groups; n > 0; n--) {
+	set = pim_jp_group(set, &g);
+	__CPROVER_assert(set <= buf + len, "every set the header counts is inside the message");
+	__CPROVER_assert(g.masklen <= PIM_MAX_MSKLEN, "and its mask can be converted");
+	if ((uint32_t)g.num_j + g.num_p > 0) {
+	    i = nondet_uint32_t();
+	    __CPROVER_assume(i < (uint32_t)g.num_j + g.num_p);
+	    pim_jp_source(&g, i, &e);
+	    __CPROVER_assert(e.masklen == SINGLE_SRC_MSKLEN, "and every source is a host");
+	}
     }
     free(buf);
 }

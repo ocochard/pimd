@@ -730,7 +730,7 @@ nondeterministic buffer allocated at exactly its length, answers whether *any* i
 bounds, overflows, or breaks the decoder's contract, where a fuzzer samples. It works only on
 decoders shaped for it, which is the plan of `aidd_docs/plans/parse-then-apply.md`: each
 `receive_*()` split into a decode half in a file of its own (`src/autorp_parse.c` for Auto-RP,
-`src/pim_parse.c` for PIM, the Hello so far) and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
+`src/pim_parse.c` for PIM, the Hello and the Join/Prune so far) and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
 a loop over it. The shape is measured, not taste: walking whole Auto-RP messages cost 5m19s at 64
 bytes and four times more per doubling, while the loop-free step is proven for every length a UDP
 payload can have in 4s, and the loop only needs a few blocks once the step is proven.

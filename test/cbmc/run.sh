@@ -17,7 +17,8 @@
 # any datagram; a proof with a loop is proven for messages up to a length
 # given beside it below, picked from measurements: a whole message costs
 # about four times as much per doubling (Auto-RP 32 bytes 32s, 64 bytes
-# 3m37s; a Hello 24 bytes 21s, 32 bytes 2m30s), and the step being proven
+# 3m37s; a Hello 24 bytes 21s, 32 bytes 2m30s; a Join/Prune 34 bytes 27s,
+# 48 bytes 1m12s), and the step being proven
 # already, what the loop adds needs no more than a few iterations of it.
 # SCALE multiplies every one of those lengths, for a longer run by hand.
 
@@ -86,7 +87,13 @@ mutant()
 	if [ "$rc" -eq 10 ]; then
 		# What it was caught by, so that a control caught by the harness
 		# itself -- an unwinding bound too small, say -- reads as one.
-		sed -n 's/^\[\([^]]*\)\] \(.*\): FAILURE$/	\1: \2/p' "$work/$1.log" | head -1
+		# An unwinding assertion is shown only when nothing else failed,
+		# and says so: it is the right catch for a loop that no longer
+		# ends, and no catch at all for anything else.
+		sed -n 's/^\[\([^]]*\)\] \(.*\): FAILURE$/	\1: \2/p' "$work/$1.log" \
+		    >"$work/$1.why"
+		grep -v '\.unwind\.' "$work/$1.why" | head -1 | grep . ||
+		    sed -e 's/$/ (unwinding only)/' "$work/$1.why" | head -1
 	elif [ "$rc" -eq 0 ]; then
 		echo "  the proof did not catch this mutant" >&2
 		fail=1
@@ -126,5 +133,21 @@ mutant hello-tbit-kept             "$h" "$s" proof_hello_opt    0 1 's/delay & ~
 mutant hello-addrs-partial-entry   "$h" "$s" proof_hello_addrs 32 6 's/opts->addr_list_len % PIM_ENCODE_UNI_ADDR_LEN/0/'
 mutant hello-addrs-any-etype       "$h" "$s" proof_hello_addrs 32 6 's/ || etype != ADDRT_IPv4//'
 mutant hello-addr-stride           "$h" "$s" proof_hello_addr   0 1 's/(size_t)i \* PIM_ENCODE_UNI_ADDR_LEN/(size_t)i * 4/'
+proof  jp-hdr                      "$h" "$s" proof_jp_hdr       0 1
+proof  jp-set                      "$h" "$s" proof_jp_set       0 1
+proof  jp-srcs                     "$h" "$s" proof_jp_srcs    512 8
+proof  jp-group                    "$h" "$s" proof_jp_group     0 1
+proof  jp-source                   "$h" "$s" proof_jp_source    0 1
+proof  jp                          "$h" "$s" proof_jp          40 8
+mutant jp-no-header-bound          "$h" "$s" proof_jp_hdr       0 1 's/len < PIM_JOIN_PRUNE_MINLEN/0/'
+mutant jp-upstream-any-family      "$h" "$s" proof_jp_hdr       0 1 's/eua.addr_family != ADDRF_IPv4 || //'
+mutant jp-no-set-bound             "$h" "$s" proof_jp_set       0 1 's/c->left < PIM_JP_GRP_SET_LEN/0/'
+mutant jp-no-source-bound          "$h" "$s" proof_jp_set       0 1 's/c->left - PIM_JP_GRP_SET_LEN < srclen/0/'
+mutant jp-group-mask-unchecked     "$h" "$s" proof_jp_set       0 1 's/p\[PIM_ENCODE_MSKLEN_OFF\] > PIM_MAX_MSKLEN/0/'
+mutant jp-source-mask-unchecked    "$h" "$s" proof_jp_srcs     32 8 's/p\[PIM_ENCODE_MSKLEN_OFF\] != SINGLE_SRC_MSKLEN/0/'
+mutant jp-sources-unchecked        "$h" "$s" proof_jp          40 8 's/rc = pim_parse_jp_srcs(&srcs, jp);/rc = PIM_JP_OK;/'
+mutant jp-group-count-ignored      "$h" "$s" proof_jp          40 8 's/for (n = jp->num_groups; n > 0; n--)/for (n = 1; n > 0; n--)/'
+mutant jp-source-stride            "$h" "$s" proof_jp_source    0 1 's/(size_t)i \* PIM_ENCODE_SRC_ADDR_LEN/(size_t)i * 6/'
+mutant jp-next-set                 "$h" "$s" proof_jp_group     0 1 's/return p + ((size_t)grp->num_j + grp->num_p) \* PIM_ENCODE_SRC_ADDR_LEN;/return p;/'
 
 exit $fail

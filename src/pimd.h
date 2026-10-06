@@ -475,6 +475,59 @@ typedef struct {
 int      pim_parse_hello(const void *msg, size_t len, pim_hello_opts_t *opts);
 uint32_t pim_hello_addr (const pim_hello_opts_t *opts, uint16_t i);
 
+/*
+ * A Join/Prune, RFC 7761 sec. 4.9.5, as src/pim_parse.c decodes it.
+ * pim_parse_jp() walks the whole message once and refuses it unless every
+ * group set is inside it and every address is one pimd can read; only then
+ * do pim_jp_group() and pim_jp_source() hand out the sets and their entries,
+ * which is the one way receive_pim_join_prune() reads them, as often and in
+ * whatever order its passes want.
+ */
+#define PIM_JOIN_PRUNE_MINLEN	(sizeof(pim_header_t) + PIM_ENCODE_UNI_ADDR_LEN + 4)
+#define PIM_JP_GRP_SET_LEN	(PIM_ENCODE_GRP_ADDR_LEN + 4)	/* group, #joins, #prunes */
+
+typedef struct {
+    uint32_t upstream;		/* network order */
+    uint16_t holdtime;
+    uint8_t  num_groups;
+    const uint8_t *groups;	/* the first group set, in the message */
+
+    /* What was refused, for the caller's log */
+    uint8_t  bad_family;
+    uint8_t  bad_etype;
+    uint8_t  bad_masklen;
+} pim_jp_t;
+
+typedef struct {
+    uint32_t group;		/* network order */
+    uint8_t  masklen;
+    uint16_t num_j;
+    uint16_t num_p;
+    const uint8_t *srcs;	/* num_j joined, then num_p pruned */
+} pim_jp_grp_t;
+
+typedef struct {
+    uint32_t addr;		/* network order */
+    uint8_t  flags;
+    uint8_t  masklen;
+} pim_jp_src_t;
+
+/* What pim_parse_jp() says.  The first three are about the header and the
+ * rest about a group set, which the caller logs after the message itself. */
+#define PIM_JP_OK		0
+#define PIM_JP_SHORT		1	/* shorter than the header		*/
+#define PIM_JP_UPSTREAM		2	/* an upstream address that is not IPv4	*/
+#define PIM_JP_NOGROUPS		3	/* a group count of zero		*/
+#define PIM_JP_TRUNCATED	4	/* a group set runs past the message	*/
+#define PIM_JP_GRP_MASKLEN	5	/* a group mask wider than an address	*/
+#define PIM_JP_GRP_FAMILY	6	/* a group address that is not IPv4	*/
+#define PIM_JP_SRC_FAMILY	7	/* a source address that is not IPv4	*/
+#define PIM_JP_SRC_MASKLEN	8	/* a source mask that is not a host's	*/
+
+int            pim_parse_jp (const void *msg, size_t len, pim_jp_t *jp);
+const uint8_t *pim_jp_group (const uint8_t *set, pim_jp_grp_t *grp);
+void           pim_jp_source(const pim_jp_grp_t *grp, uint32_t i, pim_jp_src_t *src);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

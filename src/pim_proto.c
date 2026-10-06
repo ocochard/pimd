@@ -2261,45 +2261,29 @@ static const char *jp_entry_kind(uint8_t flags)
    |        Pruned Source Address n (Encoded-Source format)        |
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
-static void log_pim_join_prune(uint32_t src, uint8_t *data_ptr, int num_groups, char* ifname)
+static void log_pim_join_prune(uint32_t src, const pim_jp_t *jp, char* ifname)
 {
-    pim_encod_grp_addr_t encod_group;
-    pim_encod_src_addr_t encod_src;
-    uint32_t group, source;
-    uint16_t num_j_srcs;
-    uint16_t num_p_srcs;
+    const uint8_t *set = jp->groups;
+    pim_jp_grp_t gset;
+    pim_jp_src_t esrc;
+    uint8_t num_groups;
+    uint32_t i;
 
     /* Message validity check is done by caller */
-    while (num_groups--) {
+    for (num_groups = jp->num_groups; num_groups > 0; num_groups--) {
+	set = pim_jp_group(set, &gset);
 
-	GET_EGADDR(&encod_group, data_ptr);
-	GET_HOSTSHORT(num_j_srcs, data_ptr);
-	GET_HOSTSHORT(num_p_srcs, data_ptr);
-	group = encod_group.mcast_addr;
-
-	while (num_j_srcs--) {
-	    GET_ESADDR(&encod_src, data_ptr);
-	    source = encod_src.src_addr;
+	for (i = 0; i < (uint32_t)gset.num_j + gset.num_p; i++) {
+	    pim_jp_source(&gset, i, &esrc);
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_INFO, 0, "Received PIM JOIN from %s to group %s for source %s on %s%s",
-		      inet_fmt(src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
-		      inet_fmt(source, s3, sizeof(s3)), ifname, jp_entry_kind(encod_src.flags));
-	}
-
-	while (num_p_srcs--) {
-	    GET_ESADDR(&encod_src, data_ptr);
-	    source = encod_src.src_addr;
-	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_INFO, 0, "Received PIM PRUNE from %s to group %s for source %s on %s%s",
-		      inet_fmt(src, s1, sizeof(s1)), inet_fmt(group, s2, sizeof(s2)),
-		      inet_fmt(source, s3, sizeof(s3)), ifname, jp_entry_kind(encod_src.flags));
+		logit(LOG_INFO, 0, "Received PIM %s from %s to group %s for source %s on %s%s",
+		      i < gset.num_j ? "JOIN" : "PRUNE",
+		      inet_fmt(src, s1, sizeof(s1)), inet_fmt(gset.group, s2, sizeof(s2)),
+		      inet_fmt(esrc.addr, s3, sizeof(s3)), ifname, jp_entry_kind(esrc.flags));
 	}
     }
 }
 
-/* TODO: when parsing, check if we go beyond message size */
-/* TODO: too long, simplify it! */
-#define PIM_JOIN_PRUNE_MINLEN (4 + PIM_ENCODE_UNI_ADDR_LEN + 4)
 /*
  * PruneEcho(*,G), PruneEcho(S,G) and PruneEcho(S,G,rpt), RFC 7761 sec. 4.5.1
  * and sec. 4.5.2: when the Prune-Pending Timer expires and the router really
@@ -2518,18 +2502,18 @@ static int rpt_noinfo(mrtentry_t *mrt, vifi_t vifi)
 }
 
 /*
- * Does the Pruned list of a group set, @num_p_srcs entries from @data, hold
- * a Prune(S,G,rpt) for @source?  Only called on a list the length checks of
- * receive_pim_join_prune() have already walked.
+ * Does the Pruned list of group set @gset hold a Prune(S,G,rpt) for
+ * @source?
  */
-static int jp_prunes_rpt(uint8_t *data, uint16_t num_p_srcs, uint32_t source)
+static int jp_prunes_rpt(const pim_jp_grp_t *gset, uint32_t source)
 {
-    pim_encod_src_addr_t esaddr;
+    pim_jp_src_t esrc;
+    uint16_t i;
 
-    while (num_p_srcs--) {
-	GET_ESADDR(&esaddr, data);
-	if (esaddr.src_addr == source &&
-	    (esaddr.flags & (USADDR_RP_BIT | USADDR_WC_BIT)) == USADDR_RP_BIT)
+    for (i = 0; i < gset->num_p; i++) {
+	pim_jp_source(gset, (uint32_t)gset->num_j + i, &esrc);
+	if (esrc.addr == source &&
+	    (esrc.flags & (USADDR_RP_BIT | USADDR_WC_BIT)) == USADDR_RP_BIT)
 	    return TRUE;
     }
 
@@ -2607,24 +2591,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 {
     vifi_t vifi;
     struct uvif *v;
-    pim_encod_uni_addr_t eutaddr;
-    pim_encod_grp_addr_t egaddr;
-    pim_encod_src_addr_t esaddr;
-    uint8_t *data;
-    uint8_t *data_start;
-    uint8_t *data_group_end;
+    pim_jp_t jp;
+    pim_jp_grp_t gset;
+    pim_jp_src_t esrc;
+    const uint8_t *set;
     uint8_t num_groups;
-    uint8_t num_groups_tmp;
     uint16_t holdtime;
-    uint16_t num_j_srcs;
-    uint16_t num_j_srcs_tmp;
-    uint16_t num_p_srcs;
+    uint32_t si;
     uint32_t source;
     uint32_t group;
     uint32_t s_mask;
     uint32_t g_mask;
     uint8_t s_flags;
-    uint8_t reserved __attribute__((unused));
     rpentry_t *rpentry;
     mrtentry_t *mrt;
     mrtentry_t *mrt_srcs;
@@ -2633,10 +2611,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     uint32_t jp_value;
     pim_nbr_entry_t *upstream_router;
     int my_action;
-    uint8_t *data_group_j_start;
-    uint8_t *data_group_p_start;
     uint32_t new_join;
-    uint16_t num_p_srcs_all;
     int wc_join;
 
     if ((vifi = find_vif_direct(src)) == NO_VIF) {
@@ -2684,147 +2659,90 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	return FALSE;
     }
 
-    /* sanity check for the minimum length */
-    if (len < PIM_JOIN_PRUNE_MINLEN) {
-	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-	    logit(LOG_NOTICE, 0, "Too short Join/Prune message (%zu bytes) from %s on %s",
-		  len, inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-
-	return FALSE;
-    }
-
-    len -= PIM_JOIN_PRUNE_MINLEN;
-    data = (uint8_t *)(msg + sizeof(pim_header_t));
-
-    /* Get the target address */
-    GET_EUADDR(&eutaddr, data);
-    GET_BYTE(reserved, data);
-    GET_BYTE(num_groups, data);
-    GET_HOSTSHORT(holdtime, data);
-
-    /* sec. 4.9.5 processes the addresses of the upstream neighbor's family
-     * and ignores the rest; where that address is not one we can read, the
-     * whole message is a message for somebody else.
-     */
-    if (!encoded_addr_ok(eutaddr.addr_family, eutaddr.encod_type)) {
-	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-	    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, upstream address family %u type %u is not IPv4",
-		  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-		  eutaddr.addr_family, eutaddr.encod_type);
-	return FALSE;
-    }
-
-    if (num_groups == 0) {
-	/* No indication for groups in the message */
-	IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-	    logit(LOG_NOTICE, 0, "No groups in Join/Prune message from %s on %s!",
-		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-	return FALSE;
-    }
-
-    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-	logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
-	      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-
-    /* Sanity check for the message length through all the groups */
-    num_groups_tmp = num_groups;
-    data_start = data;
-    while (num_groups_tmp--) {
-        size_t srclen, srcoff;
-
-        /* group addr + #join + #src */
-        if (len < PIM_ENCODE_GRP_ADDR_LEN + sizeof(uint32_t)) {
+    /* Every bounds check of the message is pim_parse_jp()'s, in
+     * src/pim_parse.c, and nothing below reads its bytes but through
+     * pim_jp_group() and pim_jp_source().  What is left here is what to
+     * say about a message it refused: the header first, then, once the
+     * message is logged as received, a group set. */
+    switch (pim_parse_jp(msg, len, &jp)) {
+	case PIM_JP_SHORT:
 	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "Too short Join/Prune message (%zu bytes) from %s on %s",
+		      len, inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+	    return FALSE;
+
+	case PIM_JP_UPSTREAM:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, upstream address family %u type %u is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name, jp.bad_family, jp.bad_etype);
+	    return FALSE;
+
+	case PIM_JP_NOGROUPS:
+	    /* No indication for groups in the message */
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_NOTICE, 0, "No groups in Join/Prune message from %s on %s!",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+	    return FALSE;
+
+	case PIM_JP_OK:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+	    break;
+
+	case PIM_JP_TRUNCATED:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE) {
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
 		logit(LOG_NOTICE, 0, "Join/Prune message from %s on %s is"
 		      " too short to contain enough data",
 		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-            return FALSE;
-        }
-
-	/* The Mask Len of this Encoded-Group, checked here rather than where
-	 * it is converted: MASKLEN_TO_MASK() (src/pimd.h) shifts by
-	 * 32 - masklen, the byte is the sender's to choose, and the two
-	 * passes below convert it at six places.  Bounded and not required
-	 * to be SINGLE_GRP_MSKLEN, which sec. 4.9.5.1 asks of a
-	 * group-specific set: the (*,*,RP) set RFC 7761 Appendix A removed
-	 * carries STAR_STAR_RP_MSKLEN, and the passes below still recognise
-	 * one in order to skip it.
-	 */
-	if (data[PIM_ENCODE_MSKLEN_OFF] > PIM_MAX_MSKLEN) {
-	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group mask length %u is wider than an address",
-		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-		      data[PIM_ENCODE_MSKLEN_OFF]);
-	    return FALSE;
-	}
-
-	/* And its family and encoding type.  This walk and the two passes
-	 * below step over PIM_ENCODE_GRP_ADDR_LEN and
-	 * PIM_ENCODE_SRC_ADDR_LEN per record, the IPv4 sizes, so a record
-	 * that says it is something else is not merely an address we cannot
-	 * use -- it is a record whose fields are not where we will look.
-	 */
-	if (!encoded_addr_ok(data[PIM_ENCODE_FAMILY_OFF], data[PIM_ENCODE_ETYPE_OFF])) {
-	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group address family %u type %u is not IPv4",
-		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-		      data[PIM_ENCODE_FAMILY_OFF], data[PIM_ENCODE_ETYPE_OFF]);
-	    return FALSE;
-	}
-
-        len -= (PIM_ENCODE_GRP_ADDR_LEN + sizeof(uint32_t));
-        data += PIM_ENCODE_GRP_ADDR_LEN;
-
-        /* joined source addresses and pruned source addresses */
-        GET_HOSTSHORT(num_j_srcs, data);
-        GET_HOSTSHORT(num_p_srcs, data);
-        srclen = (num_j_srcs + num_p_srcs) * PIM_ENCODE_SRC_ADDR_LEN;
-        if (len < srclen) {
-	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_NOTICE, 0, "Join/Prune message from %s on %s is"
-		      " too short to contain enough data",
-		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-            return FALSE;
-        }
-
-	/* And the Mask Len of every Encoded-Source behind it, which
-	 * sec. 4.9.1 does pin to the full address length: "The mask length
-	 * MUST be equal to the mask length in bits for the given Address
-	 * Family and Encoding Type (32 for IPv4 native) ... A router SHOULD
-	 * ignore any messages received with any other mask length."  The
-	 * srclen bytes are inside the message by the check just above.
-	 */
-	for (srcoff = 0; srcoff < srclen; srcoff += PIM_ENCODE_SRC_ADDR_LEN) {
-	    if (!encoded_addr_ok(data[srcoff + PIM_ENCODE_FAMILY_OFF],
-				 data[srcoff + PIM_ENCODE_ETYPE_OFF])) {
-		IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		    logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source address family %u type %u is not IPv4",
-			  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-			  data[srcoff + PIM_ENCODE_FAMILY_OFF],
-			  data[srcoff + PIM_ENCODE_ETYPE_OFF]);
-		return FALSE;
 	    }
-
-	    if (data[srcoff + PIM_ENCODE_MSKLEN_OFF] == SINGLE_SRC_MSKLEN)
-		continue;
-
-	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
-		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source mask length %u is not %u",
-		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-		      data[srcoff + PIM_ENCODE_MSKLEN_OFF], SINGLE_SRC_MSKLEN);
 	    return FALSE;
-	}
 
-        len -= srclen;
-        data += srclen;
+	case PIM_JP_GRP_MASKLEN:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE) {
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group mask length %u is wider than an address",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name, jp.bad_masklen);
+	    }
+	    return FALSE;
+
+	case PIM_JP_GRP_FAMILY:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE) {
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, group address family %u type %u is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name, jp.bad_family, jp.bad_etype);
+	    }
+	    return FALSE;
+
+	case PIM_JP_SRC_FAMILY:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE) {
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source address family %u type %u is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name, jp.bad_family, jp.bad_etype);
+	    }
+	    return FALSE;
+
+	case PIM_JP_SRC_MASKLEN:
+	default:
+	    IF_DEBUG(DEBUG_PIM_JOIN_PRUNE) {
+		logit(LOG_INFO, 0, "Received PIM JOIN/PRUNE from %s on %s",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+		logit(LOG_NOTICE, 0, "Ignoring Join/Prune from %s on %s, source mask length %u is not %u",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name, jp.bad_masklen, SINGLE_SRC_MSKLEN);
+	    }
+	    return FALSE;
     }
-    data = data_start;
-    num_groups_tmp = num_groups;
 
-    /* Sanity check is done. Log the message */
-    log_pim_join_prune(src, data, num_groups, v->uv_name);
+    num_groups = jp.num_groups;
+    holdtime   = jp.holdtime;
+    log_pim_join_prune(src, &jp, v->uv_name);
 
-    if (eutaddr.unicast_addr != v->uv_lcl_addr) {
+    if (jp.upstream != v->uv_lcl_addr) {
 	/* if I am not the target of the join message */
 	/* Join/Prune suppression code. This either modifies the J/P timers
 	 * or triggers an overriding Join.
@@ -2833,32 +2751,29 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	 * them in the same message. We don't bother to modify both timers
 	 * here. The Join/Prune sending function will take care of that.
 	 */
-	upstream_router = find_pim_nbr(eutaddr.unicast_addr);
+	upstream_router = find_pim_nbr(jp.upstream);
 	if (!upstream_router)
 	    return FALSE;   /* I have no such neighbor */
 
+	set = jp.groups;
 	while (num_groups--) {
-	    GET_EGADDR(&egaddr, data);
-	    GET_HOSTSHORT(num_j_srcs, data);
-	    GET_HOSTSHORT(num_p_srcs, data);
-	    MASKLEN_TO_MASK(egaddr.masklen, g_mask);
-	    group = egaddr.mcast_addr;
-	    if (!IN_MULTICAST(ntohl(group))) {
-		data += (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
+	    set = pim_jp_group(set, &gset);
+	    MASKLEN_TO_MASK(gset.masklen, g_mask);
+	    group = gset.group;
+	    if (!IN_MULTICAST(ntohl(group)))
 		continue; /* Ignore this group and jump to the next */
-	    }
 
-	    if ((ntohl(group) == CLASSD_PREFIX) && (egaddr.masklen == STAR_STAR_RP_MSKLEN)) {
+	    if ((ntohl(group) == CLASSD_PREFIX) && (gset.masklen == STAR_STAR_RP_MSKLEN)) {
 		/* (*,*,RP) Join suppression */
 
-		while (num_j_srcs--) {
-		    GET_ESADDR(&esaddr, data);
-		    source = esaddr.src_addr;
+		for (si = 0; si < gset.num_j; si++) {
+		    pim_jp_source(&gset, si, &esrc);
+		    source = esrc.addr;
 		    if (!inet_valid_host(source))
 			continue;
 
-		    s_flags = esaddr.flags;
-		    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+		    s_flags = esrc.flags;
+		    MASKLEN_TO_MASK(esrc.masklen, s_mask);
 		    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 			/* This is the RP address. */
 			rpentry = rp_find(source);
@@ -2887,22 +2802,22 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			if (jp_timer_left(mrt_rp) < jp_value * 1000)
 			    jp_timer_set(mrt_rp, jp_value * 1000);
 		    }
-		} /* num_j_srcs */
+		} /* the Joins */
 
-		while (num_p_srcs--) {
+		for (si = gset.num_j; si < (uint32_t)gset.num_j + gset.num_p; si++) {
 		    /* TODO: XXX: Can we have (*,*,RP) prune message?
 		     * Not in the spec, but anyway, the code below
 		     * can handle them: either suppress
 		     * the local (*,*,RP) prunes or override the prunes by
 		     * sending (*,*,RP) and/or (*,G) and/or (S,G) Join.
 		     */
-		    GET_ESADDR(&esaddr, data);
-		    source = esaddr.src_addr;
+		    pim_jp_source(&gset, si, &esrc);
+		    source = esrc.addr;
 		    if (!inet_valid_host(source))
 			continue;
 
-		    s_flags = esaddr.flags;
-		    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+		    s_flags = esrc.flags;
+		    MASKLEN_TO_MASK(esrc.masklen, s_mask);
 		    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 			/* This is the RP address. */
 			rpentry = rp_find(source);
@@ -2952,7 +2867,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			    } /* For all (S,G) */
 			} /* For all (*,G) */
 		    }
-		} /* num_p_srcs */
+		} /* the Prunes */
 		continue;  /* This was (*,*,RP) suppression */
 	    }
 
@@ -2962,14 +2877,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	     * implemented. Just need to create a loop and apply the
 	     * procedure below for all groups matching the prefix.
 	     */
-	    while (num_j_srcs--) {
-		GET_ESADDR(&esaddr, data);
-		source = esaddr.src_addr;
+	    for (si = 0; si < gset.num_j; si++) {
+		pim_jp_source(&gset, si, &esrc);
+		source = esrc.addr;
 		if (!inet_valid_host(source))
 		    continue;
 
-		s_flags = esaddr.flags;
-		MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+		s_flags = esrc.flags;
+		MASKLEN_TO_MASK(esrc.masklen, s_mask);
 
 		if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 		    /* (*,G) JOIN_REQUEST (toward the RP) */
@@ -3015,14 +2930,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    }
 
 	    /* Prunes suppression */
-	    while (num_p_srcs--) {
-		GET_ESADDR(&esaddr, data);
-		source = esaddr.src_addr;
+	    for (si = gset.num_j; si < (uint32_t)gset.num_j + gset.num_p; si++) {
+		pim_jp_source(&gset, si, &esrc);
+		source = esrc.addr;
 		if (!inet_valid_host(source))
 		    continue;
 
-		s_flags = esaddr.flags;
-		MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+		s_flags = esrc.flags;
+		MASKLEN_TO_MASK(esrc.masklen, s_mask);
 		if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 		    /* (*,G) prune suppression */
 		    rpentry = rp_match(group);
@@ -3098,7 +3013,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    if (jp_timer_left(mrt) > jp_value)
 			jp_timer_set(mrt, jp_value);
 		}
-	    }  /* while (num_p_srcs--) */
+	    }  /* the Prunes */
 	}  /* while (num_groups--) */
 	return TRUE;
     }   /* End of Join/Prune suppression code */
@@ -3130,29 +3045,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
      *   forwarding on wrong interface.
      *   Hopefully, in the future will find a better way to implement it.
      */
-    num_groups_tmp = num_groups;
-    data_start = data;
-
     /*
      * Start processing the groups. If this is (*,*,RP), skip it, but process
      * it at the end.
      */
-    data = data_start;
-    num_groups_tmp = num_groups;
-    while (num_groups_tmp--) {
-	GET_EGADDR(&egaddr, data);
-	GET_HOSTSHORT(num_j_srcs, data);
-	GET_HOSTSHORT(num_p_srcs, data);
-	group = egaddr.mcast_addr;
-	if (!IN_MULTICAST(ntohl(group))) {
-	    data += (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
+    set = jp.groups;
+    while (num_groups--) {
+	set = pim_jp_group(set, &gset);
+	group = gset.group;
+	if (!IN_MULTICAST(ntohl(group)))
 	    continue;		/* Ignore this group and jump to the next one */
-	}
 
 	if ((ntohl(group) == CLASSD_PREFIX)
-	    && (egaddr.masklen == STAR_STAR_RP_MSKLEN)) {
+	    && (gset.masklen == STAR_STAR_RP_MSKLEN)) {
 	    /* This is (*,*,RP). Jump to the next group. */
-	    data += (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
 	    continue;
 	}
 
@@ -3164,10 +3070,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	 */
 	rpentry = rp_match(group);
 
-	data_group_j_start = data;
-	data_group_p_start = data + num_j_srcs * sizeof(pim_encod_src_addr_t);
-	data_group_end = data + (num_j_srcs + num_p_srcs) * sizeof(pim_encod_src_addr_t);
-	num_p_srcs_all = num_p_srcs;
 	wc_join = FALSE;
 
 	/* Scan the Join part for (*,G) Join and then clear the
@@ -3176,9 +3078,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	 * further down; here it only means there is no shared tree of ours
 	 * to lift the (S,G) prunes off.
 	 */
-	num_j_srcs_tmp = num_j_srcs;
-	while (num_j_srcs_tmp--) {
-	    GET_ESADDR(&esaddr, data);
+	for (si = 0; si < gset.num_j; si++) {
+	    pim_jp_source(&gset, si, &esrc);
 
 	    /* An SSM group has no shared tree to lift (S,G) prunes off, so
 	     * there is nothing here to look for: RFC 7761 sec. 4.8.1 rule 4
@@ -3187,8 +3088,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    if (IN_PIM_SSM_RANGE(group))
 		break;
 
-	    if ((esaddr.flags & USADDR_RP_BIT) && (esaddr.flags & USADDR_WC_BIT)) {
-		if (!rpentry || rpentry->address != esaddr.src_addr)
+	    if ((esrc.flags & USADDR_RP_BIT) && (esrc.flags & USADDR_WC_BIT)) {
+		if (!rpentry || rpentry->address != esrc.addr)
 		    break;
 
 		/* "Receive Join(*,G)" of sec. 4.5.3: Prune and Prune-Pending
@@ -3206,15 +3107,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    }
 	}
 
-	data = data_group_p_start;
 	/* Process the Prune part first */
-	while (num_p_srcs--) {
-	    GET_ESADDR(&esaddr, data);
-	    source = esaddr.src_addr;
+	for (si = gset.num_j; si < (uint32_t)gset.num_j + gset.num_p; si++) {
+	    pim_jp_source(&gset, si, &esrc);
+	    source = esrc.addr;
 	    if (!inet_valid_host(source))
 		continue;
 
-	    s_flags = esaddr.flags;
+	    s_flags = esrc.flags;
 
 	    /* RFC 7761 sec. 4.8.1 rule 4: a router MUST NOT forward packets
 	     * based on (*,G) state for a group in the SSM range, and the
@@ -3344,7 +3244,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 				      mrt->asserted_oifs, 0);
 		} /* (*,G) or (*,*,RP) found */
 	    } /* (*,G) prune */
-	} /* while (num_p_srcs--) */
+	} /* the Prunes */
 	/* End of (S,G) and (*,G) Prune handling */
 
 	/* "End of Message" for PruneTmp and Prune-Pending-Tmp, sec. 4.5.3:
@@ -3363,7 +3263,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    !PIMD_VIFM_ISSET(vifi, mrt_srcs->rpt_pp_oifs))
 		    continue;
 
-		if (jp_prunes_rpt(data_group_p_start, num_p_srcs_all, mrt_srcs->source->address))
+		if (jp_prunes_rpt(&gset, mrt_srcs->source->address))
 		    continue;
 
 		if (rpt_noinfo(mrt_srcs, vifi))
@@ -3377,15 +3277,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	}
 
 	/* Jump back to the Join part and process it */
-	data = data_group_j_start;
-	while (num_j_srcs--) {
-	    GET_ESADDR(&esaddr, data);
-	    source = esaddr.src_addr;
+	for (si = 0; si < gset.num_j; si++) {
+	    pim_jp_source(&gset, si, &esrc);
+	    source = esrc.addr;
 	    if (!inet_valid_host(source))
 		continue;
 
-	    s_flags = esaddr.flags;
-	    MASKLEN_TO_MASK(esaddr.masklen, s_mask);
+	    s_flags = esrc.flags;
+	    MASKLEN_TO_MASK(esrc.masklen, s_mask);
 
 	    /* Rule 4 again, and this is the arm it is really about: the one
 	     * above refuses a Prune that would have taken such state away,
@@ -3540,8 +3439,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		}
 		continue;
 	    }
-	} /* while (num_j_srcs--) */
-	data = data_group_end;
+	} /* the Joins */
     } /* for all groups */
 
 

@@ -217,6 +217,182 @@ uint32_t pim_hello_addr(const pim_hello_opts_t *opts, uint16_t i)
     return eua.unicast_addr;
 }
 
+/*
+ * The header of a Join/Prune: the upstream neighbor, the group count and
+ * the holdtime, sec. 4.9.5.  Sec. 4.9.5 processes the addresses of the
+ * upstream neighbor's family and ignores the rest; where that address is
+ * not one we can read, the whole message is a message for somebody else.
+ */
+static int pim_parse_jp_hdr(struct pim_cursor *c, const void *msg, size_t len, pim_jp_t *jp)
+{
+    pim_encod_uni_addr_t eua;
+    const uint8_t *data;
+
+    if (len < PIM_JOIN_PRUNE_MINLEN)
+	return PIM_JP_SHORT;
+
+    data = (const uint8_t *)msg + sizeof(pim_header_t);
+    GET_EUADDR(&eua, data);
+    data++;			/* reserved */
+    GET_BYTE(jp->num_groups, data);
+    GET_HOSTSHORT(jp->holdtime, data);
+
+    if (eua.addr_family != ADDRF_IPv4 || eua.encod_type != ADDRT_IPv4) {
+	jp->bad_family = eua.addr_family;
+	jp->bad_etype  = eua.encod_type;
+	return PIM_JP_UPSTREAM;
+    }
+
+    if (jp->num_groups == 0)
+	return PIM_JP_NOGROUPS;
+
+    jp->upstream = eua.unicast_addr;
+    jp->groups   = data;
+    c->p         = data;
+    c->left      = len - PIM_JOIN_PRUNE_MINLEN;
+
+    return PIM_JP_OK;
+}
+
+/*
+ * One group set: the Encoded-Group and the two counts, and the sources
+ * behind it in *srcs, whose bytes are inside the message once this says
+ * OK.  The Mask Len of the group is checked here rather than where it is
+ * converted: MASKLEN_TO_MASK() shifts by 32 - masklen and the byte is the
+ * sender's to choose.  Bounded and not required to be SINGLE_GRP_MSKLEN,
+ * which sec. 4.9.5.1 asks of a group-specific set: the (*,*,RP) set RFC
+ * 7761 Appendix A removed carries STAR_STAR_RP_MSKLEN, and the caller still
+ * recognises one in order to skip it.  The family and encoding type are
+ * checked because every set is IPv4-sized here: a record that says it is
+ * something else is not merely an address we cannot use, it is a record
+ * whose fields are not where we look.
+ */
+static int pim_parse_jp_set(struct pim_cursor *c, pim_jp_t *jp, struct pim_cursor *srcs)
+{
+    const uint8_t *p = c->p;
+    uint16_t num_j, num_p;
+    size_t srclen;
+
+    if (c->left < PIM_JP_GRP_SET_LEN)
+	return PIM_JP_TRUNCATED;
+
+    if (p[PIM_ENCODE_MSKLEN_OFF] > PIM_MAX_MSKLEN) {
+	jp->bad_masklen = p[PIM_ENCODE_MSKLEN_OFF];
+	return PIM_JP_GRP_MASKLEN;
+    }
+
+    if (p[PIM_ENCODE_FAMILY_OFF] != ADDRF_IPv4 || p[PIM_ENCODE_ETYPE_OFF] != ADDRT_IPv4) {
+	jp->bad_family = p[PIM_ENCODE_FAMILY_OFF];
+	jp->bad_etype  = p[PIM_ENCODE_ETYPE_OFF];
+	return PIM_JP_GRP_FAMILY;
+    }
+
+    p += PIM_ENCODE_GRP_ADDR_LEN;
+    GET_HOSTSHORT(num_j, p);
+    GET_HOSTSHORT(num_p, p);
+    srclen = ((size_t)num_j + num_p) * PIM_ENCODE_SRC_ADDR_LEN;
+    if (c->left - PIM_JP_GRP_SET_LEN < srclen)
+	return PIM_JP_TRUNCATED;
+
+    srcs->p    = p;
+    srcs->left = srclen;
+    c->p      += PIM_JP_GRP_SET_LEN + srclen;
+    c->left   -= PIM_JP_GRP_SET_LEN + srclen;
+
+    return PIM_JP_OK;
+}
+
+/*
+ * The Encoded-Sources of one set, every one IPv4, and with the Mask Len
+ * sec. 4.9.1 pins to the full address length: "The mask length MUST be
+ * equal to the mask length in bits for the given Address Family and
+ * Encoding Type (32 for IPv4 native) ... A router SHOULD ignore any
+ * messages received with any other mask length."
+ */
+static int pim_parse_jp_srcs(const struct pim_cursor *srcs, pim_jp_t *jp)
+{
+    const uint8_t *p;
+    size_t off;
+
+    for (off = 0; off < srcs->left; off += PIM_ENCODE_SRC_ADDR_LEN) {
+	p = srcs->p + off;
+	if (p[PIM_ENCODE_FAMILY_OFF] != ADDRF_IPv4 || p[PIM_ENCODE_ETYPE_OFF] != ADDRT_IPv4) {
+	    jp->bad_family = p[PIM_ENCODE_FAMILY_OFF];
+	    jp->bad_etype  = p[PIM_ENCODE_ETYPE_OFF];
+	    return PIM_JP_SRC_FAMILY;
+	}
+
+	if (p[PIM_ENCODE_MSKLEN_OFF] != SINGLE_SRC_MSKLEN) {
+	    jp->bad_masklen = p[PIM_ENCODE_MSKLEN_OFF];
+	    return PIM_JP_SRC_MASKLEN;
+	}
+    }
+
+    return PIM_JP_OK;
+}
+
+/*
+ * A whole Join/Prune, PIM header included, refused at the first thing in
+ * it that is not inside the message or not readable, the group count off
+ * the wire bounding nothing.
+ */
+int pim_parse_jp(const void *msg, size_t len, pim_jp_t *jp)
+{
+    struct pim_cursor c, srcs;
+    unsigned n;
+    int rc;
+
+    memset(jp, 0, sizeof(*jp));
+
+    rc = pim_parse_jp_hdr(&c, msg, len, jp);
+    if (rc != PIM_JP_OK)
+	return rc;
+
+    for (n = jp->num_groups; n > 0; n--) {
+	rc = pim_parse_jp_set(&c, jp, &srcs);
+	if (rc == PIM_JP_OK)
+	    rc = pim_parse_jp_srcs(&srcs, jp);
+	if (rc != PIM_JP_OK)
+	    return rc;
+    }
+
+    return PIM_JP_OK;
+}
+
+/*
+ * The group set at set, and the one after it.  Only for a message
+ * pim_parse_jp() said OK to, and no further than its num_groups sets.
+ */
+const uint8_t *pim_jp_group(const uint8_t *set, pim_jp_grp_t *grp)
+{
+    pim_encod_grp_addr_t ega;
+    const uint8_t *p = set;
+
+    GET_EGADDR(&ega, p);
+    GET_HOSTSHORT(grp->num_j, p);
+    GET_HOSTSHORT(grp->num_p, p);
+    grp->group   = ega.mcast_addr;
+    grp->masklen = ega.masklen;
+    grp->srcs    = p;
+
+    return p + ((size_t)grp->num_j + grp->num_p) * PIM_ENCODE_SRC_ADDR_LEN;
+}
+
+/*
+ * Entry i of a group set, the joined ones first: i < num_j + num_p, which
+ * pim_parse_jp() has checked is inside the message.
+ */
+void pim_jp_source(const pim_jp_grp_t *grp, uint32_t i, pim_jp_src_t *src)
+{
+    const uint8_t *p = grp->srcs + (size_t)i * PIM_ENCODE_SRC_ADDR_LEN;
+    pim_encod_src_addr_t esa;
+
+    GET_ESADDR(&esa, p);
+    src->addr    = esa.src_addr;
+    src->flags   = esa.flags;
+    src->masklen = esa.masklen;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t
