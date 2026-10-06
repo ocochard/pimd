@@ -706,6 +706,7 @@ int    pim_put_u32      (struct pim_writer *w, uint32_t val);
 int    pim_put_euaddr   (struct pim_writer *w, uint32_t addr);
 int    pim_put_egaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t reserved);
 int    pim_put_esaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t flags);
+int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
 
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000

@@ -68,6 +68,12 @@ static int pim_put(struct pim_writer *w, const void *src, size_t n)
     return 1;
 }
 
+/* n bytes already encoded, a list a builder kept apart and copies in whole */
+int pim_put_bytes(struct pim_writer *w, const void *src, size_t n)
+{
+    return pim_put(w, src, n);
+}
+
 int pim_put_u8(struct pim_writer *w, uint8_t val)
 {
     return pim_put(w, &val, 1);

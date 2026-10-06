@@ -3610,6 +3610,28 @@ int send_periodic_pim_join_prune(vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t
 
 
 /*
+ * What the working buffers of a Join/Prune hold, get_jp_working_buff()
+ * allocating them at these sizes and every write into them going through
+ * a writer bounded by the same numbers (src/pim_encode.c), so that the
+ * size check below decides when a message goes out and cannot, if it is
+ * ever wrong, decide how far past a buffer one is written.
+ */
+#define JP_MESSAGE_CAP	(MAX_JP_MESSAGE_SIZE + sizeof(pim_jp_header_t))
+#define JP_LIST_CAP	(MAX_JP_MESSAGE_SIZE - sizeof(pim_jp_encod_grp_t))
+
+/* Said once: a write that does not fit means the size check is wrong */
+static void jp_overrun(const char *what)
+{
+    static int said;
+
+    if (said)
+	return;
+
+    said = 1;
+    logit(LOG_WARNING, 0, "Join/Prune %s does not fit its buffer, entry left out", what);
+}
+
+/*
  * How large the Join/Prune message would be once the group set in the
  * working area is packed into it and one more source entry is added.  The
  * group set costs its own header the first time anything lands in it.
@@ -3685,8 +3707,13 @@ static int jp_prune_keep_smallest(build_jp_message_t *bjpm, uint32_t source, uin
 	logit(LOG_INFO, 0, "Join/Prune group set full, Prune(%s,G,rpt) takes the place of %s",
 	      inet_fmt(source, s1, sizeof(s1)), inet_fmt(dropped, s2, sizeof(s2)));
 
-    entry = largest;
-    PUT_ESADDR(source, src_msklen, USADDR_S_BIT | USADDR_RP_BIT, entry);
+    /* In the place of the one it replaces, which is inside the list */
+    {
+	struct pim_writer w;
+
+	pim_writer_init(&w, largest, bjpm->prune_list + bjpm->prune_list_size - largest);
+	pim_put_esaddr(&w, source, src_msklen, USADDR_S_BIT | USADDR_RP_BIT);
+    }
 
     return TRUE;
 }
@@ -3696,7 +3723,10 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 		 uint16_t addr_flags, uint8_t join_prune)
 {
     build_jp_message_t *bjpm;
-    uint8_t *data;
+    struct pim_writer w;
+    uint8_t *list;
+    uint32_t *size;
+    uint16_t *number;
     uint8_t flags = 0;
     int rp_flag;
     int new_grp = FALSE;
@@ -3792,17 +3822,27 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 
     switch (join_prune) {
 	case PIM_ACTION_JOIN:
-	    if (rp_flag == TRUE)
-		data = bjpm->rp_list_join + bjpm->rp_list_join_size;
-	    else
-		data = bjpm->join_list + bjpm->join_list_size;
+	    if (rp_flag == TRUE) {
+		list   = bjpm->rp_list_join;
+		size   = &bjpm->rp_list_join_size;
+		number = &bjpm->rp_list_join_number;
+	    } else {
+		list   = bjpm->join_list;
+		size   = &bjpm->join_list_size;
+		number = &bjpm->join_addr_number;
+	    }
 	    break;
 
 	case PIM_ACTION_PRUNE:
-	    if (rp_flag == TRUE)
-		data = bjpm->rp_list_prune + bjpm->rp_list_prune_size;
-	    else
-		data = bjpm->prune_list + bjpm->prune_list_size;
+	    if (rp_flag == TRUE) {
+		list   = bjpm->rp_list_prune;
+		size   = &bjpm->rp_list_prune_size;
+		number = &bjpm->rp_list_prune_number;
+	    } else {
+		list   = bjpm->prune_list;
+		size   = &bjpm->prune_list_size;
+		number = &bjpm->prune_addr_number;
+	    }
 	    break;
 
 	default:
@@ -3814,37 +3854,19 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	flags |= USADDR_RP_BIT;
     if (addr_flags & MRTF_WC)
 	flags |= USADDR_WC_BIT;
-    PUT_ESADDR(source, src_msklen, flags, data);
+
+    pim_writer_init(&w, list + *size, JP_LIST_CAP - *size);
+    if (!pim_put_esaddr(&w, source, src_msklen, flags)) {
+	jp_overrun("source list");
+	return FALSE;
+    }
+    *size += PIM_ENCODE_SRC_ADDR_LEN;
+    (*number)++;
 
     /* The WC bit on a Joined entry is what makes this group set one sec.
      * 4.9.5.2 will not let us split, from here until it is packed. */
     if (rp_flag == FALSE && join_prune == PIM_ACTION_JOIN && (flags & USADDR_WC_BIT))
 	bjpm->curr_group_wc = TRUE;
-
-    switch (join_prune) {
-	case PIM_ACTION_JOIN:
-	    if (rp_flag == TRUE) {
-		bjpm->rp_list_join_size = data - bjpm->rp_list_join;
-		bjpm->rp_list_join_number++;
-	    } else {
-		bjpm->join_list_size = data - bjpm->join_list;
-		bjpm->join_addr_number++;
-	    }
-	    break;
-
-	case PIM_ACTION_PRUNE:
-	    if (rp_flag == TRUE) {
-		bjpm->rp_list_prune_size = data - bjpm->rp_list_prune;
-		bjpm->rp_list_prune_number++;
-	    } else {
-		bjpm->prune_list_size = data - bjpm->prune_list;
-		bjpm->prune_addr_number++;
-	    }
-	    break;
-
-	default:
-	    return FALSE;
-    }
 
     return TRUE;
 }
@@ -3862,7 +3884,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 	bjpm->next = NULL;
 
 	bjpm->jp_message_size = 0;
-	bjpm->jp_message = calloc(1, MAX_JP_MESSAGE_SIZE + sizeof(pim_jp_header_t));
+	bjpm->jp_message = calloc(1, JP_MESSAGE_CAP);
 	if (!bjpm->jp_message) {
 	    free(bjpm);
 	    return NULL;
@@ -3870,7 +3892,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 
 	bjpm->join_list_size = 0;
 	bjpm->join_addr_number = 0;
-	bjpm->join_list = calloc(1, MAX_JP_MESSAGE_SIZE - sizeof(pim_jp_encod_grp_t));
+	bjpm->join_list = calloc(1, JP_LIST_CAP);
 	if (!bjpm->join_list) {
 	    free(bjpm->jp_message);
 	    free(bjpm);
@@ -3879,7 +3901,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 
 	bjpm->prune_list_size = 0;
 	bjpm->prune_addr_number = 0;
-	bjpm->prune_list = calloc(1, MAX_JP_MESSAGE_SIZE - sizeof(pim_jp_encod_grp_t));
+	bjpm->prune_list = calloc(1, JP_LIST_CAP);
 	if (!bjpm->prune_list) {
 	    free(bjpm->join_list);
 	    free(bjpm->jp_message);
@@ -3889,7 +3911,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 
 	bjpm->rp_list_join_size = 0;
 	bjpm->rp_list_join_number = 0;
-	bjpm->rp_list_join = calloc(1, MAX_JP_MESSAGE_SIZE - sizeof(pim_jp_encod_grp_t));
+	bjpm->rp_list_join = calloc(1, JP_LIST_CAP);
 	if (!bjpm->rp_list_join) {
 	    free(bjpm->prune_list);
 	    free(bjpm->join_list);
@@ -3900,7 +3922,7 @@ static build_jp_message_t *get_jp_working_buff(void)
 
 	bjpm->rp_list_prune_size = 0;
 	bjpm->rp_list_prune_number = 0;
-	bjpm->rp_list_prune = calloc(1, MAX_JP_MESSAGE_SIZE - sizeof(pim_jp_encod_grp_t));
+	bjpm->rp_list_prune = calloc(1, JP_LIST_CAP);
 	if (!bjpm->rp_list_prune) {
 	    free(bjpm->rp_list_join);
 	    free(bjpm->prune_list);
@@ -3963,22 +3985,26 @@ static void return_jp_working_buff(pim_nbr_entry_t *pim_nbr)
 static void pack_jp_message_grp(pim_nbr_entry_t *pim_nbr)
 {
     build_jp_message_t *bjpm;
-    uint8_t *data;
+    struct pim_writer w;
 
     bjpm = pim_nbr->build_jp_message;
     if (!bjpm)
 	return;
 
     if (bjpm->join_list_size + bjpm->prune_list_size) {
-	data = bjpm->jp_message + bjpm->jp_message_size;
-	PUT_EGADDR(bjpm->curr_group, bjpm->curr_group_msklen, 0, data);
-	PUT_HOSTSHORT(bjpm->join_addr_number, data);
-	PUT_HOSTSHORT(bjpm->prune_addr_number, data);
-	memcpy(data, bjpm->join_list, bjpm->join_list_size);
-	data += bjpm->join_list_size;
-	memcpy(data, bjpm->prune_list, bjpm->prune_list_size);
-	data += bjpm->prune_list_size;
-	bjpm->jp_message_size = (data - bjpm->jp_message);
+	pim_writer_init(&w, bjpm->jp_message + bjpm->jp_message_size,
+			JP_MESSAGE_CAP - bjpm->jp_message_size);
+	pim_put_egaddr(&w, bjpm->curr_group, bjpm->curr_group_msklen, 0);
+	pim_put_u16(&w, bjpm->join_addr_number);
+	pim_put_u16(&w, bjpm->prune_addr_number);
+	pim_put_bytes(&w, bjpm->join_list, bjpm->join_list_size);
+	pim_put_bytes(&w, bjpm->prune_list, bjpm->prune_list_size);
+	if (w.full)
+	    jp_overrun("group set");
+	else {
+	    bjpm->jp_message_size += pim_writer_used(&w, bjpm->jp_message + bjpm->jp_message_size);
+	    (*bjpm->num_groups_ptr)++;
+	}
 	bjpm->curr_group = INADDR_ANY_N;
 	bjpm->curr_group_msklen = 0;
 	bjpm->curr_group_wc = FALSE;
@@ -3986,34 +4012,36 @@ static void pack_jp_message_grp(pim_nbr_entry_t *pim_nbr)
 	bjpm->join_addr_number = 0;
 	bjpm->prune_list_size = 0;
 	bjpm->prune_addr_number = 0;
-	(*bjpm->num_groups_ptr)++;
     }
 }
 
 static void pack_jp_message_rp(pim_nbr_entry_t *pim_nbr)
 {
     build_jp_message_t *bjpm;
-    uint8_t *data;
+    struct pim_writer w;
 
     bjpm = pim_nbr->build_jp_message;
     if (!bjpm)
 	return;
 
     if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
-	data = bjpm->jp_message + bjpm->jp_message_size;
-	PUT_EGADDR(htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN, 0, data);
-	PUT_HOSTSHORT(bjpm->rp_list_join_number, data);
-	PUT_HOSTSHORT(bjpm->rp_list_prune_number, data);
-	memcpy(data, bjpm->rp_list_join, bjpm->rp_list_join_size);
-	data += bjpm->rp_list_join_size;
-	memcpy(data, bjpm->rp_list_prune, bjpm->rp_list_prune_size);
-	data += bjpm->rp_list_prune_size;
-	bjpm->jp_message_size = (data - bjpm->jp_message);
+	pim_writer_init(&w, bjpm->jp_message + bjpm->jp_message_size,
+			JP_MESSAGE_CAP - bjpm->jp_message_size);
+	pim_put_egaddr(&w, htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN, 0);
+	pim_put_u16(&w, bjpm->rp_list_join_number);
+	pim_put_u16(&w, bjpm->rp_list_prune_number);
+	pim_put_bytes(&w, bjpm->rp_list_join, bjpm->rp_list_join_size);
+	pim_put_bytes(&w, bjpm->rp_list_prune, bjpm->rp_list_prune_size);
+	if (w.full)
+	    jp_overrun("(*,*,RP) set");
+	else {
+	    bjpm->jp_message_size += pim_writer_used(&w, bjpm->jp_message + bjpm->jp_message_size);
+	    (*bjpm->num_groups_ptr)++;
+	}
 	bjpm->rp_list_join_size = 0;
 	bjpm->rp_list_join_number = 0;
 	bjpm->rp_list_prune_size = 0;
 	bjpm->rp_list_prune_number = 0;
-	(*bjpm->num_groups_ptr)++;
     }
 }
 
@@ -4049,14 +4077,15 @@ static void jp_message_send(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
  * chosen for this buffer, and no group sets yet. */
 static void jp_message_restart(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
 {
-    uint8_t *data = bjpm->jp_message;
+    struct pim_writer w;
 
-    PUT_EUADDR(pim_nbr->address, data);
-    PUT_BYTE(0, data);			/* Reserved */
-    bjpm->num_groups_ptr = data++;	/* The pointer for numgroups */
-    *(bjpm->num_groups_ptr) = 0;	/* Zero groups */
-    PUT_HOSTSHORT(bjpm->holdtime, data);
-    bjpm->jp_message_size = data - bjpm->jp_message;
+    pim_writer_init(&w, bjpm->jp_message, JP_MESSAGE_CAP);
+    pim_put_euaddr(&w, pim_nbr->address);
+    pim_put_u8(&w, 0);			/* Reserved */
+    bjpm->num_groups_ptr = w.p;		/* The pointer for numgroups */
+    pim_put_u8(&w, 0);			/* Zero groups */
+    pim_put_u16(&w, bjpm->holdtime);
+    bjpm->jp_message_size = pim_writer_used(&w, bjpm->jp_message);
 }
 
 /*

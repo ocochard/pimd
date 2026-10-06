@@ -232,6 +232,7 @@ mutant igmp-source-stride          "$h" "$s" proof_source       0 1 's/(size_t)i
 h="$here/encode.c"
 s="$top/src/pim_encode.c"
 proof  writer-put                  "$h" "$s" proof_put          0 1
+proof  writer-put-bytes            "$h" "$s" proof_put_bytes   16 1
 mutant writer-no-room-check        "$h" "$s" proof_put          0 1 's/return !w->full \&\& n <= w->left;/return !w->full;/'
 mutant writer-full-not-sticky      "$h" "$s" proof_put          0 1 's/return !w->full \&\& n <= w->left;/return n <= w->left;/'
 mutant writer-full-not-set         "$h" "$s" proof_put          0 1 's/	w->full = 1;/	;/'

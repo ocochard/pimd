@@ -17,9 +17,12 @@
  *
  *
  * A harness for cbmc(1), not a program: run.sh compiles it alone, with
- * SOURCE naming src/pim_encode.c or a mutant of it.  One proof,
+ * SOURCE naming src/pim_encode.c or a mutant of it.  The proof is
  * proof_put: one put of any kind and any value, from any state a writer
- * can be in, on a buffer of any length.  That is the whole of it by
+ * can be in, on a buffer of any length.  proof_put_bytes beside it is the
+ * same for pim_put_bytes(), which copies a list a builder kept apart and
+ * whose length is the caller's, any up to MAXLEN, the comparison of what
+ * was copied being a loop.  That is the whole of it by
  * induction -- a writer starts in such a state and each put leaves it in
  * one -- which is why there is no proof of a run of puts beside it: the
  * one there was, six puts of any kinds in a row, was redundant and ran
@@ -53,7 +56,12 @@ uint32_t nondet_uint32_t(void);
 uint8_t nondet_uint8_t(void);
 int nondet_int(void);
 
+#ifndef MAXLEN
+#define MAXLEN 16
+#endif
+
 void proof_put(void);
+void proof_put_bytes(void);
 
 /* One put of kind k, and its length when it fits */
 static int put(struct pim_writer *w, unsigned k, uint32_t v, uint8_t a, uint8_t b, size_t *n)
@@ -135,6 +143,44 @@ void proof_put(void)
 			 "an Encoded-Group or -Source is IPv4, its flags, its mask, and the address masked");
 	break;
     }
+    free(buf);
+}
+
+void proof_put_bytes(void)
+{
+    struct pim_writer w, before;
+    uint8_t *buf, *src;
+    size_t len, off, n;
+    int ok;
+
+    len = nondet_size_t();
+    __CPROVER_assume(len <= SENDBUF_MAX);
+    buf = malloc(len);
+    __CPROVER_assume(buf != NULL);
+
+    n = nondet_size_t();
+    __CPROVER_assume(n <= MAXLEN);
+    src = malloc(n);
+    __CPROVER_assume(src != NULL);
+
+    off = nondet_size_t();
+    __CPROVER_assume(off <= len);
+    w.p    = buf + off;
+    w.left = len - off;
+    w.full = nondet_int() ? 1 : 0;
+    before = w;
+
+    ok = pim_put_bytes(&w, src, n);
+    __CPROVER_assert(w.p + w.left == buf + len, "the writer stays on its buffer");
+    if (ok) {
+	__CPROVER_assert(!before.full && n <= before.left && w.p == before.p + n,
+			 "a copy that fits moves the writer by its length");
+	__CPROVER_assert(memcmp(before.p, src, n) == 0, "and is the bytes it was given");
+    } else {
+	__CPROVER_assert(w.full && w.p == before.p && (before.full || n > before.left),
+			 "and one that does not writes nothing and leaves the writer full");
+    }
+    free(src);
     free(buf);
 }
 
