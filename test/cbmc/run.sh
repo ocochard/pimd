@@ -29,13 +29,43 @@
 # handful of proofs, and in parallel what is left is the longest of them.
 # The report is printed afterwards, in the order of the list, and the exit
 # status is the whole run's.
+#
+# Each job runs under a memory limit, CBMC_MEM megabytes (4096 by
+# default), so that a proof that blows up fails as one proof rather than
+# taking the host with it: a redundant one did, running a 64G machine out
+# of memory twice before it was dropped from test/cbmc/encode.c.  What
+# the proofs here need was measured, peak resident: 2.9G for the whole
+# Join/Prune, under 1G for every other one.  It is the unwind depth rather
+# than the length that costs: that proof at 34 and at 38 bytes unwinds
+# seven times and needs the same 2.9G, at 40 eight and 4.4G, which is
+# why it stops at 38, still two group sets.  A job
+# over the limit reports "cbmc exit" and cbmc's out of memory message.  The
+# default JOBS is bounded by memory as well as by cores, so that every job
+# at its limit at once still fits in half the physical memory.
 
 set -eu
 
 top=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 here="$top/test/cbmc"
 SCALE=${SCALE:-1}
-JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
+CBMC_MEM=${CBMC_MEM:-4096}
+
+# Physical memory in megabytes, or nothing: getconf spells it PHYS_PAGES
+# on FreeBSD and _PHYS_PAGES on glibc
+physmem_mb()
+{
+	pages=$(getconf PHYS_PAGES 2>/dev/null || getconf _PHYS_PAGES 2>/dev/null) || return 0
+	echo $((pages / 1024 * $(getconf PAGESIZE) / 1024))
+}
+
+if [ -z "${JOBS:-}" ]; then
+	JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+	mem=$(physmem_mb)
+	if [ -n "$mem" ] && [ $((mem / 2 / CBMC_MEM)) -lt "$JOBS" ]; then
+		JOBS=$((mem / 2 / CBMC_MEM))
+	fi
+	[ "$JOBS" -ge 1 ] || JOBS=1
+fi
 
 if ! command -v cbmc >/dev/null 2>&1; then
 	echo "cbmc: cbmc(1) not found, skipping the model checks" >&2
@@ -59,6 +89,7 @@ if [ "${1:-}" = "--job" ]; then
 		read -r len
 		read -r unwind
 	} <"$work/job.$3"
+	ulimit -v $((CBMC_MEM * 1024))
 	# shellcheck disable=SC2086
 	cbmc -DMAXLEN="$len" -DSOURCE="\"$source\"" -I "$top/src" -I "$top/include" \
 	    "$harness" --function "$function" $checks --unwind "$unwind" \
@@ -146,15 +177,15 @@ proof  jp-set                      "$h" "$s" proof_jp_set       0 1
 proof  jp-srcs                     "$h" "$s" proof_jp_srcs    512 8
 proof  jp-group                    "$h" "$s" proof_jp_group     0 1
 proof  jp-source                   "$h" "$s" proof_jp_source    0 1
-proof  jp                          "$h" "$s" proof_jp          40 8
+proof  jp                          "$h" "$s" proof_jp          38 8
 mutant jp-no-header-bound          "$h" "$s" proof_jp_hdr       0 1 's/len < PIM_JOIN_PRUNE_MINLEN/0/'
 mutant jp-upstream-any-family      "$h" "$s" proof_jp_hdr       0 1 's/eua.addr_family != ADDRF_IPv4 || //'
 mutant jp-no-set-bound             "$h" "$s" proof_jp_set       0 1 's/c->left < PIM_JP_GRP_SET_LEN/0/'
 mutant jp-no-source-bound          "$h" "$s" proof_jp_set       0 1 's/c->left - PIM_JP_GRP_SET_LEN < srclen/0/'
 mutant jp-group-mask-unchecked     "$h" "$s" proof_jp_set       0 1 '/^static int pim_parse_jp_set/,/^}/s/p\[PIM_ENCODE_MSKLEN_OFF\] > PIM_MAX_MSKLEN/0/'
 mutant jp-source-mask-unchecked    "$h" "$s" proof_jp_srcs     32 8 's/p\[PIM_ENCODE_MSKLEN_OFF\] != SINGLE_SRC_MSKLEN/0/'
-mutant jp-sources-unchecked        "$h" "$s" proof_jp          40 8 's/rc = pim_parse_jp_srcs(&srcs, jp);/rc = PIM_JP_OK;/'
-mutant jp-group-count-ignored      "$h" "$s" proof_jp          40 8 's/for (n = jp->num_groups; n > 0; n--)/for (n = 1; n > 0; n--)/'
+mutant jp-sources-unchecked        "$h" "$s" proof_jp          38 8 's/rc = pim_parse_jp_srcs(&srcs, jp);/rc = PIM_JP_OK;/'
+mutant jp-group-count-ignored      "$h" "$s" proof_jp          38 8 's/for (n = jp->num_groups; n > 0; n--)/for (n = 1; n > 0; n--)/'
 mutant jp-source-stride            "$h" "$s" proof_jp_source    0 1 's/(size_t)i \* PIM_ENCODE_SRC_ADDR_LEN/(size_t)i * 6/'
 mutant jp-next-set                 "$h" "$s" proof_jp_group     0 1 's/return p + ((size_t)grp->num_j + grp->num_p) \* PIM_ENCODE_SRC_ADDR_LEN;/return p;/'
 proof  bsr-hdr                     "$h" "$s" proof_bsr_hdr      0 1
@@ -196,6 +227,17 @@ mutant igmp-no-record-bound        "$h" "$s" proof_record       0 1 's/c->left <
 mutant igmp-aux-words-ignored      "$h" "$s" proof_record       0 1 's/ + (size_t)p\[1\] \* 4;/;/'
 mutant igmp-record-not-counted     "$h" "$s" proof_record       0 1 's/c->ngrec -= 1;/;/'
 mutant igmp-source-stride          "$h" "$s" proof_source       0 1 's/(size_t)i \* sizeof(uint32_t)/(size_t)i * 2/'
+
+# The writer the message builders write through, src/pim_encode.c
+h="$here/encode.c"
+s="$top/src/pim_encode.c"
+proof  writer-put                  "$h" "$s" proof_put          0 1
+mutant writer-no-room-check        "$h" "$s" proof_put          0 1 's/return !w->full \&\& n <= w->left;/return !w->full;/'
+mutant writer-full-not-sticky      "$h" "$s" proof_put          0 1 's/return !w->full \&\& n <= w->left;/return n <= w->left;/'
+mutant writer-full-not-set         "$h" "$s" proof_put          0 1 's/	w->full = 1;/	;/'
+mutant writer-left-not-counted     "$h" "$s" proof_put          0 1 's/w->left -= n;/;/'
+mutant writer-u16-byte-order       "$h" "$s" proof_put          0 1 's/{ (uint8_t)((val >> 8) \& 0xff), (uint8_t)(val \& 0xff) }/{ (uint8_t)(val \& 0xff), (uint8_t)((val >> 8) \& 0xff) }/'
+mutant writer-group-unmasked       "$h" "$s" proof_put          0 1 '/^int pim_put_egaddr/,/^}/s/addr \&= mask;/;/'
 
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"

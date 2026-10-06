@@ -22,8 +22,8 @@ libpimd_a_SOURCES = autorp.c		autorp.h	autorp_parse.c		    \
 		   igmpv2.h		igmpv3.h				    \
 		   inet.c		ipc.c		kern.c			    \
 		   mrt.c		mrt.h		    			    \
-		   pathnames.h		pim_parse.c	pim_proto.c	pim.c	    \
-		   pimd.h						    \
+		   pathnames.h		pim_encode.c	pim_parse.c	pim_proto.c \
+		   pim.c		pimd.h				    \
 		   privsep.c		privsep.h				    \
 		   queue.h		route.c		rp.c			    \
 		   timer.c		trace.c		trace.h	    		    \

@@ -1220,10 +1220,11 @@ rpentry_t *rp_find(uint32_t rp_address)
  */
 int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 {
-    uint8_t *data_ptr, *end;
+    const size_t hdrs = sizeof(struct ip) + sizeof(pim_header_t);
+    struct pim_writer w;
+    uint8_t *start;
     grp_mask_t *mask_ptr;
     rp_grp_entry_t *entry_ptr;
-    int datalen;
     uint8_t masklen;
     unsigned rps, written;
     uint16_t holdtime;
@@ -1231,14 +1232,16 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
     if (curr_bsr_address == INADDR_ANY_N)
 	return 0;
 
-    data_ptr = (uint8_t *)(send_buff + sizeof(struct ip) + sizeof(pim_header_t));
-    end = (uint8_t *)send_buff + buflen;
+    /* Everything below is written through w, which has the end of the
+     * buffer and writes nothing past it, see src/pim_encode.c. */
+    start = (uint8_t *)send_buff + hdrs;
+    pim_writer_init(&w, start, buflen > hdrs ? buflen - hdrs : 0);
 
     /* The fragment tag, hash mask length, priority and BSR address, before
      * any of the set: a buffer too small even for those is a caller's
      * mistake rather than a state this can be in, and saying so beats
      * writing them. */
-    if ((size_t)(end - data_ptr) < 4 + PIM_ENCODE_UNI_ADDR_LEN) {
+    if (!pim_writer_room(&w, 4 + PIM_ENCODE_UNI_ADDR_LEN)) {
 	logit(LOG_WARNING, 0, "Bootstrap send buffer of %zu bytes is too small for its own header",
 	      buflen);
 	return 0;
@@ -1246,11 +1249,11 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
     if (curr_bsr_address == my_bsr_address)
 	curr_bsr_fragment_tag++;
 
-    PUT_HOSTSHORT(curr_bsr_fragment_tag, data_ptr);
+    pim_put_u16(&w, curr_bsr_fragment_tag);
     MASK_TO_MASKLEN(curr_bsr_hash_mask, masklen);
-    PUT_BYTE(masklen, data_ptr);
-    PUT_BYTE(curr_bsr_priority, data_ptr);
-    PUT_EUADDR(curr_bsr_address, data_ptr);
+    pim_put_u8(&w, masklen);
+    pim_put_u8(&w, curr_bsr_priority);
+    pim_put_euaddr(&w, curr_bsr_address);
 
     /* TODO: XXX: No fragmentation support (yet), so an RP set larger than
      * one message holds is cut short rather than carried in fragments with
@@ -1258,12 +1261,11 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
      * past the buffer, which is what this did: the set is a stranger's to
      * grow -- see add_grp_mask() -- and 40 Candidate-RP Advertisements of
      * 255 ranges each walked a 128K send buffer off its end, measured with
-     * AddressSanitizer.  rp-set-limit bounds the set itself; this bounds
-     * the message whatever the set is.
+     * AddressSanitizer.  rp-set-limit bounds the set itself; the writer
+     * bounds the message whatever the set is, and the room asked for below
+     * keeps what is cut a whole range rather than half of one.
      */
     for (mask_ptr = grp_mask_list; mask_ptr; mask_ptr = mask_ptr->next) {
-	size_t need;
-
 	if (IN_PIM_SSM_RANGE(mask_ptr->group_addr)) {
 	    continue;  /* Do not advertise internal virtual RP for SSM groups */
 	}
@@ -1273,7 +1275,7 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	 * length of the message and the count byte in it both have to agree
 	 * with what gets written, and a byte that has drifted -- or wrapped,
 	 * which it could before PIM_MAX_RP_PER_RANGE -- would leave the
-	 * bound below too small and the count on the wire wrong.
+	 * room asked for below too small and the count on the wire wrong.
 	 */
 	rps = 0;
 	for (entry_ptr = mask_ptr->grp_rp_next; entry_ptr; entry_ptr = entry_ptr->grp_rp_next) {
@@ -1282,15 +1284,11 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	    rps++;
 	}
 
-	/* The range's own record, and one per RP under it.  Compared as a
-	 * distance rather than by forming data_ptr + need, which would be a
-	 * pointer past the end of the object before anything is written. */
-	need = PIM_ENCODE_GRP_ADDR_LEN + 4
-	    + (size_t)rps * (PIM_ENCODE_UNI_ADDR_LEN + 4);
-	if ((size_t)(end - data_ptr) < need) {
+	/* The range's own record, and one per RP under it */
+	if (!pim_writer_room(&w, PIM_BSR_GRP_SET_LEN + (size_t)rps * PIM_BSR_RP_LEN)) {
 	    if (!bootstrap_truncated_said) {
 		logit(LOG_WARNING, 0, "RP set does not fit in one Bootstrap message,"
-		      " %zu bytes in and %s onwards left out", (size_t)(data_ptr - (uint8_t *)send_buff),
+		      " %zu bytes in and %s onwards left out", hdrs + pim_writer_used(&w, start),
 		      netname(mask_ptr->group_addr, mask_ptr->group_mask));
 		bootstrap_truncated_said = TRUE;
 	    }
@@ -1298,10 +1296,10 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	}
 
 	MASK_TO_MASKLEN(mask_ptr->group_mask, masklen);
-	PUT_EGADDR(mask_ptr->group_addr, masklen, 0, data_ptr);
-	PUT_BYTE(rps, data_ptr);
-	PUT_BYTE(rps, data_ptr);	/* TODO: if frag.*/
-	PUT_HOSTSHORT(0, data_ptr);
+	pim_put_egaddr(&w, mask_ptr->group_addr, masklen, 0);
+	pim_put_u8(&w, (uint8_t)rps);
+	pim_put_u8(&w, (uint8_t)rps);	/* TODO: if frag.*/
+	pim_put_u16(&w, 0);
 
 	/* Exactly the records the count above promises, so that the message
 	 * says what it holds however the list changes underneath. */
@@ -1312,16 +1310,21 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	    /* Is holdtime in MUST BE interval? (RFC5059 section 3.3) */
 	    if (holdtime != 0 && holdtime <= my_bsr_adv_period)
 		holdtime = recommended_rp_holdtime;
-	    PUT_EUADDR(entry_ptr->rp->rpentry->address, data_ptr);
-	    PUT_HOSTSHORT(holdtime, data_ptr);
-	    PUT_BYTE(entry_ptr->priority, data_ptr);
-	    PUT_BYTE(0, data_ptr);  /* The reserved field */
+	    pim_put_euaddr(&w, entry_ptr->rp->rpentry->address);
+	    pim_put_u16(&w, holdtime);
+	    pim_put_u8(&w, entry_ptr->priority);
+	    pim_put_u8(&w, 0);  /* The reserved field */
 	}
     }
 
-    datalen = (data_ptr - (uint8_t *)send_buff) - sizeof(struct ip) - sizeof(pim_header_t);
+    /* Not reachable while the room asked for above is right, and a message
+     * with a field missing is not one to send if it ever is not. */
+    if (w.full) {
+	logit(LOG_WARNING, 0, "Bootstrap message overran its own room, not sent");
+	return 0;
+    }
 
-    return datalen;
+    return (int)pim_writer_used(&w, start);
 }
 
 

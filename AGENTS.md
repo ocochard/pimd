@@ -741,9 +741,16 @@ removed or an offset moved, and fails unless every mutant fails and every mutati
 the reason `rules/run.sh` has a control pass; it prints the property that caught each mutant,
 since a control caught by the harness itself (an unwinding bound too small for a `memcmp()`, once)
 proves nothing about the decoder. A proof with a loop names its own length bound beside it in the
-script, the ones without one cover every datagram. The proofs run in parallel, `JOBS` at a time
-(the core count by default): 2m20s on 16 cores here, 58s on 32, against 6m47s one after another,
-the floor being the slowest single proof. It exits 77 without `cbmc`; the `CBMC proofs` job of
+script, the ones without one cover every datagram. The proofs run in parallel, `JOBS` at a time:
+2m28s here, 38s on the 32-core Linux host, against 6m47s one after another, the floor being the
+slowest single proof. Each runs under `ulimit -v` of `CBMC_MEM` megabytes (4096 by default), and the
+default `JOBS` is the core count bounded so that every job at its limit fits in half the physical
+memory -- a proof that blows up fails as one proof, which is not hypothetical: one ran this 64G host
+out of memory twice before it was dropped. The peaks were measured and the costly one is the whole
+Join/Prune, 2.9G, its length set by its unwind depth (seven at 38 bytes, 4.4G at eight). The same
+`test/cbmc/encode.c` proves `src/pim_encode.c`, the bounded writer the message builders write
+through (`aidd_docs/plans/modernise-round2.md`, item 2), one put from any writer state on a buffer
+of any length, which by induction is every sequence of them. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

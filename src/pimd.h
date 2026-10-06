@@ -677,6 +677,36 @@ typedef struct {
 int pim_parse_register_stop(const void *msg, size_t len, pim_sg_msg_t *rs);
 int pim_parse_assert       (const void *msg, size_t len, pim_sg_msg_t *as);
 
+/*
+ * The other direction, src/pim_encode.c: a buffer, where writing has got
+ * to, and how much is left.  Every put checks the room first and writes
+ * nothing that does not fit; the first one that does not fit makes the
+ * writer full, and a full writer writes nothing again, so a builder asks
+ * once at the end whether its message is whole rather than after every
+ * field.  A builder that writes only through this cannot write past its
+ * buffer whatever its own arithmetic says, which test/cbmc/encode.c proves
+ * of the writer once instead of of every builder.
+ *
+ * Addresses go in network order, as pimd keeps them, the way the PUT_*
+ * macros above write them; the 16- and 32-bit numbers go in host order and
+ * are written big-endian.
+ */
+struct pim_writer {
+    uint8_t *p;			/* the next byte to write */
+    size_t   left;		/* bytes from p to the end of the buffer */
+    int      full;		/* a put did not fit */
+};
+
+void   pim_writer_init  (struct pim_writer *w, void *buf, size_t len);
+int    pim_writer_room  (const struct pim_writer *w, size_t n);
+size_t pim_writer_used  (const struct pim_writer *w, const void *buf);
+int    pim_put_u8       (struct pim_writer *w, uint8_t val);
+int    pim_put_u16      (struct pim_writer *w, uint16_t val);
+int    pim_put_u32      (struct pim_writer *w, uint32_t val);
+int    pim_put_euaddr   (struct pim_writer *w, uint32_t addr);
+int    pim_put_egaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t reserved);
+int    pim_put_esaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t flags);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 
