@@ -1,6 +1,8 @@
 EXTRA_DIST         = README.md autorp.c igmpv3.c mping.c pimsend.c
 # Not in TESTS: needs root and FreeBSD vnet jails or Linux named netns, see the script header
 EXTRA_DIST        += lab.sh lab-freebsd.sh lab-linux.sh
+# Not in TESTS: cbmc(1) is not a build dependency, and a proof takes minutes
+EXTRA_DIST        += cbmc/run.sh cbmc/autorp.c
 # Nor this one: needs root and FRR installed beside pimd, see the script header
 EXTRA_DIST        += frr-interop.sh
 # Not in TESTS either: needs bhyve and a licensed Arista vEOS image on top

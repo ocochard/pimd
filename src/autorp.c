@@ -434,34 +434,25 @@ static void autorp_announced_learn(uint32_t from, uint32_t rp_addr, uint16_t hol
  */
 void accept_autorp(uint32_t from, char *buf, size_t len)
 {
-    uint8_t *p = (uint8_t *)buf;
-    unsigned type, version, rpcnt;
-    uint16_t holdtime;
-    size_t left = len;
+    struct autorp_cursor cur;
+    struct autorp_wire_prefix pfx;
+    struct autorp_hdr hdr;
+    int rc;
 
     if (!autorp_enabled)
 	return;
 
-    if (left < AUTORP_HDR_LEN) {
+    if (autorp_parse_hdr(&cur, &hdr, buf, len)) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
 	    logit(LOG_DEBUG, 0, "Auto-RP: %zu bytes from %s is shorter than a header",
 		  len, inet_fmt(from, s1, sizeof(s1)));
 	return;
     }
 
-    version  = AUTORP_VERSION_OF(p[0]);
-    type     = AUTORP_TYPE_OF(p[0]);
-    rpcnt    = p[1];
-    holdtime = (uint16_t)((p[2] << 8) | p[3]);
-    /* p[4..7] reserved, sent as 0 and ignored on reception, sec. 4 */
-
-    p    += AUTORP_HDR_LEN;
-    left -= AUTORP_HDR_LEN;
-
-    if (version != AUTORP_VERSION) {
+    if (hdr.version != AUTORP_VERSION) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
 	    logit(LOG_DEBUG, 0, "Auto-RP: version %u from %s, expected %u",
-		  version, inet_fmt(from, s1, sizeof(s1)), AUTORP_VERSION);
+		  hdr.version, inet_fmt(from, s1, sizeof(s1)), AUTORP_VERSION);
 	return;
     }
 
@@ -472,17 +463,17 @@ void accept_autorp(uint32_t from, char *buf, size_t len)
      * this router's RP set with nothing having resolved them.  Only a
      * mapping message is the resolved answer.
      */
-    if (type == AUTORP_TYPE_ANNOUNCE && !autorp_agent_flag) {
+    if (hdr.type == AUTORP_TYPE_ANNOUNCE && !autorp_agent_flag) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
 	    logit(LOG_DEBUG, 0, "Auto-RP: type %u from %s is not an RP-mapping message",
-		  type, inet_fmt(from, s1, sizeof(s1)));
+		  hdr.type, inet_fmt(from, s1, sizeof(s1)));
 	return;
     }
 
-    if (type != AUTORP_TYPE_MAPPING && type != AUTORP_TYPE_ANNOUNCE) {
+    if (hdr.type != AUTORP_TYPE_MAPPING && hdr.type != AUTORP_TYPE_ANNOUNCE) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
 	    logit(LOG_DEBUG, 0, "Auto-RP: type %u from %s is neither an announcement"
-		  " nor a mapping", type, inet_fmt(from, s1, sizeof(s1)));
+		  " nor a mapping", hdr.type, inet_fmt(from, s1, sizeof(s1)));
 	return;
     }
 
@@ -493,7 +484,7 @@ void accept_autorp(uint32_t from, char *buf, size_t len)
      * is what lets it speak again if that agent stops.  Its own message,
      * heard back through a flooding domain, is not another agent.
      */
-    if (type == AUTORP_TYPE_MAPPING && autorp_agent_flag &&
+    if (hdr.type == AUTORP_TYPE_MAPPING && autorp_agent_flag &&
 	from != autorp_agent_addr && ntohl(from) > ntohl(autorp_agent_addr)) {
 	if (autorp_agent_better != from)
 	    logit(LOG_INFO, 0, "Auto-RP: %s is the mapping agent, %s stays quiet",
@@ -504,58 +495,35 @@ void accept_autorp(uint32_t from, char *buf, size_t len)
 	SET_TIMER(autorp_agent_better_timer, 3 * autorp_agent_interval);
     }
 
-    while (rpcnt-- > 0) {
-	uint32_t rp_addr;
-	unsigned grpcnt;
-
-	if (left < AUTORP_RP_LEN) {
+    /*
+     * A message that ends inside a block keeps what came before it: each
+     * prefix is acted on as it is read, and the walk stops at the first
+     * block the buffer does not hold.
+     */
+    while ((rc = autorp_parse_next(&cur, &pfx)) == AUTORP_PARSE_PREFIX) {
+	if (!inet_valid_host(pfx.rp_addr)) {
 	    IF_DEBUG(DEBUG_PIM_CAND_RP)
-		logit(LOG_DEBUG, 0, "Auto-RP: message from %s ends inside an RP block",
-		      inet_fmt(from, s1, sizeof(s1)));
-	    return;
+		logit(LOG_DEBUG, 0, "Auto-RP: %s from %s is not a valid RP address",
+		      inet_fmt(pfx.rp_addr, s2, sizeof(s2)), inet_fmt(from, s1, sizeof(s1)));
+	    continue;
 	}
 
-	memcpy(&rp_addr, p, sizeof(rp_addr));
-	grpcnt = p[5];
-	/* p[4] holds the RP's PIM version in its low two bits, which pimd
-	 * has no use for: it speaks PIMv2 and an RP that does not is not
-	 * one it can register to anyway. */
+	if (hdr.type == AUTORP_TYPE_ANNOUNCE)
+	    autorp_announced_learn(from, pfx.rp_addr, hdr.holdtime, pfx.group_addr,
+				   pfx.masklen, pfx.negative);
+	else
+	    autorp_learn(from, pfx.rp_addr, hdr.holdtime, pfx.group_addr,
+			 pfx.masklen, pfx.negative);
+    }
 
-	p    += AUTORP_RP_LEN;
-	left -= AUTORP_RP_LEN;
-
-	while (grpcnt-- > 0) {
-	    uint32_t group_addr;
-	    uint8_t masklen;
-	    int negative;
-
-	    if (left < AUTORP_GRP_LEN) {
-		IF_DEBUG(DEBUG_PIM_CAND_RP)
-		    logit(LOG_DEBUG, 0, "Auto-RP: message from %s ends inside a group prefix",
-			  inet_fmt(from, s1, sizeof(s1)));
-		return;
-	    }
-
-	    negative = AUTORP_GRP_NEGATIVE(p[0]);
-	    masklen  = p[1];
-	    memcpy(&group_addr, p + 2, sizeof(group_addr));
-
-	    p    += AUTORP_GRP_LEN;
-	    left -= AUTORP_GRP_LEN;
-
-	    if (!inet_valid_host(rp_addr)) {
-		IF_DEBUG(DEBUG_PIM_CAND_RP)
-		    logit(LOG_DEBUG, 0, "Auto-RP: %s from %s is not a valid RP address",
-			  inet_fmt(rp_addr, s2, sizeof(s2)), inet_fmt(from, s1, sizeof(s1)));
-		continue;
-	    }
-
-	    if (type == AUTORP_TYPE_ANNOUNCE)
-		autorp_announced_learn(from, rp_addr, holdtime, group_addr,
-				       masklen, negative);
-	    else
-		autorp_learn(from, rp_addr, holdtime, group_addr, masklen, negative);
-	}
+    if (rc == AUTORP_PARSE_SHORT_RP) {
+	IF_DEBUG(DEBUG_PIM_CAND_RP)
+	    logit(LOG_DEBUG, 0, "Auto-RP: message from %s ends inside an RP block",
+		  inet_fmt(from, s1, sizeof(s1)));
+    } else if (rc == AUTORP_PARSE_SHORT_GRP) {
+	IF_DEBUG(DEBUG_PIM_CAND_RP)
+	    logit(LOG_DEBUG, 0, "Auto-RP: message from %s ends inside a group prefix",
+		  inet_fmt(from, s1, sizeof(s1)));
     }
 }
 

@@ -724,6 +724,20 @@ which reads exactly like a clean run. The names a rule cares about are lists in 
 `@initialize:python@` block, tested in the script; `=~` is for anchored prefixes and character
 classes, which both engines read alike.
 
+`test/cbmc/` is the other half of that idea, a bounded model checker rather than a pattern
+matcher: `cbmc(1)` (`pkg install cbmc`) over a wire decoder that reads no global, with a
+nondeterministic buffer allocated at exactly its length, answers whether *any* input reads out of
+bounds, overflows, or breaks the decoder's contract, where a fuzzer samples. It works only on
+decoders shaped for it, which is the plan of `aidd_docs/plans/parse-then-apply.md`: each
+`receive_*()` split into a decode half in a file of its own (`src/autorp_parse.c` is the first)
+and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
+a loop over it. The shape is measured, not taste: walking whole Auto-RP messages cost 5m19s at 64
+bytes and four times more per doubling, while the loop-free step is proven for every length a UDP
+payload can have in 4s, and the loop only needs a few blocks once the step is proven.
+`test/cbmc/run.sh` runs each proof and then each harness against mutants of its decoder, a bound
+removed or an offset moved, and fails unless every mutant fails and every mutation applied, for
+the reason `rules/run.sh` has a control pass. It exits 77 without `cbmc` and is not in CI yet.
+
 `sparse` is not in CI either, and for different reasons than `scan-build` below. It is not
 packaged on FreeBSD at all (this ran from a source build) and it needs `--disable-hardening` to be
 useful: against glibc's `_FORTIFY_SOURCE=3` headers, sparse 0.6.4 cannot parse

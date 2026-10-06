@@ -85,6 +85,51 @@
  */
 #define AUTORP_DEFAULT_SCOPE	15
 
+/*
+ * The decoding half of accept_autorp(), in src/autorp_parse.c: bytes in,
+ * fields out, and every bounds check of the message in one place.  It
+ * reads no global and calls nothing but memcpy(), which is what lets
+ * test/cbmc/ prove it over every buffer up to a length rather than sample
+ * it.  What a field *means* -- a version pimd speaks, an RP that is a
+ * host, a mask length that is a prefix -- is accept_autorp()'s to decide.
+ *
+ * A cursor rather than a decoded message: an RP count and a group count
+ * of 255 each are 65025 prefixes, and a message that ends inside a block
+ * has always had the blocks before it applied, which a parse that refused
+ * the whole message would change.
+ */
+struct autorp_hdr {
+    unsigned version;
+    unsigned type;
+    unsigned rpcnt;
+    uint16_t holdtime;
+};
+
+struct autorp_wire_prefix {
+    uint32_t rp_addr;		/* network order */
+    uint32_t group_addr;	/* network order */
+    uint8_t  masklen;		/* as sent, not yet checked against 32 */
+    int      negative;
+};
+
+struct autorp_cursor {
+    const uint8_t *p;		/* the next byte to read		*/
+    size_t   left;		/* bytes from p to the end of the buffer	*/
+    unsigned rpcnt;		/* RP blocks still to read		*/
+    unsigned grpcnt;		/* prefixes still to read in this block	*/
+    uint32_t rp_addr;		/* the RP of the block being read	*/
+};
+
+/* What autorp_parse_next() found */
+#define AUTORP_PARSE_DONE	0	/* every block the header announced	*/
+#define AUTORP_PARSE_PREFIX	1	/* one prefix, in *prefix		*/
+#define AUTORP_PARSE_SHORT_RP	2	/* the buffer ends inside an RP block	*/
+#define AUTORP_PARSE_SHORT_GRP	3	/* ... or inside a group prefix		*/
+
+int autorp_parse_hdr(struct autorp_cursor *c, struct autorp_hdr *hdr,
+		     const void *buf, size_t len);
+int autorp_parse_next(struct autorp_cursor *c, struct autorp_wire_prefix *prefix);
+
 #endif /* PIMD_AUTORP_H_ */
 
 /**
