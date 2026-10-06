@@ -18,7 +18,8 @@ noinst_LIBRARIES = libpimd.a
 libpimd_a_SOURCES = autorp.c		autorp.h	autorp_parse.c		    \
 		   config.c		debug.c		debug.h			    \
 		   defs.h		dvmrp_proto.c	dvmrp.h			    \
-		   igmp_proto.c		igmp.c		igmpv2.h	igmpv3.h    \
+		   igmp_parse.c		igmp_proto.c	igmp.c			    \
+		   igmpv2.h		igmpv3.h				    \
 		   inet.c		ipc.c		kern.c			    \
 		   mrt.c		mrt.h		    			    \
 		   pathnames.h		pim_parse.c	pim_proto.c	pim.c	    \

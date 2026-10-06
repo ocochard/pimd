@@ -97,6 +97,43 @@ struct igmpv3_report {
 #define IGMP_V3_REPORT_MAXRECS		65535
 #endif
 
+/*
+ * An IGMPv3 Membership Report, RFC 3376 sec. 4.2, as src/igmp_parse.c
+ * decodes it: bytes in, fields out, every bounds check of the message in
+ * one place and no global read, so that test/cbmc/ can prove it.  A
+ * cursor rather than a decoded message, because a report that goes wrong
+ * halfway has always had the records before it acted on.  A record is
+ * handed out only once all of it -- its sources and its auxiliary data --
+ * is inside the message, and its sources are then read through
+ * igmpv3_source(), which is the one way accept_membership_report() reads
+ * them.
+ */
+struct igmpv3_cursor {
+    const uint8_t *p;		/* the next record */
+    size_t   left;		/* bytes from p to the end of the report */
+    unsigned ngrec;		/* records still to read */
+};
+
+typedef struct {
+    uint8_t  type;
+    uint32_t group;		/* network order */
+    uint16_t nsrcs;
+    const uint8_t *srcs;	/* nsrcs addresses */
+    size_t   size;		/* the whole record, header, sources and aux data */
+} igmpv3_rec_t;
+
+#define IGMPV3_OK		0	/* igmpv3_parse_report() only		*/
+#define IGMPV3_SHORT		1	/* shorter than a report header		*/
+#define IGMPV3_DONE		2	/* every record the header counts	*/
+#define IGMPV3_RECORD		3	/* one record, in *rec			*/
+#define IGMPV3_SHORT_HDR	4	/* a record header runs past the end	*/
+#define IGMPV3_SHORT_REC	5	/* a record runs past the end, rec->size says how far */
+
+int      igmpv3_parse_report(const void *report, size_t len, struct igmpv3_cursor *c,
+			     uint8_t *type, uint16_t *ngrec);
+int      igmpv3_parse_record(struct igmpv3_cursor *c, igmpv3_rec_t *rec);
+uint32_t igmpv3_source(const igmpv3_rec_t *rec, uint16_t i);
+
 #endif /* PIMD_IGMPV3_H_ */
 
 /**

@@ -734,21 +734,15 @@ void accept_leave_message(int ifi, uint32_t src, uint32_t dst, uint32_t group)
 /*
  * Loop through and process all sources in a v3 record.
  */
-static int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8_t *sources, uint8_t *canary, int num_sources)
+static void accept_sources(int ifi, int type, uint32_t src, const igmpv3_rec_t *rec, int num_sources)
 {
-    uint8_t *s;
+    uint32_t group = rec->group;
     int j;
 
-    for (j = 0, s = sources; j < num_sources; ++j, s += 4) {
-	in_addr_t ina;
-
-	if (canary - s < (ptrdiff_t)sizeof(struct in_addr)) {
-	    IF_DEBUG(DEBUG_IGMP)
-		logit(LOG_DEBUG, 0, "Invalid IGMPv3 report, too many sources, would overflow.");
-	    return 1;
-	}
-
-	ina = ((struct in_addr *)s)->s_addr;
+    /* Every source of the record is inside the message, which is what
+     * igmpv3_parse_record() said in handing the record out. */
+    for (j = 0; j < num_sources; ++j) {
+	in_addr_t ina = igmpv3_source(rec, (uint16_t)j);
 
 	accept_group_report(ifi, src, ina, group, type);
 
@@ -758,8 +752,6 @@ static int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8
 
         switch_shortest_path(ina, group);
     }
-
-    return 0;
 }
 
 /*
@@ -767,60 +759,44 @@ static int accept_sources(int ifi, int type, uint32_t src, uint32_t group, uint8
  */
 void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3_report *report, ssize_t reportlen)
 {
-    uint8_t *canary = (uint8_t *)report + reportlen;
-    struct igmpv3_grec *record;
-    int num_groups, i;
+    struct igmpv3_cursor cur;
+    igmpv3_rec_t rec;
+    uint8_t report_type;
+    uint16_t num_groups;
+    int rc;
 
-    if (reportlen < (ssize_t)sizeof(struct igmpv3_report)) {
+    /* Every bounds check of the report is igmpv3_parse_report()'s and
+     * igmpv3_parse_record()'s, in src/igmp_parse.c, and nothing below reads
+     * its bytes but through them and igmpv3_source(). */
+    if (reportlen < 0 ||
+	igmpv3_parse_report(report, (size_t)reportlen, &cur, &report_type, &num_groups) != IGMPV3_OK) {
 	logit(LOG_INFO, 0, "Too short Membership Report from %s: %zd bytes",
 	      inet_fmt(src, s1, sizeof(s1)), reportlen);
 	return;
     }
 
-    num_groups = ntohs(report->ngrec);
-
     IF_DEBUG(DEBUG_IGMP)
 	logit(LOG_DEBUG, 0, "IGMP v3 report, %zd bytes, from %s to %s with %d group records.",
 	      reportlen, inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)), num_groups);
 
-    record = &report->grec[0];
-
-    for (i = 0; i < num_groups; i++) {
+    /* A record that does not fit ends the walk, and the records before it
+     * have been acted on, as they always were. */
+    while ((rc = igmpv3_parse_record(&cur, &rec)) == IGMPV3_RECORD) {
 	struct in_addr  rec_group;
-	uint8_t        *sources;
-	int             rec_type;
-	int             rec_auxdatalen;
 	int             rec_num_sources;
 	int             num_sources;
-	int             j, rc;
-	int record_size = 0;
+	int             j;
 
-	if (canary - (uint8_t *)record < (ptrdiff_t)sizeof(struct igmpv3_grec)) {
-	    logit(LOG_INFO, 0, "Invalid group report, record header past end of message");
-	    return;
-	}
-
-	rec_num_sources = ntohs(record->grec_nsrcs);
-	/* RFC 3376 sec. 4.2.6: Aux Data Len is in units of 32-bit words */
-	rec_auxdatalen = record->grec_auxwords * 4;
-	record_size = sizeof(struct igmpv3_grec) + sizeof(uint32_t) * rec_num_sources + rec_auxdatalen;
-	if (canary - (uint8_t *)record < record_size) {
-	    logit(LOG_INFO, 0, "Invalid group report, %d bytes of record with %td left",
-		  record_size, canary - (uint8_t *)record);
-	    return;
-	}
-
-	rec_type = record->grec_type;
-	rec_group.s_addr = (in_addr_t)record->grec_mca;
-	sources = (uint8_t *)record->grec_src;
+	rec_num_sources = rec.nsrcs;
+	rec_group.s_addr = (in_addr_t)rec.group;
 
 	/*
 	 * Every source in the record is looked up in, or added to, the
 	 * group's source list, so a record naming 65535 of them costs
 	 * that many walks of a list this router will never let past
 	 * IGMP_MAX_SOURCES entries anyway.  Act on the ones that can
-	 * still fit and say so.  record_size, and with it the walk to
-	 * the next record, keeps counting all of them.
+	 * still fit and say so.  The walk to the next record, which is
+	 * igmpv3_parse_record()'s, keeps counting all of them.
 	 */
 	num_sources = rec_num_sources;
 	if (num_sources > IGMP_MAX_SOURCES) {
@@ -829,7 +805,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		  rec_num_sources, IGMP_MAX_SOURCES);
 	    num_sources = IGMP_MAX_SOURCES;
 	}
-	switch (rec_type) {
+	switch (rec.type) {
 	    case IGMP_MODE_IS_EXCLUDE:
 	    case IGMP_CHANGE_TO_EXCLUDE_MODE:
 		/* RFC 4604: A router SHOULD ignore a group record of
@@ -845,7 +821,7 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		    /* RFC 5790: TO_EX({}) can be interpreted as a (*,G)
 		     *           join, i.e., to include all sources.
 		     */
-		    accept_group_report(ifi, src, 0, rec_group.s_addr, report->type);
+		    accept_group_report(ifi, src, 0, rec_group.s_addr, report_type);
 		} else {
 		    /* RFC 5790: LW-IGMPv3 does not use TO_EX({x}),
 		     *           i.e., filter with non-null source.
@@ -862,40 +838,28 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		     */
 		    accept_leave_message(ifi, src, 0, rec_group.s_addr);
 		    break;
-		} else {
-		    /* RFC5790: TO_IN({x}), regular RFC3376 (S,G)
-		     *          join with >= 1 source, 'S'.
-		     */
-		    rc = accept_sources(ifi, report->type, src, rec_group.s_addr,
-					sources, canary, num_sources);
-		    if (rc)
-			return;
 		}
+
+		/* RFC5790: TO_IN({x}), regular RFC3376 (S,G)
+		 *          join with >= 1 source, 'S'.
+		 */
+		accept_sources(ifi, report_type, src, &rec, num_sources);
 		break;
 
 	    case IGMP_ALLOW_NEW_SOURCES:
 		/* RFC5790: Same as TO_IN({x}) */
-		rc = accept_sources(ifi, report->type, src, rec_group.s_addr,
-				    sources, canary, num_sources);
-		if (rc)
-		    return;
+		accept_sources(ifi, report_type, src, &rec, num_sources);
 		break;
 
 	    case IGMP_BLOCK_OLD_SOURCES:
 		/* RFC5790: Instead of TO_EX({x}) */
 		for (j = 0; j < num_sources; j++) {
-		    uint8_t *gsrc = (uint8_t *)&record->grec_src[j];
-
-		    if (canary - gsrc < (ptrdiff_t)sizeof(record->grec_src[0])) {
-			logit(LOG_INFO, 0, "Invalid group record");
-			return;
-		    }
+		    uint32_t gsrc = igmpv3_source(&rec, (uint16_t)j);
 
 		    IF_DEBUG(DEBUG_IGMP)
 			logit(LOG_DEBUG, 0, "Remove source[%d] (%s,%s)", j,
-			      inet_fmt(record->grec_src[j], s1, sizeof(s1)),
-			      inet_ntoa(rec_group));
-		    accept_leave_message(ifi, src, record->grec_src[j], rec_group.s_addr);
+			      inet_fmt(gsrc, s1, sizeof(s1)), inet_ntoa(rec_group));
+		    accept_leave_message(ifi, src, gsrc, rec_group.s_addr);
 		    IF_DEBUG(DEBUG_IGMP)
 			logit(LOG_DEBUG, 0, "Accepted");
 		}
@@ -905,9 +869,13 @@ void accept_membership_report(int ifi, uint32_t src, uint32_t dst, struct igmpv3
 		/* RFC3376: Unrecognized Record Type values MUST be silently ignored. */
 		break;
 	}
-
-	record = (struct igmpv3_grec *)((uint8_t *)record + record_size);
     }
+
+    if (rc == IGMPV3_SHORT_HDR)
+	logit(LOG_INFO, 0, "Invalid group report, record header past end of message");
+    else if (rc == IGMPV3_SHORT_REC)
+	logit(LOG_INFO, 0, "Invalid group report, %zu bytes of record with %zu left",
+	      rec.size, cur.left);
 }
 
 /*

@@ -18,9 +18,9 @@
 # given beside it below, picked from measurements: a whole message costs
 # about four times as much per doubling (Auto-RP 32 bytes 32s, 64 bytes
 # 3m37s; a Hello 24 bytes 21s, 32 bytes 2m30s; a Join/Prune 34 bytes 27s,
-# 48 bytes 1m12s; a Bootstrap 60 bytes 8s, 128 bytes 1m48s), and the step
-# being proven already, what the loop adds needs no more than a few
-# iterations of it.
+# 48 bytes 1m12s; a Bootstrap 60 bytes 8s, 128 bytes 1m48s; an IGMPv3
+# report 32 bytes 3s, 64 bytes 19s), and the step being proven already,
+# what the loop adds needs no more than a few iterations of it.
 # SCALE multiplies every one of those lengths, for a longer run by hand.
 
 set -eu
@@ -175,5 +175,19 @@ mutant reg-whole-unbounded         "$h" "$s" proof_register     0 1 's/ \&\& reg
 mutant regstop-no-length-check     "$h" "$s" proof_register_stop 0 1 's/pim_parse_sg(msg, \&p, len, PIM_REGISTER_STOP_MINLEN, rs)/pim_parse_sg(msg, \&p, len, 0, rs)/'
 mutant regstop-family-ignored      "$h" "$s" proof_register_stop 0 1 '/^static int pim_parse_sg/,/^}/s/ega.addr_family != ADDRF_IPv4 || ega.encod_type != ADDRT_IPv4 ||/0 ||/'
 mutant assert-read-past-length     "$h" "$s" proof_assert       0 1 's/pim_parse_sg(msg, \&p, len, PIM_ASSERT_MINLEN, as)/pim_parse_sg(msg, \&p, len, PIM_REGISTER_STOP_MINLEN, as)/'
+
+# IGMPv3 reports, src/igmp_parse.c
+h="$here/igmp.c"
+s="$top/src/igmp_parse.c"
+proof  igmp-report                 "$h" "$s" proof_report       0 1
+proof  igmp-record                 "$h" "$s" proof_record       0 1
+proof  igmp-source                 "$h" "$s" proof_source       0 1
+proof  igmp-walk                   "$h" "$s" proof_walk        64 8
+mutant igmp-no-header-bound        "$h" "$s" proof_report       0 1 's/len < IGMPV3_REPORT_HDRLEN/0/'
+mutant igmp-no-record-header-bound "$h" "$s" proof_record       0 1 's/c->left < IGMPV3_REC_HDRLEN/0/'
+mutant igmp-no-record-bound        "$h" "$s" proof_record       0 1 's/c->left < rec->size/0/'
+mutant igmp-aux-words-ignored      "$h" "$s" proof_record       0 1 's/ + (size_t)p\[1\] \* 4;/;/'
+mutant igmp-record-not-counted     "$h" "$s" proof_record       0 1 's/c->ngrec -= 1;/;/'
+mutant igmp-source-stride          "$h" "$s" proof_source       0 1 's/(size_t)i \* sizeof(uint32_t)/(size_t)i * 2/'
 
 exit $fail
