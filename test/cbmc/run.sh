@@ -18,8 +18,9 @@
 # given beside it below, picked from measurements: a whole message costs
 # about four times as much per doubling (Auto-RP 32 bytes 32s, 64 bytes
 # 3m37s; a Hello 24 bytes 21s, 32 bytes 2m30s; a Join/Prune 34 bytes 27s,
-# 48 bytes 1m12s), and the step being proven
-# already, what the loop adds needs no more than a few iterations of it.
+# 48 bytes 1m12s; a Bootstrap 60 bytes 8s, 128 bytes 1m48s), and the step
+# being proven already, what the loop adds needs no more than a few
+# iterations of it.
 # SCALE multiplies every one of those lengths, for a longer run by hand.
 
 set -eu
@@ -143,11 +144,26 @@ mutant jp-no-header-bound          "$h" "$s" proof_jp_hdr       0 1 's/len < PIM
 mutant jp-upstream-any-family      "$h" "$s" proof_jp_hdr       0 1 's/eua.addr_family != ADDRF_IPv4 || //'
 mutant jp-no-set-bound             "$h" "$s" proof_jp_set       0 1 's/c->left < PIM_JP_GRP_SET_LEN/0/'
 mutant jp-no-source-bound          "$h" "$s" proof_jp_set       0 1 's/c->left - PIM_JP_GRP_SET_LEN < srclen/0/'
-mutant jp-group-mask-unchecked     "$h" "$s" proof_jp_set       0 1 's/p\[PIM_ENCODE_MSKLEN_OFF\] > PIM_MAX_MSKLEN/0/'
+mutant jp-group-mask-unchecked     "$h" "$s" proof_jp_set       0 1 '/^static int pim_parse_jp_set/,/^}/s/p\[PIM_ENCODE_MSKLEN_OFF\] > PIM_MAX_MSKLEN/0/'
 mutant jp-source-mask-unchecked    "$h" "$s" proof_jp_srcs     32 8 's/p\[PIM_ENCODE_MSKLEN_OFF\] != SINGLE_SRC_MSKLEN/0/'
 mutant jp-sources-unchecked        "$h" "$s" proof_jp          40 8 's/rc = pim_parse_jp_srcs(&srcs, jp);/rc = PIM_JP_OK;/'
 mutant jp-group-count-ignored      "$h" "$s" proof_jp          40 8 's/for (n = jp->num_groups; n > 0; n--)/for (n = 1; n > 0; n--)/'
 mutant jp-source-stride            "$h" "$s" proof_jp_source    0 1 's/(size_t)i \* PIM_ENCODE_SRC_ADDR_LEN/(size_t)i * 6/'
 mutant jp-next-set                 "$h" "$s" proof_jp_group     0 1 's/return p + ((size_t)grp->num_j + grp->num_p) \* PIM_ENCODE_SRC_ADDR_LEN;/return p;/'
+proof  bsr-hdr                     "$h" "$s" proof_bsr_hdr      0 1
+proof  bsr-set                     "$h" "$s" proof_bsr_set      0 1
+proof  bsr-group                   "$h" "$s" proof_bsr_group    0 1
+proof  bsr-rp                      "$h" "$s" proof_bsr_rp       0 1
+proof  bsr                         "$h" "$s" proof_bsr         60 10
+proof  crp                         "$h" "$s" proof_crp          0 1
+mutant bsr-no-header-bound         "$h" "$s" proof_bsr_hdr      0 1 's/len < PIM_BOOTSTRAP_MINLEN/0/'
+mutant bsr-hash-mask-unchecked     "$h" "$s" proof_bsr_hdr      0 1 's/bsr->hash_masklen > PIM_MAX_MSKLEN/0/'
+mutant bsr-no-record-bound         "$h" "$s" proof_bsr_set      0 1 's/c->left - PIM_BSR_GRP_SET_LEN < rplen/0/'
+mutant bsr-group-mask-unchecked    "$h" "$s" proof_bsr_set      0 1 '/^static int pim_parse_bsr_set/,/^}/s/p\[PIM_ENCODE_MSKLEN_OFF\] > PIM_MAX_MSKLEN/0/'
+mutant bsr-next-set-by-rp-count    "$h" "$s" proof_bsr_group    0 1 's/(size_t)grp->frag_rp_count \* PIM_BSR_RP_LEN/(size_t)grp->rp_count * PIM_BSR_RP_LEN/'
+mutant bsr-rp-stride               "$h" "$s" proof_bsr_rp       0 1 's/(size_t)i \* PIM_BSR_RP_LEN/(size_t)i * 8/'
+mutant bsr-sets-uncounted          "$h" "$s" proof_bsr         60 10 's/bsr->num_sets++;/;/'
+mutant crp-prefix-count-trusted    "$h" "$s" proof_crp          0 1 's/fit < crp->prefix_cnt ? (uint8_t)fit : crp->prefix_cnt/crp->prefix_cnt/'
+mutant crp-no-header-bound         "$h" "$s" proof_crp          0 1 's/len < PIM_CAND_RP_ADV_MINLEN/0/'
 
 exit $fail

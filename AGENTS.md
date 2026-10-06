@@ -346,7 +346,9 @@ Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those
 Prunes make, step 13b),
 the Hello Address List of sec. 4.3.4 parsed from a list pimd did not write,
-a unicast Bootstrap from a host that has sent no Hello, RFC 5059's No-Forward bit
+a unicast Bootstrap from a host that has sent no Hello, a Bootstrap whose RP count of zero
+contradicts the RP records it carries (step 31: the next group set is behind them, not inside
+them), RFC 5059's No-Forward bit
 (waives the RPF check, is not forwarded on), and `accept-nbr-from`, which R1 runs the whole
 scenario with configured so that every other assertion is a soak test of it -- with a positive control beside each,
 `fuzz` the same sender and topology with messages that are wrong in no particular way instead: five
@@ -730,7 +732,7 @@ nondeterministic buffer allocated at exactly its length, answers whether *any* i
 bounds, overflows, or breaks the decoder's contract, where a fuzzer samples. It works only on
 decoders shaped for it, which is the plan of `aidd_docs/plans/parse-then-apply.md`: each
 `receive_*()` split into a decode half in a file of its own (`src/autorp_parse.c` for Auto-RP,
-`src/pim_parse.c` for PIM, the Hello and the Join/Prune so far) and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
+`src/pim_parse.c` for PIM, the Hello, Join/Prune, Bootstrap and Candidate-RP-Advertisement so far) and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
 a loop over it. The shape is measured, not taste: walking whole Auto-RP messages cost 5m19s at 64
 bytes and four times more per doubling, while the loop-free step is proven for every length a UDP
 payload can have in 4s, and the loop only needs a few blocks once the step is proven.

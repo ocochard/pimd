@@ -1797,6 +1797,12 @@ CRAFT_FRAG_NET=${CRAFT_FRAG_NET:-238}
 # at, and a step whose messages are all refused for that reason asserts
 # nothing about fragments.
 CRAFT_FRAG_PRIO=${CRAFT_FRAG_PRIO:-254}
+
+# crafted step 31: the first byte of the two ranges its Bootstrap names.
+# Not 238 or 239, which the steps before it install RPs in; a range the
+# step reads "is this in the RP set" for has to be one nobody else put
+# there.
+CRAFT_DESYNC_NET=${CRAFT_DESYNC_NET:-237}
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -7972,6 +7978,43 @@ check_crafted() {
 		fail "r1 took no RP for $CRAFT_FRAG_NET.99.0.0 even from a complete Bootstrap"
 	fi
 
+	print "31. A Bootstrap's next group set is behind the RP records it carries"
+	# A group set whose RP count is zero and whose fragment RP count is
+	# not carries RP records the count says are not there.  The checks of
+	# receive_pim_bootstrap() stepped over them, the loop that installs the
+	# ranges did not -- it deleted the range and went on reading where the
+	# records began -- so the two walks parted, and the second read the
+	# records as a group set nobody had checked: a range and an RP the BSR
+	# never sent.  Set A below claims no RP and carries two records, written
+	# to read that way: the first as the head of a set for
+	# $CRAFT_DESYNC_NET.77.0.0/16, the second, run on into the first two
+	# bytes of set B, as its RP record, naming $CRAFT_ADDR.  Set B behind
+	# them is a whole one, so the one message is both the assertion and its
+	# control: a walk that keeps in step installs B and not the phantom, the
+	# old walk the phantom and not B.  pimsend builds whole messages only,
+	# so this one is written byte by byte.
+	cd_bsr=$(echo "$CRAFT_ADDR" | tr . ' ')
+	# shellcheck disable=SC2086
+	craft_bytes "$WORKDIR/bsr-desync.bin" \
+		36 0 0 0 \
+		18 52 30 "$CRAFT_FRAG_PRIO" 1 0 $cd_bsr \
+		1 0 0 16 "$CRAFT_DESYNC_NET" 88 0 0  0 2 0 0 \
+		1 0 10 16 "$CRAFT_DESYNC_NET" 77 0 0  1 1 \
+		0 0 1 0 $cd_bsr 0 150 \
+		1 0 0 16 "$CRAFT_DESYNC_NET" 99 0 0  1 1 0 0 \
+		1 0 $cd_bsr 0 150 "$CRAFT_FRAG_PRIO" 0
+	craft "$CRAFT_ADDR" bootstrap -b "$WORKDIR/bsr-desync.bin"
+	if wait_for 10 has_rp r1 "$CRAFT_DESYNC_NET.99.0.0/16"; then
+		ok "r1 took set B, $CRAFT_DESYNC_NET.99.0.0/16, from the message"
+	else
+		fail "r1 took no RP for $CRAFT_DESYNC_NET.99.0.0/16, so the message was refused or misread"
+	fi
+	if has_rp r1 "$CRAFT_DESYNC_NET.77.0.0/16"; then
+		fail "r1 installed $CRAFT_DESYNC_NET.77.0.0/16, read out of set A's RP records"
+	else
+		ok "and nothing out of the RP records of set A, whose RP count said there were none"
+	fi
+
 	result
 }
 
@@ -8296,6 +8339,32 @@ craft() {
 	shift
 	box_run ed1 "$PIMSEND" -i "$addr" "$@" || \
 		die "failed sending a crafted $1 from $addr"
+}
+
+# Write the PIM message whose bytes, in decimal, are $2 and on to file $1,
+# with the checksum of RFC 7761 sec. 4.9 in bytes 2 and 3: what `pimsend -b`
+# sends it sends as it stands, and a message pimsend cannot build has to be
+# written some other way.
+craft_bytes() {
+	cb_file=$1
+	shift
+	# shellcheck disable=SC2059
+	printf "$(echo "$@" | awk '{
+		for (i = 1; i <= NF; i++)
+			b[i - 1] = $i
+		b[2] = 0
+		b[3] = 0
+		s = 0
+		for (i = 0; i < NF; i += 2)
+			s += b[i] * 256 + (i + 1 < NF ? b[i + 1] : 0)
+		while (s > 65535)
+			s = int(s / 65536) + s % 65536
+		s = 65535 - s
+		b[2] = int(s / 256)
+		b[3] = s % 256
+		for (i = 0; i < NF; i++)
+			printf "\\%03o", b[i]
+	}')" >"$cb_file"
 }
 
 # Has router $1 no RP left but the static ones config.c installs for the

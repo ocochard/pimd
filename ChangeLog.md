@@ -3,6 +3,20 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
+[UNRELEASED][]
+--------------
+
+### Fixes
+- A Bootstrap group set whose RP count is zero while its fragment RP count
+  is not had its RP records read as the next group set.  The checks of
+  `receive_pim_bootstrap()` stepped over the records and the loop that
+  installs the ranges did not, so the two walks of one message parted and
+  the second installed a range and an RP the BSR never sent, out of the
+  bytes of an RP address and its holdtime.  The message is walked once now,
+  by a decoder the install loop reads it through, and the next set is always
+  behind the records the fragment count says.  `crafted` step 31 of
+  `test/lab.sh` sends such a message.
+
 [v3.2.0][] - 2026-10-01
 -----------------------
 

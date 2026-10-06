@@ -528,6 +528,95 @@ int            pim_parse_jp (const void *msg, size_t len, pim_jp_t *jp);
 const uint8_t *pim_jp_group (const uint8_t *set, pim_jp_grp_t *grp);
 void           pim_jp_source(const pim_jp_grp_t *grp, uint32_t i, pim_jp_src_t *src);
 
+/*
+ * A Bootstrap, RFC 5059 sec. 3.1, as src/pim_parse.c decodes it: the
+ * header, then num_sets group sets, each checked to be inside the message
+ * with its RP records before receive_pim_bootstrap() commits to anything.
+ * pim_bsr_group() and pim_bsr_rp() are then the one way to them, and the
+ * next set is always where the fragment RP count says, so no reading of
+ * the message can step into the middle of another set's RP records.
+ *
+ * A set is walked only while a whole set with one RP record still fits,
+ * PIM_BSR_GRP_SET_LEN + PIM_BSR_RP_LEN bytes, which is what pimd has
+ * always done: trailing bytes too few for that are not a set.
+ */
+#define PIM_BOOTSTRAP_MINLEN	(sizeof(pim_header_t) + 4 + PIM_ENCODE_UNI_ADDR_LEN)
+#define PIM_BSR_GRP_SET_LEN	(PIM_ENCODE_GRP_ADDR_LEN + 4)	/* group, counts, reserved */
+#define PIM_BSR_RP_LEN		(PIM_ENCODE_UNI_ADDR_LEN + 4)	/* RP, holdtime, priority */
+
+typedef struct {
+    uint16_t frag_tag;
+    uint8_t  hash_masklen;
+    uint8_t  priority;
+    uint32_t bsr;		/* network order */
+    int      no_forward;
+    const uint8_t *sets;	/* the first group set, in the message */
+    unsigned num_sets;
+
+    /* What was refused, for the caller's log */
+    uint8_t  bad_family;
+    uint8_t  bad_etype;
+    uint8_t  bad_masklen;
+    uint8_t  bad_count;
+} pim_bsr_t;
+
+typedef struct {
+    pim_encod_grp_addr_t grp;	/* the Encoded-Group as sent */
+    uint8_t  rp_count;
+    uint8_t  frag_rp_count;
+    const uint8_t *rps;		/* frag_rp_count RP records */
+} pim_bsr_grp_t;
+
+typedef struct {
+    uint32_t addr;		/* network order */
+    uint16_t holdtime;
+    uint8_t  priority;
+} pim_bsr_rp_t;
+
+/* What pim_parse_bsr() says: the first three about the header, which the
+ * caller answers at once, the last three about a group set, which it
+ * answers once it knows the message is one it would act on. */
+#define PIM_BSR_OK		0
+#define PIM_BSR_SHORT		1	/* shorter than the header		*/
+#define PIM_BSR_FAMILY		2	/* a BSR address that is not IPv4	*/
+#define PIM_BSR_HASH_MASKLEN	3	/* a hash mask wider than an address	*/
+#define PIM_BSR_GRP_MASKLEN	4	/* a group mask wider than an address	*/
+#define PIM_BSR_GRP_FAMILY	5	/* a group address that is not IPv4	*/
+#define PIM_BSR_TRUNCATED	6	/* RP records run past the message	*/
+
+int            pim_parse_bsr(const void *msg, size_t len, pim_bsr_t *bsr);
+const uint8_t *pim_bsr_group(const uint8_t *set, pim_bsr_grp_t *grp);
+void           pim_bsr_rp   (const pim_bsr_grp_t *grp, uint8_t i, pim_bsr_rp_t *rp);
+
+/*
+ * A Candidate-RP-Advertisement, RFC 5059 sec. 3.3.  The prefixes are
+ * handed out by pim_crp_prefix(), and only num_prefixes of them: the ones
+ * the prefix count claims and the message holds.  prefix_cnt is kept
+ * apart because the two differ when the message is cut short, which the
+ * caller refuses -- after acting on the prefixes before the cut, as pimd
+ * always has.
+ */
+#define PIM_CAND_RP_ADV_MINLEN	(sizeof(pim_header_t) + 4 + PIM_ENCODE_UNI_ADDR_LEN)
+
+typedef struct {
+    uint8_t  prefix_cnt;	/* as sent */
+    uint8_t  priority;
+    uint16_t holdtime;
+    uint32_t rp;		/* network order */
+    const uint8_t *prefixes;
+    uint8_t  num_prefixes;	/* how many of them the message holds */
+
+    uint8_t  bad_family;
+    uint8_t  bad_etype;
+} pim_crp_t;
+
+#define PIM_CRP_OK		0
+#define PIM_CRP_SHORT		1	/* shorter than the header		*/
+#define PIM_CRP_FAMILY		2	/* an RP address that is not IPv4	*/
+
+int  pim_parse_crp (const void *msg, size_t len, pim_crp_t *crp);
+void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

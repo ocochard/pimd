@@ -32,6 +32,14 @@
  *   proof_jp_source    the source accessor, for any entry of any set
  *   proof_jp           a whole Join/Prune, for messages up to MAXLEN,
  *                      read back through the accessors as the caller does
+ *   proof_bsr_hdr      a Bootstrap header, for any message
+ *   proof_bsr_set      one Bootstrap group set, from any cursor
+ *   proof_bsr_group    the group set accessor, wherever a set can be
+ *   proof_bsr_rp       the RP record accessor, for any record of any set
+ *   proof_bsr          a whole Bootstrap, for messages up to MAXLEN, read
+ *                      back through the accessors as the caller does
+ *   proof_crp          a whole Candidate-RP-Advertisement and every prefix
+ *                      of it, for any message
  *
  * The first two have no loop and cover every length an IP datagram can
  * carry.  Beside memory safety, what they assert is the contract
@@ -49,7 +57,12 @@
  *     every source each set counts lies inside the message, with every
  *     address IPv4 and every mask length one MASKLEN_TO_MASK() can take,
  *     so that the accessors, walked the way receive_pim_join_prune()
- *     walks them, never leave the message.
+ *     walks them, never leave the message;
+ *   - the same of a Bootstrap's group sets and RP records, the next set
+ *     always behind the RP records the fragment count says, so that no
+ *     walk can read one set's records as another set;
+ *   - a Candidate-RP-Advertisement hands out no more prefixes than it
+ *     holds, whatever its count says.
  */
 
 #include <stddef.h>
@@ -69,6 +82,7 @@
 size_t nondet_size_t(void);
 uint16_t nondet_uint16_t(void);
 uint32_t nondet_uint32_t(void);
+uint8_t nondet_uint8_t(void);
 
 static uint8_t *message(size_t *len, size_t max)
 {
@@ -102,6 +116,12 @@ void proof_jp_srcs(void);
 void proof_jp_group(void);
 void proof_jp_source(void);
 void proof_jp(void);
+void proof_bsr_hdr(void);
+void proof_bsr_set(void);
+void proof_bsr_group(void);
+void proof_bsr_rp(void);
+void proof_bsr(void);
+void proof_crp(void);
 
 void proof_hello_opt(void)
 {
@@ -427,6 +447,188 @@ void proof_jp(void)
 	    pim_jp_source(&g, i, &e);
 	    __CPROVER_assert(e.masklen == SINGLE_SRC_MSKLEN, "and every source is a host");
 	}
+    }
+    free(buf);
+}
+
+void proof_bsr_hdr(void)
+{
+    struct pim_cursor c;
+    pim_bsr_t bsr;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    memset(&bsr, 0, sizeof(bsr));
+    rc = pim_parse_bsr_hdr(&c, buf, len, &bsr);
+
+    if (len < PIM_BOOTSTRAP_MINLEN) {
+	__CPROVER_assert(rc == PIM_BSR_SHORT, "a message without a header is refused");
+    } else if (rc == PIM_BSR_OK) {
+	__CPROVER_assert(bsr.frag_tag == be16(buf + 4) && bsr.hash_masklen == buf[6] &&
+			 bsr.priority == buf[7], "tag, hash mask and priority are bytes 4 to 7");
+	__CPROVER_assert(bsr.hash_masklen <= PIM_MAX_MSKLEN, "and the hash mask can be converted");
+	__CPROVER_assert(buf[8] == ADDRF_IPv4 && buf[9] == ADDRT_IPv4 &&
+			 memcmp(&bsr.bsr, buf + 10, 4) == 0, "the BSR is an IPv4 address at 8");
+	__CPROVER_assert(bsr.no_forward == (buf[1] & PIM_BOOTSTRAP_NO_FORWARD),
+			 "No-Forward is the top bit of the reserved byte");
+	__CPROVER_assert(c.p == buf + PIM_BOOTSTRAP_MINLEN && bsr.sets == c.p &&
+			 c.p + c.left == buf + len, "the cursor covers the rest of the message");
+    } else {
+	__CPROVER_assert(rc == PIM_BSR_FAMILY || rc == PIM_BSR_HASH_MASKLEN,
+			 "a header ends in a verdict");
+    }
+    free(buf);
+}
+
+void proof_bsr_set(void)
+{
+    struct pim_cursor c, before;
+    pim_bsr_t bsr;
+    uint8_t *buf;
+    size_t len, off;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    __CPROVER_assume(off <= len && len - off >= PIM_BSR_GRP_SET_LEN + PIM_BSR_RP_LEN);
+    c.p    = buf + off;
+    c.left = len - off;
+    before = c;
+    memset(&bsr, 0, sizeof(bsr));
+
+    rc = pim_parse_bsr_set(&c, &bsr);
+    __CPROVER_assert(c.p + c.left == buf + len, "the cursor stays on the message");
+    if (rc == PIM_BSR_OK) {
+	__CPROVER_assert(before.p[3] <= PIM_MAX_MSKLEN, "the group mask can be converted");
+	__CPROVER_assert(before.p[0] == ADDRF_IPv4 && before.p[1] == ADDRT_IPv4, "the group is IPv4");
+	__CPROVER_assert(c.p == before.p + PIM_BSR_GRP_SET_LEN + (size_t)before.p[9] * PIM_BSR_RP_LEN,
+			 "the next set is behind the fragment's RP records");
+    } else {
+	__CPROVER_assert(rc == PIM_BSR_GRP_MASKLEN || rc == PIM_BSR_GRP_FAMILY ||
+			 rc == PIM_BSR_TRUNCATED, "a set ends in a verdict");
+	__CPROVER_assert(c.p == before.p, "and a refusal moves nothing");
+    }
+    free(buf);
+}
+
+void proof_bsr_group(void)
+{
+    pim_bsr_grp_t g;
+    const uint8_t *next;
+    uint8_t *buf;
+    size_t len, off;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    __CPROVER_assume(off <= len && len - off >= PIM_BSR_GRP_SET_LEN);
+    __CPROVER_assume((size_t)buf[off + 9] * PIM_BSR_RP_LEN <= len - off - PIM_BSR_GRP_SET_LEN);
+
+    next = pim_bsr_group(buf + off, &g);
+    __CPROVER_assert(g.grp.addr_family == buf[off] && g.grp.masklen == buf[off + 3] &&
+		     memcmp(&g.grp.mcast_addr, buf + off + 4, 4) == 0,
+		     "the Encoded-Group is the first eight bytes");
+    __CPROVER_assert(g.rp_count == buf[off + 8] && g.frag_rp_count == buf[off + 9],
+		     "the counts follow it");
+    __CPROVER_assert(g.rps == buf + off + PIM_BSR_GRP_SET_LEN &&
+		     next == g.rps + (size_t)g.frag_rp_count * PIM_BSR_RP_LEN && next <= buf + len,
+		     "and the next set is behind the fragment's records, inside the message");
+    free(buf);
+}
+
+void proof_bsr_rp(void)
+{
+    pim_bsr_grp_t g;
+    pim_bsr_rp_t r;
+    uint8_t *buf, i;
+    size_t len, off;
+
+    buf = message(&len, DATAGRAM_MAX);
+    off = nondet_size_t();
+    memset(&g, 0, sizeof(g));
+    g.frag_rp_count = nondet_uint8_t();
+    i = nondet_uint8_t();
+    __CPROVER_assume(off <= len && (size_t)g.frag_rp_count * PIM_BSR_RP_LEN <= len - off);
+    __CPROVER_assume(i < g.frag_rp_count);
+    g.rps = buf + off;
+
+    pim_bsr_rp(&g, i, &r);
+    __CPROVER_assert(memcmp(&r.addr, g.rps + (size_t)i * 10 + 2, 4) == 0 &&
+		     r.holdtime == be16(g.rps + (size_t)i * 10 + 6) &&
+		     r.priority == g.rps[(size_t)i * 10 + 8],
+		     "record i is the ten bytes at i: address, holdtime, priority");
+    free(buf);
+}
+
+void proof_bsr(void)
+{
+    const uint8_t *set;
+    pim_bsr_grp_t g;
+    pim_bsr_rp_t r;
+    pim_bsr_t bsr;
+    uint8_t *buf, i;
+    size_t len;
+    unsigned n;
+
+    buf = message(&len, MAXLEN);
+    if (pim_parse_bsr(buf, len, &bsr) != PIM_BSR_OK) {
+	free(buf);
+	return;
+    }
+
+    /* What receive_pim_bootstrap() does with it */
+    set = bsr.sets;
+    for (n = 0; n < bsr.num_sets; n++) {
+	set = pim_bsr_group(set, &g);
+	__CPROVER_assert(set <= buf + len, "every set walked is inside the message");
+	__CPROVER_assert(g.grp.masklen <= PIM_MAX_MSKLEN && g.grp.addr_family == ADDRF_IPv4 &&
+			 g.grp.encod_type == ADDRT_IPv4, "and was checked");
+	if (g.frag_rp_count > 0) {
+	    i = nondet_uint8_t();
+	    __CPROVER_assume(i < g.frag_rp_count);
+	    pim_bsr_rp(&g, i, &r);
+	}
+    }
+    __CPROVER_assert((size_t)(set - buf) + PIM_BSR_GRP_SET_LEN + PIM_BSR_RP_LEN > len,
+		     "and the walk stops only where no whole set is left");
+    free(buf);
+}
+
+void proof_crp(void)
+{
+    pim_encod_grp_addr_t grp;
+    pim_crp_t crp;
+    uint8_t *buf, i;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = pim_parse_crp(buf, len, &crp);
+
+    if (len < PIM_CAND_RP_ADV_MINLEN) {
+	__CPROVER_assert(rc == PIM_CRP_SHORT, "a message without a header is refused");
+    } else if (rc == PIM_CRP_OK) {
+	__CPROVER_assert(crp.prefix_cnt == buf[4] && crp.priority == buf[5] &&
+			 crp.holdtime == be16(buf + 6), "count, priority and holdtime are bytes 4 to 7");
+	__CPROVER_assert(buf[8] == ADDRF_IPv4 && buf[9] == ADDRT_IPv4 &&
+			 memcmp(&crp.rp, buf + 10, 4) == 0, "the RP is an IPv4 address at 8");
+	__CPROVER_assert(crp.prefixes == buf + PIM_CAND_RP_ADV_MINLEN && crp.num_prefixes <= crp.prefix_cnt &&
+			 (size_t)crp.num_prefixes * PIM_ENCODE_GRP_ADDR_LEN <= len - PIM_CAND_RP_ADV_MINLEN,
+			 "no more prefixes than the count claims and the message holds");
+	__CPROVER_assert(crp.num_prefixes == crp.prefix_cnt ||
+			 ((size_t)crp.num_prefixes + 1) * PIM_ENCODE_GRP_ADDR_LEN > len - PIM_CAND_RP_ADV_MINLEN,
+			 "and fewer only where the next one does not fit");
+	if (crp.num_prefixes > 0) {
+	    i = nondet_uint8_t();
+	    __CPROVER_assume(i < crp.num_prefixes);
+	    pim_crp_prefix(&crp, i, &grp);
+	    __CPROVER_assert(grp.masklen == crp.prefixes[(size_t)i * 8 + 3] &&
+			     memcmp(&grp.mcast_addr, crp.prefixes + (size_t)i * 8 + 4, 4) == 0,
+			     "prefix i is the eight bytes at i");
+	}
+    } else {
+	__CPROVER_assert(rc == PIM_CRP_FAMILY, "a header ends in a verdict");
     }
     free(buf);
 }

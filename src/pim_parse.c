@@ -393,6 +393,188 @@ void pim_jp_source(const pim_jp_grp_t *grp, uint32_t i, pim_jp_src_t *src)
     src->masklen = esa.masklen;
 }
 
+/*
+ * The header of a Bootstrap, RFC 5059 sec. 3.1: fragment tag, hash mask
+ * length, BSR priority and the BSR's address.  The Hash Mask Len decides
+ * the group-to-RP mapping for the whole domain, and it is a byte off the
+ * wire, refused here before the caller commits or forwards anything.
+ */
+static int pim_parse_bsr_hdr(struct pim_cursor *c, const void *msg, size_t len, pim_bsr_t *bsr)
+{
+    pim_encod_uni_addr_t eua;
+    const uint8_t *data;
+
+    if (len < PIM_BOOTSTRAP_MINLEN)
+	return PIM_BSR_SHORT;
+
+    bsr->no_forward = ((const pim_header_t *)msg)->pim_reserved & PIM_BOOTSTRAP_NO_FORWARD;
+
+    data = (const uint8_t *)msg + sizeof(pim_header_t);
+    GET_HOSTSHORT(bsr->frag_tag, data);
+    GET_BYTE(bsr->hash_masklen, data);
+    GET_BYTE(bsr->priority, data);
+    GET_EUADDR(&eua, data);
+    bsr->bsr = eua.unicast_addr;
+
+    if (eua.addr_family != ADDRF_IPv4 || eua.encod_type != ADDRT_IPv4) {
+	bsr->bad_family = eua.addr_family;
+	bsr->bad_etype  = eua.encod_type;
+	return PIM_BSR_FAMILY;
+    }
+
+    if (bsr->hash_masklen > PIM_MAX_MSKLEN)
+	return PIM_BSR_HASH_MASKLEN;
+
+    bsr->sets = data;
+    c->p      = data;
+    c->left   = len - PIM_BOOTSTRAP_MINLEN;
+
+    return PIM_BSR_OK;
+}
+
+/*
+ * One group set of a Bootstrap, and its RP records, stepped over.  The
+ * mask length and the family cost the message, because where the next set
+ * begins depends on reading this one at the IPv4 strides; the B and Z bits
+ * cost only the range and are the caller's, see group_range_ok().  Called
+ * only with a set head and one RP record left, which is the condition of
+ * the loop in pim_parse_bsr().
+ */
+static int pim_parse_bsr_set(struct pim_cursor *c, pim_bsr_t *bsr)
+{
+    const uint8_t *p = c->p;
+    size_t rplen;
+
+    if (p[PIM_ENCODE_MSKLEN_OFF] > PIM_MAX_MSKLEN) {
+	bsr->bad_masklen = p[PIM_ENCODE_MSKLEN_OFF];
+	return PIM_BSR_GRP_MASKLEN;
+    }
+
+    if (p[PIM_ENCODE_FAMILY_OFF] != ADDRF_IPv4 || p[PIM_ENCODE_ETYPE_OFF] != ADDRT_IPv4) {
+	bsr->bad_family = p[PIM_ENCODE_FAMILY_OFF];
+	bsr->bad_etype  = p[PIM_ENCODE_ETYPE_OFF];
+	return PIM_BSR_GRP_FAMILY;
+    }
+
+    /* RP count, fragment RP count, reserved, then that many records */
+    rplen = (size_t)p[PIM_ENCODE_GRP_ADDR_LEN + 1] * PIM_BSR_RP_LEN;
+    if (c->left - PIM_BSR_GRP_SET_LEN < rplen) {
+	bsr->bad_count = p[PIM_ENCODE_GRP_ADDR_LEN + 1];
+	return PIM_BSR_TRUNCATED;
+    }
+
+    c->p    += PIM_BSR_GRP_SET_LEN + rplen;
+    c->left -= PIM_BSR_GRP_SET_LEN + rplen;
+
+    return PIM_BSR_OK;
+}
+
+/*
+ * A whole Bootstrap, PIM header included.  The group sets are all walked
+ * here, before the caller acts on any of them: everything it does changes
+ * state the rest of the domain can see -- the BSR, its priority and
+ * fragment tag, the segmented RP list -- and forwards the message onward,
+ * so a set refused halfway through would cost a domain its RP set
+ * whichever way the check went.
+ */
+int pim_parse_bsr(const void *msg, size_t len, pim_bsr_t *bsr)
+{
+    struct pim_cursor c;
+    int rc;
+
+    memset(bsr, 0, sizeof(*bsr));
+
+    rc = pim_parse_bsr_hdr(&c, msg, len, bsr);
+    if (rc != PIM_BSR_OK)
+	return rc;
+
+    while (c.left >= PIM_BSR_GRP_SET_LEN + PIM_BSR_RP_LEN) {
+	rc = pim_parse_bsr_set(&c, bsr);
+	if (rc != PIM_BSR_OK)
+	    return rc;
+
+	bsr->num_sets++;
+    }
+
+    return PIM_BSR_OK;
+}
+
+/*
+ * The group set at set, and the one after it, which is behind its
+ * fragment's RP records whatever the RP count says.  Only for a Bootstrap
+ * pim_parse_bsr() said OK to, and no further than its num_sets sets.
+ */
+const uint8_t *pim_bsr_group(const uint8_t *set, pim_bsr_grp_t *grp)
+{
+    const uint8_t *p = set;
+
+    GET_EGADDR(&grp->grp, p);
+    GET_BYTE(grp->rp_count, p);
+    GET_BYTE(grp->frag_rp_count, p);
+    p += 2;			/* reserved */
+    grp->rps = p;
+
+    return p + (size_t)grp->frag_rp_count * PIM_BSR_RP_LEN;
+}
+
+/* RP record i of a group set, i < frag_rp_count */
+void pim_bsr_rp(const pim_bsr_grp_t *grp, uint8_t i, pim_bsr_rp_t *rp)
+{
+    const uint8_t *p = grp->rps + (size_t)i * PIM_BSR_RP_LEN;
+    pim_encod_uni_addr_t eua;
+
+    GET_EUADDR(&eua, p);
+    GET_HOSTSHORT(rp->holdtime, p);
+    GET_BYTE(rp->priority, p);
+    rp->addr = eua.unicast_addr;
+}
+
+/*
+ * A Candidate-RP-Advertisement, PIM header included: prefix count,
+ * priority, holdtime and the RP's address, then the prefixes, as many of
+ * them as are there.  Whether they are as many as the count says is the
+ * caller's to act on, since a cut-short advertisement has always had the
+ * prefixes before the cut installed.
+ */
+int pim_parse_crp(const void *msg, size_t len, pim_crp_t *crp)
+{
+    pim_encod_uni_addr_t eua;
+    const uint8_t *data;
+    size_t fit;
+
+    memset(crp, 0, sizeof(*crp));
+
+    if (len < PIM_CAND_RP_ADV_MINLEN)
+	return PIM_CRP_SHORT;
+
+    data = (const uint8_t *)msg + sizeof(pim_header_t);
+    GET_BYTE(crp->prefix_cnt, data);
+    GET_BYTE(crp->priority, data);
+    GET_HOSTSHORT(crp->holdtime, data);
+    GET_EUADDR(&eua, data);
+    crp->rp = eua.unicast_addr;
+
+    if (eua.addr_family != ADDRF_IPv4 || eua.encod_type != ADDRT_IPv4) {
+	crp->bad_family = eua.addr_family;
+	crp->bad_etype  = eua.encod_type;
+	return PIM_CRP_FAMILY;
+    }
+
+    fit = (len - PIM_CAND_RP_ADV_MINLEN) / PIM_ENCODE_GRP_ADDR_LEN;
+    crp->prefixes     = data;
+    crp->num_prefixes = fit < crp->prefix_cnt ? (uint8_t)fit : crp->prefix_cnt;
+
+    return PIM_CRP_OK;
+}
+
+/* Prefix i of an advertisement, i < num_prefixes */
+void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp)
+{
+    const uint8_t *p = crp->prefixes + (size_t)i * PIM_ENCODE_GRP_ADDR_LEN;
+
+    GET_EGADDR(grp, p);
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t
