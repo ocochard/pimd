@@ -428,6 +428,53 @@ typedef struct pim_jp_encod_grp_ {
 /* RFC 7761 sec. 4.9.2: a run of Encoded-Unicast addresses, no count */
 #define PIM_HELLO_ADDR_LIST             24
 
+/*
+ * A Hello's options, as src/pim_parse.c decodes them: bytes in, fields out,
+ * every bounds check of the message in one place and no global read, so
+ * that test/cbmc/ can prove it rather than sample it.  What the options
+ * *mean* -- the default holdtime of an absent one, which addresses are
+ * hosts, a neighbour going down -- is receive_pim_hello()'s to decide.
+ *
+ * The Address List is kept where it is in the message and handed out one
+ * entry at a time by pim_hello_addr(), whose bound is what the decoder
+ * checked: a list is there only when it is a whole number of IPv4 entries,
+ * every one of them IPv4.
+ */
+typedef struct {
+    uint16_t  holdtime;
+    int8_t    holdtime_present;
+    uint32_t  dr_prio;
+    int8_t    dr_prio_present;
+    uint32_t  genid;
+    int8_t    lan_delay_present;
+    int8_t    tracking_support;
+    uint16_t  propagation_delay;
+    uint16_t  override_interval;
+    const uint8_t *addr_list;	/* Address List option, in the message */
+    uint16_t  addr_list_len;
+
+    /* Why the message, or only its Address List, was refused, for the
+     * caller's log: the option and the length it came with, and the
+     * address family and encoding type of the entry that was not IPv4. */
+    uint16_t  bad_type;
+    uint16_t  bad_len;
+    int8_t    addr_list_refused;
+    uint8_t   bad_family;
+    uint8_t   bad_etype;
+} pim_hello_opts_t;
+
+/* What pim_parse_hello() says */
+#define PIM_HELLO_OK            0	/* parsed; an Address List may be refused */
+#define PIM_HELLO_SHORT         1	/* an option runs past the message	   */
+#define PIM_HELLO_BADOPTLEN     2	/* a known option of a length it cannot have */
+
+/* Why an Address List was read as no list at all */
+#define PIM_HELLO_ADDRS_LEN     1	/* not a whole number of IPv4 entries	   */
+#define PIM_HELLO_ADDRS_FAMILY  2	/* an entry that is not IPv4		   */
+
+int      pim_parse_hello(const void *msg, size_t len, pim_hello_opts_t *opts);
+uint32_t pim_hello_addr (const pim_hello_opts_t *opts, uint16_t i);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

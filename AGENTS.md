@@ -729,14 +729,17 @@ matcher: `cbmc(1)` (`pkg install cbmc`) over a wire decoder that reads no global
 nondeterministic buffer allocated at exactly its length, answers whether *any* input reads out of
 bounds, overflows, or breaks the decoder's contract, where a fuzzer samples. It works only on
 decoders shaped for it, which is the plan of `aidd_docs/plans/parse-then-apply.md`: each
-`receive_*()` split into a decode half in a file of its own (`src/autorp_parse.c` is the first)
-and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
+`receive_*()` split into a decode half in a file of its own (`src/autorp_parse.c` for Auto-RP,
+`src/pim_parse.c` for PIM, the Hello so far) and an apply half that never sees the bytes, and the decode half written as a loop-free step plus
 a loop over it. The shape is measured, not taste: walking whole Auto-RP messages cost 5m19s at 64
 bytes and four times more per doubling, while the loop-free step is proven for every length a UDP
 payload can have in 4s, and the loop only needs a few blocks once the step is proven.
 `test/cbmc/run.sh` runs each proof and then each harness against mutants of its decoder, a bound
 removed or an offset moved, and fails unless every mutant fails and every mutation applied, for
-the reason `rules/run.sh` has a control pass. It exits 77 without `cbmc` and is not in CI yet.
+the reason `rules/run.sh` has a control pass; it prints the property that caught each mutant,
+since a control caught by the harness itself (an unwinding bound too small for a `memcmp()`, once)
+proves nothing about the decoder. A proof with a loop names its own length bound beside it in the
+script, the ones without one cover every datagram. It exits 77 without `cbmc` and is not in CI yet.
 
 `sparse` is not in CI either, and for different reasons than `scan-build` below. It is not
 packaged on FreeBSD at all (this ran from a source build) and it needs `--disable-hardening` to be

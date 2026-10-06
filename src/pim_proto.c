@@ -34,20 +34,6 @@
 #include <arpa/inet.h>
 #include "defs.h"
 
-typedef struct {
-    uint16_t  holdtime;
-    int8_t    holdtime_present;
-    uint32_t  dr_prio;
-    int8_t    dr_prio_present;
-    uint32_t  genid;
-    int8_t    lan_delay_present;
-    int8_t    tracking_support;
-    uint16_t  propagation_delay;
-    uint16_t  override_interval;
-    uint8_t  *addr_list;	/* Address List option, in the message */
-    uint16_t  addr_list_len;
-} pim_hello_opts_t;
-
 /*
  * Local functions definitions.
  */
@@ -56,6 +42,7 @@ static int group_range_ok          (const pim_encod_grp_addr_t *grp);
 static int dr_election             (struct uvif *v);
 static int restart_dr_election     (struct uvif *v);
 static int parse_pim_hello         (char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts);
+static const char *hello_opt_name  (uint16_t type);
 static void cache_nbr_settings     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
 static void cache_nbr_secaddrs     (pim_nbr_entry_t *nbr, pim_hello_opts_t *opts);
 static int send_pim_register_stop  (uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, uint32_t inner_source);
@@ -802,140 +789,45 @@ static int restart_dr_election(struct uvif *v)
     return result;
 }
 
-static int validate_pim_opt(uint32_t src, char *str, uint16_t len, uint16_t opt_len)
+static const char *hello_opt_name(uint16_t type)
 {
-    if (len != opt_len) {
-	IF_DEBUG(DEBUG_PIM_HELLO)
-	    logit(LOG_INFO, 0, "PIM HELLO %s from %s: invalid OptionLength = %u",
-		  str, inet_fmt(src, s1, sizeof(s1)), opt_len);
-
-	return FALSE;
+    switch (type) {
+	case PIM_HELLO_HOLDTIME:	return "Holdtime";
+	case PIM_HELLO_DR_PRIO:		return "DR Priority";
+	case PIM_HELLO_GENID:		return "GenID";
+	case PIM_HELLO_LAN_PRUNE_DELAY:	return "LAN Prune Delay";
+	default:			return "option";
     }
-
-    return TRUE;
 }
 
 /*
- * RFC 7761 sec. 4.9.2: unknown options "MUST be ignored and MUST NOT prevent
- * a neighbor relationship from being formed", and neither must a Hello that
- * carries no options at all.  Only an option we do understand, arriving with
- * a length it cannot have, fails the message.
+ * The options of a Hello from src, decoded by pim_parse_hello()
+ * (src/pim_parse.c), which does every bounds check; what is left here is
+ * the logging and what an absent option means.
  */
 static int parse_pim_hello(char *msg, size_t len, uint32_t src, pim_hello_opts_t *opts)
 {
-    size_t rec_len;
-    uint8_t *data;
-    uint16_t opt_type;
-    uint16_t opt_len;
+    switch (pim_parse_hello(msg, len, opts)) {
+	case PIM_HELLO_OK:
+	    break;
 
-    /* Assume no opts. */
-    memset(opts, 0, sizeof(*opts));
-
-    /* Body of PIM message */
-    msg += sizeof(pim_header_t);
-
-    /* Ignore any data if shorter than (pim_hello header) */
-    for (len -= sizeof(pim_header_t); len >= sizeof(pim_hello_t); len -= rec_len) {
-	data = (uint8_t *)msg;
-	GET_HOSTSHORT(opt_type, data);
-	GET_HOSTSHORT(opt_len,  data);
-
-	/* The option has to fit in what is left of the message before its
-	 * value is read, not after: validate_pim_opt() compares opt_len
-	 * against the length the option is defined to have and never
-	 * against the message, so a truncated final option would be read
-	 * past the end and only then rejected.
-	 */
-	rec_len = (sizeof(pim_hello_t) + opt_len);
-	if (len < rec_len)
+	case PIM_HELLO_BADOPTLEN:
+	    IF_DEBUG(DEBUG_PIM_HELLO)
+		logit(LOG_INFO, 0, "PIM HELLO %s from %s: invalid OptionLength = %u",
+		      hello_opt_name(opts->bad_type), inet_fmt(src, s1, sizeof(s1)), opts->bad_len);
 	    return FALSE;
 
-	switch (opt_type) {
-	    case PIM_HELLO_HOLDTIME:
-		if (validate_pim_opt(src, "Holdtime", PIM_HELLO_HOLDTIME_LEN, opt_len) == FALSE)
-		    return FALSE;
+	default:
+	    return FALSE;
+    }
 
-		opts->holdtime_present = 1;
-		GET_HOSTSHORT(opts->holdtime, data);
-		break;
-
-	    case PIM_HELLO_DR_PRIO:
-		if (validate_pim_opt(src, "DR Priority", PIM_HELLO_DR_PRIO_LEN, opt_len) == FALSE)
-		    return FALSE;
-
-		opts->dr_prio_present = 1;
-		GET_HOSTLONG(opts->dr_prio, data);
-		break;
-
-	    case PIM_HELLO_GENID:
-		if (validate_pim_opt(src, "GenID", PIM_HELLO_GENID_LEN, opt_len) == FALSE)
-		    return FALSE;
-
-		GET_HOSTLONG(opts->genid, data);
-		break;
-
-	    case PIM_HELLO_LAN_PRUNE_DELAY: {
-		uint16_t delay;
-
-		if (validate_pim_opt(src, "LAN Prune Delay", PIM_HELLO_LAN_PRUNE_DELAY_LEN, opt_len) == FALSE)
-		    return FALSE;
-
-		GET_HOSTSHORT(delay, data);
-		opts->lan_delay_present = 1;
-		opts->tracking_support  = (delay & PIM_LAN_PRUNE_DELAY_T_BIT) ? 1 : 0;
-		opts->propagation_delay = delay & ~PIM_LAN_PRUNE_DELAY_T_BIT;
-		GET_HOSTSHORT(opts->override_interval, data);
-		break;
-	    }
-
-	    case PIM_HELLO_ADDR_LIST: {
-		pim_encod_uni_addr_t eua = { 0 };
-		uint8_t *list = data;
-		uint16_t i;
-
-		/* RFC 7761 sec. 4.3.4: every address in the option is of one
-		 * family.  A list that is not all IPv4, or is not a whole
-		 * number of IPv4 entries, is not one this router can map a
-		 * next hop through, and is read as no list at all -- which
-		 * takes the neighbor's secondaries away rather than keeping
-		 * ones it no longer advertises.  The Hello itself stands: the
-		 * option being there is no reason to lose the neighbor.
-		 */
-		if (opt_len % PIM_ENCODE_UNI_ADDR_LEN) {
-		    IF_DEBUG(DEBUG_PIM_HELLO)
-			logit(LOG_INFO, 0, "PIM HELLO Address List from %s: length %u is not a list of IPv4 addresses",
-			      inet_fmt(src, s1, sizeof(s1)), opt_len);
-		    opts->addr_list     = NULL;
-		    opts->addr_list_len = 0;
-		    break;
-		}
-
-		for (i = 0; i < opt_len; i += PIM_ENCODE_UNI_ADDR_LEN) {
-		    GET_EUADDR(&eua, data);
-		    if (!encoded_addr_ok(eua.addr_family, eua.encod_type))
-			break;
-		}
-
-		if (i < opt_len) {
-		    IF_DEBUG(DEBUG_PIM_HELLO)
-			logit(LOG_INFO, 0, "PIM HELLO Address List from %s: address family %u type %u is not IPv4",
-			      inet_fmt(src, s1, sizeof(s1)), eua.addr_family, eua.encod_type);
-		    opts->addr_list     = NULL;
-		    opts->addr_list_len = 0;
-		    break;
-		}
-
-		opts->addr_list     = list;
-		opts->addr_list_len = opt_len;
-		break;
-	    }
-
-	    default:
-		break;		/* Ignore any unknown options */
-	}
-
-	/* Move to the next option */
-	msg += rec_len;
+    IF_DEBUG(DEBUG_PIM_HELLO) {
+	if (opts->addr_list_refused == PIM_HELLO_ADDRS_LEN)
+	    logit(LOG_INFO, 0, "PIM HELLO Address List from %s: length %u is not a list of IPv4 addresses",
+		  inet_fmt(src, s1, sizeof(s1)), opts->bad_len);
+	else if (opts->addr_list_refused == PIM_HELLO_ADDRS_FAMILY)
+	    logit(LOG_INFO, 0, "PIM HELLO Address List from %s: address family %u type %u is not IPv4",
+		  inet_fmt(src, s1, sizeof(s1)), opts->bad_family, opts->bad_etype);
     }
 
     /*
@@ -998,11 +890,9 @@ static int nbr_forget_secaddr(pim_nbr_entry_t *nbr, uint32_t addr)
 static void cache_nbr_secaddrs(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
 {
     static time_t last_conflict;
-    pim_encod_uni_addr_t eua;
     pim_nbr_entry_t *other;
-    uint32_t *list = NULL;
+    uint32_t *list = NULL, addr;
     uint16_t num = 0, max, i;
-    uint8_t *data = opts->addr_list;
     time_t now;
 
     max = opts->addr_list_len / PIM_ENCODE_UNI_ADDR_LEN;
@@ -1014,12 +904,12 @@ static void cache_nbr_secaddrs(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
     }
 
     for (i = 0; list && i < max; i++) {
-	GET_EUADDR(&eua, data);
-	if (eua.unicast_addr == nbr->address || !inet_valid_host(eua.unicast_addr))
+	addr = pim_hello_addr(opts, i);
+	if (addr == nbr->address || !inet_valid_host(addr))
 	    continue;
 
 	for (other = uvifs[nbr->vifi].uv_pim_neighbors; other; other = other->next) {
-	    if (other == nbr || !nbr_forget_secaddr(other, eua.unicast_addr))
+	    if (other == nbr || !nbr_forget_secaddr(other, addr))
 		continue;
 
 	    now = time(NULL);
@@ -1029,11 +919,11 @@ static void cache_nbr_secaddrs(pim_nbr_entry_t *nbr, pim_hello_opts_t *opts)
 	    last_conflict = now;
 	    logit(LOG_WARNING, 0, "PIM neighbors %s and %s on %s both advertise secondary address %s, using %s",
 		  inet_fmt(other->address, s1, sizeof(s1)), inet_fmt(nbr->address, s2, sizeof(s2)),
-		  uvifs[nbr->vifi].uv_name, inet_fmt(eua.unicast_addr, s3, sizeof(s3)),
+		  uvifs[nbr->vifi].uv_name, inet_fmt(addr, s3, sizeof(s3)),
 		  inet_fmt(nbr->address, s4, sizeof(s4)));
 	}
 
-	list[num++] = eua.unicast_addr;
+	list[num++] = addr;
     }
 
     if (!num) {
