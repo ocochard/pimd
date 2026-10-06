@@ -741,7 +741,11 @@ removed or an offset moved, and fails unless every mutant fails and every mutati
 the reason `rules/run.sh` has a control pass; it prints the property that caught each mutant,
 since a control caught by the harness itself (an unwinding bound too small for a `memcmp()`, once)
 proves nothing about the decoder. A proof with a loop names its own length bound beside it in the
-script, the ones without one cover every datagram. It exits 77 without `cbmc` and is not in CI yet.
+script, the ones without one cover every datagram. The proofs run in parallel, `JOBS` at a time
+(the core count by default): 2m20s on 16 cores here, 58s on 32, against 6m47s one after another,
+the floor being the slowest single proof. It exits 77 without `cbmc`; the `CBMC proofs` job of
+`.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
+were compared property for property and agree) and runs it on every push.
 
 `sparse` is not in CI either, and for different reasons than `scan-build` below. It is not
 packaged on FreeBSD at all (this ran from a source build) and it needs `--disable-hardening` to be

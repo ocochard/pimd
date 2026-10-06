@@ -22,12 +22,20 @@
 # report 32 bytes 3s, 64 bytes 19s), and the step being proven already,
 # what the loop adds needs no more than a few iterations of it.
 # SCALE multiplies every one of those lengths, for a longer run by hand.
+#
+# The proofs and the mutants are independent, so they are queued as the
+# list below is read and run JOBS at a time (the core count by default):
+# one after another they take about seven minutes, nearly all of it a
+# handful of proofs, and in parallel what is left is the longest of them.
+# The report is printed afterwards, in the order of the list, and the exit
+# status is the whole run's.
 
 set -eu
 
 top=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 here="$top/test/cbmc"
 SCALE=${SCALE:-1}
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
 
 if ! command -v cbmc >/dev/null 2>&1; then
 	echo "cbmc: cbmc(1) not found, skipping the model checks" >&2
@@ -38,70 +46,69 @@ checks="--bounds-check --pointer-check --pointer-overflow-check
 	--signed-overflow-check --unsigned-overflow-check --conversion-check
 	--undefined-shift-check --memory-leak-check --unwinding-assertions"
 
+# A worker, which is this script run by xargs below: run job N of the
+# queue in WORK and leave cbmc's status beside its log -- 0 proved, 10 a
+# property failed, anything else broken.
+if [ "${1:-}" = "--job" ]; then
+	work=$2
+	{
+		read -r name
+		read -r harness
+		read -r source
+		read -r function
+		read -r len
+		read -r unwind
+	} <"$work/job.$3"
+	# shellcheck disable=SC2086
+	cbmc -DMAXLEN="$len" -DSOURCE="\"$source\"" -I "$top/src" -I "$top/include" \
+	    "$harness" --function "$function" $checks --unwind "$unwind" \
+	    >"$work/$name.log" 2>&1 && rc=0 || rc=$?
+	echo "$rc" >"$work/$name.rc"
+	exit 0
+fi
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/pimd-cbmc.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
 
 fail=0
+njobs=0
+: >"$work/order"
 
-# prove NAME HARNESS SOURCE PROOF LEN STEP: run one entry point of a harness
-# against one source, for messages up to LEN bytes where it has a loop,
-# print cbmc's verdict line, and set rc to cbmc's status -- 0 proved, 10 a
-# property failed, anything else broken.  STEP is the fewest bytes one
-# iteration of the proof's loops consumes, so LEN / STEP iterations and a
-# margin unwind every one of them.
-prove()
+# queue KIND NAME HARNESS SOURCE PROOF LEN STEP: one entry point of a
+# harness against one source, for messages up to LEN bytes where it has a
+# loop.  STEP is the fewest bytes one iteration of the proof's loops
+# consumes, so LEN / STEP iterations and a margin unwind every one of them,
+# and five whatever the length, for the memcmp() of four bytes the
+# harnesses compare a decoded address with.
+queue()
 {
-	len=$(($5 * SCALE))
-	# and five whatever the length, for the memcmp() of four bytes the
-	# harnesses compare a decoded address with
-	unwind=$((len / $6 + 3))
+	len=$(($6 * SCALE))
+	unwind=$((len / $7 + 3))
 	[ "$unwind" -ge 5 ] || unwind=5
-	# shellcheck disable=SC2086
-	cbmc -DMAXLEN="$len" -DSOURCE="\"$3\"" -I "$top/src" -I "$top/include" "$2" \
-	    --function "$4" $checks --unwind "$unwind" \
-	    >"$work/$1.log" 2>&1 && rc=0 || rc=$?
-	printf '%-32s %s\n' "$1" "$(grep -E '^VERIFICATION' "$work/$1.log" || echo "cbmc exit $rc")"
+	njobs=$((njobs + 1))
+	printf '%s\n' "$2" "$3" "$4" "$5" "$len" "$unwind" >"$work/job.$njobs"
+	echo "$1 $2" >>"$work/order"
 }
 
 # proof NAME HARNESS SOURCE PROOF LEN STEP: the decoder as it is has to be proven.
 proof()
 {
-	prove "$@"
-	if [ "$rc" -ne 0 ]; then
-		grep -E 'FAILURE|rror' "$work/$1.log" | head -10 >&2
-		fail=1
-	fi
+	queue proof "$@"
 }
 
 # mutant NAME HARNESS SOURCE PROOF LEN STEP SED: SOURCE with SED applied has
-# to have changed, and the proof has to fail on it.
+# to have changed, and the proof has to fail on it.  Whether it changed is
+# known now, before anything runs.
 mutant()
 {
 	dst="$work/$1.c"
 	sed -e "$7" "$3" >"$dst"
 	if cmp -s "$3" "$dst"; then
-		printf '%-32s %s\n' "$1" "MUTATION DID NOT APPLY: $7"
-		fail=1
+		printf '%s\n' "$7" >"$work/$1.sed"
+		echo "unapplied $1" >>"$work/order"
 		return
 	fi
-	prove "$1" "$2" "$dst" "$4" "$5" "$6"
-	if [ "$rc" -eq 10 ]; then
-		# What it was caught by, so that a control caught by the harness
-		# itself -- an unwinding bound too small, say -- reads as one.
-		# An unwinding assertion is shown only when nothing else failed,
-		# and says so: it is the right catch for a loop that no longer
-		# ends, and no catch at all for anything else.
-		sed -n 's/^\[\([^]]*\)\] \(.*\): FAILURE$/	\1: \2/p' "$work/$1.log" \
-		    >"$work/$1.why"
-		grep -v '\.unwind\.' "$work/$1.why" | head -1 | grep . ||
-		    sed -e 's/$/ (unwinding only)/' "$work/$1.why" | head -1
-	elif [ "$rc" -eq 0 ]; then
-		echo "  the proof did not catch this mutant" >&2
-		fail=1
-	else
-		grep -E 'rror' "$work/$1.log" | head -5 >&2
-		fail=1
-	fi
+	queue mutant "$1" "$2" "$dst" "$4" "$5" "$6"
 }
 
 # Auto-RP, src/autorp_parse.c.  The header and the step have no loop, and
@@ -189,5 +196,49 @@ mutant igmp-no-record-bound        "$h" "$s" proof_record       0 1 's/c->left <
 mutant igmp-aux-words-ignored      "$h" "$s" proof_record       0 1 's/ + (size_t)p\[1\] \* 4;/;/'
 mutant igmp-record-not-counted     "$h" "$s" proof_record       0 1 's/c->ngrec -= 1;/;/'
 mutant igmp-source-stride          "$h" "$s" proof_source       0 1 's/(size_t)i \* sizeof(uint32_t)/(size_t)i * 2/'
+
+# Run the queue
+seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"
+
+# And report on it, in the order of the list above
+while read -r kind name; do
+	if [ "$kind" = unapplied ]; then
+		printf '%-32s %s\n' "$name" "MUTATION DID NOT APPLY: $(cat "$work/$name.sed")"
+		fail=1
+		continue
+	fi
+
+	rc=$(cat "$work/$name.rc" 2>/dev/null || echo "missing")
+	printf '%-32s %s\n' "$name" \
+	    "$(grep -E '^VERIFICATION' "$work/$name.log" 2>/dev/null || echo "cbmc exit $rc")"
+
+	if [ "$kind" = proof ]; then
+		if [ "$rc" = 10 ]; then
+			grep -E 'FAILURE' "$work/$name.log" | head -10 >&2
+			fail=1
+		elif [ "$rc" != 0 ]; then
+			tail -3 "$work/$name.log" >&2
+			fail=1
+		fi
+	elif [ "$rc" = 10 ]; then
+		# What it was caught by, so that a control caught by the harness
+		# itself -- an unwinding bound too small, say -- reads as one.
+		# An unwinding assertion is shown only when nothing else failed,
+		# and says so: it is the right catch for a loop that no longer
+		# ends, and no catch at all for anything else.
+		sed -n 's/^\[\([^]]*\)\] \(.*\): FAILURE$/	\1: \2/p' "$work/$name.log" \
+		    >"$work/$name.why"
+		grep -v '\.unwind\.' "$work/$name.why" | head -1 | grep . ||
+		    sed -e 's/$/ (unwinding only)/' "$work/$name.why" | head -1
+	elif [ "$rc" = 0 ]; then
+		echo "  the proof did not catch this mutant" >&2
+		fail=1
+	else
+		# Neither proved nor refuted: cbmc could not run it at all, and
+		# says why at the end of its log, rarely with the word "error".
+		tail -3 "$work/$name.log" >&2
+		fail=1
+	fi
+done <"$work/order"
 
 exit $fail

@@ -82,6 +82,27 @@ jobs:
       - name: Run rules/security.cocci
         run: ./rules/run.sh
 
+  cbmc:
+    # The wire decoders of src/*_parse.c, model checked: every message up
+    # to a length, or of any length for the loop-free steps, and every
+    # proof run again against mutants of its decoder that it has to
+    # refuse, see test/cbmc/run.sh.  The checker reads the C rather than
+    # running it, so it needs no build and one OS is all of it.  Ubuntu's
+    # cbmc is 6.6.0 and FreeBSD's 6.11.0; the run was compared on both,
+    # property for property, when the job went in.
+    name: CBMC proofs
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install cbmc
+      - name: Prove the decoders, and refute their mutants
+        run: |
+          cbmc --version
+          ./test/cbmc/run.sh
+
   analyzer:
     # gcc's own path-sensitive analyser, -fanalyzer, which walks each
     # function's execution paths rather than pattern matching over its
