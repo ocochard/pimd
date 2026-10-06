@@ -1217,15 +1217,13 @@ static mrtentry_t *register_sg_state(uint32_t inner_src, uint32_t inner_grp)
  * pim_send_buf is rebuilt for every member rather than filled once:
  * send_frame() (src/pim.c) rewrites the IP header in it when it fragments.
  */
-static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl, char *msg, size_t len,
-				 uint32_t inner_src, uint32_t inner_grp, int is_null)
+static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl, const pim_reg_t *reg)
 {
     static time_t window, last_warned;
     static size_t sent, sent_data;
-    pim_register_t *reg;
-    struct ip *ip;
     uint32_t local, member;
-    size_t avail, iplen = 0, i, others = 0;
+    uint32_t inner_src = reg->inner_src, inner_grp = reg->inner_grp;
+    size_t iplen = 0, i, others = 0;
     int pktlen, whole;
     uint8_t tos = 0;
     time_t now;
@@ -1241,15 +1239,12 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
 	return;
     }
 
-    /* receive_pim_register() has checked that one inner IP header arrived,
-     * nothing more.  The inner ip_len is the sender's, so it is held to
-     * what is in the buffer and to what the send buffer has room for. */
-    reg   = (pim_register_t *)(msg + sizeof(pim_header_t));
-    ip    = (struct ip *)(reg + 1);
-    avail = len - sizeof(pim_header_t) - sizeof(pim_register_t);
-    if (!is_null)
-	iplen = ntohs(ip->ip_len);
-    whole = !is_null && iplen >= sizeof(struct ip) && iplen <= avail &&
+    /* The inner ip_len is the sender's, so it is held to what is in the
+     * buffer, which pim_parse_register() says as `whole', and to what the
+     * send buffer has room for. */
+    if (!reg->is_null)
+	iplen = reg->inner_len;
+    whole = reg->whole &&
 	iplen <= SEND_BUF_SIZE - sizeof(struct ip) - sizeof(pim_header_t) - sizeof(pim_register_t);
 
     /* Every Register accepted here goes out once per other member, and the
@@ -1287,14 +1282,14 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
 	    sent_data += others;
     }
     if (whole)
-	tos = ip->ip_tos;
+	tos = reg->inner_tos;
 
     for (i = 0; (member = anycast_rp_member_at(anycast, i)) != INADDR_ANY_N; i++) {
 	if (member == local)
 	    continue;
 
 	if (whole) {
-	    memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t), reg,
+	    memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t), reg->body,
 		   sizeof(pim_register_t) + iplen);
 	    pktlen = sizeof(pim_register_t) + iplen;
 	} else {
@@ -1320,10 +1315,10 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
 int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *msg, size_t len)
 {
     uint32_t inner_src, inner_grp, rpaddr;
-    pim_register_t *reg;
-    struct ip *ip;
-    uint32_t is_null;
+    pim_reg_t reg;
+    int is_null;
     int is_copy;
+    int rc;
     mrtentry_t *mrtentry;
     rpentry_t *rp;
     uint8_t oifs[MAXVIFS];
@@ -1381,8 +1376,12 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
      * Message length validation.
      * This is suppose to be done in the kernel, but some older kernel
      * versions do not pefrorm the check for the NULL register messages.
+     * Every bound of the message is pim_parse_register()'s, in
+     * src/pim_parse.c; the two checksums are answered here, each where it
+     * always was.
      */
-    if (len < sizeof(pim_header_t) + sizeof(pim_register_t) + sizeof(struct ip)) {
+    rc = pim_parse_register(msg, len, &reg);
+    if (rc == PIM_REG_SHORT) {
 	IF_DEBUG(DEBUG_PIM_REGISTER)
 	    logit(LOG_INFO, 0, "PIM register: short packet (len = %zu) from %s",
 		  len, inet_fmt(reg_src, s1, sizeof(s1)));
@@ -1406,18 +1405,11 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 	return FALSE;
     }
 
-    /* Lookup register message flags */
-    reg = (pim_register_t *)(msg + sizeof(pim_header_t));
-    is_null   = ntohl(reg->reg_flags) & PIM_REGISTER_NULL_REGISTER_BIT;
-
-    /* initialize the pointer to the encapsulated packet */
-    ip = (struct ip *)(msg + sizeof(pim_header_t) + sizeof(pim_register_t));
-
     /* check the IP version (especially for the NULL register...see above) */
-    if (ip->ip_v != IPVERSION && (! is_null)) {
+    if (rc == PIM_REG_VERSION) {
 	IF_DEBUG(DEBUG_PIM_REGISTER)
 	    logit(LOG_INFO, 0, "PIM register: incorrect IP version (%d) of the inner packet from %s",
-		  ip->ip_v, inet_fmt(reg_src, s1, sizeof(s1)));
+		  reg.inner_version, inet_fmt(reg_src, s1, sizeof(s1)));
 
 	return FALSE;
     }
@@ -1431,36 +1423,28 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
      * the IP version test above is waived for a Null-Register -- but read
      * neither checksum, so the source and group taken out of that header,
      * and the Register-Stop and Keepalive Timer refresh they drive, rested
-     * on nothing at all.
+     * on nothing at all.  ip_hl says how much to checksum and is the
+     * sender's, so pim_parse_register() has held it to what arrived.
      */
-    if (is_null && ip->ip_sum != 0) {
-	size_t hlen = (size_t)ip->ip_hl << 2;
-	size_t avail = len - sizeof(pim_header_t) - sizeof(pim_register_t);
+    if (rc == PIM_REG_NULL_HLEN) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_INFO, 0, "PIM Null-Register from %s: dummy header claims %zu bytes, %zu arrived",
+		  inet_fmt(reg_src, s1, sizeof(s1)), reg.bad_hlen, reg.avail);
 
-	/* ip_hl is the sender's to choose and says how much to checksum, so
-	 * it is bounded before it is used rather than trusted: the length
-	 * test above guarantees one header's worth arrived and no more.
-	 */
-	if (hlen < sizeof(struct ip) || hlen > avail) {
-	    IF_DEBUG(DEBUG_PIM_REGISTER)
-		logit(LOG_INFO, 0, "PIM Null-Register from %s: dummy header claims %zu bytes, %zu arrived",
-		      inet_fmt(reg_src, s1, sizeof(s1)), hlen, avail);
-
-	    return FALSE;
-	}
-
-	if (inet_cksum((uint16_t *)ip, hlen)) {
-	    IF_DEBUG(DEBUG_PIM_REGISTER)
-		logit(LOG_INFO, 0, "PIM Null-Register from %s: bad checksum in the dummy IP header",
-		      inet_fmt(reg_src, s1, sizeof(s1)));
-
-	    return FALSE;
-	}
+	return FALSE;
     }
 
-    /* We are keeping all addresses in network order, so no need for ntohl()*/
-    inner_src = ip->ip_src.s_addr;
-    inner_grp = ip->ip_dst.s_addr;
+    if (reg.null_hlen && inet_cksum((uint16_t *)(uintptr_t)reg.inner, reg.null_hlen)) {
+	IF_DEBUG(DEBUG_PIM_REGISTER)
+	    logit(LOG_INFO, 0, "PIM Null-Register from %s: bad checksum in the dummy IP header",
+		  inet_fmt(reg_src, s1, sizeof(s1)));
+
+	return FALSE;
+    }
+
+    is_null   = reg.is_null;
+    inner_src = reg.inner_src;
+    inner_grp = reg.inner_grp;
 
     /*
      * inner_src and inner_grp must be valid IP unicast and multicast address
@@ -1488,7 +1472,7 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
     rp = rp_match(inner_grp);
     if (!is_copy && rp && rp->address == reg_dst && i_am_rp(reg_dst) &&
 	anycast_rp_configured(reg_dst) && !anycast_rp_member(reg_dst, reg_src))
-	copy_register_to_set(reg_dst, reg_src, ttl, msg, len, inner_src, inner_grp, is_null);
+	copy_register_to_set(reg_dst, reg_src, ttl, &reg);
 
     mrtentry = find_route(inner_src, inner_grp, MRTF_WC, DONT_CREATE);
     if (!mrtentry) {
@@ -1933,16 +1917,6 @@ int send_pim_null_register(mrtentry_t *mrtentry)
 /************************************************************************
  *                        PIM_REGISTER_STOP
  ************************************************************************/
-/* Header, encoded group, encoded source: the whole of what RFC 7761
- * sec. 4.9.4 puts in a Register-Stop, and everything this function reads.
- * pim.c only guarantees a PIM header, so without this a Register-Stop
- * truncated to its header had the parser reading whatever the previous
- * packet left in the receive buffer, and suppressing registers for the
- * (S,G) that came out of it.
- */
-#define PIM_REGISTER_STOP_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN \
-				  + PIM_ENCODE_UNI_ADDR_LEN)
-
 /* A Register-Stop from another member of the Anycast-RP set this router is
  * registering its own source to, see register_to_set(): the RP of the group
  * is this router, and the sender is one of the members it sent to. */
@@ -1973,9 +1947,7 @@ static void suppress_register(mrtentry_t *mrt)
 
 int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, size_t len)
 {
-    pim_encod_grp_addr_t egaddr;
-    pim_encod_uni_addr_t eusaddr;
-    uint8_t *data;
+    pim_sg_msg_t rs;
     mrtentry_t *mrtentry;
     grpentry_t *grp;
 
@@ -1983,43 +1955,39 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
     if (inet_cksum((uint16_t *)msg, len))
 	return FALSE;
 
-    /* sanity check for the minimum length */
-    if (len < PIM_REGISTER_STOP_MINLEN) {
-	IF_DEBUG(DEBUG_PIM_REGISTER)
-	    logit(LOG_NOTICE, 0, "Too short Register-Stop message (%zu bytes) from RP %s to %s",
-		  len, inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)));
+    /* Every bound is pim_parse_register_stop()'s, src/pim_parse.c */
+    switch (pim_parse_register_stop(msg, len, &rs)) {
+	case PIM_SG_SHORT:
+	    IF_DEBUG(DEBUG_PIM_REGISTER)
+		logit(LOG_NOTICE, 0, "Too short Register-Stop message (%zu bytes) from RP %s to %s",
+		      len, inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)));
+	    return FALSE;
 
-	return FALSE;
-    }
+	case PIM_SG_FAMILY:
+	    IF_DEBUG(DEBUG_PIM_REGISTER)
+		logit(LOG_NOTICE, 0, "Ignoring Register-Stop from %s, an encoded address is not IPv4",
+		      inet_fmt(reg_src, s1, sizeof(s1)));
+	    return FALSE;
 
-    data = (uint8_t *)(msg + sizeof(pim_header_t));
-    GET_EGADDR(&egaddr,  data);
-    GET_EUADDR(&eusaddr, data);
-
-    if (!encoded_addr_ok(egaddr.addr_family, egaddr.encod_type) ||
-	!encoded_addr_ok(eusaddr.addr_family, eusaddr.encod_type)) {
-	IF_DEBUG(DEBUG_PIM_REGISTER)
-	    logit(LOG_NOTICE, 0, "Ignoring Register-Stop from %s, an encoded address is not IPv4",
-		  inet_fmt(reg_src, s1, sizeof(s1)));
-
-	return FALSE;
+	default:
+	    break;
     }
 
     IF_DEBUG(DEBUG_PIM_REGISTER)
 	logit(LOG_INFO, 0, "Received PIM_REGISTER_STOP from RP %s to %s for src = %s and group = %s",
 	      inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)),
-	      inet_fmt(eusaddr.unicast_addr, s3, sizeof(s3)),
-	      inet_fmt(egaddr.mcast_addr, s4, sizeof(s4)));
+	      inet_fmt(rs.source, s3, sizeof(s3)),
+	      inet_fmt(rs.group, s4, sizeof(s4)));
 
     /* TODO: apply the group mask and do register_stop for all grp addresses */
-    if (eusaddr.unicast_addr == INADDR_ANY_N) {
+    if (rs.source == INADDR_ANY_N) {
 	/* An old RP saying RFC 2362's "stop encapsulating all sources for
 	 * this group".  RFC 7761 sec. 4.4.1 does not have us send these, but
 	 * it does have us accept one, as a Register-Stop(S,G) for every
 	 * (S,G) whose Register state machine is not in NoInfo -- i.e. every
 	 * source we are registering right now, and none that starts later.
 	 */
-	grp = find_group(egaddr.mcast_addr);
+	grp = find_group(rs.group);
 	if (!grp || !grp->active_rp_grp ||
 	    (grp->rpaddr != reg_src && !register_stop_from_set(grp->rpaddr, reg_src)))
 	    return FALSE;
@@ -2038,7 +2006,7 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
 	return TRUE;
     }
 
-    mrtentry = find_route(eusaddr.unicast_addr, egaddr.mcast_addr, MRTF_SG, DONT_CREATE);
+    mrtentry = find_route(rs.source, rs.group, MRTF_SG, DONT_CREATE);
     if (!mrtentry)
 	return FALSE;
 
@@ -4134,15 +4102,6 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 /************************************************************************
  *                        PIM_ASSERT
  ************************************************************************/
-/* Header, encoded group, encoded source, then the preference and the
- * metric: everything receive_pim_assert() reads before it has looked at
- * anything in the message.  pim.c only guarantees a PIM header, so
- * without this an Assert truncated to its header had the parser reading
- * whatever the previous packet left in the receive buffer.
- */
-#define PIM_ASSERT_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN	\
-			   + PIM_ENCODE_UNI_ADDR_LEN + 2 * sizeof(uint32_t))
-
 /* infinite_assert_metric(), RFC 7761 sec. 4.6.3: {1, infinity, infinity, 0}.
  * The RPT bit is the top bit of the preference field, so "infinity" is the
  * rest of it.  An Assert carrying this loses to every real metric, which is
@@ -4926,11 +4885,9 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 {
     vifi_t vifi;
-    pim_encod_uni_addr_t eusaddr;
-    pim_encod_grp_addr_t egaddr;
+    pim_sg_msg_t as;
     uint32_t source, group;
     mrtentry_t *sg, *wc;
-    uint8_t *data;
     struct uvif *v;
     uint32_t assert_preference;
     uint32_t assert_metric;
@@ -4981,37 +4938,31 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	return FALSE;
     }
 
-    /* sanity check for the minimum length */
-    if (len < PIM_ASSERT_MINLEN) {
-	IF_DEBUG(DEBUG_PIM_ASSERT)
-	    logit(LOG_NOTICE, 0, "Too short Assert message (%zu bytes) from %s on %s",
-		  len, inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+    /* Every bound is pim_parse_assert()'s, src/pim_parse.c */
+    switch (pim_parse_assert(msg, len, &as)) {
+	case PIM_SG_SHORT:
+	    IF_DEBUG(DEBUG_PIM_ASSERT)
+		logit(LOG_NOTICE, 0, "Too short Assert message (%zu bytes) from %s on %s",
+		      len, inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+	    return FALSE;
 
-	return FALSE;
-    }
+	case PIM_SG_FAMILY:
+	    IF_DEBUG(DEBUG_PIM_ASSERT)
+		logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, an encoded address is not IPv4",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name);
+	    return FALSE;
 
-    data = (uint8_t *)(msg + sizeof(pim_header_t));
-
-    /* Get the group and source addresses */
-    GET_EGADDR(&egaddr, data);
-    GET_EUADDR(&eusaddr, data);
-
-    if (!encoded_addr_ok(egaddr.addr_family, egaddr.encod_type) ||
-	!encoded_addr_ok(eusaddr.addr_family, eusaddr.encod_type)) {
-	IF_DEBUG(DEBUG_PIM_ASSERT)
-	    logit(LOG_NOTICE, 0, "Ignoring Assert from %s on %s, an encoded address is not IPv4",
-		  inet_fmt(src, s1, sizeof(s1)), v->uv_name);
-
-	return FALSE;
+	default:
+	    break;
     }
 
     /* Get the metric related info */
-    GET_HOSTLONG(assert_preference, data);
-    GET_HOSTLONG(assert_metric, data);
-    assert_rptbit = assert_preference & PIM_ASSERT_RPT_BIT;
+    assert_preference = as.preference;
+    assert_metric     = as.metric;
+    assert_rptbit     = assert_preference & PIM_ASSERT_RPT_BIT;
 
-    source = eusaddr.unicast_addr;
-    group = egaddr.mcast_addr;
+    source = as.source;
+    group  = as.group;
 
     IF_DEBUG(DEBUG_PIM_ASSERT)
 	logit(LOG_INFO, 0, "Received PIM ASSERT from %s for group %s and source %s",

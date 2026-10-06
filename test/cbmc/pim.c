@@ -40,6 +40,9 @@
  *                      back through the accessors as the caller does
  *   proof_crp          a whole Candidate-RP-Advertisement and every prefix
  *                      of it, for any message
+ *   proof_register     a Register, for any message
+ *   proof_register_stop  a Register-Stop, for any message
+ *   proof_assert       an Assert, for any message
  *
  * The first two have no loop and cover every length an IP datagram can
  * carry.  Beside memory safety, what they assert is the contract
@@ -62,7 +65,12 @@
  *     always behind the RP records the fragment count says, so that no
  *     walk can read one set's records as another set;
  *   - a Candidate-RP-Advertisement hands out no more prefixes than it
- *     holds, whatever its count says.
+ *     holds, whatever its count says;
+ *   - a Register says a packet is whole only where it is in the message,
+ *     so a copy of it reads nothing past the end, and a Null-Register's
+ *     dummy header is checksummed over no more than arrived;
+ *   - a Register-Stop and an Assert are read only when every byte of them
+ *     arrived.
  */
 
 #include <stddef.h>
@@ -122,6 +130,9 @@ void proof_bsr_group(void);
 void proof_bsr_rp(void);
 void proof_bsr(void);
 void proof_crp(void);
+void proof_register(void);
+void proof_register_stop(void);
+void proof_assert(void);
 
 void proof_hello_opt(void)
 {
@@ -629,6 +640,101 @@ void proof_crp(void)
 	}
     } else {
 	__CPROVER_assert(rc == PIM_CRP_FAMILY, "a header ends in a verdict");
+    }
+    free(buf);
+}
+
+void proof_register(void)
+{
+    pim_reg_t reg;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = pim_parse_register(buf, len, &reg);
+
+    if (len < PIM_REGISTER_MINLEN) {
+	__CPROVER_assert(rc == PIM_REG_SHORT, "a Register without an inner header is refused");
+	free(buf);
+	return;
+    }
+
+    __CPROVER_assert(reg.body == buf + 4 && reg.inner == buf + 8 && reg.avail == len - 8,
+		     "the flags at 4, the inner header at 8, the rest behind it");
+    __CPROVER_assert(reg.is_null == ((buf[4] & 0x40) ? 1 : 0), "Null is the second bit of the flags");
+    __CPROVER_assert(memcmp(&reg.inner_src, buf + 20, 4) == 0 && memcmp(&reg.inner_grp, buf + 24, 4) == 0,
+		     "source and group are the inner header's");
+
+    switch (rc) {
+    case PIM_REG_OK:
+	__CPROVER_assert(reg.is_null || reg.inner_version == 4, "a data Register carries IPv4");
+	if (reg.whole)
+	    __CPROVER_assert(reg.inner_len >= 20 && (size_t)reg.inner_len <= reg.avail &&
+			     sizeof(pim_register_t) + (size_t)reg.inner_len <= len - 4,
+			     "a whole packet, and the copy of the Register, are inside the message");
+	if (reg.null_hlen)
+	    __CPROVER_assert(reg.is_null && reg.null_hlen >= 20 && reg.null_hlen <= reg.avail,
+			     "a dummy header is checksummed over what arrived and no more");
+	break;
+
+    case PIM_REG_VERSION:
+	__CPROVER_assert(!reg.is_null && reg.inner_version != 4, "only a data Register is held to IPv4");
+	break;
+
+    case PIM_REG_NULL_HLEN:
+	__CPROVER_assert(reg.is_null && (reg.bad_hlen < 20 || reg.bad_hlen > reg.avail),
+			     "only a dummy header that does not fit is refused");
+	break;
+
+    default:
+	__CPROVER_assert(0, "a Register ends in a verdict");
+    }
+    free(buf);
+}
+
+void proof_register_stop(void)
+{
+    pim_sg_msg_t rs;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = pim_parse_register_stop(buf, len, &rs);
+
+    if (len < PIM_REGISTER_STOP_MINLEN) {
+	__CPROVER_assert(rc == PIM_SG_SHORT, "a short Register-Stop is refused");
+    } else if (rc == PIM_SG_OK) {
+	__CPROVER_assert(buf[4] == ADDRF_IPv4 && buf[5] == ADDRT_IPv4 &&
+			 buf[12] == ADDRF_IPv4 && buf[13] == ADDRT_IPv4, "both addresses are IPv4");
+	__CPROVER_assert(memcmp(&rs.group, buf + 8, 4) == 0 && memcmp(&rs.source, buf + 14, 4) == 0,
+			 "the group at 8 and the source at 14");
+    } else {
+	__CPROVER_assert(rc == PIM_SG_FAMILY, "a Register-Stop ends in a verdict");
+    }
+    free(buf);
+}
+
+void proof_assert(void)
+{
+    pim_sg_msg_t as;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = pim_parse_assert(buf, len, &as);
+
+    if (len < PIM_ASSERT_MINLEN) {
+	__CPROVER_assert(rc == PIM_SG_SHORT, "a short Assert is refused");
+    } else if (rc == PIM_SG_OK) {
+	__CPROVER_assert(memcmp(&as.group, buf + 8, 4) == 0 && memcmp(&as.source, buf + 14, 4) == 0,
+			 "the group at 8 and the source at 14");
+	__CPROVER_assert(as.preference == be32(buf + 18) && as.metric == be32(buf + 22),
+			 "and the preference and metric behind them");
+    } else {
+	__CPROVER_assert(rc == PIM_SG_FAMILY, "an Assert ends in a verdict");
     }
     free(buf);
 }

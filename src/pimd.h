@@ -617,6 +617,66 @@ typedef struct {
 int  pim_parse_crp (const void *msg, size_t len, pim_crp_t *crp);
 void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp);
 
+/*
+ * A Register, RFC 7761 sec. 4.9.3: the flags word and the inner IP header,
+ * read at the offsets of the wire rather than through struct ip, whose
+ * bitfields are the compiler's.  inner_len is the sender's ip_len and
+ * bounds nothing by itself; `whole' says it is a packet the message holds,
+ * which is what a copy of the Register may carry.  null_hlen is the length
+ * of a Null-Register's dummy header to checksum, bounded by what arrived,
+ * and zero where its checksum is zero and sec. 4.9.3 says not to look.
+ */
+#define PIM_REGISTER_MINLEN	(sizeof(pim_header_t) + sizeof(pim_register_t) + 20)
+
+typedef struct {
+    int      is_null;
+    const uint8_t *body;	/* the flags word: what a copy starts with */
+    const uint8_t *inner;	/* the inner IP header */
+    size_t   avail;		/* bytes from inner to the end of the message */
+    uint8_t  inner_version;
+    uint8_t  inner_tos;
+    uint16_t inner_len;		/* ip_len, host order */
+    uint32_t inner_src;		/* network order */
+    uint32_t inner_grp;		/* network order */
+    int      whole;		/* inner_len bytes of packet are in the message */
+    size_t   null_hlen;		/* dummy header bytes to checksum, or 0 */
+    size_t   bad_hlen;
+} pim_reg_t;
+
+#define PIM_REG_OK		0
+#define PIM_REG_SHORT		1	/* no room for one inner IP header	*/
+#define PIM_REG_VERSION		2	/* a data Register that is not IPv4	*/
+#define PIM_REG_NULL_HLEN	3	/* a dummy header longer than arrived	*/
+
+int pim_parse_register(const void *msg, size_t len, pim_reg_t *reg);
+
+/*
+ * A Register-Stop, sec. 4.9.4, and an Assert, sec. 4.9.6.  The lengths are
+ * everything either message holds, and everything its parser reads: pim.c
+ * only guarantees a PIM header, and a message cut short to it once had
+ * the parser reading whatever the previous packet left in the receive
+ * buffer -- suppressing registers for the (S,G) that came out of it, in
+ * the Register-Stop's case.
+ */
+#define PIM_REGISTER_STOP_MINLEN (sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN \
+				  + PIM_ENCODE_UNI_ADDR_LEN)
+#define PIM_ASSERT_MINLEN	(sizeof(pim_header_t) + PIM_ENCODE_GRP_ADDR_LEN	\
+				 + PIM_ENCODE_UNI_ADDR_LEN + 2 * sizeof(uint32_t))
+
+typedef struct {
+    uint32_t group;		/* network order */
+    uint32_t source;		/* network order */
+    uint32_t preference;	/* Assert only, host order, RPT bit included */
+    uint32_t metric;		/* Assert only, host order */
+} pim_sg_msg_t;
+
+#define PIM_SG_OK		0
+#define PIM_SG_SHORT		1
+#define PIM_SG_FAMILY		2	/* an encoded address that is not IPv4 */
+
+int pim_parse_register_stop(const void *msg, size_t len, pim_sg_msg_t *rs);
+int pim_parse_assert       (const void *msg, size_t len, pim_sg_msg_t *as);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

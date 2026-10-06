@@ -575,6 +575,129 @@ void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp)
     GET_EGADDR(grp, p);
 }
 
+/* Offsets of the IPv4 header fields a Register's inner header is read for */
+#define IP_OFF_VHL	0	/* version and header length, a nibble each */
+#define IP_OFF_TOS	1
+#define IP_OFF_LEN	2
+#define IP_OFF_SUM	10
+#define IP_OFF_SRC	12
+#define IP_OFF_DST	16
+#define IP_HDR_MINLEN	20
+#define IP_HDR_V4	4
+
+/*
+ * A Register, PIM header included.  The checks of the PIM checksum and of
+ * a Null-Register's dummy header checksum are the caller's, in between
+ * these: what is here is everything that decides how much of the buffer
+ * either may read.  A Null-Register's inner header is not inspected beyond
+ * its addresses, sec. 4.9.3, so its version is not asked; its ip_hl is
+ * the sender's and says how much to checksum, so it is held to what
+ * arrived before anything uses it.
+ */
+int pim_parse_register(const void *msg, size_t len, pim_reg_t *reg)
+{
+    const uint8_t *p;
+    uint32_t flags;
+    size_t hlen;
+
+    memset(reg, 0, sizeof(*reg));
+
+    if (len < PIM_REGISTER_MINLEN)
+	return PIM_REG_SHORT;
+
+    p = (const uint8_t *)msg + sizeof(pim_header_t);
+    reg->body = p;
+    GET_HOSTLONG(flags, p);
+    reg->is_null = (flags & PIM_REGISTER_NULL_REGISTER_BIT) ? 1 : 0;
+
+    reg->inner = p;
+    reg->avail = len - sizeof(pim_header_t) - sizeof(pim_register_t);
+    reg->inner_version = p[IP_OFF_VHL] >> 4;
+    reg->inner_tos     = p[IP_OFF_TOS];
+    reg->inner_len     = (uint16_t)((p[IP_OFF_LEN] << 8) | p[IP_OFF_LEN + 1]);
+    memcpy(&reg->inner_src, p + IP_OFF_SRC, sizeof(reg->inner_src));
+    memcpy(&reg->inner_grp, p + IP_OFF_DST, sizeof(reg->inner_grp));
+
+    if (reg->inner_version != IP_HDR_V4 && !reg->is_null)
+	return PIM_REG_VERSION;
+
+    if (reg->is_null && (p[IP_OFF_SUM] | p[IP_OFF_SUM + 1])) {
+	hlen = (size_t)(p[IP_OFF_VHL] & 0x0f) << 2;
+	if (hlen < IP_HDR_MINLEN || hlen > reg->avail) {
+	    reg->bad_hlen = hlen;
+	    return PIM_REG_NULL_HLEN;
+	}
+	reg->null_hlen = hlen;
+    }
+
+    reg->whole = !reg->is_null && reg->inner_len >= IP_HDR_MINLEN && reg->inner_len <= reg->avail;
+
+    return PIM_REG_OK;
+}
+
+/*
+ * The Encoded-Group and Encoded-Unicast both messages open with, behind
+ * the PIM header, and where reading them left off in *data.  Nothing is
+ * pointed at, the body included, until the length says it is there.
+ */
+static int pim_parse_sg(const void *msg, const uint8_t **data, size_t len, size_t minlen,
+			pim_sg_msg_t *sg)
+{
+    pim_encod_grp_addr_t ega;
+    pim_encod_uni_addr_t eua;
+    const uint8_t *p;
+
+    if (len < minlen)
+	return PIM_SG_SHORT;
+
+    p = (const uint8_t *)msg + sizeof(pim_header_t);
+    GET_EGADDR(&ega, p);
+    GET_EUADDR(&eua, p);
+    sg->group  = ega.mcast_addr;
+    sg->source = eua.unicast_addr;
+    *data = p;
+
+    if (ega.addr_family != ADDRF_IPv4 || ega.encod_type != ADDRT_IPv4 ||
+	eua.addr_family != ADDRF_IPv4 || eua.encod_type != ADDRT_IPv4)
+	return PIM_SG_FAMILY;
+
+    return PIM_SG_OK;
+}
+
+/* A Register-Stop, PIM header included: a group and a source */
+int pim_parse_register_stop(const void *msg, size_t len, pim_sg_msg_t *rs)
+{
+    const uint8_t *p;
+
+    memset(rs, 0, sizeof(*rs));
+
+    return pim_parse_sg(msg, &p, len, PIM_REGISTER_STOP_MINLEN, rs);
+}
+
+/*
+ * An Assert, PIM header included: a group, a source, and the metric
+ * preference, RPT bit included, and metric of RFC 7761 sec. 4.9.6.  The
+ * length is checked against all of it before any of it is read, which
+ * receive_pim_assert() once did not: it parsed 26 bytes out of a message
+ * pim.c guarantees 4 of.
+ */
+int pim_parse_assert(const void *msg, size_t len, pim_sg_msg_t *as)
+{
+    const uint8_t *p;
+    int rc;
+
+    memset(as, 0, sizeof(*as));
+
+    rc = pim_parse_sg(msg, &p, len, PIM_ASSERT_MINLEN, as);
+    if (rc != PIM_SG_OK)
+	return rc;
+
+    GET_HOSTLONG(as->preference, p);
+    GET_HOSTLONG(as->metric, p);
+
+    return PIM_SG_OK;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

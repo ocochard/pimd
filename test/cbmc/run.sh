@@ -165,5 +165,15 @@ mutant bsr-rp-stride               "$h" "$s" proof_bsr_rp       0 1 's/(size_t)i
 mutant bsr-sets-uncounted          "$h" "$s" proof_bsr         60 10 's/bsr->num_sets++;/;/'
 mutant crp-prefix-count-trusted    "$h" "$s" proof_crp          0 1 's/fit < crp->prefix_cnt ? (uint8_t)fit : crp->prefix_cnt/crp->prefix_cnt/'
 mutant crp-no-header-bound         "$h" "$s" proof_crp          0 1 's/len < PIM_CAND_RP_ADV_MINLEN/0/'
+proof  register                    "$h" "$s" proof_register     0 1
+proof  register-stop               "$h" "$s" proof_register_stop 0 1
+proof  assert                      "$h" "$s" proof_assert       0 1
+mutant reg-no-length-check         "$h" "$s" proof_register     0 1 's/len < PIM_REGISTER_MINLEN/0/'
+mutant reg-version-ignored         "$h" "$s" proof_register     0 1 's/reg->inner_version != IP_HDR_V4 \&\& !reg->is_null/0/'
+mutant reg-null-hlen-unbounded     "$h" "$s" proof_register     0 1 's/hlen < IP_HDR_MINLEN || hlen > reg->avail/hlen < IP_HDR_MINLEN/'
+mutant reg-whole-unbounded         "$h" "$s" proof_register     0 1 's/ \&\& reg->inner_len <= reg->avail;/;/'
+mutant regstop-no-length-check     "$h" "$s" proof_register_stop 0 1 's/pim_parse_sg(msg, \&p, len, PIM_REGISTER_STOP_MINLEN, rs)/pim_parse_sg(msg, \&p, len, 0, rs)/'
+mutant regstop-family-ignored      "$h" "$s" proof_register_stop 0 1 '/^static int pim_parse_sg/,/^}/s/ega.addr_family != ADDRF_IPv4 || ega.encod_type != ADDRT_IPv4 ||/0 ||/'
+mutant assert-read-past-length     "$h" "$s" proof_assert       0 1 's/pim_parse_sg(msg, \&p, len, PIM_ASSERT_MINLEN, as)/pim_parse_sg(msg, \&p, len, PIM_REGISTER_STOP_MINLEN, as)/'
 
 exit $fail
