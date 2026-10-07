@@ -130,6 +130,7 @@ typedef void (*ihfunc_t) (int);
 #include "mrt.h"
 #include "igmpv2.h"
 #include "igmpv3.h"
+#include "text.h"
 #include "vif.h"
 #include "debug.h"
 #include "pathnames.h"

@@ -222,7 +222,6 @@ uint32_t register_sg_limit = PIM_REGISTER_SG_LIMIT;
 /*
  * Forward declarations.
  */
-static char	*next_word	(char **);
 static int       parse_option   (char *s);
 static int	 parse_phyint	(char *s);
 static int	 parse_state_limit (char *s, const char *name, uint32_t *limit, uint32_t dflt);
@@ -3858,44 +3857,6 @@ static uint32_t ifname2addr(char *s)
     return 0;
 }
 
-static char *next_word(char **s)
-{
-    size_t i = 0;
-    char *w;
-    static char token[42];
-
-    memset(token, 0, sizeof(token));
-
-    w = *s;
-    while (*w == ' ' || *w == '\t')
-	w++;
-
-    *s = w;
-    /* Leave room for the terminator: a word of exactly sizeof(token)
-     * characters used to fill the buffer and return it unterminated, and
-     * every caller hands what it gets to strcmp(), inet_parse() or
-     * strtonum(), which then read on into whatever follows. */
-    while (**s != 0 && i < sizeof(token) - 1) {
-	switch (**s) {
-	    case ' ':
-	    case '\t':
-		(*s)++;
-		__attribute__((fallthrough));
-	    case '\n':
-	    case '#':
-	    return token;
-
-	    default:
-		if (isascii((int)**s) && isupper((int)**s))
-		    token[i++] = tolower((int)**s);
-		else
-		    token[i++] = **s;
-		(*s)++;
-	}
-    }
-
-    return token;
-}
 
 /**
  * Local Variables:

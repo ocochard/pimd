@@ -238,6 +238,19 @@ mutant igmp-aux-words-ignored      "$h" "$s" proof_record       0 1 's/ + (size_
 mutant igmp-record-not-counted     "$h" "$s" proof_record       0 1 's/c->ngrec -= 1;/;/'
 mutant igmp-source-stride          "$h" "$s" proof_source       0 1 's/(size_t)i \* sizeof(uint32_t)/(size_t)i * 2/'
 
+# The text pimd.conf and pimctl commands are split and trimmed with,
+# src/text.c.  The line has no length field, only its terminator, so these
+# are bounded by length: next_word() past its 41-character token, so that a
+# word too long for it is among the inputs, chomp() at 16 characters, its
+# work being at the end of a string whatever its length.  text_strip() has
+# a harness and no entry here, see test/cbmc/text.c.
+h="$here/text.c"
+s="$top/src/text.c"
+proof  text-next-word              "$h" "$s" proof_next_word   48 1
+proof  text-chomp                  "$h" "$s" proof_chomp       16 1
+mutant text-word-unterminated      "$h" "$s" proof_next_word   48 1 's/i < sizeof(token) - 1/i < sizeof(token)/'
+mutant text-chomp-unbounded        "$h" "$s" proof_chomp       16 1 's/while (n > 0 \&\& str\[n - 1\]/while (str[n - 1]/'
+
 # The writer the message builders write through, src/pim_encode.c
 h="$here/encode.c"
 s="$top/src/pim_encode.c"

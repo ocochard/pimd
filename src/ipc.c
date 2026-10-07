@@ -400,40 +400,6 @@ static char *timetostr(time_t t, char *buf, size_t len)
 	return buf;
 }
 
-static char *chomp(char *str)
-{
-	char *p;
-
-	if (!str || strlen(str) < 1) {
-		errno = EINVAL;
-		return NULL;
-	}
-
-	/* The bound is not decoration: without it a string of nothing but
-	 * newlines walks p off the front of the buffer, writing as it goes.
-	 * Nothing reaches this with one -- strip() skips the leading run of
-	 * " \t\n" before every call -- and the same function in pimctl.c
-	 * carries the same test, so the two say the same thing now. */
-	p = str + strlen(str) - 1;
-        while (p >= str && *p == '\n')
-		*p-- = 0;
-
-	return str;
-}
-
-static void strip(char *cmd, size_t len)
-{
-	char *ptr;
-
-	ptr = cmd + len;
-	len = strspn(ptr, " \t\n");
-	if (len > 0)
-		ptr += len;
-
-	memmove(cmd, ptr, strlen(ptr) + 1);
-	chomp(cmd);
-}
-
 /*
  * The words that may follow a command: "detail", which every table that has
  * a long form takes, and "json", which "pimctl -j" appends.  Read in any
@@ -450,7 +416,7 @@ static int is_word(const char *cmd, size_t len, const char *word)
 
 static void check_modifiers(char *cmd, size_t len)
 {
-	strip(cmd, len);		/* the command itself */
+	text_strip(cmd, len);		/* the command itself */
 
 	while (*cmd) {
 		len = strcspn(cmd, " \t\n");
@@ -462,7 +428,7 @@ static void check_modifiers(char *cmd, size_t len)
 		else
 			break;		/* not ours, leave it alone */
 
-		strip(cmd, len);
+		text_strip(cmd, len);
 	}
 }
 

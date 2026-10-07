@@ -53,6 +53,7 @@
 #include <sys/un.h>
 
 #include "queue.h"
+#include "text.h"
 #define MAXARGS	32
 
 /*
@@ -323,22 +324,6 @@ static int get_width(void)
 	tcsetattr(STDERR_FILENO, TCSANOW, &saved);
 #endif
 	return ret;
-}
-
-static char *chomp(char *str)
-{
-	char *p;
-
-	if (!str || strlen(str) < 1) {
-		errno = EINVAL;
-		return NULL;
-	}
-
-	p = str + strlen(str) - 1;
-        while (p >= str && *p == '\n')
-		*p-- = 0;
-
-	return str;
 }
 
 static void print(char *line, int indent)

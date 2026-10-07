@@ -26,7 +26,8 @@ libpimd_a_SOURCES = autorp.c		autorp.h	autorp_parse.c		    \
 		   pim.c		pimd.h				    \
 		   privsep.c		privsep.h				    \
 		   queue.h		route.c		rp.c			    \
-		   timer.c		trace.c		trace.h	    		    \
+		   text.c		text.h		timer.c		    \
+		   trace.c		trace.h				    \
 		   vif.c		vif.h
 
 # The lib/ replacements go into the archive rather than beside it, so that
@@ -52,5 +53,5 @@ libpimd_a_SOURCES += routesock.c
 endif
 endif
 
-pimctl_SOURCES   = pimctl.c		queue.h
+pimctl_SOURCES   = pimctl.c		queue.h		text.c		text.h
 pimctl_LDADD     = $(LIBS) $(LIBOBJS)
