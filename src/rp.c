@@ -371,13 +371,15 @@ static cand_rp_t *add_cand_rp(cand_rp_t **used_cand_rp_list, uint32_t address)
 
     /* TODO: XXX: check whether there is a route to that RP: if return value
      * is FALSE, then no route.
+     *
+     * For an RP address of our own set_incoming() gives the register vif,
+     * and with it the zero metric and preference of a connected route,
+     * which is the MRIB.metric(RP(G)) of RFC 7761 sec. 4.6.3 for the RP
+     * itself.  Skipping it for that case, as this used to, left the ~0
+     * above in place, so every Assert the RP sent from the shared tree
+     * carried the infinite metric of an AssertCancel.
      */
-    if (local_address(entry->address) == NO_VIF)
-	/* TODO: check for error and delete */
-	set_incoming(entry, PIM_IIF_RP);
-    else
-	/* TODO: XXX: CHECK!!! */
-	entry->incoming = PIMREG_VIF;
+    set_incoming(entry, PIM_IIF_RP);
 
     return ptr;
 }

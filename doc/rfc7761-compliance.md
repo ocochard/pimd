@@ -431,6 +431,24 @@ Winner on fz1 for (10.0.1.9,239.1.1.1)" before the fix and "for
 (*,239.1.1.1)" after it.  The second half has no reproduction at all, the
 state it acted on being the first half's.*
 
+M22 was the RP's own metric.  Sec. 4.6.3 has rpt_assert_metric(G,I) from
+MRIB.pref(RP(G)) and MRIB.metric(RP(G)), and for the RP itself the route to
+RP(G) is its own address: preference 0 and metric 0, the best an Assert can
+carry.  `add_cand_rp()` (`src/rp.c`) looked the route to an RP up only when
+the address was not one of its own, and left the `~0` it had initialised the
+entry with otherwise, so an RP forwarding its shared tree onto a LAN asserted
+with the infinite metric of an AssertCancel (sec. 4.6.4) and lost the election
+to every other router there, whatever their distance to the RP.  It asks
+`set_incoming()` in both cases now, which gives an address of its own the
+register vif, as before, and the metric of a connected route.  *Test:
+`crafted` step 7c in `test/lab.sh`: a neighbour on the RP's link to R1 joins
+the shared tree of a group at R2 and asserts on that link with the RPT bit and
+a metric of 1, which R2 has to win (it read L before the fix); the control is
+an Assert at R2's own metric from a higher address, which R2 has to lose.
+The fuzz router shows the wire: `upcall-wrongvif.bin` replayed with
+`FUZZ_DEBUG=1` logs "Send PIM ASSERT CANCEL" before the fix and "Send PIM
+ASSERT" after it.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

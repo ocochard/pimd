@@ -41,6 +41,11 @@ issue of this repository is written out in full.
   4.6.1 and 4.6.2 divide them, and having won it there kept the interface
   against any better Assert from the shared tree.  The election goes to the
   (\*,G) entry now, and a winner leaves on any Assert that beats it.
+- An RP forwarding its shared tree onto a LAN where another router forwarded
+  the same group sent its Asserts with an infinite metric, which is an
+  AssertCancel, and lost every such election.  It asserts with the zero
+  metric of its own address now, RFC 7761 sec. 4.6.3.  Step 7c of
+  `crafted` in `test/lab.sh` puts it.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

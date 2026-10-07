@@ -1825,6 +1825,9 @@ CRAFT_DESYNC_NET=${CRAFT_DESYNC_NET:-237}
 # crafted step 7b: the source the two Asserts name, one r1 holds no (S,G)
 # for, so that the (S,G) machine has no entry to take either message first
 CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
+# crafted step 7c: a group whose shared tree the RP is made to forward onto
+# its link to R1, the only state behind it being the step's own Join
+CRAFT_RP_ASSERT_GROUP=${CRAFT_RP_ASSERT_GROUP:-225.1.4.6}
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -7352,6 +7355,54 @@ check_crafted() {
 		wait_for 10 r1_supp_assert_is . || \
 			dprint "   r1 is still the Loser on ${EP}112a after the AssertCancel"
 	fi
+
+	print "7c. The RP contends from the shared tree with the metric of its own address"
+	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),
+	# sec. 4.6.3, and for the RP itself the route to RP(G) is its own
+	# address: preference 0, metric 0, the best an Assert can carry.
+	# add_cand_rp() (src/rp.c) never looked an address of its own up, and
+	# left the ~0 it had initialised the entry with, so an RP forwarding the
+	# shared tree onto a LAN asserted with the infinite metric of an
+	# AssertCancel and lost to every router there.  The same neighbour as
+	# step 7b, which is on the RP's link to R1 too, joins the shared tree
+	# of a group of its own at r2, which makes that link an outgoing
+	# interface of the RP's (*,G), and asserts on it with the RPT bit and
+	# a metric of 1: r2 has to win, and before the fix lost.  The control
+	# is an Assert at r2's own metric, 0 and 0, which r2 has to lose, on
+	# the address, 10.0.12.9 being above 10.0.12.2: the comparison is
+	# made, and it is not the Assert that is ignored.
+	if ! wait_for 30 has_neighbor r2 "$SUPP_ADDR"; then
+		fail "r2 has no neighbour at $SUPP_ADDR on its link to r1, the step cannot be put"
+	elif ! craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_RP_ASSERT_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r2 "$CRAFT_RP_ASSERT_GROUP"; then
+		fail "r2 built no (*,$CRAFT_RP_ASSERT_GROUP) from the Join, the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RP_ASSERT_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC" -R -P 1 -C 1
+		st=W
+		if wait_for 10 r2_rp_assert_is W; then
+			ok "r2 wins (*,$CRAFT_RP_ASSERT_GROUP) on ${EPU}112b against an Assert at metric 1"
+		else
+			st=$(assert_char_of r2 "${EPU}112b" ANY "$CRAFT_RP_ASSERT_GROUP" || true)
+			fail "r2 reads '${st:-nothing}' for (*,$CRAFT_RP_ASSERT_GROUP) on ${EPU}112b after an Assert at metric 1, the RP asserts with an infinite metric"
+		fi
+
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RP_ASSERT_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC" -R -P 0 -C 0
+		if [ "$st" = L ]; then
+			fail "the control cannot be read: r2 was already the Loser, and the Assert at its own metric is then inferior to the winner it holds"
+		elif wait_for 10 r2_rp_assert_is L; then
+			ok "and loses to the same metric from a higher address, the control"
+		else
+			fail "r2 did not lose to an Assert at its own metric from a higher address, so the step above proves nothing"
+		fi
+
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RP_ASSERT_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC" -R -P 2147483647 -C 4294967295
+		craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_RP_ASSERT_GROUP" -w \
+			-r "$RP_ADDR"
+	fi
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
@@ -8428,6 +8479,10 @@ check_fuzz() {
 # step 7b?
 r1_supp_assert_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)" = "$1" ]
+}
+
+r2_rp_assert_is() {
+	[ "$(assert_char_of r2 "${EPU}112b" ANY "$CRAFT_RP_ASSERT_GROUP" || true)" = "$1" ]
 }
 
 craft_on() {

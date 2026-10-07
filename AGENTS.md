@@ -344,6 +344,8 @@ triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all 
 several trials off the routers' logs),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
+the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
+as infinite, and losing to that metric from a higher address, the control (step 7c, M22),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those
