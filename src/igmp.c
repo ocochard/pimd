@@ -183,53 +183,46 @@ static void igmp_read(int sd)
  */
 void accept_igmp(int ifi, ssize_t recvlen)
 {
-    int ipdatalen, iphdrlen, igmpdatalen;
+    int ipdatalen, igmpdatalen;
     uint32_t src, dst, group;
-    struct ip *ip;
-    struct igmp *igmp;
-    int igmp_version = 3;
+    const uint8_t *body;
+    igmp_pkt_t pkt;
 
-    if (recvlen < (ssize_t)sizeof(struct ip)) {
-	logit(LOG_WARNING, 0, "Received IGMP packet too short (%zd bytes) for IP header", recvlen);
-	return;
-    }
+    /* Every bound of the packet is igmp_parse_packet()'s, src/igmp_parse.c;
+     * what is left here is what to say about one it refused, the checksum,
+     * and where each kind of message goes. */
+    switch (igmp_parse_packet(igmp_recv_buf, recvlen < 0 ? 0 : (size_t)recvlen, &pkt)) {
+	case IGMP_PKT_SHORT:
+	    logit(LOG_WARNING, 0, "Received IGMP packet too short (%zd bytes) for IP header", recvlen);
+	    return;
 
-    ip  = (struct ip *)igmp_recv_buf;
-    src = ip->ip_src.s_addr;
-    dst = ip->ip_dst.s_addr;
-
-    /* packets sent up from kernel to daemon have ip->ip_p = 0 */
-    if (ip->ip_p == 0) {
-#if 0				/* XXX */
-	if (src == 0 || dst == 0)
-	    logit(LOG_WARNING, 0, "Kernel request not accurate, src %s dst %s",
-		inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
-	else
-#endif
+	case IGMP_PKT_UPCALL:
+	    /* packets sent up from kernel to daemon have ip->ip_p = 0 */
 	    process_kernel_call(recvlen);
-	return;
+	    return;
+
+	case IGMP_PKT_BAD_HLEN:
+	    logit(LOG_WARNING, 0, "Received packet from %s with invalid IP header length %zu (%zd bytes)",
+		  inet_fmt(pkt.src, s1, sizeof(s1)), pkt.iphdrlen, recvlen);
+	    return;
+
+	case IGMP_PKT_SHORT_IGMP:
+	    logit(LOG_WARNING, 0, "Received IP data field too short (%zu bytes) for IGMP, from %s",
+		  pkt.ipdatalen, inet_fmt(pkt.src, s1, sizeof(s1)));
+	    return;
+
+	default:
+	    break;
     }
 
-    iphdrlen = ip->ip_hl << 2;
-    if (iphdrlen < (int)sizeof(struct ip) || iphdrlen > recvlen) {
-	logit(LOG_WARNING, 0, "Received packet from %s with invalid IP header length %d (%zd bytes)",
-	      inet_fmt(src, s1, sizeof(s1)), iphdrlen, recvlen);
-	return;
-    }
-
-    ipdatalen   = recvlen - iphdrlen;
+    src         = pkt.src;
+    dst         = pkt.dst;
+    group       = pkt.group;
+    ipdatalen   = (int)pkt.ipdatalen;
     igmpdatalen = ipdatalen - IGMP_MINLEN;
+    body        = pkt.igmp + IGMP_MINLEN;
 
-    if (igmpdatalen < 0) {
-	logit(LOG_WARNING, 0, "Received IP data field too short (%d bytes) for IGMP, from %s",
-	      ipdatalen, inet_fmt(src, s1, sizeof(s1)));
-	return;
-    }
-
-    igmp	= (struct igmp *)(igmp_recv_buf + iphdrlen);
-    group       = igmp->igmp_group.s_addr;
-
-    if (inet_cksum((uint16_t *)igmp, ipdatalen)) {
+    if (inet_cksum((uint16_t *)(uintptr_t)pkt.igmp, ipdatalen)) {
 	IF_DEBUG(DEBUG_IGMP)
 	    logit(LOG_DEBUG, 0, "Received IGMP message with bad checksum from %s",
 		  inet_fmt(src, s1, sizeof(s1)));
@@ -238,20 +231,14 @@ void accept_igmp(int ifi, ssize_t recvlen)
 
     IF_DEBUG(DEBUG_IGMP)
 	logit(LOG_DEBUG, 0, "Received %s from %s to %s",
-	      packet_kind(IPPROTO_IGMP, igmp->igmp_type, igmp->igmp_code),
+	      packet_kind(IPPROTO_IGMP, pkt.type, pkt.code),
 	      inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 
-    switch (igmp->igmp_type) {
+    switch (pkt.type) {
 	case IGMP_MEMBERSHIP_QUERY:
-	    /* RFC 3376:7.1 */
-	    if (ipdatalen == 8) {
-		if (igmp->igmp_code == 0)
-		    igmp_version = 1;
-		else
-		    igmp_version = 2;
-	    } else if (ipdatalen >= 12) {
-		igmp_version = 3;
-	    } else {
+	    /* RFC 3376:7.1, the version told by the length in
+	     * igmp_parse_packet() */
+	    if (!pkt.query_version) {
 		/* Not a query of any version: eight bytes is v1 or v2 and
 		 * twelve or more is v3 (RFC 3376 sec. 7.1), and there is
 		 * nothing in between to interpret.  This used to say so and
@@ -272,12 +259,12 @@ void accept_igmp(int ifi, ssize_t recvlen)
 			  inet_fmt(src, s1, sizeof(s1)), ipdatalen);
 		return;
 	    }
-	    accept_membership_query(ifi, src, dst, group, igmp->igmp_code, igmp_version);
+	    accept_membership_query(ifi, src, dst, group, pkt.code, pkt.query_version);
 	    return;
 
 	case IGMP_V1_MEMBERSHIP_REPORT:
 	case IGMP_V2_MEMBERSHIP_REPORT:
-	    accept_group_report(ifi, src, dst, group, igmp->igmp_type);
+	    accept_group_report(ifi, src, dst, group, pkt.type);
 	    return;
 
 	case IGMP_V2_LEAVE_GROUP:
@@ -290,7 +277,8 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		      igmpdatalen, IGMP_V3_GROUP_RECORD_MIN_SIZE);
 		return;
 	    }
-	    accept_membership_report(ifi, src, dst, (struct igmpv3_report *)(igmp_recv_buf + iphdrlen), recvlen - iphdrlen);
+	    accept_membership_report(ifi, src, dst, (struct igmpv3_report *)(uintptr_t)pkt.igmp,
+				     (ssize_t)pkt.ipdatalen);
 	    return;
 
 	case IGMP_DVMRP:
@@ -299,13 +287,13 @@ void accept_igmp(int ifi, ssize_t recvlen)
 	     */
 	    group = ntohl(group);
 
-	    switch (igmp->igmp_code) {
+	    switch (pkt.code) {
 		case DVMRP_PROBE:
-		    dvmrp_accept_probe(src, dst, (uint8_t *)(igmp+1), igmpdatalen, group);
+		    dvmrp_accept_probe(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
 		    return;
 
 		case DVMRP_REPORT:
-		    dvmrp_accept_report(src, dst, (uint8_t *)(igmp+1), igmpdatalen, group);
+		    dvmrp_accept_report(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
 		    return;
 
 		case DVMRP_ASK_NEIGHBORS:
@@ -317,31 +305,31 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		    return;
 
 		case DVMRP_NEIGHBORS:
-		    dvmrp_accept_neighbors(src, dst, (uint8_t *)(igmp+1), igmpdatalen, group);
+		    dvmrp_accept_neighbors(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
 		    return;
 
 		case DVMRP_NEIGHBORS2:
-		    dvmrp_accept_neighbors2(src, dst, (uint8_t *)(igmp+1), igmpdatalen, group);
+		    dvmrp_accept_neighbors2(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
 		    return;
 
 		case DVMRP_PRUNE:
-		    dvmrp_accept_prune(src, dst, (uint8_t *)(igmp+1), igmpdatalen);
+		    dvmrp_accept_prune(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
 		    return;
 
 		case DVMRP_GRAFT:
-		    dvmrp_accept_graft(src, dst, (uint8_t *)(igmp+1), igmpdatalen);
+		    dvmrp_accept_graft(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
 		    return;
 
 		case DVMRP_GRAFT_ACK:
-		    dvmrp_accept_g_ack(src, dst, (uint8_t *)(igmp+1), igmpdatalen);
+		    dvmrp_accept_g_ack(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
 		    return;
 
 		case DVMRP_INFO_REQUEST:
-		    dvmrp_accept_info_request(src, dst, (uint8_t *)(igmp+1), igmpdatalen);
+		    dvmrp_accept_info_request(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
 		    return;
 
 		case DVMRP_INFO_REPLY:
-		    dvmrp_accept_info_reply(src, dst, (uint8_t *)(igmp+1), igmpdatalen);
+		    dvmrp_accept_info_reply(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
 		    return;
 
 		default:
@@ -349,7 +337,7 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		     * same reason: see the query of no version further up. */
 		    IF_DEBUG(DEBUG_PKT)
 			logit(LOG_DEBUG, 0, "Ignoring unknown DVMRP message code %u from %s to %s",
-			      igmp->igmp_code, inet_fmt(src, s1, sizeof(s1)),
+			      pkt.code, inet_fmt(src, s1, sizeof(s1)),
 			      inet_fmt(dst, s2, sizeof(s2)));
 		    return;
 	    }
@@ -361,14 +349,14 @@ void accept_igmp(int ifi, ssize_t recvlen)
 	    return;    /* TODO: implement it */
 
 	case IGMP_MTRACE:
-	    accept_mtrace(src, dst, group, (char *)(igmp+1), igmp->igmp_code, igmpdatalen);
+	    accept_mtrace(src, dst, group, (char *)(uintptr_t)body, pkt.code, igmpdatalen);
 	    return;
 
 	default:
 	    /* And the same for a type nothing above claimed */
 	    IF_DEBUG(DEBUG_IGMP)
 		logit(LOG_DEBUG, 0, "Ignoring unknown IGMP message type %x from %s to %s",
-		      igmp->igmp_type, inet_fmt(src, s1, sizeof(s1)),
+		      pkt.type, inet_fmt(src, s1, sizeof(s1)),
 		      inet_fmt(dst, s2, sizeof(s2)));
 	    return;
     }

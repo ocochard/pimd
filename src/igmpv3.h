@@ -129,6 +129,34 @@ typedef struct {
 #define IGMPV3_SHORT_HDR	4	/* a record header runs past the end	*/
 #define IGMPV3_SHORT_REC	5	/* a record runs past the end, rec->size says how far */
 
+/*
+ * The packet accept_igmp() is handed, IP header included, as
+ * src/igmp_parse.c decodes it before anything else reads it: the IP
+ * header's length and protocol, then the IGMP header behind it.  A
+ * protocol of zero is not IGMP at all but a kernel upcall, a struct
+ * igmpmsg laid out to look like an IP header, which only the source and
+ * destination are read out of here; process_kernel_call() asks the rest.
+ */
+typedef struct {
+    uint32_t src;		/* network order */
+    uint32_t dst;		/* network order */
+    uint8_t  proto;
+    size_t   iphdrlen;		/* as the header says, bounded by the packet */
+    size_t   ipdatalen;		/* the IGMP message, its header included */
+    const uint8_t *igmp;	/* that message */
+    uint8_t  type;
+    uint8_t  code;
+    uint32_t group;		/* network order */
+    int      query_version;	/* of a query, by its length: 1, 2, 3, or 0 for none */
+} igmp_pkt_t;
+
+#define IGMP_PKT_OK		0
+#define IGMP_PKT_SHORT		1	/* shorter than an IP header		*/
+#define IGMP_PKT_UPCALL		2	/* protocol 0, the kernel's		*/
+#define IGMP_PKT_BAD_HLEN	3	/* a header length the packet cannot have */
+#define IGMP_PKT_SHORT_IGMP	4	/* no room behind it for an IGMP header	*/
+
+int      igmp_parse_packet  (const void *buf, size_t len, igmp_pkt_t *pkt);
 int      igmpv3_parse_report(const void *report, size_t len, struct igmpv3_cursor *c,
 			     uint8_t *type, uint16_t *ngrec);
 int      igmpv3_parse_record(struct igmpv3_cursor *c, igmpv3_rec_t *rec);

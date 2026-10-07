@@ -16,8 +16,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  *
- * The decoding half of accept_membership_report() in src/igmp_proto.c,
- * the format of RFC 3376 sec. 4.2.  This file includes libc and igmpv3.h
+ * The decoding halves of accept_igmp() in src/igmp.c and of
+ * accept_membership_report() in src/igmp_proto.c, the formats of RFC 3376
+ * sec. 4.  This file includes libc and igmpv3.h
  * and nothing else of the daemon's, deliberately: test/cbmc/igmp.c
  * compiles it alone and proves it reads nothing outside the buffer.  The
  * fields are read at the offsets of the wire rather than through struct
@@ -37,6 +38,59 @@
 #include "igmpv3.h"
 
 #define IGMPV3_REPORT_HDRLEN	8	/* type, reserved, checksum, reserved, count */
+
+/* The IPv4 header and IGMP header fields read here, at their offsets */
+#define IP_HDR_MINLEN		20
+#define IP_OFF_VHL		0
+#define IP_OFF_PROTO		9
+#define IP_OFF_SRC		12
+#define IP_OFF_DST		16
+#define IGMP_HDRLEN		8	/* type, code, checksum, group */
+
+/*
+ * A packet off the IGMP socket, IP header included.  The header length is
+ * the sender's to choose and is held to what arrived before anything is
+ * read behind it.  The checksum is the caller's, over the ipdatalen bytes
+ * at igmp.  RFC 3376 sec. 7.1 tells a query's version by its length: eight
+ * bytes is v1 with a zero Max Response Code and v2 without, twelve or more
+ * is v3, and anything in between is no query.
+ */
+int igmp_parse_packet(const void *buf, size_t len, igmp_pkt_t *pkt)
+{
+    const uint8_t *p = buf;
+
+    memset(pkt, 0, sizeof(*pkt));
+
+    if (len < IP_HDR_MINLEN)
+	return IGMP_PKT_SHORT;
+
+    pkt->proto = p[IP_OFF_PROTO];
+    memcpy(&pkt->src, p + IP_OFF_SRC, sizeof(pkt->src));
+    memcpy(&pkt->dst, p + IP_OFF_DST, sizeof(pkt->dst));
+
+    if (pkt->proto == 0)
+	return IGMP_PKT_UPCALL;
+
+    pkt->iphdrlen = (size_t)(p[IP_OFF_VHL] & 0x0f) << 2;
+    if (pkt->iphdrlen < IP_HDR_MINLEN || pkt->iphdrlen > len)
+	return IGMP_PKT_BAD_HLEN;
+
+    pkt->ipdatalen = len - pkt->iphdrlen;
+    if (pkt->ipdatalen < IGMP_HDRLEN)
+	return IGMP_PKT_SHORT_IGMP;
+
+    pkt->igmp = p + pkt->iphdrlen;
+    pkt->type = pkt->igmp[0];
+    pkt->code = pkt->igmp[1];
+    memcpy(&pkt->group, pkt->igmp + 4, sizeof(pkt->group));
+
+    if (pkt->ipdatalen == IGMP_HDRLEN)
+	pkt->query_version = pkt->code == 0 ? 1 : 2;
+    else if (pkt->ipdatalen >= IGMP_HDRLEN + 4)
+	pkt->query_version = 3;
+
+    return IGMP_PKT_OK;
+}
 #define IGMPV3_REC_HDRLEN	8	/* type, aux len, source count, group */
 
 /* The report header: its type, which accept_group_report() is told, and

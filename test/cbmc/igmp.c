@@ -20,6 +20,8 @@
  * SOURCE naming src/igmp_parse.c or a mutant of it.  autorp.c beside it
  * explains the method; the proofs are, each an entry point for --function:
  *
+ *   proof_packet    the IP and IGMP headers accept_igmp() is handed, for
+ *                   any packet
  *   proof_report    the report header, for any message
  *   proof_record    one group record, from any cursor on any message
  *   proof_source    the source accessor, for any source of any record
@@ -28,8 +30,11 @@
  *
  * The first three have no loop and cover every length an IP datagram can
  * carry.  Beside memory safety, what they assert is the contract
- * accept_membership_report() relies on:
+ * accept_igmp() and accept_membership_report() rely on:
  *
+ *   - a packet is read behind its IP header only when the header length
+ *     is one a header can have and the packet holds, and behind that only
+ *     when an IGMP header fits; a query's version is its length's;
  *   - a record is handed out only when all of it, sources and auxiliary
  *     data, is inside the message, and the next one begins behind it;
  *   - a refusal moves nothing, and every record handed out is counted;
@@ -65,10 +70,52 @@ static uint8_t *message(size_t *len, size_t max)
     return buf;
 }
 
+void proof_packet(void);
 void proof_report(void);
 void proof_record(void);
 void proof_source(void);
 void proof_walk(void);
+
+void proof_packet(void)
+{
+    igmp_pkt_t pkt;
+    uint8_t *buf;
+    size_t len, hlen;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = igmp_parse_packet(buf, len, &pkt);
+
+    if (len < 20) {
+	__CPROVER_assert(rc == IGMP_PKT_SHORT, "a packet without an IP header is refused");
+	free(buf);
+	return;
+    }
+    __CPROVER_assert(memcmp(&pkt.src, buf + 12, 4) == 0 && memcmp(&pkt.dst, buf + 16, 4) == 0,
+		     "source and destination are the IP header's");
+    if (buf[9] == 0) {
+	__CPROVER_assert(rc == IGMP_PKT_UPCALL, "protocol zero is the kernel's");
+	free(buf);
+	return;
+    }
+
+    hlen = (size_t)(buf[0] & 0x0f) * 4;
+    if (hlen < 20 || hlen > len) {
+	__CPROVER_assert(rc == IGMP_PKT_BAD_HLEN, "a header length the packet cannot have is refused");
+    } else if (len - hlen < 8) {
+	__CPROVER_assert(rc == IGMP_PKT_SHORT_IGMP, "and so is no room for an IGMP header");
+    } else {
+	__CPROVER_assert(rc == IGMP_PKT_OK && pkt.igmp == buf + hlen && pkt.ipdatalen == len - hlen,
+			 "the IGMP message is everything behind the header");
+	__CPROVER_assert(pkt.type == buf[hlen] && pkt.code == buf[hlen + 1] &&
+			 memcmp(&pkt.group, buf + hlen + 4, 4) == 0,
+			 "type, code and group are the IGMP header's");
+	__CPROVER_assert(pkt.query_version ==
+			 (pkt.ipdatalen == 8 ? (pkt.code == 0 ? 1 : 2) : pkt.ipdatalen >= 12 ? 3 : 0),
+			 "a query's version is its length's, RFC 3376 sec. 7.1");
+    }
+    free(buf);
+}
 
 void proof_report(void)
 {

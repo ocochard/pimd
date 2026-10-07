@@ -217,10 +217,16 @@ mutant assert-read-past-length     "$h" "$s" proof_assert       0 1 's/pim_parse
 # IGMPv3 reports, src/igmp_parse.c
 h="$here/igmp.c"
 s="$top/src/igmp_parse.c"
+proof  igmp-packet                 "$h" "$s" proof_packet       0 1
 proof  igmp-report                 "$h" "$s" proof_report       0 1
 proof  igmp-record                 "$h" "$s" proof_record       0 1
 proof  igmp-source                 "$h" "$s" proof_source       0 1
 proof  igmp-walk                   "$h" "$s" proof_walk        64 8
+mutant igmp-no-ip-bound            "$h" "$s" proof_packet       0 1 's/if (len < IP_HDR_MINLEN)/if (0)/'
+mutant igmp-hlen-unbounded         "$h" "$s" proof_packet       0 1 's/ || pkt->iphdrlen > len)/)/'
+mutant igmp-no-igmp-bound          "$h" "$s" proof_packet       0 1 's/pkt->ipdatalen < IGMP_HDRLEN/0/'
+mutant igmp-query-v1-v2-swapped    "$h" "$s" proof_packet       0 1 's/pkt->code == 0 ? 1 : 2/pkt->code == 0 ? 2 : 1/'
+mutant igmp-nine-byte-query        "$h" "$s" proof_packet       0 1 's/pkt->ipdatalen >= IGMP_HDRLEN + 4/pkt->ipdatalen > IGMP_HDRLEN/'
 mutant igmp-no-header-bound        "$h" "$s" proof_report       0 1 's/len < IGMPV3_REPORT_HDRLEN/0/'
 mutant igmp-no-record-header-bound "$h" "$s" proof_record       0 1 's/c->left < IGMPV3_REC_HDRLEN/0/'
 mutant igmp-no-record-bound        "$h" "$s" proof_record       0 1 's/c->left < rec->size/0/'
