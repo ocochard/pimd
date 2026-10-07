@@ -1738,6 +1738,34 @@ static mrtentry_t *local_sg_entry(uint32_t source, uint32_t group)
  * TODO: when cache miss, check the iif, because probably ASSERTS
  * shoult take place
  */
+/*
+ * "Data arrives from S to G on I", the event both Assert machines of RFC
+ * 7761 sec. 4.6 have in their NoInfo state, on an interface this router
+ * forwards S out of.  It is the (S,G) machine's where CouldAssert(S,G,I),
+ * which wants SPTbit(S,G), and the (*,G) machine's where the router
+ * forwards S off the shared tree: an (S,G) entry without SPTbit -- an
+ * (S,G)RPbit entry, or one switch_shortest_path() made before data came
+ * down the new tree -- has no (S,G) answer to give.  Recording the Winner
+ * state on such an entry put the (*,G) machine's election on the (S,G)
+ * one, with the RPT metric, where an (S,G) Assert with the RPT bit set that
+ * beat it was then never acted on.  An interface in the forwarding list
+ * stands in for CouldAssert, as it did before: calc_oifs() never has the
+ * incoming interface in it.
+ */
+static void assert_on_data(mrtentry_t *mrt, uint32_t source, uint32_t group, vifi_t iif)
+{
+    mrtentry_t *machine = mrt;
+
+    if ((mrt->flags & MRTF_SG) && !(mrt->flags & MRTF_SPT)) {
+	machine = mrt->group ? mrt->group->grp_route : NULL;
+	if (!machine)
+	    return;
+    }
+
+    if (PIMD_VIFM_ISSET(iif, machine->oifs))
+	send_pim_assert(source, group, iif, machine);
+}
+
 static void process_cache_miss(struct igmpmsg *igmpctl)
 {
     uint32_t source, mfc_source;
@@ -1878,8 +1906,7 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
      * kernel raises only once an entry exists: one packet late for a stream,
      * and never for a source that sent once.
      */
-    if (PIMD_VIFM_ISSET(iif, mrt->oifs))
-	send_pim_assert(source, group, iif, mrt);
+    assert_on_data(mrt, source, group, iif);
 
     if (mrt->flags & MRTF_SG) {
 	/* Arrived on wrong interface */
@@ -2010,8 +2037,7 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
     }
 
     /* Trigger an Assert */
-    if (PIMD_VIFM_ISSET(iif, mrt->oifs))
-	send_pim_assert(source, group, iif, mrt);
+    assert_on_data(mrt, source, group, iif);
 }
 
 /*

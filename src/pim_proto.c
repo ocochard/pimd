@@ -4334,6 +4334,13 @@ static void assert_won(mrtentry_t *mrt, vifi_t vifi, uint32_t source,
     as->expires    = timer_now() + PIM_ASSERT_WINNER_TIMEOUT * 1000;
     route_timers_schedule(as->expires);
     mrt->flags |= MRTF_ASSERTED;
+
+    /* Which machine holds it, (S,G) or (*,G), is what the two Assert
+     * sections of RFC 7761 sec. 4.6 are mostly about telling apart */
+    IF_DEBUG(DEBUG_PIM_ASSERT)
+	logit(LOG_DEBUG, 0, "Assert Winner on %s for (%s,%s)", uvifs[vifi].uv_name,
+	      (mrt->flags & MRTF_WC) || !mrt->source ? "*" : inet_fmt(mrt->source->address, s1, sizeof(s1)),
+	      mrt->group ? inet_fmt(mrt->group->group, s2, sizeof(s2)) : "?");
 }
 
 /* Actions A2 and A6: store the new winner and what it won with, and hold it
@@ -4847,9 +4854,14 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 
 	/* We lost, and sec. 4.6.1 has no NoInfo-to-Loser transition for an
 	 * Assert with the RPT bit set: that one is the (*,G) machine's, and
-	 * losing it there is what takes the group off this interface.
+	 * losing it there is what takes the group off this interface.  The
+	 * Winner state has one, "Receive Preferred Assert", whatever the bit,
+	 * which this used to return from as well, so a winner holding an RPT
+	 * metric on an (S,G) entry kept the interface against any Assert with
+	 * the bit that beat it.  assert_on_data() in src/route.c no longer
+	 * gives an (S,G) entry such a Winner state; this is the other half.
 	 */
-	if (!wc && rptbit)
+	if (!wc && rptbit && !(own && assert_winner_is_me(own, vifi)))
 	    return ASSERT_NOTHING;
 
 	if (!own) {

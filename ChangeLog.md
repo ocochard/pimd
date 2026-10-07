@@ -35,6 +35,12 @@ issue of this repository is written out in full.
   source the Assert named.  RFC 7761 sec. 4.6.2 lets only an Assert with
   the RPT bit move the (\*,G) machine there, and pimd now ignores the other
   kind for it.  Step 7b of `crafted` in `test/lab.sh` sends both.
+- A router forwarding a source off the shared tree that saw that source's
+  data on one of its outgoing interfaces held the Assert election that
+  followed on its (S,G) entry rather than its (\*,G) one, as RFC 7761 sec.
+  4.6.1 and 4.6.2 divide them, and having won it there kept the interface
+  against any better Assert from the shared tree.  The election goes to the
+  (\*,G) entry now, and a winner leaves on any Assert that beats it.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

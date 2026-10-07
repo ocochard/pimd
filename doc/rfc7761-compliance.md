@@ -409,6 +409,28 @@ of `crafted` sends both from a neighbour on R1's link to the RP, for a source
 R1 holds no (S,G) for: without the bit R1 has to stay NoInfo (it read L before
 the fix), and with it, the control, it has to go Loser.*
 
+M20 was two halves of one mistake about which machine an Assert election
+belongs to, found by the same map.  "Data arrives from S to G on I" is the
+(S,G) machine's NoInfo event where CouldAssert(S,G,I), which wants
+SPTbit(S,G), and the (\*,G) machine's where the router forwards S off the
+shared tree.  `process_cache_miss()` and `process_wrong_iif()` recorded the
+Winner state on whatever entry the lookup returned, so an (S,G) entry without
+SPTbit -- an (S,G)RPbit entry, or one `switch_shortest_path()` made before
+data came down the new tree -- won the (\*,G) machine's election, with the RPT
+metric.  And `assert_machine()`, having lost a comparison to an Assert with
+the RPT bit on an (S,G) entry, returned before acting whatever the state, so
+such a winner kept the interface against every Assert with the bit that beat
+it, where sec. 4.6.1's Winner state goes to Loser on any preferred Assert.
+`assert_on_data()` (`src/route.c`) gives the event to the machine it belongs
+to now, and the Winner state is excepted from that return.  *Test: none in a
+lab -- no topology here puts data on an outgoing interface of an (S,G) entry
+without SPTbit deterministically.  The fuzz router of `test/fuzz/` does, with
+the committed `upcall-wrongvif.bin` seed: `FUZZ_DEBUG=1
+test/fuzz_igmp_replay test/fuzz/corpus/igmp/upcall-wrongvif.bin` logs "Assert
+Winner on fz1 for (10.0.1.9,239.1.1.1)" before the fix and "for
+(*,239.1.1.1)" after it.  The second half has no reproduction at all, the
+state it acted on being the first half's.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
