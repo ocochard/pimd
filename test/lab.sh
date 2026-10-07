@@ -1821,6 +1821,10 @@ CRAFT_FRAG_PRIO=${CRAFT_FRAG_PRIO:-254}
 # step reads "is this in the RP set" for has to be one nobody else put
 # there.
 CRAFT_DESYNC_NET=${CRAFT_DESYNC_NET:-237}
+
+# crafted step 7b: the source the two Asserts name, one r1 holds no (S,G)
+# for, so that the (S,G) machine has no entry to take either message first
+CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -7295,6 +7299,59 @@ check_crafted() {
 		fail "every answer came within ${HELLO_PROMPT}ms of the Hello, r1 answers new neighbours at once"
 	fi
 
+	print "7b. Only an Assert with the RPT bit moves the (*,G) machine upstream"
+	# RFC 7761 sec. 4.6.2 takes the (*,G) machine on RPF_interface(RP(G))
+	# from NoInfo to Loser only on an Assert with the RPT bit set, and moves
+	# RPF'(*,G) -- where the Joins of the whole group go -- to its winner.
+	# An Assert without the bit is about one source's shortest path tree and
+	# is the (S,G) machine's, AssertTrackingDesired(S,G,I)'s last clause.
+	# assert_machine() (src/pim_proto.c) gated the bit on its RPF-interface
+	# branch for entries without MRTF_RP only, and the (*,G) entry carries
+	# it, so with no (S,G) entry to take the message first, an Assert for
+	# any source handed the whole group's upstream to its sender.  Step 5's
+	# neighbour on R1's link to the RP sends both, for a source r1 holds no
+	# (S,G) for, at a metric better than anything: the one without the bit
+	# first, which has to leave r1 alone, then the one with it, the control,
+	# which has to take r1 to Loser there.  The address goes back on r2 for
+	# the step, step 5 and step 13 having taken it off again.
+	# The Hellos are sent again rather than relied on, for step 2c's reason.
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR on its link to the RP, the step cannot be put"
+	elif ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, so no downstream Join to build (*,$SUPP_GROUP) from"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$SUPP_GROUP" -w -r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$SUPP_GROUP"; then
+		fail "r1 built no (*,$SUPP_GROUP) from the downstream Join, the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$SUPP_GROUP" -s "$CRAFT_RPT_ASSERT_SRC" -P 1 -C 1
+		sleep 3
+		st=$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)
+		first=$st
+		if [ "$st" = . ]; then
+			ok "r1 holds NoInfo for (*,$SUPP_GROUP) on ${EP}112a after an Assert without the RPT bit"
+		else
+			fail "r1 reads '${st:-nothing}' for (*,$SUPP_GROUP) on ${EP}112a after an Assert without the RPT bit, sec. 4.6.2 has no transition for it"
+		fi
+
+		craft_on r2 "$SUPP_ADDR" assert -g "$SUPP_GROUP" -s "$CRAFT_RPT_ASSERT_SRC" -P 1 -C 1 -R
+		if wait_for 10 r1_supp_assert_is L; then
+			ok "and Loser on the same Assert with the bit set, the control"
+		elif [ "$first" = L ]; then
+			fail "the control cannot be read: the Assert without the bit already made r1 the Loser, and the same sender's with the bit is then inferior to it"
+		else
+			fail "r1 did not take the Assert with the RPT bit either, so the step above proves nothing"
+		fi
+
+		# And r1 left as it was found for the steps below, which use this
+		# link: an AssertCancel from the winner, sec. 4.6.4, is the RPT bit
+		# with an infinite preference and metric.
+		craft_on r2 "$SUPP_ADDR" assert -g "$SUPP_GROUP" -s "$CRAFT_RPT_ASSERT_SRC" -R \
+			-P 2147483647 -C 4294967295
+		wait_for 10 r1_supp_assert_is . || \
+			dprint "   r1 is still the Loser on ${EP}112a after the AssertCancel"
+	fi
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
@@ -8367,6 +8424,12 @@ check_fuzz() {
 }
 
 # Send one crafted PIM message from jail $1, sourced at $2
+# Is r1's (*,$SUPP_GROUP) Assert state on its link to the RP $1, crafted
+# step 7b?
+r1_supp_assert_is() {
+	[ "$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)" = "$1" ]
+}
+
 craft_on() {
 	jail=$1
 	addr=$2

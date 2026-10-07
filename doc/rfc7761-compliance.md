@@ -394,6 +394,21 @@ reading the state in that window, mistook for the bug's doing.  The BSR is
 the RP's own address, so the move takes the RPF check of the Bootstraps
 with it; the new neighbour sends them for the length of the step.*
 
+M19 was the (\*,G) machine taking an Assert it has no transition for, found
+by the same map.  Sec. 4.6.2 moves it on `RPF_interface(RP(G))` only on an
+Assert with the RPT bit set; one without the bit is about one source's
+shortest path tree and is the (S,G) machine's.  `assert_machine()` gated the
+bit on its RPF-interface branch for entries without `MRTF_RP` alone, and the
+(\*,G) entry carries it, so where no (S,G) entry took the message first an
+Assert naming any source put the (\*,G) machine into Loser state and moved
+`RPF'(*,G)` -- the upstream neighbour of the whole group -- to its sender.  The
+branch refuses such an Assert for the (\*,G) machine now, which loses no
+transition: a metric without the RPT bit is better than any with it, so it
+is never the inferior Assert that ends a Loser state either.  *Test: step 7b
+of `crafted` sends both from a neighbour on R1's link to the RP, for a source
+R1 holds no (S,G) for: without the bit R1 has to stay NoInfo (it read L before
+the fix), and with it, the control, it has to go Loser.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

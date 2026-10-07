@@ -4933,6 +4933,19 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 					* will win the assert, so don't
 					* change it.
 					*/
+	} else if (wc) {
+	    /* Sec. 4.6.2 moves the (*,G) machine here only on an Assert with
+	     * the RPT bit -- NoInfo to Loser, the preferred and the acceptable
+	     * Assert from the winner -- and an Assert without it is about one
+	     * source's shortest path tree, the (S,G) machine's by
+	     * AssertTrackingDesired(S,G,I)'s last clause.  Nor can it be the
+	     * inferior Assert from the winner that ends a Loser state: a metric
+	     * without the bit is better than any with it.  This branch let it
+	     * through for any entry carrying MRTF_RP, which the (*,G) entry
+	     * does, so with no (S,G) entry to take the message first an Assert
+	     * for any source handed the whole group's upstream to its sender.
+	     */
+	    return ASSERT_NOTHING;
 	}
 
 	/* Ignore assert message if we do not have an upstream router */

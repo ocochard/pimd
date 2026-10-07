@@ -29,6 +29,12 @@ issue of this repository is written out in full.
   outgoing interfaces until the timer ran out.  RFC 7761 sec. 4.6.1 and
   4.6.2 send the state to NoInfo the moment the interface stops being the
   RPF interface, and pimd does now.  Step 9 of `assert-recover` in `test/lab.sh` moves such a route.
+- An Assert without the RPT bit, arriving on the interface toward the RP,
+  could make pimd the Assert loser for the whole group and move the group's
+  upstream neighbour to whoever sent it, where it had no (S,G) state for the
+  source the Assert named.  RFC 7761 sec. 4.6.2 lets only an Assert with
+  the RPT bit move the (\*,G) machine there, and pimd now ignores the other
+  kind for it.  Step 7b of `crafted` in `test/lab.sh` sends both.
 
 [v3.2.0][] - 2026-10-01
 -----------------------
