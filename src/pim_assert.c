@@ -148,7 +148,18 @@ int assert_decide(const struct assert_view *v)
 	 * never wins: sec. 4.6.1 and sec. 4.6.2 have it lose to any
 	 * acceptable Assert, replace the winner only with a preferred one,
 	 * and go back to NoInfo on an inferior Assert from the winner.
-	 * RPF' follows the winner, sec. 4.1.6. */
+	 * RPF' follows the winner, sec. 4.1.6.
+	 *
+	 * The winner's AssertCancel first, for either machine: it carries
+	 * the RPT bit whatever the machine, sec. 4.6.4, and the test of the
+	 * bit below refused it for an (S,G) entry before it was looked at,
+	 * which left RPF'(S,G) naming a router that had said it would stop
+	 * forwarding, until Assert_Time.  test/cbmc/assert.c found it. */
+	if (loser && v->src == v->winner &&
+	    v->pref == PIM_ASSERT_INFINITE_PREFERENCE &&
+	    v->metric == PIM_ASSERT_INFINITE_METRIC)
+	    return ASSERT_ACT_CLEAR;
+
 	if (rptbit) {
 	    /* The locally used upstream router wins that one */
 	    if (!v->rp_entry)

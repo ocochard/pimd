@@ -345,7 +345,9 @@ several trials off the routers' logs),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
 the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
-as infinite, and losing to that metric from a higher address, the control (step 7c, M22),
+as infinite, and losing to that metric from a higher address, the control (step 7c, M22), an (S,G)
+Loser on its RPF interface leaving on the winner's AssertCancel, which carries the RPT bit and was
+dropped for it (step 7d, M23, found by `proof_decide` of `test/cbmc/assert.c`),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those

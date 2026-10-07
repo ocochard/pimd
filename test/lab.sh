@@ -1833,6 +1833,12 @@ CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
 # its link to R1, the only state behind it being the step's own Join
 CRAFT_RP_ASSERT_GROUP=${CRAFT_RP_ASSERT_GROUP:-225.1.4.6}
+# crafted step 7d: a group r2 holds an (S,G) for, the source being
+# CRAFT_RPT_ASSERT_SRC behind r1, and a neighbour on r2's link to r3 below
+# r3's address to join it from, so that it becomes nobody's DR
+CRAFT_RPF_CANCEL_GROUP=${CRAFT_RPF_CANCEL_GROUP:-225.1.4.7}
+CRAFT_R2_DOWN_ADDR=${CRAFT_R2_DOWN_ADDR:-10.0.23.1}
+CRAFT_R2_LINK23_ADDR=${CRAFT_R2_LINK23_ADDR:-10.0.23.2}	# r2's own, the Join's upstream
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -7408,6 +7414,55 @@ check_crafted() {
 		craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_RP_ASSERT_GROUP" -w \
 			-r "$RP_ADDR"
 	fi
+
+	print "7d. The winner's AssertCancel ends the (S,G) Loser state on the RPF interface"
+	# Sec. 4.6.1's Loser state goes back to NoInfo on "Receive Inferior
+	# Assert or Assert Cancel from Current Winner", on the RPF interface as
+	# anywhere: the winner has stopped forwarding, and RPF'(S,G) must stop
+	# naming it.  An AssertCancel carries the RPT bit, sec. 4.6.4, and
+	# assert_decide() (src/pim_assert.c) refused every Assert with the bit
+	# on an (S,G) entry's RPF interface before it looked at what it was,
+	# so the Joins went on to a router that had said it would not forward,
+	# until Assert_Time.  test/cbmc/assert.c's proof_decide found it.  r2
+	# is given an (S,G) whose RPF interface is its link to r1, by a Join
+	# from a neighbour on its link to r3, and loses it there to step 7c's
+	# neighbour, the control that the Assert reaches the machine at all;
+	# the same neighbour's AssertCancel then has to take r2 back to
+	# NoInfo.
+	box_addr_add r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR/24" 2>/dev/null || \
+		dprint "   could not put $CRAFT_R2_DOWN_ADDR on r2"
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 105
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_DOWN_ADDR" ||
+	   ! wait_for 30 has_neighbor r2 "$SUPP_ADDR"; then
+		fail "r2 has no neighbour at $CRAFT_R2_DOWN_ADDR or $SUPP_ADDR, the step cannot be put"
+	elif ! craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC" -H 65535 ||
+	     ! wait_for 30 has_sg r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP"; then
+		fail "r2 built no ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) from the Join, the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC" -P 1 -C 1
+		if ! wait_for 10 r2_rpf_cancel_assert_is L; then
+			st=$(assert_char_of r2 "${EPU}112b" "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" || true)
+			fail "r2 reads '${st:-nothing}' on ${EPU}112b after an Assert from $SUPP_ADDR, it never lost, the step proves nothing"
+		else
+			ok "r2 loses ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) to $SUPP_ADDR on its RPF interface, the control"
+
+			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
+				-s "$CRAFT_RPT_ASSERT_SRC" -R -P 2147483647 -C 4294967295
+			if wait_for 10 r2_rpf_cancel_assert_is .; then
+				ok "and goes back to NoInfo on the winner's AssertCancel"
+			else
+				fail "r2 is still the Loser on ${EPU}112b after the winner's AssertCancel, sec. 4.6.1 goes to NoInfo"
+			fi
+		fi
+
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
+			-s "$CRAFT_RPT_ASSERT_SRC"
+	fi
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
+	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
@@ -8488,6 +8543,10 @@ r1_supp_assert_is() {
 
 r2_rp_assert_is() {
 	[ "$(assert_char_of r2 "${EPU}112b" ANY "$CRAFT_RP_ASSERT_GROUP" || true)" = "$1" ]
+}
+
+r2_rpf_cancel_assert_is() {
+	[ "$(assert_char_of r2 "${EPU}112b" "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" || true)" = "$1" ]
 }
 
 craft_on() {

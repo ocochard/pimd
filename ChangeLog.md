@@ -46,6 +46,12 @@ issue of this repository is written out in full.
   AssertCancel, and lost every such election.  It asserts with the zero
   metric of its own address now, RFC 7761 sec. 4.6.3.  Step 7c of
   `crafted` in `test/lab.sh` puts it.
+- A router that had lost the Assert election for a source on its upstream
+  link ignored the winner's AssertCancel and went on sending its Joins for
+  that source to a router that had stopped forwarding it, for up to three
+  minutes.  It goes back to the routing table's neighbour at once now,
+  RFC 7761 sec. 4.6.1.  Found by the CBMC proof of the Assert decisions,
+  put by step 7d of `crafted` in `test/lab.sh`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

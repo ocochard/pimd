@@ -449,6 +449,22 @@ The fuzz router shows the wire: `upcall-wrongvif.bin` replayed with
 `FUZZ_DEBUG=1` logs "Send PIM ASSERT CANCEL" before the fix and "Send PIM
 ASSERT" after it.*
 
+M23 was found by a prover rather than by a reader: `proof_decide` in
+`test/cbmc/assert.c` writes the two tables of sec. 4.6.1 and 4.6.2 out as a
+spec and checks `assert_decide()` (`src/pim_assert.c`) against them for
+every input.  On the RPF interface the (S,G) machine's Loser state goes back
+to NoInfo on "Receive Inferior Assert or Assert Cancel from Current Winner",
+and an AssertCancel carries the RPT bit, sec. 4.6.4.  The upstream branch
+refused every Assert with the bit on an (S,G) entry without MRTF_RP before it
+looked at what it was, so the winner's cancel was dropped, and RPF'(S,G)
+went on naming a router that had said it would stop forwarding until
+Assert_Time ran out -- the black hole the cancel exists to prevent.  The
+(\*,G) machine reached the same transition through its own path.  The
+winner's cancel is tested first now, for either machine.  *Test: `crafted`
+step 7d in `test/lab.sh`: r2 is given an (S,G) whose RPF interface is its
+link to r1 and loses it there to a neighbour, the control, whose AssertCancel
+then has to take r2 back to NoInfo (it stayed the Loser before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
