@@ -122,6 +122,27 @@ struct tr_resp {
 
 #define NBR_VERS(n)	(((n)->al_pv << 8) + (n)->al_mv)
 
+/*
+ * An mtrace query or one in transit, as src/igmp_parse.c decodes it: the
+ * IGMP payload, a query block and then as many response blocks as the
+ * routers before this one added.  The response TTL and the query ID share
+ * one word on the wire, the TTL its first byte, and are read from there
+ * rather than through the bitfields of struct tr_query above, whose order
+ * is the compiler's: with clang on FreeBSD/amd64 they read the TTL out of
+ * the query ID's last byte, and a multicast reply went out with that TTL.
+ */
+typedef struct {
+    int      type;		/* QUERY or RESP */
+    uint32_t src;		/* network order */
+    uint32_t dst;		/* network order */
+    uint32_t raddr;		/* network order */
+    uint8_t  rttl;
+    uint32_t qid;		/* the 24-bit query ID, host order */
+    unsigned rcount;		/* response blocks already in it */
+} mtrace_msg_t;
+
+int mtrace_parse(const void *data, size_t len, mtrace_msg_t *m);
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

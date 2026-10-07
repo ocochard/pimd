@@ -16,6 +16,12 @@ issue of this repository is written out in full.
   by a decoder the install loop reads it through, and the next set is always
   behind the records the fragment count says.  `crafted` step 31 of
   `test/lab.sh` sends such a message.
+- An mtrace query's response TTL and query ID were read through the
+  bitfields of `struct tr_query`, whose order is the compiler's: with clang
+  on FreeBSD/amd64 (measured) the TTL came out of the query ID's last byte,
+  and a multicast reply went out with that TTL -- zero for a query ID ending
+  in 0x00.  Both are read at their
+  offsets on the wire now, by a decoder in `src/igmp_parse.c`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

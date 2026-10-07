@@ -36,6 +36,7 @@
 #include <netinet/in.h>
 
 #include "igmpv3.h"
+#include "trace.h"
 
 #define IGMPV3_REPORT_HDRLEN	8	/* type, reserved, checksum, reserved, count */
 
@@ -153,6 +154,34 @@ uint32_t igmpv3_source(const igmpv3_rec_t *rec, uint16_t i)
     memcpy(&addr, rec->srcs + (size_t)i * sizeof(uint32_t), sizeof(addr));
 
     return addr;
+}
+
+/*
+ * An mtrace packet's payload, behind the IGMP header: a query block of
+ * QLEN bytes alone is a query, and one followed by any whole number of
+ * RLEN response blocks is a query in transit.  Anything else is neither.
+ */
+int mtrace_parse(const void *data, size_t len, mtrace_msg_t *m)
+{
+    const uint8_t *p = data;
+
+    memset(m, 0, sizeof(*m));
+
+    if (len == QLEN)
+	m->type = QUERY;
+    else if (len > QLEN && (len - QLEN) % RLEN == 0)
+	m->type = RESP;
+    else
+	return -1;
+
+    memcpy(&m->src,   p,     sizeof(m->src));
+    memcpy(&m->dst,   p + 4, sizeof(m->dst));
+    memcpy(&m->raddr, p + 8, sizeof(m->raddr));
+    m->rttl   = p[12];
+    m->qid    = ((uint32_t)p[13] << 16) | ((uint32_t)p[14] << 8) | p[15];
+    m->rcount = (unsigned)((len - QLEN) / RLEN);
+
+    return 0;
 }
 
 /**

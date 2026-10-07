@@ -22,6 +22,7 @@
  *
  *   proof_packet    the IP and IGMP headers accept_igmp() is handed, for
  *                   any packet
+ *   proof_mtrace    an mtrace payload, for any length
  *   proof_report    the report header, for any message
  *   proof_record    one group record, from any cursor on any message
  *   proof_source    the source accessor, for any source of any record
@@ -35,6 +36,9 @@
  *   - a packet is read behind its IP header only when the header length
  *     is one a header can have and the packet holds, and behind that only
  *     when an IGMP header fits; a query's version is its length's;
+ *   - an mtrace payload is a query block and whole response blocks or it
+ *     is refused, and its response TTL and query ID are the bytes the
+ *     wire puts them in, whatever order a compiler gives bitfields;
  *   - a record is handed out only when all of it, sources and auxiliary
  *     data, is inside the message, and the next one begins behind it;
  *   - a refusal moves nothing, and every record handed out is counted;
@@ -71,6 +75,7 @@ static uint8_t *message(size_t *len, size_t max)
 }
 
 void proof_packet(void);
+void proof_mtrace(void);
 void proof_report(void);
 void proof_record(void);
 void proof_source(void);
@@ -114,6 +119,31 @@ void proof_packet(void)
 			 (pkt.ipdatalen == 8 ? (pkt.code == 0 ? 1 : 2) : pkt.ipdatalen >= 12 ? 3 : 0),
 			 "a query's version is its length's, RFC 3376 sec. 7.1");
     }
+    free(buf);
+}
+
+void proof_mtrace(void)
+{
+    mtrace_msg_t m;
+    uint8_t *buf;
+    size_t len;
+    int rc;
+
+    buf = message(&len, DATAGRAM_MAX);
+    rc = mtrace_parse(buf, len, &m);
+
+    if (!(len == 16 || (len > 16 && (len - 16) % 32 == 0))) {
+	__CPROVER_assert(rc == -1, "a payload that is not a query and whole blocks is refused");
+	free(buf);
+	return;
+    }
+    __CPROVER_assert(rc == 0 && m.type == (len == 16 ? QUERY : RESP) && m.rcount == (len - 16) / 32,
+		     "a query alone, or in transit with a block per router before");
+    __CPROVER_assert(memcmp(&m.src, buf, 4) == 0 && memcmp(&m.dst, buf + 4, 4) == 0 &&
+		     memcmp(&m.raddr, buf + 8, 4) == 0, "source, destination and response address");
+    __CPROVER_assert(m.rttl == buf[12] &&
+		     m.qid == (((uint32_t)buf[13] << 16) | ((uint32_t)buf[14] << 8) | buf[15]),
+		     "the response TTL is byte 12 and the query ID the three behind it");
     free(buf);
 }
 

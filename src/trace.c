@@ -82,12 +82,12 @@ static void trace_vif_req(struct sioc_vif_req *v_req, vifi_t vifi)
 
 void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int no, int datalen)
 {
-    uint8_t type;
     mrtentry_t *mrt;
-    struct tr_query *qry;
-    struct tr_resp  *resp;
+    mtrace_msg_t qry;
+    struct tr_resp resp;
+    struct pim_writer w;
+    uint8_t *start;
     int vifi;
-    char *p;
     u_int rcount;
     int errcode = TR_NO_ERR;
     int resptype;
@@ -106,16 +106,23 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     gettimeofday(&tp, 0);
 
     /*
-     * Check if it is a query or a response
+     * Check if it is a query or a response.  Every bound of the payload is
+     * mtrace_parse()'s, src/igmp_parse.c, which reads its fields at the
+     * offsets of the wire.
      */
-    if (datalen == QLEN) {
-        type = QUERY;
+    if (datalen < 0 || mtrace_parse(data, (size_t)datalen, &qry)) {
+        logit(LOG_WARNING, 0, "%s from %s to %s",
+              "Non decipherable traceroute request received",
+              inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
+        return;
+    }
+
+    if (qry.type == QUERY) {
         IF_DEBUG(DEBUG_TRACE) {
             logit(LOG_DEBUG, 0, "Initial traceroute query rcvd from %s to %s",
                   inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 	}
-    } else if (datalen > (int)QLEN && ((size_t)datalen - QLEN) % RLEN == 0) {
-        type = RESP;
+    } else {
         IF_DEBUG(DEBUG_TRACE) {
             logit(LOG_DEBUG, 0, "In-transit traceroute query rcvd from %s to %s",
                   inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
@@ -126,34 +133,27 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 	    }
             return;
         }
-    } else {
-        logit(LOG_WARNING, 0, "%s from %s to %s",
-              "Non decipherable traceroute request received",
-              inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
-        return;
     }
-
-    qry = (struct tr_query *)data;
 
     /*
      * if it is a packet with all reports filled, drop it
      */
-    if ((rcount = ((size_t)datalen - QLEN) / RLEN) == no) {
+    if ((rcount = qry.rcount) == no) {
         IF_DEBUG(DEBUG_TRACE)
             logit(LOG_DEBUG, 0, "packet with all reports filled in");
         return;
     }
 
     IF_DEBUG(DEBUG_TRACE) {
-        logit(LOG_DEBUG, 0, "s: %s g: %s d: %s ", inet_fmt(qry->tr_src, s1, sizeof(s1)),
-              inet_fmt(group, s2, sizeof(s2)), inet_fmt(qry->tr_dst, s3, sizeof(s3)));
-        logit(LOG_DEBUG, 0, "rttl: %d rd: %s", qry->tr_rttl,
-              inet_fmt(qry->tr_raddr, s1, sizeof(s1)));
-        logit(LOG_DEBUG, 0, "rcount:%d, qid:%06x", rcount, qry->tr_qid);
+        logit(LOG_DEBUG, 0, "s: %s g: %s d: %s ", inet_fmt(qry.src, s1, sizeof(s1)),
+              inet_fmt(group, s2, sizeof(s2)), inet_fmt(qry.dst, s3, sizeof(s3)));
+        logit(LOG_DEBUG, 0, "rttl: %d rd: %s", qry.rttl,
+              inet_fmt(qry.raddr, s1, sizeof(s1)));
+        logit(LOG_DEBUG, 0, "rcount:%d, qid:%06x", rcount, qry.qid);
     }
 
     /* determine the routing table entry for this traceroute */
-    mrt = find_route(qry->tr_src, group, MRTF_SG | MRTF_WC,
+    mrt = find_route(qry.src, group, MRTF_SG | MRTF_WC,
                      DONT_CREATE);
     IF_DEBUG(DEBUG_TRACE) {
         if (mrt != (mrtentry_t *)NULL) {
@@ -177,8 +177,8 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
      * Check if the query destination is a vif connected to me.
      * and if so, whether I should start response back
      */
-    if (type == QUERY) {
-        if (oqid == qry->tr_qid) {
+    if (qry.type == QUERY) {
+        if (oqid == qry.qid) {
             /*
              * If the multicast router is a member of the group being
              * queried, and the query is multicasted, then the router can
@@ -197,17 +197,17 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 
         if (!mrt) {
             IF_DEBUG(DEBUG_TRACE) {
-                logit(LOG_DEBUG, 0, "Mcast traceroute: no route entry %s", inet_fmt(qry->tr_src, s1, sizeof(s1)));
+                logit(LOG_DEBUG, 0, "Mcast traceroute: no route entry %s", inet_fmt(qry.src, s1, sizeof(s1)));
 	    }
             if (IN_MULTICAST(ntohl(dst)))
                 return;
         }
 
-        vifi = find_vif_direct(qry->tr_dst);
+        vifi = find_vif_direct(qry.dst);
         if (vifi == NO_VIF) {
             /* The traceroute destination is not on one of my subnet vifs. */
             IF_DEBUG(DEBUG_TRACE) {
-                logit(LOG_DEBUG, 0, "Destination %s not an interface", inet_fmt(qry->tr_dst, s1, sizeof(s1)));
+                logit(LOG_DEBUG, 0, "Destination %s not an interface", inet_fmt(qry.dst, s1, sizeof(s1)));
 	    }
             if (IN_MULTICAST(ntohl(dst)))
                 return;
@@ -216,7 +216,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
             IF_DEBUG(DEBUG_TRACE) {
                 logit(LOG_DEBUG, 0,
                       "Destination %s not on forwarding tree for src %s",
-                      inet_fmt(qry->tr_dst, s1, sizeof(s1)), inet_fmt(qry->tr_src, s2, sizeof(s2)));
+                      inet_fmt(qry.dst, s1, sizeof(s1)), inet_fmt(qry.src, s2, sizeof(s2)));
 	    }
             if (IN_MULTICAST(ntohl(dst)))
                 return;
@@ -238,66 +238,63 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     }
 
     /* Now that we've decided to send a response, save the qid */
-    oqid = qry->tr_qid;
+    oqid = qry.qid;
 
     IF_DEBUG(DEBUG_TRACE) {
         logit(LOG_DEBUG, 0, "Sending traceroute response");
     }
 
-    /* copy the packet to the sending buffer */
-    p = igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN;
-
     /*
-     * The request has to fit before it can be answered at all.  The test
-     * below is a different one: it asks whether *our own* response record
-     * still fits behind the copy, and relays a TR_NO_SPACE inside it,
-     * which needs the copy to have happened first.  This one bounds the
-     * copy itself.  datalen is the IGMP payload length of a packet off the
-     * socket, so it is whatever the sender's IP total length field said
-     * rather than anything this daemon chose.
+     * Copy the packet to the sending buffer, through a writer bounded by
+     * its end (src/pim_encode.c).  The request has to fit before it can be
+     * answered at all: datalen is the IGMP payload length of a packet off
+     * the socket, so it is whatever the sender's IP total length field
+     * said rather than anything this daemon chose.
      */
-    if (IP_IGMP_HEADER_LEN + IGMP_MINLEN + (size_t)datalen > SEND_BUF_SIZE) {
+    start = (uint8_t *)igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN;
+    pim_writer_init(&w, start, SEND_BUF_SIZE - IP_IGMP_HEADER_LEN - IGMP_MINLEN);
+    if (!pim_put_bytes(&w, data, (size_t)datalen)) {
         logit(LOG_WARNING, 0, "Mcast traceroute from %s is %d bytes, too long to answer",
               inet_fmt(src, s1, sizeof(s1)), datalen);
         return;
     }
 
-    bcopy(data, p, datalen);
-    p += datalen;
-
     /*
      * If there is no room to insert our reply, coopt the previous hop
-     * error indication to relay this fact.
+     * error indication to relay this fact: the last byte of the copy, the
+     * flags of the block the router before us added.  A query that has no
+     * such block and no room for ours is not one this buffer can be handed.
      */
-    if (p + sizeof(struct tr_resp) > igmp_send_buf + SEND_BUF_SIZE) {
-        resp = (struct tr_resp *)p - 1;
-        resp->tr_rflags = TR_NO_SPACE;
+    if (!pim_writer_room(&w, RLEN)) {
+        if (!rcount)
+            return;
+        start[datalen - 1] = TR_NO_SPACE;
         mrt = NULL;
         goto sendit;
     }
 
     /*
-     * fill in initial response fields
+     * fill in initial response fields, in a block of our own appended to
+     * the copy once it is complete
      */
-    resp = (struct tr_resp *)p;
-    memset(resp, 0, sizeof(struct tr_resp));
+    memset(&resp, 0, sizeof(resp));
     datalen += RLEN;
 
-    resp->tr_qarr    = htonl(((tp.tv_sec + JAN_1970) << 16) +
+    resp.tr_qarr    = htonl(((tp.tv_sec + JAN_1970) << 16) +
 			     ((tp.tv_usec << 10) / 15625));
-    resp->tr_rproto  = PROTO_PIM;
-    resp->tr_outaddr = (vifi == NO_VIF) ? dst : uvifs[vifi].uv_lcl_addr;
-    resp->tr_fttl    = (vifi == NO_VIF) ? 0   : uvifs[vifi].uv_threshold;
-    resp->tr_rflags  = errcode;
+    resp.tr_rproto  = PROTO_PIM;
+    resp.tr_outaddr = (vifi == NO_VIF) ? dst : uvifs[vifi].uv_lcl_addr;
+    resp.tr_fttl    = (vifi == NO_VIF) ? 0   : uvifs[vifi].uv_threshold;
+    resp.tr_rflags  = errcode;
 
     /*
      * obtain # of packets out on interface
      */
     trace_vif_req(&v_req, vifi);
     if (vifi != NO_VIF && trace_vif_cnt(&v_req) >= 0)
-        resp->tr_vifout  =  htonl(v_req.ocount);
+        resp.tr_vifout  =  htonl(v_req.ocount);
     else
-        resp->tr_vifout  =  0xffffffff;
+        resp.tr_vifout  =  0xffffffff;
 
     /*
      * fill in scoping & pruning information
@@ -317,34 +314,34 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
         struct stable *st;
 
         for (st = gt->gt_srctbl; st; st = st->st_next) {
-            if (qry->tr_src == st->st_origin)
+            if (qry.src == st->st_origin)
                 break;
 	}
 
         memset(&sg_req, 0, sizeof(sg_req));
-        sg_req.src.s_addr = qry->tr_src;
+        sg_req.src.s_addr = qry.src;
         sg_req.grp.s_addr = group;
         if (st && st->st_ctime != 0 && trace_sg_cnt(&sg_req) >= 0)
-            resp->tr_pktcnt = htonl(sg_req.pktcnt + st->st_savpkt);
+            resp.tr_pktcnt = htonl(sg_req.pktcnt + st->st_savpkt);
         else
-            resp->tr_pktcnt = htonl(st ? st->st_savpkt : 0xffffffff);
+            resp.tr_pktcnt = htonl(st ? st->st_savpkt : 0xffffffff);
 
         if (PIMD_VIFM_ISSET(vifi, gt->gt_scope)) {
-            resp->tr_rflags = TR_SCOPED;
+            resp.tr_rflags = TR_SCOPED;
 	} else if (gt->gt_prsent_timer) {
-            resp->tr_rflags = TR_PRUNED;
+            resp.tr_rflags = TR_PRUNED;
         } else if (!PIMD_VIFM_ISSET(vifi, gt->gt_grpmems)) {
             if (PIMD_VIFM_ISSET(vifi, rt->rt_children) &&
                 NBRM_ISSETMASK(uvifs[vifi].uv_nbrmap, rt->rt_subordinates)) /*XXX*/
-                resp->tr_rflags = TR_OPRUNED;
+                resp.tr_rflags = TR_OPRUNED;
             else
-                resp->tr_rflags = TR_NO_FWD;
+                resp.tr_rflags = TR_NO_FWD;
 	}
     } else {
         if (scoped_addr(vifi, group))
-            resp->tr_rflags = TR_SCOPED;
+            resp.tr_rflags = TR_SCOPED;
         else if (rt && !PIMD_VIFM_ISSET(vifi, rt->rt_children))
-            resp->tr_rflags = TR_NO_FWD;
+            resp.tr_rflags = TR_NO_FWD;
     }
 #endif /* 0 */
 
@@ -353,42 +350,44 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
      */
     if (!mrt) {
         src = dst;		/* the dst address of resp. pkt */
-        resp->tr_inaddr   = 0;
-        resp->tr_rflags   = TR_NO_RTE;
-        resp->tr_rmtaddr  = 0;
+        resp.tr_inaddr   = 0;
+        resp.tr_rflags   = TR_NO_RTE;
+        resp.tr_rmtaddr  = 0;
     } else {
         /* get # of packets in on interface */
         trace_vif_req(&v_req, mrt->incoming);
         if (trace_vif_cnt(&v_req) >= 0)
-            resp->tr_vifin = htonl(v_req.icount);
+            resp.tr_vifin = htonl(v_req.icount);
         else
-            resp->tr_vifin = 0xffffffff;
+            resp.tr_vifin = 0xffffffff;
 
         /* TODO
-           MASK_TO_VAL(rt->rt_originmask, resp->tr_smask);
+           MASK_TO_VAL(rt->rt_originmask, resp.tr_smask);
         */
         src = uvifs[mrt->incoming].uv_lcl_addr;
-        resp->tr_inaddr = src;
+        resp.tr_inaddr = src;
         if (mrt->upstream)
             parent_address = mrt->upstream->address;
         else
             parent_address = INADDR_ANY;
 
-        resp->tr_rmtaddr = parent_address;
+        resp.tr_rmtaddr = parent_address;
         if (vifi != NO_VIF && !PIMD_VIFM_ISSET(vifi, mrt->oifs)) {
             IF_DEBUG(DEBUG_TRACE)
                 logit(LOG_DEBUG, 0, "Destination %s not on forwarding tree for src %s",
-                      inet_fmt(qry->tr_dst, s1, sizeof(s1)), inet_fmt(qry->tr_src, s2, sizeof(s2)));
-            resp->tr_rflags = TR_WRONG_IF;
+                      inet_fmt(qry.dst, s1, sizeof(s1)), inet_fmt(qry.src, s2, sizeof(s2)));
+            resp.tr_rflags = TR_WRONG_IF;
         }
 #if 0
         if (rt->rt_metric >= UNREACHABLE) {
-            resp->tr_rflags = TR_NO_RTE;
+            resp.tr_rflags = TR_NO_RTE;
             /* Hack to send reply directly */
             rt = NULL;
         }
 #endif /* 0 */
     }
+
+    pim_put_bytes(&w, &resp, RLEN);
 
   sendit:
     /*
@@ -401,12 +400,12 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 
     if ((rcount + 1 == no) || (mrt == NULL) || (mrt->metric == 1)) {
         resptype = IGMP_MTRACE_RESP;
-        dst = qry->tr_raddr;
+        dst = qry.raddr;
     } else {
 #if 0   /* TODO */
 	if (!can_mtrace(rt->rt_parent, rt->rt_gateway)) {
-	    dst = qry->tr_raddr;
-	    resp->tr_rflags = TR_OLD_ROUTER;
+	    dst = qry.raddr;
+	    resp.tr_rflags = TR_OLD_ROUTER;
 	    resptype = IGMP_MTRACE_RESP;
 	} else {
 #endif  /* 0 */
@@ -431,7 +430,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 		logit(LOG_DEBUG, 0, "Sending reply to %s from %s",
 		      inet_fmt(dst, s1, sizeof(s1)),
 		      inet_fmt(uvifs[phys_vif].uv_lcl_addr, s2, sizeof(s2)));
-	    k_set_ttl(igmp_socket, qry->tr_rttl);
+	    k_set_ttl(igmp_socket, qry.rttl);
 	    send_igmp(igmp_send_buf, uvifs[phys_vif].uv_lcl_addr, dst,
 		      resptype, no, group, datalen);
 	    k_set_ttl(igmp_socket, 1);
@@ -453,24 +452,32 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
  * accept_neighbor_request() supports some old DVMRP messages from mrinfo.
  * Haven't tested it, because I have only the new mrinfo.
  */
+/*
+ * A writer over the body of a DVMRP reply in igmp_send_buf, bounded by the
+ * MAX_DVMRP_DATA_LEN the replies below are flushed at (src/pim_encode.c):
+ * a reply that does not fit is sent and a new one begun, and the writer is
+ * what makes "does it fit" and "where does it end" the same number.
+ */
+static uint8_t *dvmrp_reply_start(struct pim_writer *w)
+{
+    uint8_t *start = (uint8_t *)igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN;
+
+    pim_writer_init(w, start, MAX_DVMRP_DATA_LEN);
+
+    return start;
+}
+
 void accept_neighbor_request(uint32_t src, uint32_t dst __attribute__((unused)))
 {
     vifi_t vifi;
     struct uvif *v;
-    uint8_t *p, *ncount;
+    uint8_t *start, *ncount;
 /*    struct listaddr *la; */
     pim_nbr_entry_t *pim_nbr;
-    int datalen;
-    uint32_t temp_addr, them = src;
+    struct pim_writer w;
+    uint32_t them = src;
 
-#define PUT_ADDR(a)     temp_addr = ntohl(a);	\
-    *p++ = temp_addr >> 24;			\
-    *p++ = (temp_addr >> 16) & 0xFF;		\
-    *p++ = (temp_addr >> 8) & 0xFF;		\
-    *p++ = temp_addr & 0xFF;
-
-    p = (uint8_t *) (igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN);
-    datalen = 0;
+    start = dvmrp_reply_start(&w);
 
     for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
 	if (v->uv_flags & VIFF_DISABLED)
@@ -482,33 +489,30 @@ void accept_neighbor_request(uint32_t src, uint32_t dst __attribute__((unused)))
 	for (pim_nbr = v->uv_pim_neighbors; pim_nbr != (pim_nbr_entry_t *)NULL;
 	     pim_nbr = pim_nbr->next) {
 	    /* Make sure that there's room for this neighbor... */
-	    if (datalen + (ncount == 0 ? 4 + 3 + 4 : 4) > MAX_DVMRP_DATA_LEN) {
+	    if (!pim_writer_room(&w, ncount == 0 ? 4 + 3 + 4 : 4)) {
 		send_igmp(igmp_send_buf, INADDR_ANY, them, IGMP_DVMRP,
-			  DVMRP_NEIGHBORS, htonl(PIMD_LEVEL), datalen);
-		p = (uint8_t *) (igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN);
-		datalen = 0;
+			  DVMRP_NEIGHBORS, htonl(PIMD_LEVEL), (int)pim_writer_used(&w, start));
+		start = dvmrp_reply_start(&w);
 		ncount = 0;
 	    }
 
 	    /* Put out the header for this neighbor list... */
 	    if (ncount == 0) {
-		PUT_ADDR(v->uv_lcl_addr);
-		*p++ = v->uv_metric;
-		*p++ = v->uv_threshold;
-		ncount = p;
-		*p++ = 0;
-		datalen += 4 + 3;
+		pim_put_bytes(&w, &v->uv_lcl_addr, sizeof(v->uv_lcl_addr));
+		pim_put_u8(&w, v->uv_metric);
+		pim_put_u8(&w, v->uv_threshold);
+		ncount = w.p;
+		pim_put_u8(&w, 0);
 	    }
 
-	    PUT_ADDR(pim_nbr->address);
-	    datalen += 4;
+	    pim_put_bytes(&w, &pim_nbr->address, sizeof(pim_nbr->address));
 	    (*ncount)++;
 	}
     }
 
-    if (datalen != 0)
+    if (pim_writer_used(&w, start))
 	send_igmp(igmp_send_buf, INADDR_ANY, them, IGMP_DVMRP, DVMRP_NEIGHBORS,
-		  htonl(PIMD_LEVEL), datalen);
+		  htonl(PIMD_LEVEL), (int)pim_writer_used(&w, start));
 }
 
 
@@ -522,14 +526,13 @@ void accept_neighbor_request2(uint32_t src, uint32_t dst __attribute__((unused))
 {
     vifi_t vifi;
     struct uvif *v;
-    uint8_t *p, *ncount;
+    uint8_t *start, *ncount;
 /*    struct listaddr *la; */
     pim_nbr_entry_t *pim_nbr;
-    int datalen;
+    struct pim_writer w;
     uint32_t them = src;
 
-    p = (uint8_t *) (igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN);
-    datalen = 0;
+    start = dvmrp_reply_start(&w);
 
     for (vifi = 0, v = uvifs; vifi < numvifs; vifi++, v++) {
 	uint32_t vflags = v->uv_flags;
@@ -560,56 +563,47 @@ void accept_neighbor_request2(uint32_t src, uint32_t dst __attribute__((unused))
 	    if (rflags & DVMRP_NF_TUNNEL)
 		rflags |= DVMRP_NF_DOWN;
 
-	    if (datalen > MAX_DVMRP_DATA_LEN - 12) {
+	    if (!pim_writer_room(&w, 12)) {
 		send_igmp(igmp_send_buf, INADDR_ANY, them, IGMP_DVMRP,
-			  DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), datalen);
-		p = (uint8_t *) (igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN);
-		datalen = 0;
+			  DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), (int)pim_writer_used(&w, start));
+		start = dvmrp_reply_start(&w);
 	    }
 
-	    *(u_int*)p = v->uv_lcl_addr;
-	    p += 4;
-	    *p++ = v->uv_metric;
-	    *p++ = v->uv_threshold;
-	    *p++ = rflags;
-	    *p++ = 1;
-	    *(u_int*)p =  v->uv_rmt_addr;
-	    p += 4;
-	    datalen += 12;
+	    pim_put_bytes(&w, &v->uv_lcl_addr, sizeof(v->uv_lcl_addr));
+	    pim_put_u8(&w, v->uv_metric);
+	    pim_put_u8(&w, v->uv_threshold);
+	    pim_put_u8(&w, rflags);
+	    pim_put_u8(&w, 1);
+	    pim_put_bytes(&w, &v->uv_rmt_addr, sizeof(v->uv_rmt_addr));
 	} else {
 	    for ( ; pim_nbr; pim_nbr = pim_nbr->next) {
 		/* Make sure that there's room for this neighbor... */
-		if (datalen + (ncount == 0 ? 4+4+4 : 4) > MAX_DVMRP_DATA_LEN) {
+		if (!pim_writer_room(&w, ncount == 0 ? 4+4+4 : 4)) {
 		    send_igmp(igmp_send_buf, INADDR_ANY, them, IGMP_DVMRP,
-			      DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), datalen);
-		    p = (uint8_t *) (igmp_send_buf + IP_IGMP_HEADER_LEN + IGMP_MINLEN);
-		    datalen = 0;
+			      DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), (int)pim_writer_used(&w, start));
+		    start = dvmrp_reply_start(&w);
 		    ncount = 0;
 		}
 
 		/* Put out the header for this neighbor list... */
 		if (ncount == 0) {
-		    *(u_int*)p = v->uv_lcl_addr;
-		    p += 4;
-		    *p++ = v->uv_metric;
-		    *p++ = v->uv_threshold;
-		    *p++ = rflags;
-		    ncount = p;
-		    *p++ = 0;
-		    datalen += 4 + 4;
+		    pim_put_bytes(&w, &v->uv_lcl_addr, sizeof(v->uv_lcl_addr));
+		    pim_put_u8(&w, v->uv_metric);
+		    pim_put_u8(&w, v->uv_threshold);
+		    pim_put_u8(&w, rflags);
+		    ncount = w.p;
+		    pim_put_u8(&w, 0);
 		}
 
-		*(u_int*)p = pim_nbr->address;
-		p += 4;
-		datalen += 4;
+		pim_put_bytes(&w, &pim_nbr->address, sizeof(pim_nbr->address));
 		(*ncount)++;
 	    }
 	}
     }
 
-    if (datalen != 0)
+    if (pim_writer_used(&w, start))
 	send_igmp(igmp_send_buf, INADDR_ANY, them, IGMP_DVMRP,
-		  DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), datalen);
+		  DVMRP_NEIGHBORS2, htonl(PIMD_LEVEL), (int)pim_writer_used(&w, start));
 }
 
 /**

@@ -218,6 +218,7 @@ mutant assert-read-past-length     "$h" "$s" proof_assert       0 1 's/pim_parse
 h="$here/igmp.c"
 s="$top/src/igmp_parse.c"
 proof  igmp-packet                 "$h" "$s" proof_packet       0 1
+proof  igmp-mtrace                 "$h" "$s" proof_mtrace       0 1
 proof  igmp-report                 "$h" "$s" proof_report       0 1
 proof  igmp-record                 "$h" "$s" proof_record       0 1
 proof  igmp-source                 "$h" "$s" proof_source       0 1
@@ -227,6 +228,9 @@ mutant igmp-hlen-unbounded         "$h" "$s" proof_packet       0 1 's/ || pkt->
 mutant igmp-no-igmp-bound          "$h" "$s" proof_packet       0 1 's/pkt->ipdatalen < IGMP_HDRLEN/0/'
 mutant igmp-query-v1-v2-swapped    "$h" "$s" proof_packet       0 1 's/pkt->code == 0 ? 1 : 2/pkt->code == 0 ? 2 : 1/'
 mutant igmp-nine-byte-query        "$h" "$s" proof_packet       0 1 's/pkt->ipdatalen >= IGMP_HDRLEN + 4/pkt->ipdatalen > IGMP_HDRLEN/'
+mutant mtrace-partial-block        "$h" "$s" proof_mtrace       0 1 's/len > QLEN \&\& (len - QLEN) % RLEN == 0/len > QLEN/'
+mutant mtrace-ttl-from-bitfield    "$h" "$s" proof_mtrace       0 1 's/m->rttl   = p\[12\];/m->rttl   = p[15];/'
+mutant mtrace-qid-byte-order       "$h" "$s" proof_mtrace       0 1 's/((uint32_t)p\[13\] << 16) | ((uint32_t)p\[14\] << 8) | p\[15\]/((uint32_t)p[15] << 16) | ((uint32_t)p[14] << 8) | p[13]/'
 mutant igmp-no-header-bound        "$h" "$s" proof_report       0 1 's/len < IGMPV3_REPORT_HDRLEN/0/'
 mutant igmp-no-record-header-bound "$h" "$s" proof_record       0 1 's/c->left < IGMPV3_REC_HDRLEN/0/'
 mutant igmp-no-record-bound        "$h" "$s" proof_record       0 1 's/c->left < rec->size/0/'
