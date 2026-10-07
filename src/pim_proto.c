@@ -1317,12 +1317,16 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
 	    continue;
 
 	if (whole) {
-	    memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t), reg->body,
-		   sizeof(pim_register_t) + iplen);
-	    pktlen = sizeof(pim_register_t) + iplen;
+	    struct pim_writer w;
+	    uint8_t *start = pim_body_writer(&w);
+
+	    pim_put_bytes(&w, reg->body, sizeof(pim_register_t) + iplen);
+	    pktlen = w.full ? 0 : (int)pim_writer_used(&w, start);
 	} else {
 	    pktlen = build_null_register(inner_src, inner_grp);
 	}
+	if (!pktlen)
+	    return;
 
 	IF_DEBUG(DEBUG_PIM_REGISTER)
 	    logit(LOG_DEBUG, 0, "Copy PIM Register from %s for (%s, %s) to Anycast-RP member %s, "
@@ -1730,13 +1734,20 @@ static void register_to_set(uint32_t anycast, uint32_t source, uint32_t group, s
 	/* Rebuilt per member, send_frame() rewrites the buffer when it
 	 * fragments, see copy_register_to_set() */
 	if (ip) {
-	    char *buf = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
+	    struct pim_writer w;
+	    uint8_t *start = pim_body_writer(&w);
 
-	    memset(buf, 0, sizeof(pim_register_t));
-	    memcpy(buf + sizeof(pim_register_t), ip, pktlen);
-	    len = sizeof(pim_register_t) + pktlen;
+	    pim_put_u32(&w, 0);		/* No flags set */
+	    pim_put_bytes(&w, ip, (size_t)pktlen);
+	    if (w.full) {
+		pim_body_overrun("Register");
+		return;
+	    }
+	    len = (int)pim_writer_used(&w, start);
 	} else {
 	    len = build_null_register(source, group);
+	    if (!len)
+		return;
 	}
 
 	IF_DEBUG(DEBUG_PIM_REGISTER)
@@ -1760,7 +1771,8 @@ int send_pim_register(char *packet, size_t len)
     mrtentry_t *mrtentry2;
     uint32_t     reg_src, reg_dst;
     int		reg_mtu, pktlen = 0;
-    char       *buf;
+    struct pim_writer w;
+    uint8_t    *start;
     int		anycast = FALSE;
 
     /* `len` is what the kernel actually handed up behind its own header.
@@ -1846,16 +1858,17 @@ int send_pim_register(char *packet, size_t len)
 	    return TRUE;
 	}
 
-	buf = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
-	memset(buf, 0, sizeof(pim_register_t)); /* No flags set */
-	buf += sizeof(pim_register_t);
+	start = pim_body_writer(&w);
+	pim_put_u32(&w, 0);		/* No flags set */
 
 	/* Copy the data packet at the back of the register packet, at the
 	 * length checked against what arrived at the top of this function.
 	 */
-	memcpy(buf, ip, pktlen);
+	pim_put_bytes(&w, ip, (size_t)pktlen);
+	if (w.full)
+	    return pim_body_overrun("Register");
 
-	pktlen += sizeof(pim_register_t); /* 'sizeof(struct ip) + sizeof(pim_header_t)' added by send_pim()  */
+	pktlen = (int)pim_writer_used(&w, start); /* 'sizeof(struct ip) + sizeof(pim_header_t)' added by send_pim()  */
 	reg_mtu = uvifs[vifi].uv_mtu; /* XXX: Use PMTU to RP instead! */
 	reg_src = uvifs[vifi].uv_lcl_addr;
 	reg_dst = mrtentry->group->rpaddr;
@@ -1878,34 +1891,45 @@ int send_pim_register(char *packet, size_t len)
  * send_pim_unicast() fills with the IP and PIM headers.  Returns the length
  * to hand it, the Register header and the dummy IP header.
  */
+/*
+ * A Null-Register, RFC 7761 sec. 4.9.3: the flags word with the N bit, and
+ * a dummy IPv4 header carrying the source and the group, written field by
+ * field at the wire's offsets rather than through struct ip's bitfields,
+ * and checksummed once written.  Returns its length, or 0 if it did not
+ * fit, which at 24 bytes it always does.
+ */
 static int build_null_register(uint32_t source, uint32_t group)
 {
-    struct ip *ip;
-    pim_register_t *pim_register;
+    struct pim_writer w;
+    uint8_t *start, *hdr;
+    uint16_t sum;
 
-    pim_register = (pim_register_t *)(pim_send_buf + sizeof(struct ip) +
-				      sizeof(pim_header_t));
-    memset(pim_register, 0, sizeof(pim_register_t));
-    pim_register->reg_flags = htonl(pim_register->reg_flags
-				    | PIM_REGISTER_NULL_REGISTER_BIT);
+    start = pim_body_writer(&w);
+    pim_put_u32(&w, PIM_REGISTER_NULL_REGISTER_BIT);
 
-    ip = (struct ip *)(pim_register + 1);
-    /* set src/dst in dummy hdr */
-    ip->ip_v     = IPVERSION;
-    ip->ip_hl    = (sizeof(struct ip) >> 2);
-    ip->ip_tos   = 0;
-    ip->ip_id    = 0;
-    ip->ip_off   = 0;
-    ip->ip_p     = IPPROTO_PIM;			/* RFC 7761 sec. 4.9.3: 103 */
-    ip->ip_len   = htons(sizeof(struct ip));
-    ip->ip_ttl   = MINTTL; /* TODO: XXX: check whether need to setup the ttl */
-    ip->ip_src.s_addr = source;
-    ip->ip_dst.s_addr = group;
-    ip->ip_sum   = 0;
-    ip->ip_sum   = inet_cksum((uint16_t *)ip, sizeof(struct ip));
+    hdr = w.p;
+    pim_put_u8(&w, (IPVERSION << 4) | (sizeof(struct ip) >> 2));
+    pim_put_u8(&w, 0);				/* ToS */
+    pim_put_u16(&w, sizeof(struct ip));		/* Total length */
+    pim_put_u16(&w, 0);				/* Id */
+    pim_put_u16(&w, 0);				/* Fragment offset */
+    pim_put_u8(&w, MINTTL); /* TODO: XXX: check whether need to setup the ttl */
+    pim_put_u8(&w, IPPROTO_PIM);		/* RFC 7761 sec. 4.9.3: 103 */
+    pim_put_u16(&w, 0);				/* Checksum, below */
+    pim_put_bytes(&w, &source, sizeof(source));
+    pim_put_bytes(&w, &group, sizeof(group));
+    if (w.full) {
+	pim_body_overrun("Null-Register");
+	return 0;
+    }
+
+    /* inet_cksum() sums in network order and returns the result so, which
+     * is how the header carries it */
+    sum = (uint16_t)inet_cksum((uint16_t *)(void *)hdr, sizeof(struct ip));
+    memcpy(hdr + 10, &sum, sizeof(sum));
 
     /* include the dummy ip header */
-    return sizeof(pim_register_t) + sizeof(struct ip);
+    return (int)pim_writer_used(&w, start);
 }
 
 
@@ -1931,6 +1955,8 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     }
 
     pktlen = build_null_register(mrtentry->source->address, mrtentry->group->group);
+    if (!pktlen)
+	return FALSE;
 
     reg_mtu = uvifs[vifi].uv_mtu;
     reg_dst = mrtentry->group->rpaddr;
@@ -4094,10 +4120,14 @@ void pack_and_send_jp_message(pim_nbr_entry_t *pim_nbr)
 static void jp_message_send(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm)
 {
     vifi_t vifi = pim_nbr->vifi;
+    struct pim_writer w;
 
     hello_before_send(vifi);
-    memcpy(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t),
-	   bjpm->jp_message, bjpm->jp_message_size);
+    pim_body_writer(&w);
+    if (!pim_put_bytes(&w, bjpm->jp_message, bjpm->jp_message_size)) {
+	pim_body_overrun("Join/Prune");
+	return;
+    }
     IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
 	logit(LOG_INFO, 0, "Send PIM JOIN/PRUNE from %s on %s",
 	      inet_fmt(uvifs[vifi].uv_lcl_addr, s1, sizeof(s1)), uvifs[vifi].uv_name);
@@ -5589,7 +5619,17 @@ int receive_pim_bootstrap(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    if (uvifs[vifi].uv_flags & (VIFF_DISABLED | VIFF_DOWN | VIFF_REGISTER | VIFF_NONBRS))
 		continue;
 
-	    memcpy(pim_send_buf + sizeof(struct ip), msg, len);
+	    /* The message as it arrived, its PIM header included, which
+	     * send_pim() writes over: through a writer that starts where
+	     * that header goes (src/pim_encode.c) */
+	    struct pim_writer w;
+
+	    pim_writer_init(&w, (uint8_t *)pim_send_buf + sizeof(struct ip),
+			    SEND_BUF_SIZE - sizeof(struct ip));
+	    if (!pim_put_bytes(&w, msg, len)) {
+		pim_body_overrun("Bootstrap");
+		break;
+	    }
 	    send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
 		     PIM_BOOTSTRAP, len - sizeof(pim_header_t));
 	}
