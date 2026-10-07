@@ -580,36 +580,28 @@ static void autorp_send(uint32_t group, uint8_t ttl, uint8_t *msg, size_t len)
  * The header both messages share, sec. 4: version and type in one byte, the
  * RP count, the holdtime, and a reserved word.
  */
-static uint8_t *autorp_put_hdr(uint8_t *p, unsigned type, unsigned rpcnt, uint16_t holdtime)
+static void autorp_put_hdr(struct pim_writer *w, unsigned type, unsigned rpcnt, uint16_t holdtime)
 {
-    *p++ = (uint8_t)(((AUTORP_VERSION & 0x0f) << 4) | (type & 0x0f));
-    *p++ = (uint8_t)rpcnt;
-    *p++ = (uint8_t)((holdtime >> 8) & 0xff);
-    *p++ = (uint8_t)(holdtime & 0xff);
-    memset(p, 0, 4);
-
-    return p + 4;
+    pim_put_u8(w, (uint8_t)(((AUTORP_VERSION & 0x0f) << 4) | (type & 0x0f)));
+    pim_put_u8(w, (uint8_t)rpcnt);
+    pim_put_u16(w, holdtime);
+    pim_put_u32(w, 0);
 }
 
 /* An RP block: the address, this router's PIM version, a prefix count */
-static uint8_t *autorp_put_rp(uint8_t *p, uint32_t rp_addr, unsigned grpcnt)
+static void autorp_put_rp(struct pim_writer *w, uint32_t rp_addr, unsigned grpcnt)
 {
-    memcpy(p, &rp_addr, sizeof(rp_addr));
-    p += sizeof(rp_addr);
-    *p++ = PIM_VERSION & 0x03;
-    *p++ = (uint8_t)grpcnt;
-
-    return p;
+    pim_put_bytes(w, &rp_addr, sizeof(rp_addr));
+    pim_put_u8(w, PIM_VERSION & 0x03);
+    pim_put_u8(w, (uint8_t)grpcnt);
 }
 
 /* And one encoded group prefix, with the N bit of sec. 4 in its first byte */
-static uint8_t *autorp_put_grp(uint8_t *p, uint32_t group_addr, uint8_t masklen, int negative)
+static void autorp_put_grp(struct pim_writer *w, uint32_t group_addr, uint8_t masklen, int negative)
 {
-    *p++ = negative ? 0x01 : 0x00;
-    *p++ = masklen;
-    memcpy(p, &group_addr, sizeof(group_addr));
-
-    return p + sizeof(group_addr);
+    pim_put_u8(w, negative ? 0x01 : 0x00);
+    pim_put_u8(w, masklen);
+    pim_put_bytes(w, &group_addr, sizeof(group_addr));
 }
 
 /*
@@ -621,8 +613,9 @@ static void autorp_send_announce(void)
 {
     uint8_t msg[AUTORP_MSG_MAX];
     struct autorp_prefix *pfx;
+    struct pim_writer w;
     unsigned count = 0;
-    uint8_t *p = msg;
+    size_t len;
 
     for (pfx = autorp_prefixes; pfx; pfx = pfx->next)
 	count++;
@@ -635,17 +628,25 @@ static void autorp_send_announce(void)
 	return;
     }
 
-    p = autorp_put_hdr(p, AUTORP_TYPE_ANNOUNCE, 1, autorp_announce_holdtime);
-    p = autorp_put_rp(p, autorp_announce_addr, count);
+    /* Written through a writer bounded by msg (src/pim_encode.c), the
+     * count above saying whether it fits and the writer making sure */
+    pim_writer_init(&w, msg, sizeof(msg));
+    autorp_put_hdr(&w, AUTORP_TYPE_ANNOUNCE, 1, autorp_announce_holdtime);
+    autorp_put_rp(&w, autorp_announce_addr, count);
     for (pfx = autorp_prefixes; pfx; pfx = pfx->next)
-	p = autorp_put_grp(p, pfx->group_addr, pfx->masklen, pfx->negative);
+	autorp_put_grp(&w, pfx->group_addr, pfx->masklen, pfx->negative);
+    if (w.full) {
+	logit(LOG_WARNING, 0, "Auto-RP: announcement overran its buffer, not sent");
+	return;
+    }
+    len = pim_writer_used(&w, msg);
 
     IF_DEBUG(DEBUG_PIM_CAND_RP)
 	logit(LOG_DEBUG, 0, "Auto-RP: announcing %s for %u prefix%s, holdtime %u",
 	      inet_fmt(autorp_announce_addr, s1, sizeof(s1)), count,
 	      count == 1 ? "" : "es", autorp_announce_holdtime);
 
-    autorp_send(AUTORP_ANNOUNCE_GROUP, autorp_announce_ttl, msg, (size_t)(p - msg));
+    autorp_send(AUTORP_ANNOUNCE_GROUP, autorp_announce_ttl, msg, len);
 
     /*
      * An agent in this same daemon has to hear it, and multicast loopback
@@ -656,7 +657,7 @@ static void autorp_send_announce(void)
      * message goes into the cache directly, from this router's own address.
      */
     if (autorp_agent_flag)
-	accept_autorp(autorp_announce_addr, (char *)msg, (size_t)(p - msg));
+	accept_autorp(autorp_announce_addr, (char *)msg, len);
 }
 
 /*
@@ -715,9 +716,8 @@ static void autorp_send_mapping(void)
 {
     uint8_t msg[AUTORP_MSG_MAX];
     struct autorp_map *map, *rp;
+    struct pim_writer w;
     unsigned rpcnt = 0;
-    uint8_t *p = msg;
-    size_t left;
 
     if (autorp_agent_better != INADDR_ANY_N) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
@@ -726,13 +726,13 @@ static void autorp_send_mapping(void)
 	return;
     }
 
-    p    = autorp_put_hdr(p, AUTORP_TYPE_MAPPING, 0, autorp_agent_holdtime);
-    left = sizeof(msg) - AUTORP_HDR_LEN;
+    /* Written through a writer bounded by msg (src/pim_encode.c) */
+    pim_writer_init(&w, msg, sizeof(msg));
+    autorp_put_hdr(&w, AUTORP_TYPE_MAPPING, 0, autorp_agent_holdtime);
 
     /* One pass per RP, the list being keyed by prefix rather than by RP */
     for (rp = autorp_announced; rp; rp = rp->next) {
 	unsigned grpcnt = 0;
-	uint8_t *rpp;
 
 	/* Have its blocks already gone in under an earlier entry? */
 	for (map = autorp_announced; map != rp; map = map->next) {
@@ -749,29 +749,32 @@ static void autorp_send_mapping(void)
 	if (!grpcnt)
 	    continue;
 
-	if (left < AUTORP_RP_LEN + grpcnt * AUTORP_GRP_LEN) {
+	if (!pim_writer_room(&w, AUTORP_RP_LEN + grpcnt * AUTORP_GRP_LEN)) {
 	    logit(LOG_WARNING, 0, "Auto-RP: the mapping message is full, %s left out"
 		  " (the domain wants more than one agent, or fewer prefixes)",
 		  inet_fmt(rp->rp_addr, s1, sizeof(s1)));
 	    break;
 	}
 
-	rpp = p;
-	p = autorp_put_rp(p, rp->rp_addr, grpcnt);
+	autorp_put_rp(&w, rp->rp_addr, grpcnt);
 	for (map = autorp_announced; map; map = map->next) {
 	    if (map->rp_addr != rp->rp_addr || !autorp_resolved(map))
 		continue;
 
-	    p = autorp_put_grp(p, map->group_addr, map->masklen, map->negative);
+	    autorp_put_grp(&w, map->group_addr, map->masklen, map->negative);
 	}
 
-	left -= (size_t)(p - rpp);
 	rpcnt++;
     }
 
     if (!rpcnt) {
 	IF_DEBUG(DEBUG_PIM_CAND_RP)
 	    logit(LOG_DEBUG, 0, "Auto-RP: nothing announced, no mapping to send");
+	return;
+    }
+
+    if (w.full) {
+	logit(LOG_WARNING, 0, "Auto-RP: mapping overran its buffer, not sent");
 	return;
     }
 
@@ -782,7 +785,7 @@ static void autorp_send_mapping(void)
 	      rpcnt, rpcnt == 1 ? "" : "s",
 	      inet_fmt(autorp_agent_addr, s1, sizeof(s1)), autorp_agent_holdtime);
 
-    autorp_send(AUTORP_DISCOVERY_GROUP, autorp_agent_ttl, msg, (size_t)(p - msg));
+    autorp_send(AUTORP_DISCOVERY_GROUP, autorp_agent_ttl, msg, pim_writer_used(&w, msg));
 }
 
 /*
@@ -870,19 +873,22 @@ void age_autorp(void)
 static uint16_t autorp_udp_cksum(uint32_t src, uint32_t dst, uint8_t *udp, size_t udplen)
 {
     uint8_t buf[12 + AUTORP_RELAY_MAX];
-    uint8_t *p = buf;
+    struct pim_writer w;
 
     if (udplen > AUTORP_RELAY_MAX)	/* the caller bounds this already */
 	return 0;
 
-    /* Both are already in network byte order, which is what PUT_NETLONG
-     * writes the bytes of -- PUT_EUADDR hands it an address the same way. */
-    PUT_NETLONG(src, p);
-    PUT_NETLONG(dst, p);
-    PUT_BYTE(0, p);
-    PUT_BYTE(IPPROTO_UDP, p);
-    PUT_HOSTSHORT(udplen, p);
-    memcpy(p, udp, udplen);
+    /* Both addresses are already in network byte order, and go in as the
+     * bytes they are */
+    pim_writer_init(&w, buf, sizeof(buf));
+    pim_put_bytes(&w, &src, sizeof(src));
+    pim_put_bytes(&w, &dst, sizeof(dst));
+    pim_put_u8(&w, 0);
+    pim_put_u8(&w, IPPROTO_UDP);
+    pim_put_u16(&w, (uint16_t)udplen);
+    pim_put_bytes(&w, udp, udplen);
+    if (w.full)
+	return 0;
 
     return (uint16_t)inet_cksum((uint16_t *)buf, (u_int)(12 + udplen));
 }

@@ -16,8 +16,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  *
- * The PUT_* macros of pimd.h write wherever their pointer points, and each
- * builder that used them carried its own sum of how much would fit.  One
+ * The PUT_* macros pimd.h used to have wrote wherever their pointer
+ * pointed, and each builder that used them carried its own sum of how much
+ * would fit.  One
  * of those sums was missing once: create_pim_bootstrap_message() wrote an
  * RP set of 10200 ranges a stranger had advertised past the end of the
  * 128K send buffer.  This is the same writing with the end of the buffer
@@ -104,7 +105,7 @@ int pim_put_euaddr(struct pim_writer *w, uint32_t addr)
     return pim_put(w, b, sizeof(b));
 }
 
-/* Encoded-Group: the address masked to its length, as PUT_EGADDR() does */
+/* Encoded-Group: the address masked to its length, RFC 7761 sec. 4.9.1 */
 int pim_put_egaddr(struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t reserved)
 {
     uint8_t b[PIM_ENCODE_GRP_ADDR_LEN] = { ADDRF_IPv4, ADDRT_IPv4, reserved, masklen };
@@ -117,7 +118,7 @@ int pim_put_egaddr(struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t
     return pim_put(w, b, sizeof(b));
 }
 
-/* Encoded-Source: the address masked to its length, as PUT_ESADDR() does */
+/* Encoded-Source: the address masked to its length, sec. 4.9.1 */
 int pim_put_esaddr(struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t flags)
 {
     uint8_t b[PIM_ENCODE_SRC_ADDR_LEN] = { ADDRF_IPv4, ADDRT_IPv4, flags, masklen };

@@ -1005,11 +1005,35 @@ static uint32_t prune_pending_delay(vifi_t vifi)
     return effective_propagation_delay(vifi) + effective_override_interval(vifi);
 }
 
+/*
+ * A writer over the body of a message in pim_send_buf, behind the IP and
+ * PIM headers send_pim() and send_pim_unicast() fill in, bounded by the end
+ * of the buffer (src/pim_encode.c).  The body's start is returned for the
+ * length.  A builder that finds the writer full afterwards sends nothing:
+ * none of them comes near 128K, so it would be a builder whose own sum is
+ * wrong, and a message with a field missing is not one to put on the wire.
+ */
+static uint8_t *pim_body_writer(struct pim_writer *w)
+{
+    const size_t hdrs = sizeof(struct ip) + sizeof(pim_header_t);
+    uint8_t *start = (uint8_t *)pim_send_buf + hdrs;
+
+    pim_writer_init(w, start, SEND_BUF_SIZE - hdrs);
+
+    return start;
+}
+
+/* Said for a message pim_body_writer() could not hold, and not sent */
+static int pim_body_overrun(const char *what)
+{
+    logit(LOG_WARNING, 0, "PIM %s does not fit the send buffer, not sent", what);
+    return FALSE;
+}
+
 int send_pim_hello(struct uvif *v, uint16_t holdtime)
 {
-    char   *buf;
-    uint8_t *data;
-    size_t  len;
+    struct pim_writer w;
+    uint8_t *start;
 
     /* "phyint ... passive": IGMP on this link and no PIM, so no Hello --
      * and every other message this router would send there wants a
@@ -1023,29 +1047,28 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     IF_DEBUG(DEBUG_PIM_HELLO)
 	logit(LOG_DEBUG, 0, "Sending PIM HELLO on %s", v->uv_name);
 
-    buf = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
-    data = (uint8_t *)buf;
-    PUT_HOSTSHORT(PIM_HELLO_HOLDTIME, data);
-    PUT_HOSTSHORT(PIM_HELLO_HOLDTIME_LEN, data);
-    PUT_HOSTSHORT(holdtime, data);
+    start = pim_body_writer(&w);
+    pim_put_u16(&w, PIM_HELLO_HOLDTIME);
+    pim_put_u16(&w, PIM_HELLO_HOLDTIME_LEN);
+    pim_put_u16(&w, holdtime);
 
     /* RFC 7761 sec. 4.3.3 wants this on every multi-access LAN, and an
      * upstream that does not see it falls back to its own defaults -- which
      * for pimd's own downstream neighbors used to mean the option was never
      * on the wire at all.  The T bit stays clear: it advertises the ability
      * to disable Join suppression, which pimd does not have. */
-    PUT_HOSTSHORT(PIM_HELLO_LAN_PRUNE_DELAY, data);
-    PUT_HOSTSHORT(PIM_HELLO_LAN_PRUNE_DELAY_LEN, data);
-    PUT_HOSTSHORT(PIM_MSEC(PIM_PROPAGATION_DELAY), data);
-    PUT_HOSTSHORT(PIM_MSEC(PIM_OVERRIDE_INTERVAL), data);
+    pim_put_u16(&w, PIM_HELLO_LAN_PRUNE_DELAY);
+    pim_put_u16(&w, PIM_HELLO_LAN_PRUNE_DELAY_LEN);
+    pim_put_u16(&w, PIM_MSEC(PIM_PROPAGATION_DELAY));
+    pim_put_u16(&w, PIM_MSEC(PIM_OVERRIDE_INTERVAL));
 
-    PUT_HOSTSHORT(PIM_HELLO_DR_PRIO, data);
-    PUT_HOSTSHORT(PIM_HELLO_DR_PRIO_LEN, data);
-    PUT_HOSTLONG(v->uv_dr_prio, data);
+    pim_put_u16(&w, PIM_HELLO_DR_PRIO);
+    pim_put_u16(&w, PIM_HELLO_DR_PRIO_LEN);
+    pim_put_u32(&w, v->uv_dr_prio);
 
-    PUT_HOSTSHORT(PIM_HELLO_GENID, data);
-    PUT_HOSTSHORT(PIM_HELLO_GENID_LEN, data);
-    PUT_HOSTLONG(v->uv_genid, data);
+    pim_put_u16(&w, PIM_HELLO_GENID);
+    pim_put_u16(&w, PIM_HELLO_GENID_LEN);
+    pim_put_u32(&w, v->uv_genid);
 
     /* RFC 7761 sec. 4.3.1: MUST be included whenever the interface has
      * secondary addresses.  Without it a neighbor whose route to a source
@@ -1053,15 +1076,20 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     if (v->uv_nsecaddrs) {
 	u_int i;
 
-	PUT_HOSTSHORT(PIM_HELLO_ADDR_LIST, data);
-	PUT_HOSTSHORT(v->uv_nsecaddrs * PIM_ENCODE_UNI_ADDR_LEN, data);
+	/* MAX_SECADDRS (src/vif.h) keeps the length well inside the
+	 * option's 16 bits */
+	pim_put_u16(&w, PIM_HELLO_ADDR_LIST);
+	pim_put_u16(&w, (uint16_t)(v->uv_nsecaddrs * PIM_ENCODE_UNI_ADDR_LEN));
 	for (i = 0; i < v->uv_nsecaddrs; i++)
-	    PUT_EUADDR(v->uv_secaddrs[i], data);
+	    pim_put_euaddr(&w, v->uv_secaddrs[i]);
     }
 
-    len = data - (uint8_t *)buf;
-    send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_HELLO, len);
     SET_TIMER(v->uv_hello_timer, pim_timer_hello_interval);
+    if (w.full)
+	return pim_body_overrun("Hello");
+
+    send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_HELLO,
+	     pim_writer_used(&w, start));
 
     return TRUE;
 }
@@ -2035,8 +2063,8 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
 static int
 send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, uint32_t inner_src)
 {
-    char   *buf;
-    uint8_t *data;
+    struct pim_writer w;
+    uint8_t *start;
 
     /* A Register for a group in the SSM range used to return here without
      * building anything, which left RFC 7761 sec. 4.8.1's second half
@@ -2055,11 +2083,14 @@ send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, u
 	      inet_fmt(reg_src, s1, sizeof(s1)), inet_fmt(reg_dst, s2, sizeof(s2)),
 	      inet_fmt(inner_src, s3, sizeof(s3)), inet_fmt(inner_grp, s4, sizeof(s4)));
 
-    buf  = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
-    data = (uint8_t *)buf;
-    PUT_EGADDR(inner_grp, SINGLE_GRP_MSKLEN, 0, data);
-    PUT_EUADDR(inner_src, data);
-    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, reg_src, reg_dst, PIM_REGISTER_STOP, data - (uint8_t *)buf);
+    start = pim_body_writer(&w);
+    pim_put_egaddr(&w, inner_grp, SINGLE_GRP_MSKLEN, 0);
+    pim_put_euaddr(&w, inner_src);
+    if (w.full)
+	return pim_body_overrun("Register-Stop");
+
+    send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, reg_src, reg_dst, PIM_REGISTER_STOP,
+		     pim_writer_used(&w, start));
 
     return TRUE;
 }
@@ -2271,9 +2302,8 @@ void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
     struct uvif *v = &uvifs[vifi];
     uint32_t source;
     uint8_t flags = USADDR_S_BIT;
-    uint8_t *data;
-    char *buf;
-    size_t len;
+    struct pim_writer w;
+    uint8_t *start;
 
     if (!mrt || !mrt->group)
 	return;
@@ -2296,25 +2326,27 @@ void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
 	flags |= USADDR_RP_BIT | USADDR_WC_BIT;
     }
 
-    buf  = pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t);
-    data = (uint8_t *)buf;
+    start = pim_body_writer(&w);
+    pim_put_euaddr(&w, v->uv_lcl_addr);	/* Upstream Neighbor Address: ours */
+    pim_put_u8(&w, 0);			/* Reserved */
+    pim_put_u8(&w, 1);			/* One group */
+    pim_put_u16(&w, PIM_JOIN_PRUNE_HOLDTIME);
+    pim_put_egaddr(&w, mrt->group->group, SINGLE_GRP_MSKLEN, 0);
+    pim_put_u16(&w, 0);			/* No joined sources */
+    pim_put_u16(&w, 1);			/* One pruned source */
+    pim_put_esaddr(&w, source, SINGLE_SRC_MSKLEN, flags);
+    if (w.full) {
+	pim_body_overrun("PruneEcho");
+	return;
+    }
 
-    PUT_EUADDR(v->uv_lcl_addr, data);	/* Upstream Neighbor Address: ours */
-    PUT_BYTE(0, data);			/* Reserved */
-    PUT_BYTE(1, data);			/* One group */
-    PUT_HOSTSHORT(PIM_JOIN_PRUNE_HOLDTIME, data);
-    PUT_EGADDR(mrt->group->group, SINGLE_GRP_MSKLEN, 0, data);
-    PUT_HOSTSHORT(0, data);		/* No joined sources */
-    PUT_HOSTSHORT(1, data);		/* One pruned source */
-    PUT_ESADDR(source, SINGLE_SRC_MSKLEN, flags, data);
-
-    len = data - (uint8_t *)buf;
     IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
 	logit(LOG_INFO, 0, "Send PruneEcho for (%s,%s) on %s",
 	      inet_fmt(source, s1, sizeof(s1)),
 	      inet_fmt(mrt->group->group, s2, sizeof(s2)), v->uv_name);
 
-    send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_JOIN_PRUNE, len);
+    send_pim(pim_send_buf, v->uv_lcl_addr, allpimrouters_group, PIM_JOIN_PRUNE,
+	     pim_writer_used(&w, start));
 }
 
 /*
@@ -5090,8 +5122,8 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
 		       uint32_t preference, uint32_t metric)
 {
-    uint8_t *data;
-    uint8_t *data_start;
+    struct pim_writer w;
+    uint8_t *start;
 
     /* Don't send assert if the outgoing interface a tunnel or register vif */
     /* TODO: XXX: in the code above asserts are accepted over VIFF_TUNNEL.
@@ -5102,12 +5134,13 @@ static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
 	return FALSE;
 
     hello_before_send(vifi);
-    data = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
-    data_start = data;
-    PUT_EGADDR(group, SINGLE_GRP_MSKLEN, 0, data);
-    PUT_EUADDR(source, data);
-    PUT_HOSTLONG(preference, data);
-    PUT_HOSTLONG(metric, data);
+    start = pim_body_writer(&w);
+    pim_put_egaddr(&w, group, SINGLE_GRP_MSKLEN, 0);
+    pim_put_euaddr(&w, source);
+    pim_put_u32(&w, preference);
+    pim_put_u32(&w, metric);
+    if (w.full)
+	return pim_body_overrun("Assert");
 
     IF_DEBUG(DEBUG_PIM_ASSERT)
 	logit(LOG_INFO, 0, "Send PIM ASSERT%s from %s for group %s and source %s",
@@ -5117,7 +5150,7 @@ static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
 	      inet_fmt(source, s3, sizeof(s3)));
 
     send_pim(pim_send_buf, uvifs[vifi].uv_lcl_addr, allpimrouters_group,
-	     PIM_ASSERT, data - data_start);
+	     PIM_ASSERT, pim_writer_used(&w, start));
 
     return TRUE;
 }
@@ -5901,7 +5934,8 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
  */
 static int send_cand_rp_adv(uint8_t priority, size_t count)
 {
-    uint8_t *data, *start, *cnt;
+    struct pim_writer w;
+    uint8_t *start, *cnt;
     size_t need, i, num = 0;
 
     /* Header, RP address, and one encoded group address per range */
@@ -5912,14 +5946,13 @@ static int send_cand_rp_adv(uint8_t priority, size_t count)
 	return FALSE;
     }
 
-    start = (uint8_t *)(pim_send_buf + sizeof(struct ip) + sizeof(pim_header_t));
-    data  = start;
-    cnt   = data;		/* Filled in below, from what was written */
+    start = pim_body_writer(&w);
+    cnt   = start;		/* Filled in below, from what was written */
 
-    PUT_BYTE(0, data);
-    PUT_BYTE(priority, data);
-    PUT_HOSTSHORT(my_cand_rp_holdtime, data);
-    PUT_EUADDR(my_cand_rp_address, data);
+    pim_put_u8(&w, 0);
+    pim_put_u8(&w, priority);
+    pim_put_u16(&w, my_cand_rp_holdtime);
+    pim_put_euaddr(&w, my_cand_rp_address);
 
     for (i = 0; i < count; i++) {
 	uint32_t group, masklen;
@@ -5927,17 +5960,20 @@ static int send_cand_rp_adv(uint8_t priority, size_t count)
 	if (!cand_rp_prefix_at(priority, i, &group, &masklen))
 	    break;
 
-	PUT_EGADDR(group, (uint8_t)masklen, 0, data);
+	if (!pim_put_egaddr(&w, group, (uint8_t)masklen, 0))
+	    break;
 	num++;
     }
 
     /* The Prefix Count is what went into the message rather than what was
      * meant to: a header that says more than the body carries is the bug
      * this file has had before, and it is one line to make impossible. */
+    if (w.full)
+	return pim_body_overrun("Candidate-RP-Advertisement");
     *cnt = (uint8_t)num;
 
     send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, my_cand_rp_address, curr_bsr_address,
-		     PIM_CAND_RP_ADV, data - start);
+		     PIM_CAND_RP_ADV, pim_writer_used(&w, start));
 
     return TRUE;
 }

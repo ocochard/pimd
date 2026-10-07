@@ -687,9 +687,10 @@ int pim_parse_assert       (const void *msg, size_t len, pim_sg_msg_t *as);
  * buffer whatever its own arithmetic says, which test/cbmc/encode.c proves
  * of the writer once instead of of every builder.
  *
- * Addresses go in network order, as pimd keeps them, the way the PUT_*
- * macros above write them; the 16- and 32-bit numbers go in host order and
- * are written big-endian.
+ * Addresses go in network order, as pimd keeps them, and are written as
+ * the bytes they are; the 16- and 32-bit numbers go in host order and are
+ * written big-endian.  It replaced the PUT_* macros this file had, which
+ * wrote wherever their pointer pointed.
  */
 struct pim_writer {
     uint8_t *p;			/* the next byte to write */
@@ -767,14 +768,12 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
 #endif
 #endif
 
-/* PUT_NETLONG puts "network ordered" data to the datastream.
- * PUT_HOSTLONG puts "host ordered" data to the datastream.
- * GET_NETLONG gets the data and keeps it in "network order" in the memory
+/* GET_NETLONG gets the data and keeps it in "network order" in the memory
  * GET_HOSTLONG gets the data, but in the memory it is in "host order"
- * The same for all {PUT,GET}_{NET,HOST}{SHORT,LONG}
+ * The same for all GET_{NET,HOST}{SHORT,LONG}.  Writing is the bounded
+ * writer's, see struct pim_writer above.
  */
 #define GET_BYTE(val, cp)       ((val) = *(cp)++)
-#define PUT_BYTE(val, cp)       (*(cp)++ = (uint8_t)(val))
 
 #define GET_HOSTSHORT(val, cp)                  \
         do {                                    \
@@ -782,14 +781,6 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
                 Xv = (*(cp)++) << 8;            \
                 Xv |= *(cp)++;                  \
                 (val) = Xv;                     \
-        } while (0)
-
-#define PUT_HOSTSHORT(val, cp)                  \
-        do {                                    \
-                uint16_t Xv;                    \
-                Xv = (uint16_t)(val);            \
-                *(cp)++ = (uint8_t)(Xv >> 8);   \
-                *(cp)++ = (uint8_t)Xv;          \
         } while (0)
 
 #if defined(BYTE_ORDER) && (BYTE_ORDER == LITTLE_ENDIAN)
@@ -800,17 +791,9 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
                 Xv |= (*(cp)++) << 8;           \
                 (val) = Xv;                     \
         } while (0)
-#define PUT_NETSHORT(val, cp)                   \
-        do {                                    \
-                uint16_t Xv;                    \
-                Xv = (uint16_t)(val);            \
-                *(cp)++ = (uint8_t)Xv;          \
-                *(cp)++ = (uint8_t)(Xv >> 8);   \
-        } while (0)
 #else
 #define GET_NETSHORT(val, cp) GET_HOSTSHORT(val, cp)
-#define PUT_NETSHORT(val, cp) PUT_HOSTSHORT(val, cp)
-#endif /* {GET,PUT}_NETSHORT */
+#endif /* GET_NETSHORT */
 
 #define GET_HOSTLONG(val, cp)                   \
         do {                                    \
@@ -820,16 +803,6 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
                 Xv |= (uint32_t)(*(cp)++) <<  8; \
                 Xv |= *(cp)++;                  \
                 (val) = Xv;                     \
-        } while (0)
-
-#define PUT_HOSTLONG(val, cp)                   \
-        do {                                    \
-                uint32_t Xv;                     \
-                Xv = (uint32_t)(val);            \
-                *(cp)++ = (uint8_t)(Xv >> 24);  \
-                *(cp)++ = (uint8_t)(Xv >> 16);  \
-                *(cp)++ = (uint8_t)(Xv >>  8);  \
-                *(cp)++ = (uint8_t)Xv;          \
         } while (0)
 
 #if defined(BYTE_ORDER) && (BYTE_ORDER == LITTLE_ENDIAN)
@@ -842,20 +815,9 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
                 Xv |= (uint32_t)(*(cp)++) << 24; \
                 (val) = Xv;                     \
         } while (0)
-
-#define PUT_NETLONG(val, cp)                    \
-        do {                                    \
-                uint32_t Xv;                    \
-                Xv = (uint32_t)(val);            \
-                *(cp)++ = (uint8_t)Xv;          \
-                *(cp)++ = (uint8_t)(Xv >>  8);  \
-                *(cp)++ = (uint8_t)(Xv >> 16);  \
-                *(cp)++ = (uint8_t)(Xv >> 24);  \
-        } while (0)
 #else
 #define GET_NETLONG(val, cp) GET_HOSTLONG(val, cp)
-#define PUT_NETLONG(val, cp) PUT_HOSTLONG(val, cp)
-#endif /* {GET,PUT}_HOSTLONG */
+#endif /* GET_NETLONG */
 
 
 #define GET_ESADDR(esa, cp)                     \
@@ -867,17 +829,6 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
             GET_NETLONG((esa)->src_addr, (cp)); \
         } while(0)
 
-#define PUT_ESADDR(addr, masklen, flags, cp)    \
-        do {                                    \
-            uint32_t mask;                      \
-            MASKLEN_TO_MASK((masklen), mask);   \
-            *(cp)++ = ADDRF_IPv4; /* family */  \
-            *(cp)++ = ADDRT_IPv4; /* type   */  \
-            *(cp)++ = (flags);    /* flags  */  \
-            *(cp)++ = (masklen);                \
-            PUT_NETLONG((addr) & mask, (cp));   \
-        } while(0)
-
 #define GET_EGADDR(ega, cp)                     \
         do {                                    \
             (ega)->addr_family = *(cp)++;       \
@@ -887,29 +838,11 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
             GET_NETLONG((ega)->mcast_addr, (cp)); \
         } while(0)
 
-#define PUT_EGADDR(addr, masklen, reserved, cp) \
-        do {                                    \
-            uint32_t mask;                      \
-            MASKLEN_TO_MASK((masklen), mask);   \
-            *(cp)++ = ADDRF_IPv4; /* family */  \
-            *(cp)++ = ADDRT_IPv4; /* type   */  \
-            *(cp)++ = (reserved); /* reserved; should be 0 */  \
-            *(cp)++ = (masklen);                \
-            PUT_NETLONG((addr) & mask, (cp)); \
-        } while(0)
-
 #define GET_EUADDR(eua, cp)                     \
         do {                                    \
             (eua)->addr_family = *(cp)++;       \
             (eua)->encod_type  = *(cp)++;       \
             GET_NETLONG((eua)->unicast_addr, (cp)); \
-        } while(0)
-
-#define PUT_EUADDR(addr, cp)                    \
-        do {                                    \
-            *(cp)++ = ADDRF_IPv4; /* family */  \
-            *(cp)++ = ADDRT_IPv4; /* type   */  \
-            PUT_NETLONG((addr), (cp));          \
         } while(0)
 
 /* The PIM-SSM range pimd uses until pimd.conf configures one, RFC 4607 */
