@@ -723,6 +723,51 @@ int    compare_metrics  (uint32_t local_preference, uint32_t local_metric,
 			 uint32_t local_address, uint32_t remote_preference,
 			 uint32_t remote_metric, uint32_t remote_address);
 
+/*
+ * Where on an entry an Assert arrived: an interface the entry forwards
+ * onto, or holds out of its olist for a lost Assert; its RPF interface;
+ * or neither.
+ */
+#define ASSERT_ELSEWHERE	0
+#define ASSERT_DOWNSTREAM	1
+#define ASSERT_UPSTREAM		2
+
+/*
+ * What one of the two machines of RFC 7761 sec. 4.6 sees of one interface
+ * when an Assert arrives on it, everything assert_decide() reads.  The
+ * winner fields are the per-interface state of the entry holding it,
+ * zero where there is none; the preferences carry the RPT bit on top.
+ */
+struct assert_view {
+    int      wc;		/* the (*,G) machine, sec. 4.6.2 */
+    int      tracking;		/* the interface interests the entry */
+    int      where;		/* ASSERT_DOWNSTREAM and friends */
+    int      has_state;		/* the entry has a slot for the interface */
+    int      spt;		/* SPTbit(S,G) */
+    int      rp_entry;		/* the entry carries MRTF_RP */
+    int      has_upstream;	/* the entry has an RPF neighbor */
+    uint32_t winner;		/* AssertWinner, 0 in NoInfo */
+    int      is_winner;		/* ... and it is this router */
+    uint32_t win_pref;		/* AssertWinnerMetric */
+    uint32_t win_metric;
+    uint32_t my_pref;		/* my_assert_metric() */
+    uint32_t my_metric;
+    uint32_t my_addr;		/* this router's address on the interface */
+    uint32_t src;		/* the Assert's sender */
+    uint32_t pref;		/* and its metric */
+    uint32_t metric;
+};
+
+/* What assert_decide() asks of the caller, by the actions of sec. 4.6 */
+#define ASSERT_ACT_NONE		0	/* nothing changes */
+#define ASSERT_ACT_SEND		1	/* A1, A3: send our Assert, Winner */
+#define ASSERT_ACT_STORE	2	/* A2: store the sender as winner */
+#define ASSERT_ACT_LOSE		3	/* A2, A6: Loser, the olist loses I */
+#define ASSERT_ACT_CLEAR	4	/* A5: back to NoInfo */
+#define ASSERT_ACT_FOLLOW	5	/* A2, A6 upstream: RPF' follows it */
+
+int    assert_decide    (const struct assert_view *v);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

@@ -60,6 +60,136 @@ int compare_metrics(uint32_t local_preference, uint32_t local_metric, uint32_t l
     return 0;
 }
 
+/*
+ * One Assert, received on one interface, through one of the two machines:
+ * sec. 4.6.1's for an (S,G) entry and sec. 4.6.2's for a (*,G) one.  The
+ * caller has read the entry into `v` and acts on the answer, one of the
+ * ASSERT_ACT_* of pimd.h; nothing here touches state.  They are two
+ * machines with two sets of events, and the RPT bit of the message is what
+ * tells the events apart.  Every transition the (*,G) machine has out of
+ * NoInfo, and every one that replaces the winner it holds, is on an Assert
+ * carrying the bit; the (S,G) machine answers one without the bit with a
+ * metric of its own, and one with the bit only from the shortest path
+ * tree, which is what CouldAssert(S,G,I) asks for.
+ */
+int assert_decide(const struct assert_view *v)
+{
+    uint32_t rptbit = v->pref & PIM_ASSERT_RPT_BIT;
+    int winner = v->winner != 0 && v->is_winner;
+    int loser  = v->winner != 0 && !v->is_winner;
+
+    /* AssertTrackingDesired, as pimd approximates it: join state, local
+     * membership, assert state or the interface being upstream */
+    if (!v->tracking)
+	return ASSERT_ACT_NONE;
+
+    if (v->where == ASSERT_DOWNSTREAM) {
+	if (v->has_state && loser) {
+	    /* "I am Assert Loser".  Only the current winner can take us out
+	     * of it, and a preferred Assert from anyone can replace it. */
+	    if (v->src == v->winner) {
+		/* Inferior to our own metric, an AssertCancel included: back
+		 * to NoInfo, and Join/Prune operates again.  Neither machine
+		 * asks for the RPT bit here, sec. 4.6.4. */
+		if (compare_metrics(v->my_pref, v->my_metric, v->my_addr,
+				    v->pref, v->metric, v->src))
+		    return ASSERT_ACT_CLEAR;
+
+		/* Acceptable Assert from the current winner: A2, it keeps
+		 * the interface.  The (*,G) machine takes it only with the
+		 * RPT bit set. */
+		if (v->wc && !rptbit)
+		    return ASSERT_ACT_NONE;
+
+		return ASSERT_ACT_STORE;
+	    }
+
+	    /* From anyone else only an Assert better than the winner's
+	     * changes anything: A2, and only with the RPT bit for (*,G) */
+	    if (v->wc && !rptbit)
+		return ASSERT_ACT_NONE;
+
+	    if (!compare_metrics(v->win_pref, v->win_metric, v->winner,
+				 v->pref, v->metric, v->src))
+		return ASSERT_ACT_STORE;
+
+	    return ASSERT_ACT_NONE;
+	}
+
+	/* NoInfo, or "I am Assert Winner".  The (*,G) machine leaves NoInfo
+	 * only on an Assert with the RPT bit set, sec. 4.6.2; one without it
+	 * is the (S,G) machine's.  The Winner state answers either, A3. */
+	if (v->wc && !rptbit && !winner)
+	    return ASSERT_ACT_NONE;
+
+	/* And the (S,G) machine leaves NoInfo on an Assert with the bit only
+	 * when CouldAssert(S,G,I) holds, which needs SPTbit(S,G) */
+	if (!v->wc && rptbit && !v->spt && !winner)
+	    return ASSERT_ACT_NONE;
+
+	/* A1, or A3 from the Winner state: the interface is ours */
+	if (compare_metrics(v->my_pref, v->my_metric, v->my_addr,
+			    v->pref, v->metric, v->src))
+	    return ASSERT_ACT_SEND;
+
+	/* We lost, and sec. 4.6.1 has no NoInfo-to-Loser transition for an
+	 * Assert with the RPT bit: that one is the (*,G) machine's.  The
+	 * Winner state has one, "Receive Preferred Assert", whatever the bit.
+	 */
+	if (!v->wc && rptbit && !winner)
+	    return ASSERT_ACT_NONE;
+
+	/* A6, or A2 from the Winner state */
+	return ASSERT_ACT_LOSE;
+    }
+
+    if (v->where == ASSERT_UPSTREAM) {
+	/* The RPF interface.  CouldAssert is FALSE there, so this router
+	 * never wins: sec. 4.6.1 and sec. 4.6.2 have it lose to any
+	 * acceptable Assert, replace the winner only with a preferred one,
+	 * and go back to NoInfo on an inferior Assert from the winner.
+	 * RPF' follows the winner, sec. 4.1.6. */
+	if (rptbit) {
+	    /* The locally used upstream router wins that one */
+	    if (!v->rp_entry)
+		return ASSERT_ACT_NONE;
+	} else if (v->wc) {
+	    /* Sec. 4.6.2 moves the (*,G) machine here only on an Assert with
+	     * the RPT bit; one without it is the (S,G) machine's, by
+	     * AssertTrackingDesired(S,G,I)'s last clause. */
+	    return ASSERT_ACT_NONE;
+	}
+
+	if (!v->has_upstream || !v->has_state)
+	    return ASSERT_ACT_NONE;
+
+	if (v->winner != 0) {
+	    if (compare_metrics(v->win_pref, v->win_metric, v->winner,
+				v->pref, v->metric, v->src)) {
+		/* Inferior Assert from the current winner: A5 */
+		if (v->src != v->winner)
+		    return ASSERT_ACT_NONE;
+
+		return ASSERT_ACT_CLEAR;
+	    }
+
+	    /* Its Assert again, A2 */
+	    if (v->src == v->winner)
+		return ASSERT_ACT_STORE;
+	} else if (v->pref == PIM_ASSERT_INFINITE_PREFERENCE &&
+		   v->metric == PIM_ASSERT_INFINITE_METRIC) {
+	    /* An AssertCancel from a router that won nothing here */
+	    return ASSERT_ACT_NONE;
+	}
+
+	/* A6, or A2 for a preferred Assert: a new winner, and the Joins go
+	 * to it */
+	return ASSERT_ACT_FOLLOW;
+    }
+
+    return ASSERT_ACT_NONE;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

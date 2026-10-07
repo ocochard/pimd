@@ -4679,12 +4679,10 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
 /*
  * One run of a per-interface Assert state machine: sec. 4.6.1's on an (S,G)
  * entry, sec. 4.6.2's on a (*,G) one, `wc` saying which of the two this is.
- * They are two machines with two sets of events, and the RPT bit of the
- * message is what tells the events apart.  Every transition the (*,G)
- * machine has out of NoInfo, and every one that replaces the winner it
- * holds, is on an Assert carrying the bit; the (S,G) machine answers one
- * without the bit with a metric of its own, and one with the bit only from
- * the shortest path tree, which is what CouldAssert(S,G,I) asks for.
+ * Which transition the message is belongs to assert_decide() in
+ * src/pim_assert.c, which reads no state so that test/cbmc/assert.c can
+ * prove it; this reads the entry into the view it decides on, and carries
+ * out the actions it answers with.
  *
  * `mrt` is the entry this machine reads its metric and its interfaces from.
  * `own` is the entry holding its per-interface state, the same entry except
@@ -4700,19 +4698,19 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
  */
 static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  uint32_t src, uint32_t source, uint32_t group,
-			  uint32_t rptbit, uint32_t assert_preference,
-			  uint32_t assert_metric)
+			  uint32_t assert_preference, uint32_t assert_metric)
 {
-    uint32_t local_preference, local_metric;
+    struct assert_view view;
     struct assert_state *as;
     struct uvif *v;
-    uint8_t local_wins;
     uint32_t jp_value;
 
     if (!mrt)
 	return ASSERT_NOTHING;
 
     v = &uvifs[vifi];
+    memset(&view, 0, sizeof(view));
+    view.wc = wc;
 
     /*
      * RFC 7761 sec. 4.6.1 keys the NoInfo-to-Loser transition on
@@ -4726,17 +4724,11 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
      * out.  Ask whether the interface interests us, which is the question
      * the spec asks.
      */
-    if (!(mrt->flags & MRTF_KERNEL_CACHE) &&
-	vifi != mrt->incoming &&
-	!PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) &&
-	!PIMD_VIFM_ISSET(vifi, mrt->leaves) &&
-	!PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs)) {
-	/* Nothing here cares about this interface. Ignore the assert */
-	return ASSERT_NOTHING;
-    }
-
-    /* Prepare the local preference and metric, RPT bit included */
-    my_assert_metric(mrt, &local_preference, &local_metric);
+    view.tracking = (mrt->flags & MRTF_KERNEL_CACHE) ||
+	vifi == mrt->incoming ||
+	PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) ||
+	PIMD_VIFM_ISSET(vifi, mrt->leaves) ||
+	PIMD_VIFM_ISSET(vifi, mrt->asserted_oifs);
 
     /* An interface we lost an Assert on is no longer in `oifs` -- that is
      * what losing does -- so testing `oifs` alone made every later Assert on
@@ -4754,213 +4746,45 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
      * says nothing about the outgoing interfaces.
      */
     if (PIMD_VIFM_ISSET(vifi, mrt->oifs) ||
-	(vifi != mrt->incoming && assert_lost_on(own ? own : mrt, vifi))) {
-	/* The ASSERT has arrived on oif */
-	as = own ? assert_state(own, vifi) : NULL;
+	(vifi != mrt->incoming && assert_lost_on(own ? own : mrt, vifi)))
+	view.where = ASSERT_DOWNSTREAM;
+    else if (own && own->incoming == vifi)
+	view.where = ASSERT_UPSTREAM;
+    else
+	view.where = ASSERT_ELSEWHERE;
 
-	if (as && assert_lost_on(own, vifi)) {
-	    /* "I am Assert Loser", sec. 4.6.1 and sec. 4.6.2.  Only the
-	     * current winner can take us out of it, and a preferred Assert
-	     * from anyone can replace it.
-	     */
-	    if (src == as->winner) {
-		/* Inferior to our own metric, an AssertCancel included:
-		 * back to NoInfo and let Join/Prune operate again.  Neither
-		 * machine asks for the RPT bit here, sec. 4.6.4. */
-		if (compare_metrics(local_preference, local_metric, v->uv_lcl_addr,
-				    assert_preference, assert_metric, src) == TRUE) {
-		    IF_DEBUG(DEBUG_PIM_ASSERT)
-			logit(LOG_INFO, 0, "Assert winner %s on %s gave up %s, resuming",
-			      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
-			      inet_fmt(group, s2, sizeof(s2)));
+    as = own ? assert_state(own, vifi) : NULL;
+    if (as) {
+	view.has_state  = TRUE;
+	view.winner     = as->winner;
+	view.is_winner  = as->is_winner;
+	view.win_pref   = as->preference;
+	view.win_metric = as->metric;
+    }
 
-		    if (assert_clear(own, vifi))
-			change_interfaces(own, own->incoming, own->joined_oifs,
-					  own->pruned_oifs, own->leaves,
-					  own->asserted_oifs, 0);
+    view.spt          = (mrt->flags & MRTF_SPT) != 0;
+    view.rp_entry     = own && (own->flags & MRTF_RP);
+    view.has_upstream = own && own->upstream != NULL;
 
-		    return ASSERT_CANCELLED;
-		}
+    /* The local preference and metric, RPT bit included */
+    my_assert_metric(mrt, &view.my_pref, &view.my_metric);
+    view.my_addr = v->uv_lcl_addr;
 
-		/* Acceptable Assert from the current winner: Actions A2, it
-		 * keeps the interface and refreshes the timer.  The (*,G)
-		 * machine takes it only with the RPT bit set. */
-		if (wc && !rptbit)
-		    return ASSERT_NOTHING;
+    view.src    = src;
+    view.pref   = assert_preference;
+    view.metric = assert_metric;
 
-		assert_lost(own, vifi, src, assert_preference, assert_metric);
-
-		return ASSERT_MOVED;
-	    }
-
-	    /* From anyone else, only an Assert better than the one the
-	     * winner holds changes anything: Actions A2 again, and again
-	     * only with the RPT bit set for the (*,G) machine. */
-	    if (wc && !rptbit)
-		return ASSERT_NOTHING;
-
-	    if (compare_metrics(as->preference, as->metric, as->winner,
-				assert_preference, assert_metric, src) == FALSE) {
-		assert_lost(own, vifi, src, assert_preference, assert_metric);
-
-		return ASSERT_MOVED;
-	    }
-
-	    return ASSERT_NOTHING;
-	}
-
-	/* NoInfo, or "I am Assert Winner".  The (*,G) machine leaves NoInfo
-	 * only for an Assert with the RPT bit set, sec. 4.6.2; one without
-	 * it is the (S,G) machine's, which has already had it.  The Winner
-	 * state answers either, Actions A3.
-	 */
-	if (wc && !rptbit && !(own && assert_winner_is_me(own, vifi)))
-	    return ASSERT_NOTHING;
-
-	/* And the (S,G) machine leaves NoInfo on an Assert that carries the
-	 * bit only when CouldAssert(S,G,I) holds, which needs SPTbit(S,G):
-	 * an RPT forwarder has no (S,G) answer to give, so the message goes
-	 * on to the (*,G) machine instead.
-	 */
-	if (!wc && rptbit && !(mrt->flags & MRTF_SPT) &&
-	    !(own && assert_winner_is_me(own, vifi)))
-	    return ASSERT_NOTHING;
-
-	local_wins = compare_metrics(local_preference, local_metric,
-				     v->uv_lcl_addr, assert_preference,
-				     assert_metric, src);
-
-	if (local_wins == TRUE) {
-	    /* Actions A1, or Actions A3 from the Winner state: the
-	     * interface is ours and we say so. */
+    switch (assert_decide(&view)) {
+	case ASSERT_ACT_SEND:
 	    send_pim_assert(source, group, vifi, own ? own : mrt);
-
 	    return ASSERT_MOVED;
-	}
 
-	/* We lost, and sec. 4.6.1 has no NoInfo-to-Loser transition for an
-	 * Assert with the RPT bit set: that one is the (*,G) machine's, and
-	 * losing it there is what takes the group off this interface.  The
-	 * Winner state has one, "Receive Preferred Assert", whatever the bit,
-	 * which this used to return from as well, so a winner holding an RPT
-	 * metric on an (S,G) entry kept the interface against any Assert with
-	 * the bit that beat it.  assert_on_data() in src/route.c no longer
-	 * gives an (S,G) entry such a Winner state; this is the other half.
-	 */
-	if (!wc && rptbit && !(own && assert_winner_is_me(own, vifi)))
-	    return ASSERT_NOTHING;
+	case ASSERT_ACT_STORE:
+	    assert_lost(own, vifi, src, assert_preference, assert_metric);
+	    return ASSERT_MOVED;
 
-	if (!own) {
-	    /* Loser state to keep, so the (S,G) machine needs an entry of
-	     * its own now.
-	     */
-	    own = find_route(source, group, MRTF_SG, CREATE);
-	    if (!own) {
-		/* Nowhere to keep it: no unicast route to S, no RP for the
-		 * group, or an (S,G) refused for a limit.  The message is
-		 * this machine's all the same, it compared metrics and lost,
-		 * so it must not go on to the (*,G) machine: that one would
-		 * record one source's loss as the group's and take the
-		 * interface out of the olist every other source of G inherits
-		 * from it.  Measured on the assert-recover scenario of
-		 * test/lab.sh, one run in five: a renumbered interface leaves
-		 * the route to a source on that segment unresolvable for a
-		 * moment, and the DR then stopped forwarding the group for
-		 * Assert_Time over an Assert naming a source it was not
-		 * forwarding at all.
-		 */
-		IF_DEBUG(DEBUG_PIM_ASSERT)
-		    logit(LOG_DEBUG, 0, "Lost the Assert for (%s,%s) on %s, no (S,G) to keep it on",
-			  inet_fmt(source, s1, sizeof(s1)),
-			  inet_fmt(group, s2, sizeof(s2)), v->uv_name);
-
-		return ASSERT_REFUSED;
-	    }
-
-	    if (own->flags & MRTF_NEW) {
-		own->flags &= ~MRTF_NEW;
-		/* TODO: XXX: The spec doesn't say what entry timer value
-		 * to use when the routing entry is created because of asserts.
-		 */
-		SET_TIMER(own->entry_timer, PIM_DATA_TIMEOUT);
-	    }
-	}
-
-	/* Actions A6: "I am Assert Loser" on this interface.  The interface
-	 * leaves the olist with it, which is lost_assert(S,G,I) of
-	 * sec. 4.6.5 as pimd spells it.
-	 */
-	PIMD_VIFM_SET(vifi, own->asserted_oifs);
-	assert_lost(own, vifi, src, assert_preference, assert_metric);
-
-	/* TODO: XXX: check that the timer of all affected routing entries
-	 * has been restarted.
-	 */
-	change_interfaces(own,
-			  own->incoming,
-			  own->joined_oifs,
-			  own->pruned_oifs,
-			  own->leaves,
-			  own->asserted_oifs, 0);
-
-	return ASSERT_MOVED;
-    } /* End of assert received on oif */
-
-
-    if (own && own->incoming == vifi) {
-	/*
-	 * Assert received on RPF_interface.  CouldAssert is FALSE there, so
-	 * this router never wins and its own metric is not a question:
-	 * sec. 4.6.1 and sec. 4.6.2 have it lose to any acceptable Assert,
-	 * replace the winner only with a preferred one, and go back to NoInfo
-	 * on an inferior Assert from the winner, the AssertCancel of
-	 * sec. 4.6.4 included.  RPF' follows the winner, sec. 4.1.6.
-	 *
-	 * pimd used to compare the Assert against its own metric instead,
-	 * as if the router it had chosen from the routing table were the
-	 * one asserting with it.  A downstream router nearer to the RP than
-	 * the routers on its upstream LAN then found every Assert inferior,
-	 * kept sending its Joins to the router that had lost, and every one
-	 * of them took that router out of its Loser state again, "Receive
-	 * Join(*,G)" in sec. 4.6.2: the LAN flapped between the two once a
-	 * Join/Prune period.
-	 */
-	if (rptbit) {
-	    if (!(own->flags & MRTF_RP))
-		return ASSERT_NOTHING; /* The locally used upstream router
-					* will win the assert, so don't
-					* change it.
-					*/
-	} else if (wc) {
-	    /* Sec. 4.6.2 moves the (*,G) machine here only on an Assert with
-	     * the RPT bit -- NoInfo to Loser, the preferred and the acceptable
-	     * Assert from the winner -- and an Assert without it is about one
-	     * source's shortest path tree, the (S,G) machine's by
-	     * AssertTrackingDesired(S,G,I)'s last clause.  Nor can it be the
-	     * inferior Assert from the winner that ends a Loser state: a metric
-	     * without the bit is better than any with it.  This branch let it
-	     * through for any entry carrying MRTF_RP, which the (*,G) entry
-	     * does, so with no (S,G) entry to take the message first an Assert
-	     * for any source handed the whole group's upstream to its sender.
-	     */
-	    return ASSERT_NOTHING;
-	}
-
-	/* Ignore assert message if we do not have an upstream router */
-	if (own->upstream == NULL)
-	    return ASSERT_NOTHING;
-
-	as = assert_state(own, vifi);
-	if (!as)
-	    return ASSERT_NOTHING;
-
-	if (as->winner != INADDR_ANY_N) {
-	    if (compare_metrics(as->preference, as->metric, as->winner,
-				assert_preference, assert_metric, src) == TRUE) {
-		if (src != as->winner)
-		    return ASSERT_NOTHING;
-
-		/* Inferior Assert from the current winner: Actions A5 */
+	case ASSERT_ACT_CLEAR:
+	    if (view.where == ASSERT_UPSTREAM) {
 		IF_DEBUG(DEBUG_PIM_ASSERT)
 		    logit(LOG_INFO, 0, "Assert winner %s on %s gave up %s, back to the RPF neighbor",
 			  inet_fmt(src, s1, sizeof(s1)), v->uv_name,
@@ -4970,44 +4794,103 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 		return ASSERT_CANCELLED;
 	    }
 
-	    if (src == as->winner) {
-		/* Its Assert again, Actions A2: refresh the timer */
-		assert_lost(own, vifi, src, assert_preference, assert_metric);
+	    IF_DEBUG(DEBUG_PIM_ASSERT)
+		logit(LOG_INFO, 0, "Assert winner %s on %s gave up %s, resuming",
+		      inet_fmt(src, s1, sizeof(s1)), v->uv_name,
+		      inet_fmt(group, s2, sizeof(s2)));
 
-		return ASSERT_MOVED;
+	    if (assert_clear(own, vifi))
+		change_interfaces(own, own->incoming, own->joined_oifs,
+				  own->pruned_oifs, own->leaves,
+				  own->asserted_oifs, 0);
+
+	    return ASSERT_CANCELLED;
+
+	case ASSERT_ACT_LOSE:
+	    if (!own) {
+		/* Loser state to keep, so the (S,G) machine needs an entry of
+		 * its own now.
+		 */
+		own = find_route(source, group, MRTF_SG, CREATE);
+		if (!own) {
+		    /* Nowhere to keep it: no unicast route to S, no RP for
+		     * the group, or an (S,G) refused for a limit.  The message
+		     * is this machine's all the same, it compared metrics and
+		     * lost, so it must not go on to the (*,G) machine: that
+		     * one would record one source's loss as the group's and
+		     * take the interface out of the olist every other source
+		     * of G inherits from it.  Measured on the assert-recover
+		     * scenario of test/lab.sh, one run in five: a renumbered
+		     * interface leaves the route to a source on that segment
+		     * unresolvable for a moment, and the DR then stopped
+		     * forwarding the group for Assert_Time over an Assert
+		     * naming a source it was not forwarding at all.
+		     */
+		    IF_DEBUG(DEBUG_PIM_ASSERT)
+			logit(LOG_DEBUG, 0, "Lost the Assert for (%s,%s) on %s, no (S,G) to keep it on",
+			      inet_fmt(source, s1, sizeof(s1)),
+			      inet_fmt(group, s2, sizeof(s2)), v->uv_name);
+
+		    return ASSERT_REFUSED;
+		}
+
+		if (own->flags & MRTF_NEW) {
+		    own->flags &= ~MRTF_NEW;
+		    /* TODO: XXX: The spec doesn't say what entry timer value
+		     * to use when the routing entry is created because of
+		     * asserts.
+		     */
+		    SET_TIMER(own->entry_timer, PIM_DATA_TIMEOUT);
+		}
 	    }
-	} else if (assert_preference == PIM_ASSERT_INFINITE_PREFERENCE &&
-		   assert_metric == PIM_ASSERT_INFINITE_METRIC) {
-	    /* An AssertCancel from a router that won nothing here */
-	    return ASSERT_NOTHING;
-	}
 
-	/* Actions A6, or A2 for a preferred Assert: a new winner, and the
-	 * Joins go to it.  Held even where it is the router the routing table
-	 * names, so that a later, inferior Assert from another router is
-	 * measured against it rather than against nothing.
-	 */
-	assert_lost(own, vifi, src, assert_preference, assert_metric);
-	if (own->upstream == find_pim_nbr_on_vif(vifi, src))
+	    /* "I am Assert Loser" on this interface.  The interface leaves
+	     * the olist with it, which is lost_assert(S,G,I) of sec. 4.6.5 as
+	     * pimd spells it.
+	     */
+	    PIMD_VIFM_SET(vifi, own->asserted_oifs);
+	    assert_lost(own, vifi, src, assert_preference, assert_metric);
+
+	    /* TODO: XXX: check that the timer of all affected routing entries
+	     * has been restarted.
+	     */
+	    change_interfaces(own,
+			      own->incoming,
+			      own->joined_oifs,
+			      own->pruned_oifs,
+			      own->leaves,
+			      own->asserted_oifs, 0);
+
 	    return ASSERT_MOVED;
 
-	own->upstream = find_pim_nbr_on_vif(vifi, src);
+	case ASSERT_ACT_FOLLOW:
+	    /* Held even where it is the router the routing table names, so
+	     * that a later, inferior Assert from another router is measured
+	     * against it rather than against nothing.
+	     */
+	    assert_lost(own, vifi, src, assert_preference, assert_metric);
+	    if (own->upstream == find_pim_nbr_on_vif(vifi, src))
+		return ASSERT_MOVED;
 
-	/* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If the
-	 * Join Timer is set to expire in more than t_override seconds, reset
-	 * it so that it expires after t_override seconds."  Our downstream
-	 * receivers are behind the assert winner now, and it does not know
-	 * about them until we say so; waiting for the periodic Join left
-	 * them without the group for up to a whole period.
-	 */
-	jp_value = jp_override_timeout(vifi);
-	if (jp_timer_left(own) > jp_value)
-	    jp_timer_set(own, jp_value);
+	    own->upstream = find_pim_nbr_on_vif(vifi, src);
 
-	return ASSERT_MOVED;
+	    /* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If
+	     * the Join Timer is set to expire in more than t_override seconds,
+	     * reset it so that it expires after t_override seconds."  Our
+	     * downstream receivers are behind the assert winner now, and it
+	     * does not know about them until we say so; waiting for the
+	     * periodic Join left them without the group for up to a whole
+	     * period.
+	     */
+	    jp_value = jp_override_timeout(vifi);
+	    if (jp_timer_left(own) > jp_value)
+		jp_timer_set(own, jp_value);
+
+	    return ASSERT_MOVED;
+
+	default:
+	    return ASSERT_NOTHING;
     }
-
-    return ASSERT_NOTHING;
 }
 
 int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
@@ -5019,7 +4902,6 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     struct uvif *v;
     uint32_t assert_preference;
     uint32_t assert_metric;
-    uint32_t assert_rptbit;
     int held, rc;
 
     (void)dst;
@@ -5087,7 +4969,6 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
     /* Get the metric related info */
     assert_preference = as.preference;
     assert_metric     = as.metric;
-    assert_rptbit     = assert_preference & PIM_ASSERT_RPT_BIT;
 
     source = as.source;
     group  = as.group;
@@ -5155,7 +5036,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	held = sg && (assert_lost_on(sg, vifi) || assert_winner_is_me(sg, vifi));
 
 	rc = assert_machine(sg ? sg : wc, sg, vifi, FALSE, src, source, group,
-			    assert_rptbit, assert_preference, assert_metric);
+			    assert_preference, assert_metric);
 	/* ASSERT_REFUSED is the same answer as ASSERT_MOVED to sec. 4.6.2:
 	 * the message was this machine's, which is what keeps the (*,G) one
 	 * out of it, and the only difference is that nothing could be kept.
@@ -5177,7 +5058,7 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 	    return TRUE;
     }
 
-    assert_machine(wc, wc, vifi, TRUE, src, source, group, assert_rptbit,
+    assert_machine(wc, wc, vifi, TRUE, src, source, group,
 		   assert_preference, assert_metric);
 
     return TRUE;
