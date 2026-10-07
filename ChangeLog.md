@@ -52,6 +52,11 @@ issue of this repository is written out in full.
   minutes.  It goes back to the routing table's neighbour at once now,
   RFC 7761 sec. 4.6.1.  Found by the CBMC proof of the Assert decisions,
   put by step 7d of `crafted` in `test/lab.sh`.
+- The same router, sent the winner's Assert again at a worse metric than it
+  had won with, took its Joins back to the routing table's neighbour while
+  the winner went on forwarding.  It stays with the winner until the winner
+  cancels or times out, as RFC 7761 sec. 4.6.1 and 4.6.2 have it.  Step 7e
+  of `crafted`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

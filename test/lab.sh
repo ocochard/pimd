@@ -7449,6 +7449,30 @@ check_crafted() {
 		else
 			ok "r2 loses ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) to $SUPP_ADDR on its RPF interface, the control"
 
+			# 7e.  The winner's Assert again, at a worse metric than it
+			# won with.  On the RPF interface my_assert_metric is
+			# infinite, so no Assert is inferior to it and this one is
+			# acceptable: sec. 4.6.1 stays Loser and stores it, A2.
+			# assert_decide() measured it against the winner's old
+			# metric instead and went back to NoInfo, handing RPF'(S,G)
+			# back to the routing table while the winner forwarded on.
+			# Read three seconds later, a clearing being immediate; on
+			# a failure the first Assert is sent again, so that the
+			# cancel below is still from a current winner.
+			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
+				-s "$CRAFT_RPT_ASSERT_SRC" -P 5 -C 5
+			sleep 3
+			if r2_rpf_cancel_assert_is L; then
+				ok "and stays the Loser on the winner's Assert at a worse metric, which is still acceptable (7e)"
+			else
+				st=$(assert_char_of r2 "${EPU}112b" "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" || true)
+				fail "r2 reads '${st:-nothing}' after the winner's Assert at a worse metric, sec. 4.6.1 keeps the Loser state (7e)"
+				craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
+					-s "$CRAFT_RPT_ASSERT_SRC" -P 5 -C 5
+				wait_for 10 r2_rpf_cancel_assert_is L || \
+					dprint "   r2 did not go back to the Loser state for the cancel below"
+			fi
+
 			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
 				-s "$CRAFT_RPT_ASSERT_SRC" -R -P 2147483647 -C 4294967295
 			if wait_for 10 r2_rpf_cancel_assert_is .; then

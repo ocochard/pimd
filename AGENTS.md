@@ -347,7 +347,8 @@ bit refused by the (\*,G) machine on the RPF interface and one with it taken, th
 the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
 as infinite, and losing to that metric from a higher address, the control (step 7c, M22), an (S,G)
 Loser on its RPF interface leaving on the winner's AssertCancel, which carries the RPT bit and was
-dropped for it (step 7d, M23, found by `proof_decide` of `test/cbmc/assert.c`),
+dropped for it (step 7d, M23, found by `proof_decide` of `test/cbmc/assert.c`), and staying the
+Loser on the winner's Assert at a worse metric, which is still acceptable there (step 7e, M24),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those

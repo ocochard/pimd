@@ -465,6 +465,18 @@ step 7d in `test/lab.sh`: r2 is given an (S,G) whose RPF interface is its
 link to r1 and loses it there to a neighbour, the control, whose AssertCancel
 then has to take r2 back to NoInfo (it stayed the Loser before the fix).*
 
+M24 came out of the same proof, beside M23.  On the RPF interface
+my_assert_metric is infinite, CouldAssert being FALSE there, so sec. 4.6.3's
+"never considered inferior if my_assert_metric is infinite" leaves the
+winner's Assert, whatever its metric, an acceptable one: both machines stay
+Loser and store it, A2, and only the cancel ends the state.  `assert_decide()`
+compared it against the metric the winner had won with instead, and went back
+to NoInfo on any that was worse -- RPF' back to the routing table's
+neighbour, the Joins with it, while the winner went on forwarding onto the
+LAN.  *Test: `crafted` step 7e in `test/lab.sh`, inside 7d's setup: the
+winner's Assert at a worse metric has to leave r2 the Loser (it read NoInfo
+before the fix), and 7d's cancel after it still has to end the state.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

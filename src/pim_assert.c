@@ -177,11 +177,16 @@ int assert_decide(const struct assert_view *v)
 	if (v->winner != 0) {
 	    if (compare_metrics(v->win_pref, v->win_metric, v->winner,
 				v->pref, v->metric, v->src)) {
-		/* Inferior Assert from the current winner: A5 */
 		if (v->src != v->winner)
 		    return ASSERT_ACT_NONE;
 
-		return ASSERT_ACT_CLEAR;
+		/* The winner's Assert, worse than the one it won with.  Here
+		 * that is still an acceptable one, A2: my_assert_metric is
+		 * infinite on the RPF interface, so no Assert is inferior to
+		 * it and only the cancel above ends the state.  pimd used to
+		 * clear on it, sending its Joins back to the routing table's
+		 * neighbor while the winner went on forwarding. */
+		return ASSERT_ACT_STORE;
 	    }
 
 	    /* Its Assert again, A2 */
