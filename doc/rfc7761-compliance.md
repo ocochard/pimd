@@ -477,6 +477,28 @@ LAN.  *Test: `crafted` step 7e in `test/lab.sh`, inside 7d's setup: the
 winner's Assert at a worse metric has to leave r2 the Loser (it read NoInfo
 before the fix), and 7d's cancel after it still has to end the state.*
 
+M25 is map finding 5 of the sec. 4.6 review, which the same proof confirmed.
+On RPF_interface(RP(G)) an Assert with the RPT bit is the (\*,G) machine's,
+sec. 4.6.1 having no transition there for one, and RPF'(S,G,rpt) is
+RPF'(\*,G), sec. 4.1.6.  `assert_decide()` let an (S,G) entry on the shared
+tree -- MRTF_RP, the state a Prune(S,G,rpt) makes -- take the message for its
+source and follow the winner itself, which kept the (\*,G) machine out of it:
+the whole group's Joins stayed on the router that had lost.  And
+`age_routes()` (`src/route.c`) undid a winner either entry held, resetting
+both to the routing table's neighbour -- the (S,G) entry on every check of the
+unicast routes, the (\*,G) whenever one of its interface timers ran out.  The
+message goes to the (\*,G) machine alone now, `assert_rpt_follow()` carries
+RPF'(\*,G) over to the group's (S,G) entries on the shared tree whenever an
+Assert moves it, and `age_routes()` asks `assert_rpf_prime()` for RPF' rather
+than overwrite it.  *Test: `crafted` step 7f in `test/lab.sh`, read off the
+new "Upstream" line of `pimctl show mrt detail`: with a (\*,G) and an (S,G)
+on its shared tree at r1, an Assert with the bit for that source has to make
+the (\*,G) the Loser (the (S,G) took it before the fix), both entries have to
+send their Joins to the winner, still after a check of the unicast routes
+(the (S,G) went back without the `route.c` half, measured), and back to r2
+once the winner cancels.  The (\*,G) half of the `age_routes()` reset is not
+reached: the step's Join holds its interface timers at 65535.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

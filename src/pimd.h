@@ -744,7 +744,6 @@ struct assert_view {
     int      where;		/* ASSERT_DOWNSTREAM and friends */
     int      has_state;		/* the entry has a slot for the interface */
     int      spt;		/* SPTbit(S,G) */
-    int      rp_entry;		/* the entry carries MRTF_RP */
     int      has_upstream;	/* the entry has an RPF neighbor */
     uint32_t winner;		/* AssertWinner, 0 in NoInfo */
     int      is_winner;		/* ... and it is this router */

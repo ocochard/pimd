@@ -1830,6 +1830,10 @@ CRAFT_DESYNC_NET=${CRAFT_DESYNC_NET:-237}
 # crafted step 7b: the source the two Asserts name, one r1 holds no (S,G)
 # for, so that the (S,G) machine has no entry to take either message first
 CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
+# crafted step 7f: a group ED1 joins at r1 with a source behind r3 pruned
+# off its shared tree, which gives r1 an (S,G) entry on the shared tree
+CRAFT_RPT_FOLLOW_GROUP=${CRAFT_RPT_FOLLOW_GROUP:-225.1.4.8}
+CRAFT_RPT_FOLLOW_SRC=${CRAFT_RPT_FOLLOW_SRC:-10.0.3.77}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
 # its link to R1, the only state behind it being the step's own Join
 CRAFT_RP_ASSERT_GROUP=${CRAFT_RP_ASSERT_GROUP:-225.1.4.6}
@@ -7367,6 +7371,80 @@ check_crafted() {
 			dprint "   r1 is still the Loser on ${EP}112a after the AssertCancel"
 	fi
 
+	print "7f. An Assert with the RPT bit moves RPF'(*,G), and RPF'(S,G,rpt) with it"
+	# On RPF_interface(RP(G)) an Assert with the RPT bit is the (*,G)
+	# machine's, sec. 4.6.1 having no transition there for one, and
+	# RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.6.  assert_decide()
+	# (src/pim_assert.c) let an (S,G) entry on the shared tree -- MRTF_RP,
+	# the state a Prune(S,G,rpt) makes -- take the message for its source,
+	# follow the winner itself, and so keep the (*,G) machine out of it:
+	# the group's Joins stayed on the router that had lost.
+	# test/cbmc/assert.c's proof_decide found it.  ED1 joins a group at r1
+	# and prunes a source behind r3 off its shared tree, in two messages:
+	# in one group set the Prune(S,G,rpt) is read before the Join(*,G)
+	# makes the group.  Step 5's
+	# neighbour on r1's link to the RP asserts for that source with the
+	# bit: r1's (*,G) has to be the Loser there, and both entries have to
+	# send their Joins to the winner -- the "Upstream" of `show mrt
+	# detail` -- and back to r2 once the winner cancels.
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_RPT_FOLLOW_GROUP" ||
+	     ! craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535 ||
+	     ! wait_for 30 has_sg r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_FOLLOW_GROUP"; then
+		fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_RPT_FOLLOW_GROUP) from the Prune(S,G,rpt), the step cannot be put"
+	else
+		# r2 forwards the group's shared tree onto the same link and, being
+		# the RP, asserts at metric 0 (step 7c): the neighbour asserts at
+		# that metric and wins on its address, 10.0.12.9 above 10.0.12.2.
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPT_FOLLOW_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 0 -C 0
+		if wait_for 10 r1_rpt_follow_wc_is L; then
+			ok "r1's (*,$CRAFT_RPT_FOLLOW_GROUP) is the Loser on ${EP}112a, the Assert was the (*,G) machine's"
+		else
+			st=$(assert_char_of r1 "${EP}112a" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_FOLLOW_GROUP" || true)
+			fail "r1's (*,$CRAFT_RPT_FOLLOW_GROUP) is not the Loser on ${EP}112a, its (S,G) on the shared tree reads '${st:-nothing}': the (S,G) machine took the Assert"
+		fi
+		for e in ANY "$CRAFT_RPT_FOLLOW_SRC"; do
+			if wait_for 10 route_upstream_is r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP" "$SUPP_ADDR"; then
+				ok "($e,$CRAFT_RPT_FOLLOW_GROUP) sends its Joins to the winner, $SUPP_ADDR"
+			else
+				fail "($e,$CRAFT_RPT_FOLLOW_GROUP) sends its Joins to $(route_upstream r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP"), not to the winner $SUPP_ADDR"
+			fi
+		done
+
+		# And still there after a check of the unicast routes, every
+		# 20 seconds, which reset both upstreams to the routing table's
+		# neighbor -- the (*,G)'s whenever one of its interface timers
+		# ran out, the (S,G)'s every time.
+		sleep 26
+		for e in ANY "$CRAFT_RPT_FOLLOW_SRC"; do
+			if route_upstream_is r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP" "$SUPP_ADDR"; then
+				ok "($e,$CRAFT_RPT_FOLLOW_GROUP) still does after a check of the unicast routes"
+			else
+				fail "($e,$CRAFT_RPT_FOLLOW_GROUP) went back to $(route_upstream r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP") at a check of the unicast routes, the winner $SUPP_ADDR still holding the link"
+			fi
+		done
+
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPT_FOLLOW_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 2147483647 -C 4294967295
+		for e in ANY "$CRAFT_RPT_FOLLOW_SRC"; do
+			if wait_for 10 route_upstream_is r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP" "$RP_ADDR"; then
+				ok "and back to $RP_ADDR once the winner cancels, ($e,$CRAFT_RPT_FOLLOW_GROUP)"
+			else
+				fail "($e,$CRAFT_RPT_FOLLOW_GROUP) still sends its Joins to $(route_upstream r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP") after the winner's AssertCancel"
+			fi
+		done
+
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" -w -r "$RP_ADDR"
+	fi
+
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),
 	# sec. 4.6.3, and for the RP itself the route to RP(G) is its own
@@ -8564,6 +8642,21 @@ check_fuzz() {
 r1_supp_assert_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)" = "$1" ]
 }
+
+r1_rpt_follow_wc_is() {
+	[ "$(assert_char_of r1 "${EP}112a" ANY "$CRAFT_RPT_FOLLOW_GROUP" || true)" = "$1" ]
+}
+
+# The neighbor ($2,$3) on router $1 sends its Joins to, RPF' of RFC 7761
+# sec. 4.1.6, off the "Upstream" line of "show mrt detail"
+route_upstream() {
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" '
+		$1 == s && $2 == g { want = 1; next }
+		want && $1 == "Upstream" { print $3; want = 0 }
+	'
+}
+
+route_upstream_is() { [ "$(route_upstream "$1" "$2" "$3")" = "$4" ]; }
 
 r2_rp_assert_is() {
 	[ "$(assert_char_of r2 "${EPU}112b" ANY "$CRAFT_RP_ASSERT_GROUP" || true)" = "$1" ]

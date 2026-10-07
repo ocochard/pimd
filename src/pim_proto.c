@@ -4397,6 +4397,48 @@ static srcentry_t *assert_mrib_src(mrtentry_t *mrt)
 }
 
 /*
+ * RPF' of RFC 7761 sec. 4.1.6 for an entry whose routing table neighbor is
+ * @mrib: the Assert winner on its incoming interface while this router is
+ * the Loser there, @mrib otherwise.  age_routes() (src/route.c) recomputes
+ * upstreams from the routing table and asks this, rather than overwrite
+ * the winner the Joins are to go to.
+ */
+pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib)
+{
+    struct assert_state *as;
+    pim_nbr_entry_t *nbr;
+
+    if (!assert_lost_on(mrt, mrt->incoming))
+	return mrib;
+
+    as  = assert_state(mrt, mrt->incoming);
+    nbr = find_pim_nbr_on_vif(mrt->incoming, as->winner);
+
+    return nbr ? nbr : mrib;
+}
+
+/*
+ * RPF'(S,G,rpt) is RPF'(*,G), RFC 7761 sec. 4.1.6: an (S,G) entry on the
+ * shared tree, MRTF_RP, sends its Prune(S,G,rpt) where the (*,G) sends its
+ * Joins.  A new RP carries the (*,G)'s upstream over to those entries, and
+ * so must an Assert that moves it, since the Assert with the RPT bit is the
+ * (*,G) machine's alone -- the (S,G) entries no longer follow it themselves,
+ * see assert_decide() in src/pim_assert.c.
+ */
+static void assert_rpt_follow(mrtentry_t *wc)
+{
+    mrtentry_t *mrt;
+
+    if (!(wc->flags & MRTF_WC) || !wc->group)
+	return;
+
+    for (mrt = wc->group->mrtlink; mrt; mrt = mrt->grpnext) {
+	if ((mrt->flags & MRTF_RP) && mrt->incoming == wc->incoming)
+	    mrt->upstream = wc->upstream;
+    }
+}
+
+/*
  * RPF'(S,G) and RPF'(*,G) of RFC 7761 sec. 4.1.6 are the Assert winner on
  * RPF_interface while there is one, and the MRIB's neighbor otherwise.  So
  * when the Loser state there ends the Joins go back to the MRIB's neighbor,
@@ -4412,6 +4454,7 @@ static int assert_rpf_restore(mrtentry_t *mrt)
 	return FALSE;
 
     mrt->upstream = mrib->upstream;
+    assert_rpt_follow(mrt);
     jp_value = jp_override_timeout(mrt->incoming);
     if (jp_timer_left(mrt) > jp_value)
 	jp_timer_set(mrt, jp_value);
@@ -4763,7 +4806,6 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
     }
 
     view.spt          = (mrt->flags & MRTF_SPT) != 0;
-    view.rp_entry     = own && (own->flags & MRTF_RP);
     view.has_upstream = own && own->upstream != NULL;
 
     /* The local preference and metric, RPT bit included */
@@ -4873,6 +4915,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 		return ASSERT_MOVED;
 
 	    own->upstream = find_pim_nbr_on_vif(vifi, src);
+	    assert_rpt_follow(own);
 
 	    /* RFC 7761 sec. 4.5.5, "RPF'(S,G) changes due to an Assert": "If
 	     * the Join Timer is set to expire in more than t_override seconds,

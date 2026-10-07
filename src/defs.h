@@ -769,6 +769,7 @@ extern void	process_kernel_call	(ssize_t recvlen);
 extern int	delete_vif_from_mrt	(vifi_t vifi);
 extern void	assert_vif_gone		(mrtentry_t *mrt, vifi_t vifi);
 extern int	assert_iif_moved	(mrtentry_t *mrt, vifi_t old_iif);
+extern pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
 /* How long the last pass of it took, and the longest one so far, in

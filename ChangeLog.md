@@ -57,11 +57,21 @@ issue of this repository is written out in full.
   the winner went on forwarding.  It stays with the winner until the winner
   cancels or times out, as RFC 7761 sec. 4.6.1 and 4.6.2 have it.  Step 7e
   of `crafted`.
+- A router whose (*,G) lost the Assert election on its link towards the RP
+  went on sending the group's Joins to the router that had lost whenever it
+  also held a source pruned off that shared tree: the Assert went to that
+  source's entry instead.  Both now follow the winner, and stay with it
+  across the periodic check of the unicast routes, which put them back on
+  the routing table's neighbour.  RFC 7761 sec. 4.1.6 and 4.6.2, step 7f of
+  `crafted`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------
 
 ### Changes
+- `pimctl show mrt detail` prints each entry's upstream neighbor, the one
+  its Joins go to: the routing table's, or the winner of an Assert on the
+  incoming interface (RFC 7761 sec. 4.1.6).
 - An address a `pimd.conf` names by interface is resolved again on every
   interface scan, so `bsr-candidate`, `rp-candidate`, `autorp announce` and
   `autorp mapping-agent` may name an interface that does not exist, or has no

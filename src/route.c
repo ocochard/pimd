@@ -2736,7 +2736,9 @@ static void age_routes_pass(void)
 					  mrt_grp->pruned_oifs,
 					  mrt_grp->leaves,
 					  mrt_grp->asserted_oifs, 0);
-			mrt_grp->upstream = rp->upstream;
+			/* RPF'(*,G): the routing table's neighbor, unless an
+			 * Assert on the incoming interface named another one */
+			mrt_grp->upstream = assert_rpf_prime(mrt_grp, rp->upstream);
 
 			/* RFC 7761 sec. 4.5.4, "RPF'(*,G) changes not due to
 			 * an Assert": Join the new upstream router.  When the
@@ -2847,9 +2849,17 @@ static void age_routes_pass(void)
 				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
 			    }
 			} else {
-			    /* (S,G)RPBit with iif toward RP */
-			    if ((rpentry_save.upstream != mrt_srcs->upstream) ||
-				(rpentry_save.incoming != mrt_srcs->incoming)) {
+			    /* (S,G)RPBit with iif toward RP.  Its upstream is
+			     * RPF'(S,G,rpt), which sec. 4.1.6 makes RPF'(*,G),
+			     * the (*,G) above being brought up to date first:
+			     * held to the RP's routing table neighbor, it went
+			     * back there on every check, the Assert winner the
+			     * (*,G) follows notwithstanding. */
+			    pim_nbr_entry_t *rpt_upstream = grp->grp_route
+				? grp->grp_route->upstream : rp->upstream;
+
+			    if ((rpt_upstream != mrt_srcs->upstream) ||
+				(rp->incoming != mrt_srcs->incoming)) {
 				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
 
 				vifi_t old_iif = mrt_srcs->incoming;
@@ -2857,7 +2867,7 @@ static void age_routes_pass(void)
 				update_src_iif = TRUE; /* XXX: a hack */
 				/* XXX: setup the iif now! */
 				mrt_srcs->incoming = rp->incoming;
-				mrt_srcs->upstream = rp->upstream;
+				mrt_srcs->upstream = rpt_upstream;
 				assert_iif_moved(mrt_srcs, old_iif);
 
 				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);

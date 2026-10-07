@@ -283,10 +283,15 @@ Show PIM neighbor table.  With
 each neighbor is followed by the secondary addresses it advertises in the
 Address List option of its Hello, one to a line, which is how a route whose
 next hop is one of them is mapped to the neighbor.
-.It Nm Ar show mrt
+.It Nm Ar show mrt Op Cm detail
 Show PIM multicast routing table, i.e., the state the daemon itself
 keeps.  For the flows the kernel actually forwards, see
 .Cm show mfc .
+With
+.Cm detail ,
+each entry is followed by its per-interface maps, the neighbor its Joins
+go to (the routing table's, or the winner of an Assert on the incoming
+interface), and its timers.
 .It Nm Ar show mfc
 Show the multicast forwarding cache (MFC) the daemon has installed in
 the kernel: one line per (S,G), with the incoming interface, the

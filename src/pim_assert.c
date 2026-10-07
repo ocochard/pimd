@@ -161,8 +161,15 @@ int assert_decide(const struct assert_view *v)
 	    return ASSERT_ACT_CLEAR;
 
 	if (rptbit) {
-	    /* The locally used upstream router wins that one */
-	    if (!v->rp_entry)
+	    /* An Assert with the RPT bit is the (*,G) machine's here, every
+	     * transition sec. 4.6.1 has on the RPF interface being on one
+	     * without it.  An (S,G) entry on the shared tree -- MRTF_RP, the
+	     * (S,G,rpt) state -- used to take it as well, follow the winner
+	     * itself and so keep the (*,G) machine out of the message,
+	     * leaving RPF'(*,G) and the whole group's Joins on the router
+	     * that had lost.  RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.6, and
+	     * src/pim_proto.c carries the (*,G)'s over to it. */
+	    if (!v->wc)
 		return ASSERT_ACT_NONE;
 	} else if (v->wc) {
 	    /* Sec. 4.6.2 moves the (*,G) machine here only on an Assert with

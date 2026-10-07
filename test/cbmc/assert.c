@@ -261,7 +261,6 @@ void proof_decide(void)
     v.where        = (int)(nondet_uint32_t() % 3);
     v.has_state    = nondet_uint32_t() & 1;
     v.spt          = nondet_uint32_t() & 1;
-    v.rp_entry     = nondet_uint32_t() & 1;
     v.has_upstream = nondet_uint32_t() & 1;
     v.winner       = nondet_uint32_t();
     v.is_winner    = nondet_uint32_t() & 1;
@@ -276,14 +275,12 @@ void proof_decide(void)
 
     /* What the caller guarantees: no state without a slot to keep it in,
      * a winner that is this router is stored under its own address, an
-     * Assert is never from this router, and the (*,G) entry carries
-     * MRTF_RP.  And what the tables leave out: my_assert_metric is not
+     * Assert is never from this router.  And what the tables leave out: my_assert_metric is not
      * infinite on a downstream interface, and nothing wins upstream, where
      * this router has no RPF neighbor only while it has no route. */
     __CPROVER_assume(v.has_state || v.winner == 0);
     __CPROVER_assume(!v.is_winner || v.winner == v.my_addr);
     __CPROVER_assume(v.src != v.my_addr && v.src != 0);
-    __CPROVER_assume(!v.wc || v.rp_entry);
     /* my_assert_metric(): spt_assert_metric, RPT bit clear, where the
      * (S,G) machine has SPTbit; rpt_assert_metric, bit set, otherwise */
     __CPROVER_assume(((v.my_pref & PIM_ASSERT_RPT_BIT) == 0) == (!v.wc && v.spt));
@@ -293,12 +290,11 @@ void proof_decide(void)
 						    !(v.winner && v.is_winner)));
     /* And what assert_decide() itself keeps true of the state it leaves,
      * which is why it is not proven here: no transition stores an
-     * infinite metric as the winner's, and an (S,G) entry without MRTF_RP
-     * stores no winner off an Assert with the RPT bit on its RPF
-     * interface. */
+     * infinite metric as the winner's, and the (S,G) machine stores no
+     * winner off an Assert with the RPT bit on its RPF interface. */
     __CPROVER_assume(v.winner == 0 || !(v.win_pref == PIM_ASSERT_INFINITE_PREFERENCE &&
 					v.win_metric == PIM_ASSERT_INFINITE_METRIC));
-    __CPROVER_assume(!(v.where == ASSERT_UPSTREAM && !v.wc && !v.rp_entry && v.winner) ||
+    __CPROVER_assume(!(v.where == ASSERT_UPSTREAM && !v.wc && v.winner) ||
 		     !(v.win_pref & PIM_ASSERT_RPT_BIT));
 
     got  = assert_decide(&v);

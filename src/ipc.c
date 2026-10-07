@@ -1032,6 +1032,11 @@ static void dump_route(FILE *fp, mrtentry_t *r)
 	fprintf(fp, "Assert state : %-20s\n", assert_states);
 	fprintf(fp, "Outgoing oifs: %-20s\n", oifs);
 	fprintf(fp, "Incoming     : %-20s\n", incoming_iif);
+	/* RPF' of RFC 7761 sec. 4.1.6, where the entry's Joins go: the
+	 * routing table's neighbor, or the Assert winner on the incoming
+	 * interface while there is one */
+	fprintf(fp, "Upstream     : %s\n",
+		r->upstream ? inet_fmt(r->upstream->address, s1, sizeof(s1)) : "-");
 
 	fprintf(fp, "\nTIMERS       :  Entry    JP    RS  VIFS:");
 	for (vifi = 0; vifi < numvifs; vifi++)
