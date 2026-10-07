@@ -576,6 +576,33 @@ pimd.conf says 150 -- the number the `arista-wins` sub-case beside it shows
 pimd losing with, which is this one's control.  It needs a netlink build and
 skips itself on a routing socket one, saying so.*
 
+**M21.  AssertTrackingDesired is never evaluated, by choice.**  Both Loser
+states of sec. 4.6.1 and sec. 4.6.2 go to NoInfo when
+`AssertTrackingDesired(S,G,I)` or `AssertTrackingDesired(*,G,I)` turns FALSE
+(`doc/rfc7761.txt:4431`, `:4901`), and pimd computes neither: its Loser state
+ends on the Assert Timer, the winner's AssertCancel, inferior Assert, GenID
+or Neighbor Liveness Timer, "my metric becomes better", a Join on the
+interface, or the interface leaving the RPF interface (M18) -- every other
+exit of the two tables -- but not on the router losing interest in the
+interface.  Weighed rather than fixed, after the sec. 4.6 map that turned up
+M18 to M20.  Downstream, a router with no interest in an interface would not
+forward onto it in either state, so the two differ only when interest
+returns: RFC 7761's router is in NoInfo, forwards, duplicates the winner's
+traffic and loses the election again, while pimd's is still the Loser --
+the winner's Assert every 177 seconds keeps it so -- and forwards nothing,
+correctly while the winner still serves the link; a winner that stops does
+so with an AssertCancel, which pimd acts on, and one that dies takes its
+state with its Neighbor Liveness Timer.  Upstream, a Loser on the RPF
+interface with no Join desired sends no Join either way, and when one is
+desired again pimd sends it to the winner at once where RFC 7761's router
+sends it to the routing table's neighbor and follows the next Assert.  No
+forwarding difference could be constructed from either case.  Evaluating it
+would approximate the four terms of the (S,G) macro and three of the (\*,G)
+one from pimd's state, and a term wrong on the RPF interface reopens M15,
+the Join/Prune-period flap that Loser state was fixed to stop.  *Test: none
+-- the visible difference is the state alone, after a Join holdtime, 210
+seconds in the labs here.*
+
 
 RP discovery
 ------------
