@@ -1200,7 +1200,12 @@ fi
 PIMD_START_WAIT=${PIMD_START_WAIT:-20}
 
 # pimd debug flags, e.g. DEBUG="-l debug -d mrt,rpf" or "-l debug -d all"
-DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap"}
+#
+# pim_asserts is in the default because the assert elections of shared-lan,
+# shared-lan-spt and assert-recover are decided by messages nothing else
+# logs: a failure in one of them left a dump that showed who held the LAN
+# but not which Assert, with which preference and metric, won it.
+DEBUG=${DEBUG:-"-l debug -d mrt,rpf,pim_register,pim_bootstrap,pim_asserts"}
 
 # Kept so set_scenario() can put it back: "run all" walks the scenarios in
 # one shell, and crafted needs a subsystem the rest do not.
