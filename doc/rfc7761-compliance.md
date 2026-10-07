@@ -370,6 +370,30 @@ now, where the SPT threshold is zero (`spt_switch_on_first_packet()`), and
 sends none otherwise.  Step 4 of `assert-recover` asserts M15 directly: the
 downstream router reads L on its RPF interface.
 
+M18 was the one transition of the Loser state no code took: sec. 4.6.1's
+"RPF_interface(S) stops being I" and sec. 4.6.2's "RPF_interface(RP(G))
+stops being I", Actions A5.  None of the places that move an entry's
+incoming interface -- `change_interfaces()` and the three in `age_routes()`
+and `switch_shortest_path()` that set it themselves (`src/route.c`) --
+touched the assert state of the interface left behind, so the Loser state
+there outlived the route that made the winner RPF', for up to its Assert
+Timer, and was read as a loss on what had become a downstream interface:
+measured, a router with a member on the interface it had just left kept
+that interface out of its outgoing list, two runs out of two.
+`assert_iif_moved()` (`src/pim_proto.c`) is the
+transition now, called from all four once `incoming` has moved.  Found by
+mapping sec. 4.6 against the code transition by transition
+(`aidd_docs/plans/assert-machines-map.md`, untracked).  *Test: step 9 of `assert-recover` moves the
+downstream router's route to the RP onto a link of its own, at a metric
+worse than the winner's so that sec. 4.6.2's other way out of the Loser
+state, "my metric becomes better", cannot be what clears it, and with a
+member of its own on a third link so that the entry outlives the move: the
+router is not the DR on the LAN it leaves, and without one it ages the
+entry out a pass later, correctly -- which a first version of the step,
+reading the state in that window, mistook for the bug's doing.  The BSR is
+the RP's own address, so the move takes the RPF check of the Bootstraps
+with it; the new neighbour sends them for the length of the step.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

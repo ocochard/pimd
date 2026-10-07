@@ -22,6 +22,13 @@ issue of this repository is written out in full.
   and a multicast reply went out with that TTL -- zero for a query ID ending
   in 0x00.  Both are read at their
   offsets on the wire now, by a decoder in `src/igmp_parse.c`.
+- A router that was the Assert loser on its RPF interface kept that
+  state when its route moved to another interface, for up to its Assert
+  Timer, 180 seconds, and read it as a loss on that interface, which had
+  become a downstream one: measured, a member there was left out of the
+  outgoing interfaces until the timer ran out.  RFC 7761 sec. 4.6.1 and
+  4.6.2 send the state to NoInfo the moment the interface stops being the
+  RPF interface, and pimd does now.  Step 9 of `assert-recover` in `test/lab.sh` moves such a route.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

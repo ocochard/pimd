@@ -4613,6 +4613,32 @@ static void assert_forget_winner(mrtentry_t *mrt, vifi_t vifi, uint32_t addr,
  * nothing to anybody.  The oif lists are the caller's to recompute, so
  * nothing here ends in change_interfaces().
  */
+/*
+ * RFC 7761 sec. 4.6.1 and sec. 4.6.2, the Loser state's "RPF_interface(S)
+ * stops being I" and "RPF_interface(RP(G)) stops being I", Actions A5: the
+ * winner of an election on an interface the entry no longer takes traffic
+ * from is not its RPF' any more, and that state goes to NoInfo.  Without
+ * this it lasted until its Assert Timer ran out, up to 180 seconds, and
+ * was read meanwhile as a downstream loss on what had become an outgoing
+ * interface.  Called once mrt->incoming has moved, so that assert_clear()
+ * sees a downstream interface and leaves the upstream router, which is the
+ * new interface's now, alone.  Returns whether anything was cleared.
+ */
+int assert_iif_moved(mrtentry_t *mrt, vifi_t old_iif)
+{
+    if (!mrt || old_iif >= numvifs || old_iif == mrt->incoming)
+	return FALSE;
+
+    if (!assert_lost_on(mrt, old_iif))
+	return FALSE;
+
+    IF_DEBUG(DEBUG_PIM_ASSERT)
+	logit(LOG_DEBUG, 0, "Assert Loser state on %s goes, it is not the RPF interface any more",
+	      uvifs[old_iif].uv_name);
+
+    return assert_clear(mrt, old_iif);
+}
+
 void assert_vif_gone(mrtentry_t *mrt, vifi_t vifi)
 {
     if (!mrt || vifi >= numvifs)

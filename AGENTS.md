@@ -240,7 +240,9 @@ administrative distance netlink derives from that label while the metrics stay e
 kernel whose routes carry a protocol and so runs on Linux and skips itself on the BSDs --, and
 `assert-recover` is the only one about how a
 router *leaves* the assert state rather than how it enters one -- it kills the winner's pimd so the
-loser meets a new GenID, then renumbers the winner's interface downwards),
+loser meets a new GenID, then renumbers the winner's interface downwards, and step 9 moves the
+downstream router's route to the RP onto a link built for it, at a metric worse than the winner's so
+that only sec. 4.6.2's "RPF_interface stops being I" can end its Loser state, M18),
 `rp-offpath` is the only one whose topology is not a chain, so it is the only one where a router is
 adjacent to the BSR and the RP and where the shared tree and the shortest path tree leave a router by
 different interfaces, `bsr-elect` the only one with two Candidate-BSRs, so the election of RFC 5059

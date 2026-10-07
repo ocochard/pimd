@@ -1553,6 +1553,24 @@ AR_DR_NEW=${AR_DR_NEW:-10.0.3.100}
 # on the segment, so the stream has to outlast a pimd restart, a
 # renumbering and the four convergences between them.
 AR_WAIT=${AR_WAIT:-90}
+
+# assert-recover step 9: the metric r5's route to the RP is given when it
+# moves off the shared LAN.  Worse than the $SL_METRIC_FAR r4 asserts with,
+# so that "my metric became better than the winner's" cannot take r5 out of
+# its Loser state and the transition the step is about is the only one
+# that can: a first version of the step moved the route at the default
+# metric and passed with the bug in place, measured.
+AR_METRIC_WORSE=${AR_METRIC_WORSE:-500}
+
+# And the link that route moves onto, built under the running lab: r5 has
+# two interfaces, the shared LAN and ED2's, and moving its RPF interface
+# onto ED2's would make the receiver's link the incoming interface, leave
+# the (*,G) entry no outgoing one and delete it -- a first version of the
+# step did exactly that.  A third link, to ED2 as well but used for nothing
+# but its Hello, keeps the receiver where it is.
+AR_RPF_EP=${EP}515
+AR_RPF_R5_ADDR=10.0.15.1
+AR_RPF_PEER_ADDR=10.0.15.10
 AR_PKTS=${AR_PKTS:-600}
 
 # ED3 joins the group on a port of its own.  IGMP membership is per group,
@@ -4703,6 +4721,37 @@ ar_iif_assert_state() {
 	printf '%s' "$map" | cut -c "$((idx + 1))"
 }
 
+# Does r5 hold a leaf for $GROUP on its link to ED2, the one step 9 makes
+# it keep the (*,G) entry for?
+ar_r5_leaf_on_ed2() {
+	map_isset r5 "${EP}510a" "$(route_map r5 ANY "$GROUP" Leaves)"
+}
+
+# The RP set r5 has to keep while step 9's route points at ED2: the BSR is
+# r2, at the RP's own address, so moving the route to the RP moves r5's
+# RPF interface toward the BSR as well, and the Bootstraps r3 and r4 relay
+# on the shared LAN stop passing its RPF check.  ED2, its RPF neighbour
+# toward the BSR now, sends them instead -- the same BSR, priority and RP --
+# or the RP set ages out within seconds and takes the entry with it, which
+# a version of this step without it found.
+ar_ed2_bootstrap() {
+	box_run ed2 "$PIMSEND" -i "$AR_RPF_PEER_ADDR" bootstrap -u "$RP_ADDR" -p 1 \
+		-g 224.0.0.0 -m 4 -r "$RP_ADDR" >/dev/null 2>&1 || true
+}
+
+# r5's state on the shared LAN is NoInfo, with the RP set kept up first
+ar_r5_iif_cleared() {
+	ar_ed2_bootstrap
+	ar_r5_iif_is .
+}
+
+# Does r5 hold state $1 ('L', '.') for (*,$GROUP) on its RPF interface on
+# the shared LAN?  '.' is NoInfo, which is also what a vanished entry
+# reads as, so step 9 asks for the entry's existence separately.
+ar_r5_iif_is() {
+	[ "$(ar_iif_assert_state r5 "$SL_R5_IF" "$GROUP" || true)" = "$1" ]
+}
+
 ar_cleanup() {
 	kill "$sender" "$joiner" "$receiver" 2>/dev/null || true
 	wait "$sender" "$joiner" "$receiver" 2>/dev/null || true
@@ -4897,6 +4946,70 @@ check_assert_recover() {
 	else
 		fail "r3 and r4 both still forward $GROUP ${AR_WAIT}s after the renumbering, nothing settled the LAN again"
 	fi
+
+	print "9. Loser state on the RPF interface goes when it stops being one"
+	# RFC 7761 sec. 4.6.2, the Loser state's "RPF_interface(RP(G)) stops
+	# being I", Actions A5: the winner of an election on a LAN this router
+	# no longer takes the group from is not its RPF'(*,G) any more, and the
+	# state that said so goes to NoInfo at once.  pimd changed the incoming
+	# interface without touching the assert state of the one it left, so
+	# the Loser state stayed until its Assert Timer ran out, up to 180s, and
+	# was read as a loss on what had become a downstream interface: r5 below
+	# kept its member on the shared LAN out of the outgoing list, measured,
+	# two runs out of two.  R5 holds that state since step 4 -- its RPF interface for
+	# the RP is the shared LAN, whose election r4 won -- and the route to
+	# the RP is moved to a link built for this step, see AR_RPF_EP.  ED2
+	# says a Hello on it first, from pimsend: with no PIM neighbour on the
+	# new RPF interface the (*,G) entry has no upstream and goes, which a
+	# first version of this step found, and an entry that is gone answers
+	# nothing about the state it had.  It says goodbye, holdtime 0, once
+	# the step is done.  And ED2 reports $GROUP on its own link first, so
+	# that r5 keeps the entry after the move: its only leaf is on the shared
+	# LAN, where r4 and not r5 is the DR, so once that LAN is no longer its
+	# incoming interface r5 has nothing to forward and ages the entry out,
+	# correctly, one pass later.  A version of this step without the report
+	# read the state only in the ten seconds between the move and that
+	# pass, passed and failed by timing, and was taken at first for the
+	# bug deleting the entry.
+	# The route goes at $AR_METRIC_WORSE, see there; a route(8) that cannot
+	# set one cannot keep the other transition out, and the step skips.
+	if ! route_has_metric; then
+		dprint "   skipped: route(8) here cannot set a metric (FreeBSD 16 and later can), and without one the step cannot tell the two ways out of the Loser state apart"
+	elif ! wait_for "$AR_WAIT" ar_r5_iif_is L; then
+		fail "r5 holds no Loser state on $SL_R5_IF after the renumbering, there is nothing to move away from"
+	elif ! box_link_add "$AR_RPF_EP" r5 ed2 ||
+	     ! box_addr_add r5 "${AR_RPF_EP}a" "$AR_RPF_R5_ADDR/24" ||
+	     ! box_addr_add ed2 "${AR_RPF_EP}b" "$AR_RPF_PEER_ADDR/24" ||
+	     ! box_if_up r5 "${AR_RPF_EP}a" || ! box_if_up ed2 "${AR_RPF_EP}b" ||
+	     ! wait_for 60 iface_is r5 "${AR_RPF_EP}a" "$AR_RPF_R5_ADDR"; then
+		fail "r5 never took the link built for this step, see $WORKDIR/r5.log"
+	else
+		box_run ed2 "$IGMPV3" -i 10.0.5.10 -g "$GROUP" -v 2 >/dev/null 2>&1 || true
+		box_run ed2 "$PIMSEND" -i "$AR_RPF_PEER_ADDR" hello -H 300 >/dev/null 2>&1 || true
+		if ! wait_for 30 ar_r5_leaf_on_ed2; then
+			fail "r5 took no leaf for $GROUP from ED2's report, nothing keeps its entry once the route moves"
+		elif ! wait_for 30 has_neighbor r5 "$AR_RPF_PEER_ADDR"; then
+			fail "r5 never took ED2's Hello, the RPF interface cannot be moved onto a neighbour"
+		else
+			box_route_change r5 "$SL_RP_NET" "$AR_RPF_PEER_ADDR" "$AR_METRIC_WORSE" >/dev/null
+			if wait_for 30 ar_r5_iif_cleared; then
+				ok "r5 dropped its Loser state on $SL_R5_IF once the RP moved off it"
+			elif ! route_assert_map r5 ANY "$GROUP" | grep -q .; then
+				fail "r5's (*,$GROUP) entry is gone after the route change despite ED2's leaf, the state cannot be read"
+				dprint "--- r5: pimctl show mrt detail ---"
+				pimctl r5 show mrt detail 2>&1 | head -40 || true
+			else
+				fail "r5 still reads L on $SL_R5_IF 30s after it stopped being the RPF interface, sec. 4.6.2 says NoInfo"
+				dprint "--- r5: pimctl show mrt detail ---"
+				pimctl r5 show mrt detail 2>&1 | head -40 || true
+			fi
+			box_route_change r5 "$SL_RP_NET" "$SL_R3_ADDR" "$SL_METRIC_NEAR" >/dev/null
+		fi
+		box_run ed2 "$PIMSEND" -i "$AR_RPF_PEER_ADDR" hello -H 0 >/dev/null 2>&1 || true
+	fi
+	# The link is the step's own, and a later run in this slot would find
+	# it there and fail to build it again
+	box_if_destroy r5 "${AR_RPF_EP}a" >/dev/null 2>&1 || true
 
 	# Back to the addressing the header describes, for a lab left running
 	ar_restore_addr

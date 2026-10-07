@@ -1345,6 +1345,7 @@ int change_interfaces(mrtentry_t *mrt,
     PIMD_VIFM_COPY(new_pruned_oifs, mrt->pruned_oifs);
     PIMD_VIFM_COPY(new_leaves, mrt->leaves);
     PIMD_VIFM_COPY(new_asserted_oifs, mrt->asserted_oifs);
+    assert_iif_moved(mrt, old_iif);
     calc_oifs(mrt, new_real_oifs);
 
     if (PIMD_VIFM_ISEMPTY(old_real_oifs)) {
@@ -2045,9 +2046,14 @@ mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)
              * For SSM, (S,G)RPbit entry does not exist but switch to
              * SPT must be allowed right away.
 	     */
-	    mrt->flags &= ~MRTF_RP;
-	    mrt->incoming = mrt->source->incoming;
-	    mrt->upstream = mrt->source->upstream;
+	    {
+		vifi_t old_iif = mrt->incoming;
+
+		mrt->flags &= ~MRTF_RP;
+		mrt->incoming = mrt->source->incoming;
+		mrt->upstream = mrt->source->upstream;
+		assert_iif_moved(mrt, old_iif);
+	    }
 	    delete_mrtentry_all_kernel_cache(mrt);
 	    change_interfaces(mrt,
 			      mrt->incoming,
@@ -2802,9 +2808,12 @@ static void age_routes_pass(void)
 				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
 
 				/* Route change has occur */
+				vifi_t old_iif = mrt_srcs->incoming;
+
 				update_src_iif = TRUE;
 				mrt_srcs->incoming = mrt_srcs->source->incoming;
 				mrt_srcs->upstream = mrt_srcs->source->upstream;
+				assert_iif_moved(mrt_srcs, old_iif);
 
 				/* Prune the router we used to take S from, the
 				 * half of RFC 7761 sec. 4.5.5 that pairs with
@@ -2817,10 +2826,13 @@ static void age_routes_pass(void)
 				(rpentry_save.incoming != mrt_srcs->incoming)) {
 				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
 
+				vifi_t old_iif = mrt_srcs->incoming;
+
 				update_src_iif = TRUE; /* XXX: a hack */
 				/* XXX: setup the iif now! */
 				mrt_srcs->incoming = rp->incoming;
 				mrt_srcs->upstream = rp->upstream;
+				assert_iif_moved(mrt_srcs, old_iif);
 
 				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
 			    }
