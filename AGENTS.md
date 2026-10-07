@@ -755,7 +755,14 @@ out of memory twice before it was dropped. The peaks were measured and the costl
 Join/Prune, 2.9G, its length set by its unwind depth (seven at 38 bytes, 4.4G at eight). The same
 `test/cbmc/encode.c` proves `src/pim_encode.c`, the bounded writer the message builders write
 through (`aidd_docs/plans/modernise-round2.md`, item 2), one put from any writer state on a buffer
-of any length, which by induction is every sequence of them. It exits 77 without `cbmc`; the `CBMC proofs` job of
+of any length, which by induction is every sequence of them. `test/cbmc/assert.c` is the first
+proof of a decision rather than of memory safety: `compare_metrics()`, which every Assert election
+comes down to, moved into `src/pim_assert.c` for it, proven equal to the order RFC 7761 sec. 4.6.3
+writes down -- a spec built from the fields and the address bytes rather than from the code's
+32-bit compares and `ntohl()` -- strict, transitive, and never letting the AssertCancel's infinite
+metric beat a real one (`aidd_docs/plans/assert-proofs.md`, step 1).  Two infinite metrics compare
+by address there, so the RFC's "never acceptable if infinite" is the state machines' to honour, which
+is step 2 of that plan. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

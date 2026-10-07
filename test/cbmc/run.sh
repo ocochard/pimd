@@ -263,6 +263,25 @@ mutant writer-left-not-counted     "$h" "$s" proof_put          0 1 's/w->left -
 mutant writer-u16-byte-order       "$h" "$s" proof_put          0 1 's/{ (uint8_t)((val >> 8) \& 0xff), (uint8_t)(val \& 0xff) }/{ (uint8_t)(val \& 0xff), (uint8_t)((val >> 8) \& 0xff) }/'
 mutant writer-group-unmasked       "$h" "$s" proof_put          0 1 '/^int pim_put_egaddr/,/^}/s/addr \&= mask;/;/'
 
+# The Assert metric comparison, src/pim_assert.c.  No buffer and no loop
+# the length could bound, so every proof covers every input and the 0 1
+# is never read.  The controls are the ways an order of four fields can be
+# wrong: the address tie inclusive, compared in network order or the wrong
+# way round, the metric the wrong way round, the preference or its RPT bit
+# left out.
+h="$here/assert.c"
+s="$top/src/pim_assert.c"
+proof  metric-spec                 "$h" "$s" proof_spec         0 1
+proof  metric-strict               "$h" "$s" proof_strict       0 1
+proof  metric-transitive           "$h" "$s" proof_transitive   0 1
+proof  metric-cancel               "$h" "$s" proof_cancel       0 1
+mutant metric-address-tie-wins     "$h" "$s" proof_strict       0 1 's/ntohl(local_address) > ntohl(remote_address)/ntohl(local_address) >= ntohl(remote_address)/'
+mutant metric-address-network-order "$h" "$s" proof_spec        0 1 's/ntohl(local_address) > ntohl(remote_address)/local_address > remote_address/'
+mutant metric-lower-address-wins   "$h" "$s" proof_spec         0 1 's/ntohl(local_address) > ntohl(remote_address)/ntohl(local_address) < ntohl(remote_address)/'
+mutant metric-higher-route-wins    "$h" "$s" proof_spec         0 1 's/if (remote_metric > local_metric)/if (remote_metric < local_metric)/'
+mutant metric-preference-ignored   "$h" "$s" proof_cancel       0 1 's/if (remote_preference [<>] local_preference)/if (0)/'
+mutant metric-rpt-bit-ignored      "$h" "$s" proof_spec         0 1 's/if (remote_preference \([<>]\) local_preference)/if ((remote_preference \& 0x7fffffff) \1 (local_preference \& 0x7fffffff))/'
+
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"
 

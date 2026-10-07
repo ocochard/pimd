@@ -350,6 +350,15 @@ typedef struct pim_jp_encod_grp_ {
 
 #define PIM_ASSERT_RPT_BIT 0x80000000
 
+/* infinite_assert_metric(), RFC 7761 sec. 4.6.3: {1, infinity, infinity, 0}.
+ * The RPT bit is the top bit of the preference field, so "infinity" is the
+ * rest of it.  An Assert carrying this loses to every real metric, which is
+ * the whole of what sec. 4.6.4 needs an AssertCancel to be, and
+ * test/cbmc/assert.c proves it does.
+ */
+#define PIM_ASSERT_INFINITE_PREFERENCE	(PIM_ASSERT_RPT_BIT | 0x7fffffff)
+#define PIM_ASSERT_INFINITE_METRIC	0xffffffff
+
 
 /* PIM messages type */
 #ifndef PIM_HELLO
@@ -708,6 +717,11 @@ int    pim_put_euaddr   (struct pim_writer *w, uint32_t addr);
 int    pim_put_egaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t reserved);
 int    pim_put_esaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t flags);
 int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
+
+/* The Assert decisions that read no state, src/pim_assert.c */
+int    compare_metrics  (uint32_t local_preference, uint32_t local_metric,
+			 uint32_t local_address, uint32_t remote_preference,
+			 uint32_t remote_metric, uint32_t remote_address);
 
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000

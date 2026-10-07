@@ -54,12 +54,6 @@ static void pack_jp_message_rp     (pim_nbr_entry_t *pim_nbr);
 static void send_jp_message        (pim_nbr_entry_t *pim_nbr);
 static int flush_packed_groups     (pim_nbr_entry_t *pim_nbr);
 static void jp_message_restart     (pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm);
-static int compare_metrics         (uint32_t local_preference,
-				    uint32_t local_metric,
-				    uint32_t local_address,
-				    uint32_t remote_preference,
-				    uint32_t remote_metric,
-				    uint32_t remote_address);
 static void my_assert_metric       (mrtentry_t *mrt,
 				    uint32_t *preference,
 				    uint32_t *metric);
@@ -4193,14 +4187,6 @@ static void send_jp_message(pim_nbr_entry_t *pim_nbr)
 /************************************************************************
  *                        PIM_ASSERT
  ************************************************************************/
-/* infinite_assert_metric(), RFC 7761 sec. 4.6.3: {1, infinity, infinity, 0}.
- * The RPT bit is the top bit of the preference field, so "infinity" is the
- * rest of it.  An Assert carrying this loses to every real metric, which is
- * the whole of what sec. 4.6.4 needs an AssertCancel to be.
- */
-#define PIM_ASSERT_INFINITE_PREFERENCE	(PIM_ASSERT_RPT_BIT | 0x7fffffff)
-#define PIM_ASSERT_INFINITE_METRIC	0xffffffff
-
 /*
  * The three states of RFC 7761 sec. 4.6.1 and sec. 4.6.2: NoInfo holds no
  * winner, and the `is_winner` flag of struct assert_state tells the other
@@ -5325,35 +5311,6 @@ static void my_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *me
 
     *preference = mrp->preference | PIM_ASSERT_RPT_BIT;
     *metric     = mrp->metric;
-}
-
-static int compare_metrics(uint32_t local_preference, uint32_t local_metric, uint32_t local_address,
-			   uint32_t remote_preference, uint32_t remote_metric, uint32_t remote_address)
-{
-    /* Now lets see who has a smaller gun (aka "asserts war") */
-    /* FYI, the smaller gun...err metric wins, but if the same
-     * caliber, then the bigger network address wins. The order of
-     * threatment is: preference, metric, address.
-     */
-    /* The RPT bits are already included as the most significant bits
-     * of the preferences.
-     */
-    if (remote_preference > local_preference)
-	return TRUE;
-
-    if (remote_preference < local_preference)
-	return FALSE;
-
-    if (remote_metric > local_metric)
-	return TRUE;
-
-    if (remote_metric < local_metric)
-	return FALSE;
-
-    if (ntohl(local_address) > ntohl(remote_address))
-	return TRUE;
-
-    return FALSE;
 }
 
 
