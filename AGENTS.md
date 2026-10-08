@@ -359,7 +359,8 @@ the Assert winner when the route to the source moves to another router on the sa
 M31), a Join(S,G) taking an (S,G) off the shared tree where the source and the RP share r1's RPF
 interface, read off r2's log of r1's messages (step 7l, M32), a Prune(\*,G) taking the interface off
 the sources with an (S,G) entry as well, on a link r1 gets for the step to have three interfaces
-(step 7m, M33), a (\*,G) Winner
+(step 7m, M33), a Join(\*,G) and a Prune(S,G,rpt) in one message for a new group, the Prune kept
+(step 7n, M34), a (\*,G) Winner
 that an (S,G) Assert for one source no longer takes off the LAN (step 7i, M29),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)

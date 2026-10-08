@@ -637,6 +637,22 @@ across the new link, the (S,G) forwarding onto the LAN being the control;
 after ED1's Prune(\*,G) on the LAN it has to stop there (it went on before the
 fix) and keep the link its Join(S,G) holds.*
 
+M34 is D2 of the same map.  The periodic message of sec. 4.5.6 carries a
+Join(\*,G) and the Prune(S,G,rpt) of every source its sender holds off the
+shared tree in one group set, and it is what a new upstream -- after an RPF
+change, or a reboot -- first hears of the group; sec. 4.5.3 takes such a Prune
+from NoInfo to Prune-Pending.  `receive_pim_join_prune()` reads the Prunes of
+a set before its Joins and dropped a Prune(S,G,rpt) for a group with neither
+an (S,G) nor a (\*,G) yet, which the Join after it then created: the source
+was forwarded until the next period.  The scan that finds the set's Join(\*,G)
+ahead of both loops creates the (\*,G) now, having made the checks the Join
+loop makes before creating one -- the SSM range and the RP -- and the entry
+keeps MRTF_NEW for that loop's immediate Join upstream.  *Test: `crafted`
+step 7n in `test/lab.sh`: one message from ED1 joining a new group and
+pruning a source behind r3 off its shared tree, the (\*,G) being the control,
+after which r1 has to hold the source pruned off the LAN (it held no (S,G)
+before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

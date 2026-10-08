@@ -3077,7 +3077,18 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		 * go to their transient states for the rest of the set */
 		wc_join = TRUE;
 
-		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
+		/* And the (*,G) exists from here on, made now where it is
+		 * new rather than by the Join loop below.  The Prunes are
+		 * read first, and a Prune(S,G,rpt) for a group with neither
+		 * an (S,G) nor a (*,G) is dropped, so in the compound
+		 * Join(*,G) plus Prune(S,G,rpt) a neighbour sends to a new
+		 * upstream -- the periodic message of sec. 4.5.6 -- the
+		 * prune was lost and the source forwarded until the next
+		 * period.  This scan has already made the checks the Join
+		 * loop makes before it creates one, the SSM range and the
+		 * RP, and the entry keeps MRTF_NEW for that loop's
+		 * immediate Join upstream. */
+		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, CREATE);
 		if (mrt) {
 		    for (mrt_srcs = mrt->group->mrtlink;
 			 mrt_srcs;

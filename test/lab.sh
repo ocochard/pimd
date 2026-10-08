@@ -1846,6 +1846,9 @@ CRAFT_SG_ON_RPT_GROUP=${CRAFT_SG_ON_RPT_GROUP:-225.1.4.11}
 # crafted step 7m: a third interface for r1, a link to ED1 built for the
 # step, and the group joined (*,G) on the LAN and (S,G) across it
 CRAFT_D1_GROUP=${CRAFT_D1_GROUP:-225.1.4.12}
+# crafted step 7n: a group r1 holds nothing for until ED1's compound
+# Join(*,G) and Prune(S,G,rpt)
+CRAFT_COMPOUND_GROUP=${CRAFT_COMPOUND_GROUP:-225.1.4.13}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7656,6 +7659,37 @@ check_crafted() {
 	# The link is the step's own, and a later run in this slot would find
 	# it there and fail to build it again
 	box_if_destroy r1 "${CRAFT_D1_EP}a" >/dev/null 2>&1 || true
+
+	print "7n. A Join(*,G) and a Prune(S,G,rpt) in one message, for a new group"
+	# The periodic message of sec. 4.5.6 carries a Join(*,G) and the
+	# Prune(S,G,rpt) of every source its sender holds off the shared tree
+	# in one group set, and it is what a new upstream -- after an RPF
+	# change, or a reboot -- first hears of the group.  Sec. 4.5.3 takes
+	# the Prune from NoInfo to Prune-Pending.  receive_pim_join_prune()
+	# (src/pim_proto.c) reads the Prunes of a set before its Joins and
+	# dropped a Prune(S,G,rpt) for a group with neither an (S,G) nor a
+	# (*,G) yet, which the Join after it then made: the source was
+	# forwarded until the next period.  Map finding D2, and the reason
+	# step 7f sends the two apart.  The control is the (*,G) the Join
+	# makes; the (S,G) has to be there too, the source pruned off the LAN.
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, the step cannot be put"
+	else
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_COMPOUND_GROUP" -w \
+			-r "$RP_ADDR" -X "$CRAFT_RPT_FOLLOW_SRC" -H 65535
+		if ! wait_for 15 has_mrt r1 "$CRAFT_COMPOUND_GROUP"; then
+			fail "r1 made no (*,$CRAFT_COMPOUND_GROUP) from the Join(*,G), the step proves nothing"
+		else
+			ok "r1 makes (*,$CRAFT_COMPOUND_GROUP) from the Join(*,G), the control"
+			if wait_for 15 sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_COMPOUND_GROUP"; then
+				ok "and holds $CRAFT_RPT_FOLLOW_SRC pruned off ${EP}101b from the Prune(S,G,rpt) in the same message"
+			else
+				fail "r1 holds no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_COMPOUND_GROUP) pruned off ${EP}101b, the Prune(S,G,rpt) beside the Join(*,G) was dropped"
+			fi
+		fi
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_COMPOUND_GROUP" -w -r "$RP_ADDR"
+	fi
 
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),

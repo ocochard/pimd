@@ -27,6 +27,11 @@ issue of this repository is written out in full.
   sources of the group that had an (S,G) entry, which went on flowing onto
   the pruned link until a copied timer ran out -- for good under a
   holdtime of 0xffff.  RFC 7761 sec. 4.1.6.  Step 7m of `crafted`.
+- A Join(*,G) and a Prune(S,G,rpt) arriving in the same message for a
+  group the router held nothing for -- what a downstream neighbour sends a
+  new upstream after an RPF change -- created the group and dropped the
+  prune, so the pruned source was forwarded until the next periodic
+  message.  RFC 7761 sec. 4.5.3.  Step 7n of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
