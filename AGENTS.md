@@ -774,7 +774,11 @@ written out as a spec, one assertion per machine, interface and state.  It found
 `doc/rfc7761-compliance.md` -- each then reproduced by a `crafted` step before it was fixed -- and
 holds now for every cell, under the modelling choices its comments name: pimd's AssertTrackingDesired
 approximation gates every transition (M21), and "preferred" in the Winner state is against the metric
-the router would assert with now. It exits 77 without `cbmc`; the `CBMC proofs` job of
+the router would assert with now.  `proof_order` is the ordering of the two machines in
+`receive_pim_assert()`, sec. 4.6.2's rule and the AssertCancel exception of M14 written as
+`assert_rc()` and `assert_wc_may_run()`; it found M27, the exception granted to any inferior Assert
+from the winner, which no lab reaches -- that needs an (S,G) with SPTbit, and `crafted` forwards no
+data. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

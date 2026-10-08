@@ -4707,19 +4707,6 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
 }
 
 /*
- * What one run of one of the two Assert state machines did with the
- * message.  Sec. 4.6.2 needs no more than this: the (*,G) machine may run
- * only if the (S,G) one held no state and did not move.  ASSERT_CANCELLED
- * is the one case where it may run anyway -- see receive_pim_assert().
- * ASSERT_REFUSED is a machine that took the message and had nowhere to keep
- * what it learned, which keeps the other one out just the same.
- */
-#define ASSERT_NOTHING	0
-#define ASSERT_MOVED	1
-#define ASSERT_CANCELLED	2
-#define ASSERT_REFUSED	3
-
-/*
  * One run of a per-interface Assert state machine: sec. 4.6.1's on an (S,G)
  * entry, sec. 4.6.2's on a (*,G) one, `wc` saying which of the two this is.
  * Which transition the message is belongs to assert_decide() in
@@ -4734,9 +4721,10 @@ static void assert_neighbor_gone(vifi_t vifi, uint32_t addr, const char *why)
  * lends it through inherited_olist(S,G), and an entry of its own is created
  * only once it has Loser state to keep.
  *
- * Returns ASSERT_MOVED if the machine took the message, which is what keeps
- * the (*,G) machine out of it, and ASSERT_CANCELLED if it took it by giving
- * the interface back, which does not.  ASSERT_REFUSED where the message was
+ * Returns what assert_rc() makes of the decision -- ASSERT_MOVED if the
+ * machine took the message, which is what keeps the (*,G) machine out of
+ * it, ASSERT_CANCELLED if the winner's AssertCancel ended a Loser state,
+ * which does not -- or ASSERT_REFUSED where the message was
  * this machine's and the state it would have kept had no entry to live on.
  */
 static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
@@ -4747,6 +4735,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
     struct assert_state *as;
     struct uvif *v;
     uint32_t jp_value;
+    int act, rc;
 
     if (!mrt)
 	return ASSERT_NOTHING;
@@ -4816,14 +4805,17 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
     view.pref   = assert_preference;
     view.metric = assert_metric;
 
-    switch (assert_decide(&view)) {
+    act = assert_decide(&view);
+    rc  = assert_rc(act, assert_preference, assert_metric);
+
+    switch (act) {
 	case ASSERT_ACT_SEND:
 	    send_pim_assert(source, group, vifi, own ? own : mrt);
-	    return ASSERT_MOVED;
+	    return rc;
 
 	case ASSERT_ACT_STORE:
 	    assert_lost(own, vifi, src, assert_preference, assert_metric);
-	    return ASSERT_MOVED;
+	    return rc;
 
 	case ASSERT_ACT_CLEAR:
 	    if (view.where == ASSERT_UPSTREAM) {
@@ -4833,7 +4825,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			  inet_fmt(group, s2, sizeof(s2)));
 		assert_clear(own, vifi);
 
-		return ASSERT_CANCELLED;
+		return rc;
 	    }
 
 	    IF_DEBUG(DEBUG_PIM_ASSERT)
@@ -4846,7 +4838,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 				  own->pruned_oifs, own->leaves,
 				  own->asserted_oifs, 0);
 
-	    return ASSERT_CANCELLED;
+	    return rc;
 
 	case ASSERT_ACT_LOSE:
 	    if (!own) {
@@ -4903,7 +4895,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 			      own->leaves,
 			      own->asserted_oifs, 0);
 
-	    return ASSERT_MOVED;
+	    return rc;
 
 	case ASSERT_ACT_FOLLOW:
 	    /* Held even where it is the router the routing table names, so
@@ -4912,7 +4904,7 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	     */
 	    assert_lost(own, vifi, src, assert_preference, assert_metric);
 	    if (own->upstream == find_pim_nbr_on_vif(vifi, src))
-		return ASSERT_MOVED;
+		return rc;
 
 	    own->upstream = find_pim_nbr_on_vif(vifi, src);
 	    assert_rpt_follow(own);
@@ -4929,10 +4921,10 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	    if (jp_timer_left(own) > jp_value)
 		jp_timer_set(own, jp_value);
 
-	    return ASSERT_MOVED;
+	    return rc;
 
 	default:
-	    return ASSERT_NOTHING;
+	    return rc;
     }
 }
 
@@ -5080,24 +5072,10 @@ int receive_pim_assert(uint32_t src, uint32_t dst, char *msg, size_t len)
 
 	rc = assert_machine(sg ? sg : wc, sg, vifi, FALSE, src, source, group,
 			    assert_preference, assert_metric);
-	/* ASSERT_REFUSED is the same answer as ASSERT_MOVED to sec. 4.6.2:
-	 * the message was this machine's, which is what keeps the (*,G) one
-	 * out of it, and the only difference is that nothing could be kept.
-	 */
-	if (rc == ASSERT_MOVED || rc == ASSERT_REFUSED)
-	    return TRUE;
 
-	/* The exception, and the whole of why the (S,G) machine returns its
-	 * two answers apart.  An AssertCancel, sec. 4.6.4, is the one message
-	 * that hands the interface back rather than taking it, and a router
-	 * that lost both machines to the same winner -- the (*,G) first, on
-	 * the shared tree, and the (S,G) once the winner moved to the
-	 * shortest path tree -- has two Loser states to leave on it.  Stop at
-	 * the (S,G) one, as the ordering of sec. 4.6.2 reads, and the (*,G)
-	 * goes on holding the interface out of its olist until Assert_Time
-	 * runs out, which is the black hole the cancel exists to prevent.
-	 */
-	if (rc == ASSERT_NOTHING && held)
+	/* The ordering of sec. 4.6.2, and the one exception pimd makes to
+	 * it: see assert_wc_may_run() in src/pim_assert.c */
+	if (!assert_wc_may_run(held, rc))
 	    return TRUE;
     }
 

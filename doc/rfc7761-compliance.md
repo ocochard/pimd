@@ -514,6 +514,21 @@ it with eight mutants, the four fixes undone among them.  *Test: `crafted` step
 without the bit, the control, and its Assert Timer has to run on past the
 winner's Assert with the bit (it went back to 178 before the fix).*
 
+M27 was M14's exception granted wider than M14 says.  The (S,G) machine
+returned "cancelled", which lets the (\*,G) machine have the message as well,
+for any Assert from its winner worse than our own metric, not only for the
+AssertCancel M14 is about -- and sec. 4.6.2's own counter-example is that
+message: the (S,G) machine goes from Loser to NoInfo on it, and the (\*,G)
+one, in NoInfo, "might appear" to go to Winner, "but this is not the case".
+pimd's did, on an Assert with the RPT bit.  The return code and the ordering
+rule are `assert_rc()` and `assert_wc_may_run()` in `src/pim_assert.c` now,
+"cancelled" is the winner's AssertCancel alone, and `proof_order` in
+`test/cbmc/assert.c` proves the rule against sec. 4.6.2 and M14 for every
+(S,G) machine and message, with three mutants -- the old, wider exception
+among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
+SPTbit, which the message needs to be inferior to, while `crafted` sends it:
+`crafted` forwards no data.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

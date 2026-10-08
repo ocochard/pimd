@@ -767,6 +767,20 @@ struct assert_view {
 
 int    assert_decide    (const struct assert_view *v);
 
+/*
+ * What one run of one of the two Assert machines did with the message, as
+ * the ordering of sec. 4.6.2 needs it: ASSERT_MOVED took it, ASSERT_NOTHING
+ * did not, ASSERT_CANCELLED left the Loser state on the winner's
+ * AssertCancel, and ASSERT_REFUSED took it with nowhere to keep the state.
+ */
+#define ASSERT_NOTHING		0
+#define ASSERT_MOVED		1
+#define ASSERT_CANCELLED	2
+#define ASSERT_REFUSED		3
+
+int    assert_rc        (int act, uint32_t pref, uint32_t metric);
+int    assert_wc_may_run(int sg_held, int sg_rc);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

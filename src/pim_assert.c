@@ -223,6 +223,49 @@ int assert_decide(const struct assert_view *v)
     return ASSERT_ACT_NONE;
 }
 
+/*
+ * What assert_decide()'s answer was, for the ordering of the two machines:
+ * nothing, a transition, or the one transition after which the (*,G)
+ * machine may still have the message -- a Loser state ended by the
+ * winner's AssertCancel, sec. 4.6.4.  @pref and @metric are the message's.
+ */
+int assert_rc(int act, uint32_t pref, uint32_t metric)
+{
+    if (act == ASSERT_ACT_NONE)
+	return ASSERT_NOTHING;
+
+    if (act == ASSERT_ACT_CLEAR &&
+	pref == PIM_ASSERT_INFINITE_PREFERENCE && metric == PIM_ASSERT_INFINITE_METRIC)
+	return ASSERT_CANCELLED;
+
+    return ASSERT_MOVED;
+}
+
+/*
+ * May the (*,G) machine have an Assert the (S,G) machine has had?  Sec.
+ * 4.6.2: only if the (S,G) machine is in NoInfo after the message and the
+ * message changed nothing there -- @sg_held is that machine holding a
+ * Winner or Loser state before it, @sg_rc what assert_rc() made of its run.
+ *
+ * pimd makes one exception, M14 of doc/rfc7761-compliance.md: a Loser
+ * state the winner's AssertCancel ended.  A router that lost both machines
+ * to the same winner -- the (*,G) first, on the shared tree, and the (S,G)
+ * once the winner moved to the shortest path tree -- has two Loser states
+ * to leave on that one message, and stopping at the (S,G) one leaves the
+ * (*,G) holding the interface out of its olist until Assert_Time, the black
+ * hole the cancel exists to prevent.  It used to be granted for any Assert
+ * from the winner worse than our own metric, which is the counter-example
+ * sec. 4.6.2 gives: the (S,G) machine goes to NoInfo, and the (*,G) one
+ * must not then go to Winner on the same message.  M27.
+ */
+int assert_wc_may_run(int sg_held, int sg_rc)
+{
+    if (sg_rc == ASSERT_CANCELLED)
+	return 1;
+
+    return sg_rc == ASSERT_NOTHING && !sg_held;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

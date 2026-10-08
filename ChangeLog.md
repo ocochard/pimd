@@ -69,6 +69,11 @@ issue of this repository is written out in full.
   group, including those that no longer named the source's own tree, and
   so went on holding the interface out long after the winner had stopped
   asserting for the source.  RFC 7761 sec. 4.6.1, step 7g of `crafted`.
+- A router that had lost the Assert election for a source to a router
+  that then asserted for the group from the shared tree, worse than this
+  router's own metric, gave the source up and claimed the group on the
+  same message.  RFC 7761 sec. 4.6.2 forbids exactly that; the second
+  machine now sees the message only after the winner's AssertCancel.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

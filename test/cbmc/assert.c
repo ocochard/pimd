@@ -34,6 +34,9 @@
  *   proof_decide      assert_decide() against the tables of sec. 4.6.1 and
  *                     4.6.2, below, one assertion per machine, interface
  *                     and state so that each disagreement is reported apart
+ *   proof_order       assert_rc() and assert_wc_may_run(), which order the
+ *                     two machines, against the rule of sec. 4.6.2 and the
+ *                     one exception pimd makes to it
  *
  * What an order cannot say is the RFC's other two words: "an assert is
  * never considered acceptable if its metric is infinite", and "never
@@ -329,4 +332,60 @@ void proof_decide(void)
 		     "(*,G) machine, RPF interface, Loser");
     __CPROVER_assert(v.where != ASSERT_ELSEWHERE || got == ASSERT_ACT_NONE,
 		     "an interface neither machine is on");
+}
+
+void proof_order(void);
+
+/*
+ * Sec. 4.6.2: "NO TRANSITION CAN OCCUR in the (*,G) state machine as a
+ * result of receiving an Assert message unless the (S,G) assert state
+ * machine for the relevant S and G is in the "NoInfo" state after the (S,G)
+ * state machine has processed the message", nor if the message "triggers
+ * any change of state in the (S,G) state machine".  The one exception is
+ * M14, a Loser state the winner's AssertCancel ended.  Any (S,G) machine
+ * and message proof_decide's preconditions allow, through the decision as
+ * it is.
+ */
+void proof_order(void)
+{
+    struct assert_view v;
+    int act, rc, held, runs, want, cancel;
+
+    v.wc           = 0;
+    v.tracking     = nondet_uint32_t() & 1;
+    v.where        = (int)(nondet_uint32_t() % 3);
+    v.has_state    = nondet_uint32_t() & 1;
+    v.spt          = nondet_uint32_t() & 1;
+    v.has_upstream = nondet_uint32_t() & 1;
+    v.winner       = nondet_uint32_t();
+    v.is_winner    = nondet_uint32_t() & 1;
+    v.win_pref     = nondet_uint32_t();
+    v.win_metric   = nondet_uint32_t();
+    v.my_pref      = nondet_uint32_t();
+    v.my_metric    = nondet_uint32_t();
+    v.my_addr      = nondet_uint32_t();
+    v.src          = nondet_uint32_t();
+    v.pref         = nondet_uint32_t();
+    v.metric       = nondet_uint32_t();
+
+    __CPROVER_assume(v.has_state || v.winner == 0);
+    __CPROVER_assume(!v.is_winner || v.winner == v.my_addr);
+    __CPROVER_assume(v.src != v.my_addr && v.src != 0);
+    __CPROVER_assume(((v.my_pref & PIM_ASSERT_RPT_BIT) == 0) == (v.spt != 0));
+
+    act    = assert_decide(&v);
+    rc     = assert_rc(act, v.pref, v.metric);
+    held   = v.winner != 0;
+    runs   = assert_wc_may_run(held, rc);
+    cancel = v.pref == PIM_ASSERT_INFINITE_PREFERENCE &&
+	v.metric == PIM_ASSERT_INFINITE_METRIC;
+
+    /* NoInfo before and nothing done is NoInfo after with no change; every
+     * other answer is a change of state or a state already held, but for
+     * the Loser state the winner's cancel ends */
+    want = (!held && act == ASSERT_ACT_NONE) ||
+	(held && !v.is_winner && act == ASSERT_ACT_CLEAR && cancel);
+
+    __CPROVER_assert(runs == want, "the (*,G) machine has the message only as sec. 4.6.2 and M14 allow");
+    __CPROVER_assert(act != ASSERT_ACT_NONE || rc == ASSERT_NOTHING, "nothing done is ASSERT_NOTHING");
 }

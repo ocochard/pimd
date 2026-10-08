@@ -296,6 +296,10 @@ mutant decide-preferred-winner-dropped "$h" "$s" proof_decide   0 1 's/(!v->wc |
 mutant decide-wc-leaves-noinfo-bare "$h" "$s" proof_decide      0 1 's/if (v->wc \&\& !rptbit \&\& !winner)/if (0)/'
 mutant decide-sg-no-sptbit-asserts "$h" "$s" proof_decide       0 1 's/if (!v->wc \&\& rptbit \&\& !v->spt \&\& !winner)/if (0)/'
 mutant decide-untracked-loses      "$h" "$s" proof_decide       0 1 's/if (!v->tracking)/if (0)/'
+proof  decide-order                "$h" "$s" proof_order        0 1
+mutant order-any-clear-cancels     "$h" "$s" proof_order        0 1 's/if (act == ASSERT_ACT_CLEAR \&\&$/if (act == ASSERT_ACT_CLEAR || (0 \&\&/;s/pref == PIM_ASSERT_INFINITE_PREFERENCE \&\& metric == PIM_ASSERT_INFINITE_METRIC)$/pref == PIM_ASSERT_INFINITE_PREFERENCE \&\& metric == PIM_ASSERT_INFINITE_METRIC))/'
+mutant order-held-ignored          "$h" "$s" proof_order        0 1 's/return sg_rc == ASSERT_NOTHING \&\& !sg_held;/return sg_rc == ASSERT_NOTHING;/'
+mutant order-no-cancel-exception   "$h" "$s" proof_order        0 1 's/if (sg_rc == ASSERT_CANCELLED)$/if (0)/'
 
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"
