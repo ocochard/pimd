@@ -2850,12 +2850,19 @@ static void age_routes_pass(void)
 
 				update_src_iif = TRUE;
 				mrt_srcs->incoming = mrt_srcs->source->incoming;
-				mrt_srcs->upstream = mrt_srcs->source->upstream;
 				assert_iif_moved(mrt_srcs, old_iif);
+				/* RPF'(S,G): the routing table's new neighbor,
+				 * unless an Assert still holds the incoming
+				 * interface -- RFC 7761 sec. 4.5.5, the change
+				 * "does not occur if an Assert is active and the
+				 * upstream interface does not change".  A moved
+				 * interface has dropped the Loser state above. */
+				mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, mrt_srcs->source->upstream);
 
 				/* Prune the router we used to take S from, the
 				 * half of RFC 7761 sec. 4.5.5 that pairs with
-				 * the Join to the new one. */
+				 * the Join to the new one; nothing, where the
+				 * winner keeps it. */
 				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
 			    }
 			} else {

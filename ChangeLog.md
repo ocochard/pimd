@@ -13,6 +13,11 @@ issue of this repository is written out in full.
   on the LAN every period until the separate Prune arrived.  RFC 7761
   sec. 4.5.6 has them in one message.  Step 7j of `crafted` in
   `test/lab.sh`.
+- A router that had lost the Assert election for a source on its upstream
+  link moved its Joins away from the winner, and pruned it, whenever its
+  route to the source changed to another router on the same link.  RFC
+  7761 sec. 4.5.5 keeps them with the winner while the Assert holds.  Step
+  7k of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

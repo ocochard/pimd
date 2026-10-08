@@ -1851,6 +1851,11 @@ CRAFT_RP_ASSERT_GROUP=${CRAFT_RP_ASSERT_GROUP:-225.1.4.6}
 CRAFT_RPF_CANCEL_GROUP=${CRAFT_RPF_CANCEL_GROUP:-225.1.4.7}
 CRAFT_R2_DOWN_ADDR=${CRAFT_R2_DOWN_ADDR:-10.0.23.1}
 CRAFT_R2_LINK23_ADDR=${CRAFT_R2_LINK23_ADDR:-10.0.23.2}	# r2's own, the Join's upstream
+# crafted step 7k: a third router on the r1-r2 link, played from r1's jail,
+# that r2's route to ED1's LAN is moved to
+CRAFT_R2_ALT_NBR=${CRAFT_R2_ALT_NBR:-10.0.12.8}
+CRAFT_ED1_NET=${CRAFT_ED1_NET:-10.0.1.0/24}
+CRAFT_R1_LINK12=${CRAFT_R1_LINK12:-10.0.12.1}
 # A secondary address the Hello Address List steps have ED1 advertise.  It
 # is never configured anywhere: the option is what is under test, not the
 # address.
@@ -7656,6 +7661,35 @@ check_crafted() {
 					dprint "   r2 did not go back to the Loser state for the cancel below"
 			fi
 
+			# 7k.  Sec. 4.5.5, "RPF'(S,G) changes not due to an Assert":
+			# "this transition does not occur if an Assert is active
+			# and the upstream interface does not change".  The
+			# unicast check of age_routes() (src/route.c) reset an
+			# (S,G)'s upstream to the routing table's neighbour
+			# whatever held the link, and pruned the winner; M25 had
+			# fixed it for the (*,G) and the shared tree's (S,G) and
+			# not here.  r2's route to ED1's LAN moves to a third
+			# router on the same link while r2 is the Loser to
+			# $SUPP_ADDR: after a check of the unicast routes its Joins
+			# still have to go to the winner.  The control is the
+			# cancel below, after which they have to go to the new
+			# routing table neighbour.
+			box_addr_add r1 "${EP}112a" "$CRAFT_R2_ALT_NBR/24" 2>/dev/null || \
+				dprint "   could not put $CRAFT_R2_ALT_NBR on r1"
+			craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 105
+			if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_ALT_NBR"; then
+				fail "r2 has no neighbour at $CRAFT_R2_ALT_NBR, 7k cannot be put"
+			else
+				box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R2_ALT_NBR" >/dev/null
+				sleep 26
+				if route_upstream_is r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" "$SUPP_ADDR" &&
+				   r2_rpf_cancel_assert_is L; then
+					ok "r2's Joins stay with the winner $SUPP_ADDR when its route moves on the same link (7k)"
+				else
+					fail "r2 sends its Joins to $(route_upstream r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP") after a route change on the same link, the Assert winner $SUPP_ADDR still holding it (7k)"
+				fi
+			fi
+
 			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPF_CANCEL_GROUP" \
 				-s "$CRAFT_RPT_ASSERT_SRC" -R -P 2147483647 -C 4294967295
 			if wait_for 10 r2_rpf_cancel_assert_is .; then
@@ -7663,6 +7697,17 @@ check_crafted() {
 			else
 				fail "r2 is still the Loser on ${EPU}112b after the winner's AssertCancel, sec. 4.6.1 goes to NoInfo"
 			fi
+
+			if has_neighbor r2 "$CRAFT_R2_ALT_NBR"; then
+				if wait_for 10 route_upstream_is r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" "$CRAFT_R2_ALT_NBR"; then
+					ok "and then to the routing table's new neighbour $CRAFT_R2_ALT_NBR, the control (7k)"
+				else
+					fail "r2 sends its Joins to $(route_upstream r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP") after the cancel, not to the routing table's $CRAFT_R2_ALT_NBR (7k)"
+				fi
+			fi
+			box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R1_LINK12" >/dev/null
+			craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 0
+			box_addr_del r1 "${EP}112a" "$CRAFT_R2_ALT_NBR" 2>/dev/null
 		fi
 
 		craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \

@@ -583,6 +583,21 @@ and the first carrying r1's Join(\*,G) after the Assert -- its triggered Join
 to the winner -- has to carry the Prune(S,G,rpt) too (it went alone before
 the fix).*
 
+M31 is M25's sibling, U6 of the same map.  Sec. 4.5.5's "RPF'(S,G) changes
+not due to an Assert" "does not occur if an Assert is active and the upstream
+interface does not change", and the unicast check of `age_routes()`
+(`src/route.c`) reset a source-tree (S,G)'s upstream to the routing table's
+neighbour on any change of it, and pruned the winner: the Joins went to a
+router that had lost the election.  M25 had made the (\*,G) and the shared
+tree's (S,G) ask `assert_rpf_prime()` there and left this branch out.  It
+asks too now, after `assert_iif_moved()` has dropped the Loser state of an
+interface that did change.  *Test: `crafted` step 7k in `test/lab.sh`, inside
+7d: with r2 the Loser to a neighbour on its RPF interface, its route to the
+source moves to a third router on the same link, and after a check of the
+unicast routes its Joins have to go to the winner still (they went to the
+new neighbour before the fix); after the winner's AssertCancel, the control,
+they have to go to the new neighbour.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
