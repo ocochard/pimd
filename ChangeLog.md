@@ -3,8 +3,22 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
-[UNRELEASED][]
---------------
+[v3.3.0][] - 2026-10-08
+-----------------------
+
+### Changes
+- Parts of pimd are proven with the bounded model checker CBMC, by
+  `test/cbmc/run.sh` and a job of the Linux CI workflow on every push: the
+  wire decoders, the configuration and `pimctl` text parsers and the
+  message writer read and write nothing out of bounds; the Assert election
+  follows the metric order and the state machines of RFC 7761 sec. 4.6,
+  tables and prose; and every message pimd builds decodes back to what was
+  encoded.  Each proof is checked by broken variants of its code that it
+  has to reject.  The Assert proofs found or confirmed five of the Assert
+  fixes below, M23 to M27 of `doc/rfc7761-compliance.md`.
+- `pimctl show mrt detail` prints each entry's upstream neighbor, the one
+  its Joins go to: the routing table's, or the winner of an Assert on the
+  incoming interface (RFC 7761 sec. 4.1.6).
 
 ### Fixes
 - A Bootstrap group set whose RP count is zero while its fragment RP count
@@ -89,18 +103,6 @@ issue of this repository is written out in full.
 -----------------------
 
 ### Changes
-- Parts of pimd are proven with the bounded model checker CBMC, by
-  `test/cbmc/run.sh` and a job of the Linux CI workflow on every push:
-  the wire decoders, the configuration and `pimctl` text parsers and the
-  message writer read and write nothing out of bounds; the Assert
-  election follows the metric order and the state machine tables of RFC
-  7761 sec. 4.6; and every message pimd builds decodes back to what was
-  encoded.  Each proof is checked by broken variants of its code that it
-  has to reject.  The Assert proofs found or confirmed five of the Assert
-  fixes below, M23 to M27 of `doc/rfc7761-compliance.md`.
-- `pimctl show mrt detail` prints each entry's upstream neighbor, the one
-  its Joins go to: the routing table's, or the winner of an Assert on the
-  incoming interface (RFC 7761 sec. 4.1.6).
 - An address a `pimd.conf` names by interface is resolved again on every
   interface scan, so `bsr-candidate`, `rp-candidate`, `autorp announce` and
   `autorp mapping-agent` may name an interface that does not exist, or has no
@@ -3735,7 +3737,8 @@ v2.1.0-alpha1 - 1997-08-26
 First alpha version of the "new, up to date" pimd.  RSRR and Solaris
 support added.  Many functions rewritten and/or modified.
 
-[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.2.0...HEAD
+[UNRELEASED]: https://github.com/ocochard/pimd/compare/3.3.0...HEAD
+[v3.3.0]:     https://github.com/ocochard/pimd/compare/3.2.0...3.3.0
 [v3.2.0]:     https://github.com/ocochard/pimd/compare/3.1.0...3.2.0
 [v3.1.0]:     https://github.com/ocochard/pimd/compare/3.0.0...3.1.0
 [v3.0.0]:     https://github.com/ocochard/pimd/compare/2.3.2...3.0.0
