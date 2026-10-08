@@ -31,6 +31,8 @@
  *  $Id: pimd.h,v 1.27 2003/05/21 10:40:28 pavlin Exp $
  */
 
+#ifndef PIMD_PIMD_H_
+#define PIMD_PIMD_H_
 
 #include <netdb.h>
 #include <netinet/pim.h>
@@ -717,6 +719,9 @@ int    pim_put_euaddr   (struct pim_writer *w, uint32_t addr);
 int    pim_put_egaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t reserved);
 int    pim_put_esaddr   (struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t flags);
 int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
+int    pim_encode_register_stop(struct pim_writer *w, uint32_t group, uint32_t source);
+int    pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
+			 uint32_t preference, uint32_t metric);
 
 /* The Assert decisions that read no state, src/pim_assert.c */
 int    compare_metrics  (uint32_t local_preference, uint32_t local_metric,
@@ -955,3 +960,5 @@ struct igmpmsg {
     struct in_addr  im_src, im_dst;
 };
 #endif
+
+#endif /* PIMD_PIMD_H_ */

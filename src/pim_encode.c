@@ -131,6 +131,33 @@ int pim_put_esaddr(struct pim_writer *w, uint32_t addr, uint8_t masklen, uint8_t
     return pim_put(w, b, sizeof(b));
 }
 
+/*
+ * Message bodies, behind the PIM header, written field for field as the
+ * decoders of src/pim_parse.c read them, so that test/cbmc/roundtrip.c can
+ * prove each pair agrees.  Each returns nonzero if the body fitted.
+ */
+
+/* A Register-Stop, RFC 7761 sec. 4.9.4: the group and the source */
+int pim_encode_register_stop(struct pim_writer *w, uint32_t group, uint32_t source)
+{
+    pim_put_egaddr(w, group, SINGLE_GRP_MSKLEN, 0);
+    pim_put_euaddr(w, source);
+
+    return !w->full;
+}
+
+/* An Assert, sec. 4.9.6: the same two, and the metric preference -- RPT
+ * bit included -- and the metric */
+int pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
+		      uint32_t preference, uint32_t metric)
+{
+    pim_encode_register_stop(w, group, source);
+    pim_put_u32(w, preference);
+    pim_put_u32(w, metric);
+
+    return !w->full;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

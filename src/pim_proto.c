@@ -2104,9 +2104,7 @@ send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, u
 	      inet_fmt(inner_src, s3, sizeof(s3)), inet_fmt(inner_grp, s4, sizeof(s4)));
 
     start = pim_body_writer(&w);
-    pim_put_egaddr(&w, inner_grp, SINGLE_GRP_MSKLEN, 0);
-    pim_put_euaddr(&w, inner_src);
-    if (w.full)
+    if (!pim_encode_register_stop(&w, inner_grp, inner_src))
 	return pim_body_overrun("Register-Stop");
 
     send_pim_unicast(pim_send_buf, 0, MAXTTL, 0, reg_src, reg_dst, PIM_REGISTER_STOP,
@@ -5122,11 +5120,7 @@ static int assert_send(uint32_t source, uint32_t group, vifi_t vifi,
 
     hello_before_send(vifi);
     start = pim_body_writer(&w);
-    pim_put_egaddr(&w, group, SINGLE_GRP_MSKLEN, 0);
-    pim_put_euaddr(&w, source);
-    pim_put_u32(&w, preference);
-    pim_put_u32(&w, metric);
-    if (w.full)
+    if (!pim_encode_assert(&w, group, source, preference, metric))
 	return pim_body_overrun("Assert");
 
     IF_DEBUG(DEBUG_PIM_ASSERT)

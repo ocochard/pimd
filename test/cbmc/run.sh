@@ -303,6 +303,20 @@ mutant order-any-clear-cancels     "$h" "$s" proof_order        0 1 's/if (act =
 mutant order-held-ignored          "$h" "$s" proof_order        0 1 's/return sg_rc == ASSERT_NOTHING \&\& !sg_held;/return sg_rc == ASSERT_NOTHING;/'
 mutant order-no-cancel-exception   "$h" "$s" proof_order        0 1 's/if (sg_rc == ASSERT_CANCELLED)$/if (0)/'
 
+# Round trips, step 3 of aidd_docs/plans/assert-proofs.md: the bodies
+# src/pim_encode.c writes, read back by src/pim_parse.c, for every value
+# of every field.  The controls are encoders that disagree with their
+# decoder -- a field in the wrong place, a mask short of the group, a field
+# left out, two fields swapped.
+h="$here/roundtrip.c"
+s="$top/src/pim_encode.c"
+proof  rt-register-stop            "$h" "$s" proof_rt_register_stop 0 1
+proof  rt-assert                   "$h" "$s" proof_rt_assert    0 1
+mutant rt-stop-group-as-source     "$h" "$s" proof_rt_register_stop 0 1 's/    pim_put_egaddr(w, group, SINGLE_GRP_MSKLEN, 0);/    pim_put_egaddr(w, source, SINGLE_GRP_MSKLEN, 0);/'
+mutant rt-stop-group-masked        "$h" "$s" proof_rt_register_stop 0 1 's/pim_put_egaddr(w, group, SINGLE_GRP_MSKLEN, 0)/pim_put_egaddr(w, group, 24, 0)/'
+mutant rt-assert-metric-dropped    "$h" "$s" proof_rt_assert    0 1 's/^    pim_put_u32(w, metric);$/    ;/'
+mutant rt-assert-pref-metric-swapped "$h" "$s" proof_rt_assert  0 1 's/(w, preference);/(w, XPREF);/;s/(w, metric);/(w, preference);/;s/(w, XPREF);/(w, metric);/'
+
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"
 
