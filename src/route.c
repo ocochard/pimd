@@ -833,7 +833,7 @@ int join_desired(mrtentry_t *mrt)
  * forwarding; shared-lan-spt of test/lab.sh reproduces it under
  * "-j 4 run all".
  */
-static void update_sptbit(mrtentry_t *mrt, vifi_t iif)
+void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 {
     int directly_connected, different_iif, no_rpt_olist, same_rpf_nbr, assert_loser;
     rpentry_t *rp = NULL;

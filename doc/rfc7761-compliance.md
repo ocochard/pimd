@@ -529,6 +529,19 @@ among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
 SPTbit, which the message needs to be inferior to, while `crafted` sends it:
 `crafted` forwards no data.*
 
+M28 was the last action of the (S,G) machine pimd did not take when the
+transition happened.  Actions A6, NoInfo to Loser, end "If (I is
+RPF_interface(S)) AND (UpstreamJPState(S,G) == Joined) set SPTbit(S,G) to
+TRUE".  pimd had the same test, the last alternative of `update_sptbit()`
+(`src/route.c`), "I_Am_Assert_Loser(S,G,iif)" of sec. 4.2.2, but asked it only
+when data from S reached it -- an upcall or the kernel's packet count -- so an
+entry that lost the election on its RPF interface before any data came stayed
+an RPT forwarder, asserting with the RPT bit and sending no Prune(S,G,rpt)
+toward the RP, until some did.  The glue of `assert_machine()` asks it on the
+transition now.  *Test: `crafted` step 7h in `test/lab.sh`, inside 7d: r2's
+(S,G), joined downstream, has to carry SPTbit once it has lost on its RPF
+interface, with no data in the scenario (it did not before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

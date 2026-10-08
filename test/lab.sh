@@ -7529,6 +7529,19 @@ check_crafted() {
 		else
 			ok "r2 loses ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) to $SUPP_ADDR on its RPF interface, the control"
 
+			# 7h.  Actions A6 of sec. 4.6.1, the NoInfo-to-Loser
+			# transition, end "If (I is RPF_interface(S)) AND
+			# (UpstreamJPState(S,G) == Joined) set SPTbit(S,G) to TRUE":
+			# both hold, r2 having a downstream Join for the source.
+			# pimd had the same test as the last alternative of
+			# update_sptbit() (src/route.c), but asked it only when data
+			# from the source reached it, and this scenario sends none.
+			if route_has_flag r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" SPT; then
+				ok "and sets SPTbit on losing there, Actions A6 (7h)"
+			else
+				fail "r2's ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) has no SPTbit after losing on its RPF interface while joined, Actions A6 sets it (7h)"
+			fi
+
 			# 7e.  The winner's Assert again, at a worse metric than it
 			# won with.  On the RPF interface my_assert_metric is
 			# infinite, so no Assert is inferior to it and this one is

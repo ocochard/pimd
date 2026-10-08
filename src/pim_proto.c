@@ -4903,6 +4903,16 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	     * against it rather than against nothing.
 	     */
 	    assert_lost(own, vifi, src, assert_preference, assert_metric);
+
+	    /* Actions A6, the (S,G) machine's way out of NoInfo here, end
+	     * "If (I is RPF_interface(S)) AND (UpstreamJPState(S,G) == Joined)
+	     * set SPTbit(S,G) to TRUE".  update_sptbit() asks exactly that,
+	     * its last alternative being the Loser state just stored; pimd
+	     * used to ask it only when data from S reached it, so without
+	     * data the entry stayed an RPT forwarder. */
+	    if (!wc && view.winner == 0)
+		update_sptbit(own, vifi);
+
 	    if (own->upstream == find_pim_nbr_on_vif(vifi, src))
 		return rc;
 

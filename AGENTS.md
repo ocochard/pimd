@@ -352,7 +352,8 @@ Loser on the winner's Assert at a worse metric, which is still acceptable there 
 Assert with the RPT bit taken by the (\*,G) machine rather than an (S,G) on the shared tree, and
 RPF'(\*,G) and RPF'(S,G,rpt) both following its winner across a check of the unicast routes, read off
 the "Upstream" line of `pimctl show mrt detail` (step 7f, M25), and an (S,G) Loser whose Assert Timer
-the winner's RPT-bit Assert no longer renews (step 7g, M26),
+the winner's RPT-bit Assert no longer renews (step 7g, M26), and SPTbit set on losing on the RPF
+interface while joined, with no data in the scenario, Actions A6 (step 7h, M28),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those

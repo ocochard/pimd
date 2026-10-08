@@ -74,6 +74,10 @@ issue of this repository is written out in full.
   router's own metric, gave the source up and claimed the group on the
   same message.  RFC 7761 sec. 4.6.2 forbids exactly that; the second
   machine now sees the message only after the winner's AssertCancel.
+- A router that lost the Assert election for a source on its upstream link
+  took the source's tree as its own only once the source's data reached
+  it, where RFC 7761 sec. 4.6.1 has that happen on the election itself.
+  Step 7h of `crafted`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------
