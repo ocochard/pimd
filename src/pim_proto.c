@@ -3725,7 +3725,7 @@ static int jp_prune_keep_smallest(build_jp_message_t *bjpm, uint32_t source, uin
 	struct pim_writer w;
 
 	pim_writer_init(&w, largest, bjpm->prune_list + bjpm->prune_list_size - largest);
-	pim_put_esaddr(&w, source, src_msklen, USADDR_S_BIT | USADDR_RP_BIT);
+	pim_encode_jp_source(&w, source, src_msklen, USADDR_S_BIT | USADDR_RP_BIT);
     }
 
     return TRUE;
@@ -3869,7 +3869,7 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	flags |= USADDR_WC_BIT;
 
     pim_writer_init(&w, list + *size, JP_LIST_CAP - *size);
-    if (!pim_put_esaddr(&w, source, src_msklen, flags)) {
+    if (!pim_encode_jp_source(&w, source, src_msklen, flags)) {
 	jp_overrun("source list");
 	return FALSE;
     }
@@ -4007,12 +4007,10 @@ static void pack_jp_message_grp(pim_nbr_entry_t *pim_nbr)
     if (bjpm->join_list_size + bjpm->prune_list_size) {
 	pim_writer_init(&w, bjpm->jp_message + bjpm->jp_message_size,
 			JP_MESSAGE_CAP - bjpm->jp_message_size);
-	pim_put_egaddr(&w, bjpm->curr_group, bjpm->curr_group_msklen, 0);
-	pim_put_u16(&w, bjpm->join_addr_number);
-	pim_put_u16(&w, bjpm->prune_addr_number);
-	pim_put_bytes(&w, bjpm->join_list, bjpm->join_list_size);
-	pim_put_bytes(&w, bjpm->prune_list, bjpm->prune_list_size);
-	if (w.full)
+	if (!pim_encode_jp_group(&w, bjpm->curr_group, bjpm->curr_group_msklen,
+				 bjpm->join_addr_number, bjpm->prune_addr_number,
+				 bjpm->join_list, bjpm->join_list_size,
+				 bjpm->prune_list, bjpm->prune_list_size))
 	    jp_overrun("group set");
 	else {
 	    bjpm->jp_message_size += pim_writer_used(&w, bjpm->jp_message + bjpm->jp_message_size);
@@ -4040,12 +4038,10 @@ static void pack_jp_message_rp(pim_nbr_entry_t *pim_nbr)
     if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
 	pim_writer_init(&w, bjpm->jp_message + bjpm->jp_message_size,
 			JP_MESSAGE_CAP - bjpm->jp_message_size);
-	pim_put_egaddr(&w, htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN, 0);
-	pim_put_u16(&w, bjpm->rp_list_join_number);
-	pim_put_u16(&w, bjpm->rp_list_prune_number);
-	pim_put_bytes(&w, bjpm->rp_list_join, bjpm->rp_list_join_size);
-	pim_put_bytes(&w, bjpm->rp_list_prune, bjpm->rp_list_prune_size);
-	if (w.full)
+	if (!pim_encode_jp_group(&w, htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN,
+				 bjpm->rp_list_join_number, bjpm->rp_list_prune_number,
+				 bjpm->rp_list_join, bjpm->rp_list_join_size,
+				 bjpm->rp_list_prune, bjpm->rp_list_prune_size))
 	    jp_overrun("(*,*,RP) set");
 	else {
 	    bjpm->jp_message_size += pim_writer_used(&w, bjpm->jp_message + bjpm->jp_message_size);
@@ -4097,11 +4093,7 @@ static void jp_message_restart(pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjp
     struct pim_writer w;
 
     pim_writer_init(&w, bjpm->jp_message, JP_MESSAGE_CAP);
-    pim_put_euaddr(&w, pim_nbr->address);
-    pim_put_u8(&w, 0);			/* Reserved */
-    bjpm->num_groups_ptr = w.p;		/* The pointer for numgroups */
-    pim_put_u8(&w, 0);			/* Zero groups */
-    pim_put_u16(&w, bjpm->holdtime);
+    pim_encode_jp_hdr(&w, pim_nbr->address, bjpm->holdtime, &bjpm->num_groups_ptr);
     bjpm->jp_message_size = pim_writer_used(&w, bjpm->jp_message);
 }
 

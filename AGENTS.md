@@ -782,10 +782,12 @@ the router would assert with now.  `proof_order` is the ordering of the two mach
 from the winner, which no lab reaches -- that needs an (S,G) with SPTbit, and `crafted` forwards no
 data.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
 plan: a body written by an encoder of `src/pim_encode.c` -- Register-Stop, Assert, Null-Register,
-Candidate-RP-Advertisement, Hello -- behind a PIM header of any four bytes, into a buffer of exactly
+Candidate-RP-Advertisement, Hello, Join/Prune, Bootstrap, every message pimd builds but a data
+Register, which is a copy -- behind a PIM header of any four bytes, into a buffer of exactly
 its length, and read back by the decoder of `src/pim_parse.c`, every field of it, for every value.
-The builders of `src/pim_proto.c` call those encoders, so it is the message on the wire that is
-proven.  A round trip cannot see a field both halves get wrong the same way, which stays the
+The builders of `src/pim_proto.c` and `src/rp.c` call those encoders, so it is the message on the
+wire that is proven; the Join/Prune and Bootstrap ones write a header, a group set and an entry
+apiece, and the builders keep their walks of the routing table and the RP set.  A round trip cannot see a field both halves get wrong the same way, which stays the
 interop labs'.  The Hello proofs fix the number of secondary addresses per proof: left
 nondeterministic it made every offset of the option walk symbolic, and one proof ran to 49G before
 it was stopped, where the two that replace it take under a second. It exits 77 without `cbmc`; the `CBMC proofs` job of

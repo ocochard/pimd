@@ -25,6 +25,15 @@
  *   proof_rt_register_stop  pim_encode_register_stop() and
  *                           pim_parse_register_stop()
  *   proof_rt_assert         pim_encode_assert() and pim_parse_assert()
+ *   proof_rt_bsr            pim_encode_bsr_hdr(), _group() and _rp(), and
+ *                           pim_parse_bsr(), pim_bsr_group() and
+ *                           pim_bsr_rp(): a header, one group set of any
+ *                           range, one RP record of any value
+ *   proof_rt_jp             pim_encode_jp_hdr(), _group() and _source(),
+ *                           and pim_parse_jp(), pim_jp_group() and
+ *                           pim_jp_source(): a group set of any group and
+ *                           mask length, one joined source and one pruned,
+ *                           of any address and flags
  *   proof_rt_hello          pim_encode_hello() and pim_parse_hello():
  *                           every option, no Address List
  *   proof_rt_hello_addr     the same with one secondary address
@@ -63,6 +72,8 @@ void proof_rt_assert(void);
 void proof_rt_null_register(void);
 void proof_rt_crp(void);
 void proof_rt_hello(void);
+void proof_rt_jp(void);
+void proof_rt_bsr(void);
 void proof_rt_hello_addr(void);
 
 /* A message of exactly @body bytes behind a PIM header of any content, and
@@ -257,4 +268,103 @@ void proof_rt_hello(void)
 void proof_rt_hello_addr(void)
 {
     rt_hello(1);
+}
+
+/* One source entry, encoded the way the senders encode them, into a list
+ * of its own that the group set copies */
+static void jp_entry(uint8_t *entry, uint32_t addr, uint8_t flags)
+{
+    struct pim_writer w;
+
+    pim_writer_init(&w, entry, PIM_ENCODE_SRC_ADDR_LEN);
+    __CPROVER_assert(pim_encode_jp_source(&w, addr, SINGLE_SRC_MSKLEN, flags), "a source entry fits");
+}
+
+void proof_rt_jp(void)
+{
+    uint32_t upstream = nondet_uint32_t(), group = nondet_uint32_t();
+    uint32_t jsrc = nondet_uint32_t(), psrc = nondet_uint32_t(), mask;
+    uint16_t holdtime = nondet_uint16_t();
+    uint8_t masklen = nondet_uint8_t(), jflags = nondet_uint8_t(), pflags = nondet_uint8_t();
+    uint8_t join[PIM_ENCODE_SRC_ADDR_LEN], prune[PIM_ENCODE_SRC_ADDR_LEN];
+    const size_t body = PIM_ENCODE_UNI_ADDR_LEN + 4 + PIM_JP_GRP_SET_LEN + 2 * PIM_ENCODE_SRC_ADDR_LEN;
+    struct pim_writer w;
+    pim_jp_grp_t grp;
+    pim_jp_src_t src;
+    pim_jp_t jp;
+    uint8_t *buf, *num_groups;
+
+    __CPROVER_assume(masklen <= 32);
+    jp_entry(join, jsrc, jflags);
+    jp_entry(prune, psrc, pflags);
+
+    buf = message(body, &w);
+    __CPROVER_assert(pim_encode_jp_hdr(&w, upstream, holdtime, &num_groups), "the header fits");
+    __CPROVER_assert(pim_encode_jp_group(&w, group, masklen, 1, 1, join, sizeof(join), prune, sizeof(prune)),
+		     "the group set fits");
+    __CPROVER_assert(w.left == 0, "and they fill the message");
+    *num_groups = 1;
+
+    __CPROVER_assert(pim_parse_jp(buf, sizeof(pim_header_t) + body, &jp) == PIM_JP_OK,
+		     "the decoder takes what the encoder wrote");
+    __CPROVER_assert(jp.upstream == upstream, "the upstream neighbor comes back");
+    __CPROVER_assert(jp.holdtime == holdtime, "the holdtime comes back");
+    __CPROVER_assert(jp.num_groups == 1, "the group count comes back");
+
+    pim_jp_group(jp.groups, &grp);
+    mask = masklen ? htonl(0xffffffffu << (32 - masklen)) : 0;
+    __CPROVER_assert(grp.group == (group & mask) && grp.masklen == masklen, "the group comes back, masked");
+    __CPROVER_assert(grp.num_j == 1 && grp.num_p == 1, "both counts come back");
+
+    pim_jp_source(&grp, 0, &src);
+    __CPROVER_assert(src.addr == jsrc && src.flags == jflags && src.masklen == SINGLE_SRC_MSKLEN,
+		     "the joined source comes back, flags and all");
+    pim_jp_source(&grp, 1, &src);
+    __CPROVER_assert(src.addr == psrc && src.flags == pflags && src.masklen == SINGLE_SRC_MSKLEN,
+		     "the pruned source comes back after it");
+
+    free(buf);
+}
+
+void proof_rt_bsr(void)
+{
+    uint32_t bsr_addr = nondet_uint32_t(), group = nondet_uint32_t(), rp_addr = nondet_uint32_t(), mask;
+    uint16_t tag = nondet_uint16_t(), holdtime = nondet_uint16_t();
+    uint8_t hash = nondet_uint8_t(), prio = nondet_uint8_t(), masklen = nondet_uint8_t();
+    uint8_t rp_prio = nondet_uint8_t();
+    const size_t body = 4 + PIM_ENCODE_UNI_ADDR_LEN + PIM_BSR_GRP_SET_LEN + PIM_BSR_RP_LEN;
+    struct pim_writer w;
+    pim_bsr_grp_t grp;
+    pim_bsr_rp_t rp;
+    pim_bsr_t bsr;
+    uint8_t *buf;
+
+    __CPROVER_assume(hash <= 32 && masklen <= 32);
+
+    buf = message(body, &w);
+    __CPROVER_assert(pim_encode_bsr_hdr(&w, tag, hash, prio, bsr_addr), "the header fits");
+    __CPROVER_assert(pim_encode_bsr_group(&w, group, masklen, 1, 1), "the group set fits");
+    __CPROVER_assert(pim_encode_bsr_rp(&w, rp_addr, holdtime, rp_prio), "the RP record fits");
+    __CPROVER_assert(w.left == 0, "and they fill the message");
+
+    __CPROVER_assert(pim_parse_bsr(buf, sizeof(pim_header_t) + body, &bsr) == PIM_BSR_OK,
+		     "the decoder takes what the encoder wrote");
+    __CPROVER_assert(bsr.frag_tag == tag, "the fragment tag comes back");
+    __CPROVER_assert(bsr.hash_masklen == hash, "the hash mask length comes back");
+    __CPROVER_assert(bsr.priority == prio, "the BSR priority comes back");
+    __CPROVER_assert(bsr.bsr == bsr_addr, "the BSR comes back");
+    __CPROVER_assert(bsr.num_sets == 1, "the group set is there");
+
+    pim_bsr_group(bsr.sets, &grp);
+    mask = masklen ? htonl(0xffffffffu << (32 - masklen)) : 0;
+    __CPROVER_assert(grp.grp.mcast_addr == (group & mask) && grp.grp.masklen == masklen,
+		     "the range comes back, masked");
+    __CPROVER_assert(grp.rp_count == 1 && grp.frag_rp_count == 1, "both counts come back");
+
+    pim_bsr_rp(&grp, 0, &rp);
+    __CPROVER_assert(rp.addr == rp_addr, "the RP comes back");
+    __CPROVER_assert(rp.holdtime == holdtime, "its holdtime comes back");
+    __CPROVER_assert(rp.priority == rp_prio, "its priority comes back");
+
+    free(buf);
 }

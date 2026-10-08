@@ -737,6 +737,18 @@ int    pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
 			 uint32_t preference, uint32_t metric);
 int    pim_encode_null_register(struct pim_writer *w, uint32_t source, uint32_t group,
 				uint8_t ttl, uint8_t **hdr);
+int    pim_encode_bsr_hdr(struct pim_writer *w, uint16_t frag_tag, uint8_t hash_masklen,
+			  uint8_t priority, uint32_t bsr);
+int    pim_encode_bsr_group(struct pim_writer *w, uint32_t group, uint8_t masklen,
+			    uint8_t rp_count, uint8_t frag_rp_count);
+int    pim_encode_bsr_rp(struct pim_writer *w, uint32_t rp, uint16_t holdtime, uint8_t priority);
+int    pim_encode_jp_hdr(struct pim_writer *w, uint32_t upstream, uint16_t holdtime,
+			 uint8_t **num_groups);
+int    pim_encode_jp_group(struct pim_writer *w, uint32_t group, uint8_t masklen,
+			   uint16_t num_joins, uint16_t num_prunes,
+			   const void *joins, size_t joins_len,
+			   const void *prunes, size_t prunes_len);
+int    pim_encode_jp_source(struct pim_writer *w, uint32_t source, uint8_t masklen, uint8_t flags);
 int    pim_encode_hello (struct pim_writer *w, uint16_t holdtime, uint16_t propagation_delay,
 			 uint16_t override_interval, uint32_t dr_prio, uint32_t genid,
 			 const uint32_t *secaddrs, size_t nsec);

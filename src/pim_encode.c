@@ -159,6 +159,86 @@ int pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
 }
 
 /*
+ * A Bootstrap, RFC 5059 sec. 3, in its three parts.  The header: the
+ * Fragment Tag, the Hash Mask Len, the BSR Priority and the BSR's address.
+ */
+int pim_encode_bsr_hdr(struct pim_writer *w, uint16_t frag_tag, uint8_t hash_masklen,
+		       uint8_t priority, uint32_t bsr)
+{
+    pim_put_u16(w, frag_tag);
+    pim_put_u8(w, hash_masklen);
+    pim_put_u8(w, priority);
+    pim_put_euaddr(w, bsr);
+
+    return !w->full;
+}
+
+/* A group set: the group range, the RP Count, the Frag RP Count of the
+ * records that follow it, and a reserved word */
+int pim_encode_bsr_group(struct pim_writer *w, uint32_t group, uint8_t masklen,
+			 uint8_t rp_count, uint8_t frag_rp_count)
+{
+    pim_put_egaddr(w, group, masklen, 0);
+    pim_put_u8(w, rp_count);
+    pim_put_u8(w, frag_rp_count);
+    pim_put_u16(w, 0);				/* Reserved */
+
+    return !w->full;
+}
+
+/* One RP record: the RP's address, its Holdtime and Priority, a reserved
+ * byte */
+int pim_encode_bsr_rp(struct pim_writer *w, uint32_t rp, uint16_t holdtime, uint8_t priority)
+{
+    pim_put_euaddr(w, rp);
+    pim_put_u16(w, holdtime);
+    pim_put_u8(w, priority);
+    pim_put_u8(w, 0);				/* Reserved */
+
+    return !w->full;
+}
+
+/*
+ * A Join/Prune, RFC 7761 sec. 4.9.5, in its three parts.  The header: the
+ * upstream neighbor, a reserved byte, the Num Groups -- zero until the
+ * caller has packed its group sets, *@num_groups says where -- and the
+ * Holdtime.
+ */
+int pim_encode_jp_hdr(struct pim_writer *w, uint32_t upstream, uint16_t holdtime,
+		      uint8_t **num_groups)
+{
+    pim_put_euaddr(w, upstream);
+    pim_put_u8(w, 0);				/* Reserved */
+    *num_groups = w->p;
+    pim_put_u8(w, 0);				/* Num Groups */
+    pim_put_u16(w, holdtime);
+
+    return !w->full;
+}
+
+/* A group set: the group, the two counts, then the joined sources the
+ * caller has encoded with pim_encode_jp_source(), then the pruned ones */
+int pim_encode_jp_group(struct pim_writer *w, uint32_t group, uint8_t masklen,
+			uint16_t num_joins, uint16_t num_prunes,
+			const void *joins, size_t joins_len,
+			const void *prunes, size_t prunes_len)
+{
+    pim_put_egaddr(w, group, masklen, 0);
+    pim_put_u16(w, num_joins);
+    pim_put_u16(w, num_prunes);
+    pim_put_bytes(w, joins, joins_len);
+    pim_put_bytes(w, prunes, prunes_len);
+
+    return !w->full;
+}
+
+/* One joined or pruned source, with its S, W and R bits */
+int pim_encode_jp_source(struct pim_writer *w, uint32_t source, uint8_t masklen, uint8_t flags)
+{
+    return pim_put_esaddr(w, source, masklen, flags);
+}
+
+/*
  * A Hello's options, RFC 7761 sec. 4.9.2: the Holdtime, the LAN Prune
  * Delay with the T bit clear -- pimd cannot disable Join suppression --
  * the DR Priority, the Generation ID, and an Address List of the @nsec

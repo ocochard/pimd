@@ -333,6 +333,18 @@ mutant rt-hello-override-as-prop   "$h" "$s" proof_rt_hello     30 6 's/pim_put_
 mutant rt-hello-t-bit-set          "$h" "$s" proof_rt_hello     30 6 's/propagation_delay \& ~PIM_LAN_PRUNE_DELAY_T_BIT/propagation_delay | PIM_LAN_PRUNE_DELAY_T_BIT/'
 mutant rt-hello-genid-as-prio      "$h" "$s" proof_rt_hello     30 6 's/pim_put_u32(w, genid);/pim_put_u32(w, dr_prio);/'
 mutant rt-hello-list-len-short     "$h" "$s" proof_rt_hello_addr 30 6 's/(uint16_t)(nsec \* PIM_ENCODE_UNI_ADDR_LEN)/(uint16_t)(nsec * PIM_ENCODE_UNI_ADDR_LEN - 1)/'
+# One group set, one source joined and one pruned: the counts are equal,
+# so a mutant swapping them would pass and is not listed
+proof  rt-jp                       "$h" "$s" proof_rt_jp        24 6
+mutant rt-jp-holdtime-dropped      "$h" "$s" proof_rt_jp        24 6 's/^    pim_put_u16(w, holdtime);$/    pim_put_u16(w, 0);/'
+mutant rt-jp-prunes-for-joins      "$h" "$s" proof_rt_jp        24 6 's/    pim_put_bytes(w, joins, joins_len);/    pim_put_bytes(w, prunes, prunes_len);/'
+mutant rt-jp-group-masklen-fixed   "$h" "$s" proof_rt_jp        24 6 's/    pim_put_egaddr(w, group, masklen, 0);/    pim_put_egaddr(w, group, 32, 0);/'
+mutant rt-jp-source-flags-dropped  "$h" "$s" proof_rt_jp        24 6 's/return pim_put_esaddr(w, source, masklen, flags);/return pim_put_esaddr(w, source, masklen, 0);/'
+proof  rt-bsr                      "$h" "$s" proof_rt_bsr       24 6
+mutant rt-bsr-hash-as-priority     "$h" "$s" proof_rt_bsr       24 6 's/pim_put_u8(w, hash_masklen);/pim_put_u8(w, priority);/'
+mutant rt-bsr-frag-count-dropped   "$h" "$s" proof_rt_bsr       24 6 's/pim_put_u8(w, frag_rp_count);/pim_put_u8(w, 0);/'
+mutant rt-bsr-rp-holdtime-dropped  "$h" "$s" proof_rt_bsr       24 6 's/^    pim_put_u16(w, holdtime);$/    pim_put_u16(w, 0);/'
+mutant rt-bsr-rp-reserved-missing  "$h" "$s" proof_rt_bsr       24 6 '/^int pim_encode_bsr_rp/,/^}/s/^    pim_put_u8(w, 0);.*Reserved.*$/    ;/'
 
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"

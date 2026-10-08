@@ -1251,11 +1251,8 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
     if (curr_bsr_address == my_bsr_address)
 	curr_bsr_fragment_tag++;
 
-    pim_put_u16(&w, curr_bsr_fragment_tag);
     MASK_TO_MASKLEN(curr_bsr_hash_mask, masklen);
-    pim_put_u8(&w, masklen);
-    pim_put_u8(&w, curr_bsr_priority);
-    pim_put_euaddr(&w, curr_bsr_address);
+    pim_encode_bsr_hdr(&w, curr_bsr_fragment_tag, masklen, curr_bsr_priority, curr_bsr_address);
 
     /* TODO: XXX: No fragmentation support (yet), so an RP set larger than
      * one message holds is cut short rather than carried in fragments with
@@ -1298,10 +1295,8 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	}
 
 	MASK_TO_MASKLEN(mask_ptr->group_mask, masklen);
-	pim_put_egaddr(&w, mask_ptr->group_addr, masklen, 0);
-	pim_put_u8(&w, (uint8_t)rps);
-	pim_put_u8(&w, (uint8_t)rps);	/* TODO: if frag.*/
-	pim_put_u16(&w, 0);
+	/* TODO: if frag. */
+	pim_encode_bsr_group(&w, mask_ptr->group_addr, masklen, (uint8_t)rps, (uint8_t)rps);
 
 	/* Exactly the records the count above promises, so that the message
 	 * says what it holds however the list changes underneath. */
@@ -1312,10 +1307,7 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
 	    /* Is holdtime in MUST BE interval? (RFC5059 section 3.3) */
 	    if (holdtime != 0 && holdtime <= my_bsr_adv_period)
 		holdtime = recommended_rp_holdtime;
-	    pim_put_euaddr(&w, entry_ptr->rp->rpentry->address);
-	    pim_put_u16(&w, holdtime);
-	    pim_put_u8(&w, entry_ptr->priority);
-	    pim_put_u8(&w, 0);  /* The reserved field */
+	    pim_encode_bsr_rp(&w, entry_ptr->rp->rpentry->address, holdtime, entry_ptr->priority);
 	}
     }
 
