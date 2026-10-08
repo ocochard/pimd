@@ -158,6 +158,103 @@ int pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
     return !w->full;
 }
 
+/*
+ * A Hello's options, RFC 7761 sec. 4.9.2: the Holdtime, the LAN Prune
+ * Delay with the T bit clear -- pimd cannot disable Join suppression --
+ * the DR Priority, the Generation ID, and an Address List of the @nsec
+ * secondary addresses where there are any, sec. 4.3.4.  The delays are in
+ * milliseconds.
+ */
+int pim_encode_hello(struct pim_writer *w, uint16_t holdtime, uint16_t propagation_delay,
+		     uint16_t override_interval, uint32_t dr_prio, uint32_t genid,
+		     const uint32_t *secaddrs, size_t nsec)
+{
+    size_t i;
+
+    pim_put_u16(w, PIM_HELLO_HOLDTIME);
+    pim_put_u16(w, PIM_HELLO_HOLDTIME_LEN);
+    pim_put_u16(w, holdtime);
+
+    pim_put_u16(w, PIM_HELLO_LAN_PRUNE_DELAY);
+    pim_put_u16(w, PIM_HELLO_LAN_PRUNE_DELAY_LEN);
+    pim_put_u16(w, propagation_delay & ~PIM_LAN_PRUNE_DELAY_T_BIT);
+    pim_put_u16(w, override_interval);
+
+    pim_put_u16(w, PIM_HELLO_DR_PRIO);
+    pim_put_u16(w, PIM_HELLO_DR_PRIO_LEN);
+    pim_put_u32(w, dr_prio);
+
+    pim_put_u16(w, PIM_HELLO_GENID);
+    pim_put_u16(w, PIM_HELLO_GENID_LEN);
+    pim_put_u32(w, genid);
+
+    if (nsec) {
+	/* The option's length is 16 bits; a list longer than it holds is
+	 * not written at all rather than written with a wrapped length */
+	if (nsec > 0xffff / PIM_ENCODE_UNI_ADDR_LEN) {
+	    w->full = 1;
+	    return 0;
+	}
+
+	pim_put_u16(w, PIM_HELLO_ADDR_LIST);
+	pim_put_u16(w, (uint16_t)(nsec * PIM_ENCODE_UNI_ADDR_LEN));
+	for (i = 0; i < nsec; i++)
+	    pim_put_euaddr(w, secaddrs[i]);
+    }
+
+    return !w->full;
+}
+
+/*
+ * A Candidate-RP-Advertisement, RFC 5059 sec. 4.2, up to its group
+ * prefixes: the Prefix Count, zero until the caller knows how many
+ * followed -- *@cnt says where it is -- the Priority, the Holdtime and the
+ * RP's address.  pim_encode_crp_prefix() writes each prefix after it.
+ */
+int pim_encode_crp_hdr(struct pim_writer *w, uint8_t priority, uint16_t holdtime,
+		       uint32_t rp, uint8_t **cnt)
+{
+    *cnt = w->p;
+    pim_put_u8(w, 0);
+    pim_put_u8(w, priority);
+    pim_put_u16(w, holdtime);
+    pim_put_euaddr(w, rp);
+
+    return !w->full;
+}
+
+int pim_encode_crp_prefix(struct pim_writer *w, uint32_t group, uint8_t masklen)
+{
+    return pim_put_egaddr(w, group, masklen, 0);
+}
+
+/*
+ * A Null-Register, sec. 4.9.3: the flags word with the N bit, and the
+ * dummy IPv4 header of the source and the group a Register of theirs would
+ * carry, without options, with @ttl.  Its checksum is left zero for the
+ * caller, which has inet_cksum() and this file does not; *@hdr says where
+ * the header starts.
+ */
+int pim_encode_null_register(struct pim_writer *w, uint32_t source, uint32_t group,
+			     uint8_t ttl, uint8_t **hdr)
+{
+    pim_put_u32(w, PIM_REGISTER_NULL_REGISTER_BIT);
+
+    *hdr = w->p;
+    pim_put_u8(w, (IP_HDR_V4 << 4) | (IP_HDR_MINLEN >> 2));
+    pim_put_u8(w, 0);				/* ToS */
+    pim_put_u16(w, IP_HDR_MINLEN);		/* Total length */
+    pim_put_u16(w, 0);				/* Id */
+    pim_put_u16(w, 0);				/* Fragment offset */
+    pim_put_u8(w, ttl);
+    pim_put_u8(w, IPPROTO_PIM);			/* 103 */
+    pim_put_u16(w, 0);				/* Checksum, the caller's */
+    pim_put_bytes(w, &source, sizeof(source));
+    pim_put_bytes(w, &group, sizeof(group));
+
+    return !w->full;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

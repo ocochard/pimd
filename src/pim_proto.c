@@ -1041,42 +1041,17 @@ int send_pim_hello(struct uvif *v, uint16_t holdtime)
     IF_DEBUG(DEBUG_PIM_HELLO)
 	logit(LOG_DEBUG, 0, "Sending PIM HELLO on %s", v->uv_name);
 
+    /* RFC 7761 sec. 4.3.3 wants the LAN Prune Delay on every multi-access
+     * LAN, and an upstream that does not see it falls back to its own
+     * defaults -- which for pimd's own downstream neighbors used to mean the
+     * option was never on the wire at all.  Sec. 4.3.1: the Address List
+     * MUST be included whenever the interface has secondary addresses;
+     * without it a neighbor whose route to a source names one of them as
+     * next hop has no PIM neighbor to join through. */
     start = pim_body_writer(&w);
-    pim_put_u16(&w, PIM_HELLO_HOLDTIME);
-    pim_put_u16(&w, PIM_HELLO_HOLDTIME_LEN);
-    pim_put_u16(&w, holdtime);
-
-    /* RFC 7761 sec. 4.3.3 wants this on every multi-access LAN, and an
-     * upstream that does not see it falls back to its own defaults -- which
-     * for pimd's own downstream neighbors used to mean the option was never
-     * on the wire at all.  The T bit stays clear: it advertises the ability
-     * to disable Join suppression, which pimd does not have. */
-    pim_put_u16(&w, PIM_HELLO_LAN_PRUNE_DELAY);
-    pim_put_u16(&w, PIM_HELLO_LAN_PRUNE_DELAY_LEN);
-    pim_put_u16(&w, PIM_MSEC(PIM_PROPAGATION_DELAY));
-    pim_put_u16(&w, PIM_MSEC(PIM_OVERRIDE_INTERVAL));
-
-    pim_put_u16(&w, PIM_HELLO_DR_PRIO);
-    pim_put_u16(&w, PIM_HELLO_DR_PRIO_LEN);
-    pim_put_u32(&w, v->uv_dr_prio);
-
-    pim_put_u16(&w, PIM_HELLO_GENID);
-    pim_put_u16(&w, PIM_HELLO_GENID_LEN);
-    pim_put_u32(&w, v->uv_genid);
-
-    /* RFC 7761 sec. 4.3.1: MUST be included whenever the interface has
-     * secondary addresses.  Without it a neighbor whose route to a source
-     * names one of them as next hop has no PIM neighbor to join through. */
-    if (v->uv_nsecaddrs) {
-	u_int i;
-
-	/* MAX_SECADDRS (src/vif.h) keeps the length well inside the
-	 * option's 16 bits */
-	pim_put_u16(&w, PIM_HELLO_ADDR_LIST);
-	pim_put_u16(&w, (uint16_t)(v->uv_nsecaddrs * PIM_ENCODE_UNI_ADDR_LEN));
-	for (i = 0; i < v->uv_nsecaddrs; i++)
-	    pim_put_euaddr(&w, v->uv_secaddrs[i]);
-    }
+    pim_encode_hello(&w, holdtime, PIM_MSEC(PIM_PROPAGATION_DELAY),
+		     PIM_MSEC(PIM_OVERRIDE_INTERVAL), v->uv_dr_prio, v->uv_genid,
+		     v->uv_secaddrs, v->uv_nsecaddrs);
 
     SET_TIMER(v->uv_hello_timer, pim_timer_hello_interval);
     if (w.full)
@@ -1899,28 +1874,16 @@ static int build_null_register(uint32_t source, uint32_t group)
     uint16_t sum;
 
     start = pim_body_writer(&w);
-    pim_put_u32(&w, PIM_REGISTER_NULL_REGISTER_BIT);
-
-    hdr = w.p;
-    pim_put_u8(&w, (IPVERSION << 4) | (sizeof(struct ip) >> 2));
-    pim_put_u8(&w, 0);				/* ToS */
-    pim_put_u16(&w, sizeof(struct ip));		/* Total length */
-    pim_put_u16(&w, 0);				/* Id */
-    pim_put_u16(&w, 0);				/* Fragment offset */
-    pim_put_u8(&w, MINTTL); /* TODO: XXX: check whether need to setup the ttl */
-    pim_put_u8(&w, IPPROTO_PIM);		/* RFC 7761 sec. 4.9.3: 103 */
-    pim_put_u16(&w, 0);				/* Checksum, below */
-    pim_put_bytes(&w, &source, sizeof(source));
-    pim_put_bytes(&w, &group, sizeof(group));
-    if (w.full) {
+    /* TODO: XXX: check whether need to setup the ttl */
+    if (!pim_encode_null_register(&w, source, group, MINTTL, &hdr)) {
 	pim_body_overrun("Null-Register");
 	return 0;
     }
 
     /* inet_cksum() sums in network order and returns the result so, which
      * is how the header carries it */
-    sum = (uint16_t)inet_cksum((uint16_t *)(void *)hdr, sizeof(struct ip));
-    memcpy(hdr + 10, &sum, sizeof(sum));
+    sum = (uint16_t)inet_cksum((uint16_t *)(void *)hdr, IP_HDR_MINLEN);
+    memcpy(hdr + IP_OFF_SUM, &sum, sizeof(sum));
 
     /* include the dummy ip header */
     return (int)pim_writer_used(&w, start);
@@ -5909,12 +5872,8 @@ static int send_cand_rp_adv(uint8_t priority, size_t count)
     }
 
     start = pim_body_writer(&w);
-    cnt   = start;		/* Filled in below, from what was written */
-
-    pim_put_u8(&w, 0);
-    pim_put_u8(&w, priority);
-    pim_put_u16(&w, my_cand_rp_holdtime);
-    pim_put_euaddr(&w, my_cand_rp_address);
+    /* The Prefix Count is filled in below, from what was written */
+    pim_encode_crp_hdr(&w, priority, my_cand_rp_holdtime, my_cand_rp_address, &cnt);
 
     for (i = 0; i < count; i++) {
 	uint32_t group, masklen;
@@ -5922,7 +5881,7 @@ static int send_cand_rp_adv(uint8_t priority, size_t count)
 	if (!cand_rp_prefix_at(priority, i, &group, &masklen))
 	    break;
 
-	if (!pim_put_egaddr(&w, group, (uint8_t)masklen, 0))
+	if (!pim_encode_crp_prefix(&w, group, (uint8_t)masklen))
 	    break;
 	num++;
     }

@@ -316,6 +316,23 @@ mutant rt-stop-group-as-source     "$h" "$s" proof_rt_register_stop 0 1 's/    p
 mutant rt-stop-group-masked        "$h" "$s" proof_rt_register_stop 0 1 's/pim_put_egaddr(w, group, SINGLE_GRP_MSKLEN, 0)/pim_put_egaddr(w, group, 24, 0)/'
 mutant rt-assert-metric-dropped    "$h" "$s" proof_rt_assert    0 1 's/^    pim_put_u32(w, metric);$/    ;/'
 mutant rt-assert-pref-metric-swapped "$h" "$s" proof_rt_assert  0 1 's/(w, preference);/(w, XPREF);/;s/(w, metric);/(w, preference);/;s/(w, XPREF);/(w, metric);/'
+proof  rt-null-register            "$h" "$s" proof_rt_null_register 0 1
+mutant rt-null-no-n-bit            "$h" "$s" proof_rt_null_register 0 1 's/pim_put_u32(w, PIM_REGISTER_NULL_REGISTER_BIT);/pim_put_u32(w, 0);/'
+mutant rt-null-hlen-in-words-wrong "$h" "$s" proof_rt_null_register 0 1 's/(IP_HDR_MINLEN >> 2)/(IP_HDR_MINLEN >> 3)/'
+mutant rt-null-src-grp-swapped     "$h" "$s" proof_rt_null_register 0 1 's/pim_put_bytes(w, \&source, sizeof(source));/pim_put_bytes(w, \&group, sizeof(group));/'
+mutant rt-null-id-dropped          "$h" "$s" proof_rt_null_register 0 1 's/^    pim_put_u16(w, 0);				\/\* Id \*\//    ;/'
+proof  rt-crp                      "$h" "$s" proof_rt_crp       0 1
+mutant rt-crp-priority-dropped     "$h" "$s" proof_rt_crp       0 1 's/    pim_put_u8(w, priority);/    pim_put_u8(w, 0);/'
+mutant rt-crp-rp-dropped           "$h" "$s" proof_rt_crp       0 1 's/^    pim_put_euaddr(w, rp);/    pim_put_euaddr(w, 0);/'
+mutant rt-crp-masklen-fixed        "$h" "$s" proof_rt_crp       0 1 's/return pim_put_egaddr(w, group, masklen, 0);/return pim_put_egaddr(w, group, 32, 0);/'
+# The Hello walks its options in a loop, five with the Address List: the
+# 30 6 is an unwind bound of 8 for it, not a length
+proof  rt-hello                    "$h" "$s" proof_rt_hello     30 6
+proof  rt-hello-addr               "$h" "$s" proof_rt_hello_addr 30 6
+mutant rt-hello-override-as-prop   "$h" "$s" proof_rt_hello     30 6 's/pim_put_u16(w, propagation_delay \& ~PIM_LAN_PRUNE_DELAY_T_BIT);/pim_put_u16(w, override_interval);/'
+mutant rt-hello-t-bit-set          "$h" "$s" proof_rt_hello     30 6 's/propagation_delay \& ~PIM_LAN_PRUNE_DELAY_T_BIT/propagation_delay | PIM_LAN_PRUNE_DELAY_T_BIT/'
+mutant rt-hello-genid-as-prio      "$h" "$s" proof_rt_hello     30 6 's/pim_put_u32(w, genid);/pim_put_u32(w, dr_prio);/'
+mutant rt-hello-list-len-short     "$h" "$s" proof_rt_hello_addr 30 6 's/(uint16_t)(nsec \* PIM_ENCODE_UNI_ADDR_LEN)/(uint16_t)(nsec * PIM_ENCODE_UNI_ADDR_LEN - 1)/'
 
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"

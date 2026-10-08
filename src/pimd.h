@@ -639,6 +639,19 @@ void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp);
  */
 #define PIM_REGISTER_MINLEN	(sizeof(pim_header_t) + sizeof(pim_register_t) + 20)
 
+/* Offsets of the IPv4 header fields of a Register's inner header, which
+ * src/pim_parse.c reads and src/pim_encode.c writes for a Null-Register */
+#define IP_OFF_VHL	0	/* version and header length, a nibble each */
+#define IP_OFF_TOS	1
+#define IP_OFF_LEN	2
+#define IP_OFF_TTL	8
+#define IP_OFF_PROTO	9
+#define IP_OFF_SUM	10
+#define IP_OFF_SRC	12
+#define IP_OFF_DST	16
+#define IP_HDR_MINLEN	20
+#define IP_HDR_V4	4
+
 typedef struct {
     int      is_null;
     const uint8_t *body;	/* the flags word: what a copy starts with */
@@ -722,6 +735,14 @@ int    pim_put_bytes    (struct pim_writer *w, const void *src, size_t n);
 int    pim_encode_register_stop(struct pim_writer *w, uint32_t group, uint32_t source);
 int    pim_encode_assert(struct pim_writer *w, uint32_t group, uint32_t source,
 			 uint32_t preference, uint32_t metric);
+int    pim_encode_null_register(struct pim_writer *w, uint32_t source, uint32_t group,
+				uint8_t ttl, uint8_t **hdr);
+int    pim_encode_hello (struct pim_writer *w, uint16_t holdtime, uint16_t propagation_delay,
+			 uint16_t override_interval, uint32_t dr_prio, uint32_t genid,
+			 const uint32_t *secaddrs, size_t nsec);
+int    pim_encode_crp_hdr(struct pim_writer *w, uint8_t priority, uint16_t holdtime,
+			  uint32_t rp, uint8_t **cnt);
+int    pim_encode_crp_prefix(struct pim_writer *w, uint32_t group, uint8_t masklen);
 
 /* The Assert decisions that read no state, src/pim_assert.c */
 int    compare_metrics  (uint32_t local_preference, uint32_t local_metric,

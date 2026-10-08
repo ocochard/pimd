@@ -780,7 +780,15 @@ the router would assert with now.  `proof_order` is the ordering of the two mach
 `receive_pim_assert()`, sec. 4.6.2's rule and the AssertCancel exception of M14 written as
 `assert_rc()` and `assert_wc_may_run()`; it found M27, the exception granted to any inferior Assert
 from the winner, which no lab reaches -- that needs an (S,G) with SPTbit, and `crafted` forwards no
-data. It exits 77 without `cbmc`; the `CBMC proofs` job of
+data.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
+plan: a body written by an encoder of `src/pim_encode.c` -- Register-Stop, Assert, Null-Register,
+Candidate-RP-Advertisement, Hello -- behind a PIM header of any four bytes, into a buffer of exactly
+its length, and read back by the decoder of `src/pim_parse.c`, every field of it, for every value.
+The builders of `src/pim_proto.c` call those encoders, so it is the message on the wire that is
+proven.  A round trip cannot see a field both halves get wrong the same way, which stays the
+interop labs'.  The Hello proofs fix the number of secondary addresses per proof: left
+nondeterministic it made every offset of the option walk symbolic, and one proof ran to 49G before
+it was stopped, where the two that replace it take under a second. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

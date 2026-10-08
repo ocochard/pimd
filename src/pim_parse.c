@@ -575,16 +575,6 @@ void pim_crp_prefix(const pim_crp_t *crp, uint8_t i, pim_encod_grp_addr_t *grp)
     GET_EGADDR(grp, p);
 }
 
-/* Offsets of the IPv4 header fields a Register's inner header is read for */
-#define IP_OFF_VHL	0	/* version and header length, a nibble each */
-#define IP_OFF_TOS	1
-#define IP_OFF_LEN	2
-#define IP_OFF_SUM	10
-#define IP_OFF_SRC	12
-#define IP_OFF_DST	16
-#define IP_HDR_MINLEN	20
-#define IP_HDR_V4	4
-
 /*
  * A Register, PIM header included.  The checks of the PIM checksum and of
  * a Null-Register's dummy header checksum are the caller's, in between
