@@ -4808,6 +4808,14 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
     act = assert_decide(&view);
     rc  = assert_rc(act, assert_preference, assert_metric);
 
+    /* Every answer but A1 and a new Loser state downstream reads state the
+     * entry holds, so there is an entry: assert_decide() gives them only
+     * where `own` has a slot.  Said here for gcc's analyser, which does not
+     * see into src/pim_assert.c and found the dereferences below without
+     * it. */
+    if (!own && act != ASSERT_ACT_SEND && act != ASSERT_ACT_LOSE)
+	return ASSERT_NOTHING;
+
     switch (act) {
 	case ASSERT_ACT_SEND:
 	    send_pim_assert(source, group, vifi, own ? own : mrt);
