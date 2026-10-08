@@ -598,6 +598,27 @@ unicast routes its Joins have to go to the winner still (they went to the
 new neighbour before the fix); after the winner's AssertCancel, the control,
 they have to go to the new neighbour.*
 
+M32 is U1 of the same map.  An (S,G) entry made by a downstream neighbour's
+Prune(S,G,rpt) sits on the shared tree, MRTF_RP, and a Join(S,G) from another
+neighbour makes JoinDesired(S,G) true, sec. 4.5.5: the router has to send
+Join(S,G) to RPF'(S,G).  The Join(S,G) branch of `receive_pim_join_prune()`
+left moving the entry to the source tree to `change_interfaces()`, which does
+it only on a change of incoming interface; where the source and the RP are
+reached through the same interface the entry stayed on the shared tree, and
+`join_or_prune()` can answer only Prune or nothing for such an entry.  The
+router went on pruning the source off the shared tree, never joined it, and
+the neighbour that asked for it received nothing for as long as the other's
+prune held.  The branch moves the entry itself now, upstream RPF'(S,G), and
+fires its Join Timer.  What it does not get back is clause 2 of sec. 4.5.6
+once that Join(S,G) times out: an entry off the shared tree no longer sends
+the Prune(S,G,rpt) for an empty inherited_olist(S,G,rpt), map finding U10,
+which costs the shared tree's copy of the source reaching a router that does
+not forward it.  *Test: `crafted` step 7l in `test/lab.sh`: r1 reaches a
+source behind r3 and the RP through r2 on the same link; one ED1 address
+prunes the source off r1's shared tree, the control being r1's Prune(S,G,rpt)
+on r2's log, and the other joins (S,G), after which r2's log has to show r1's
+Join(S,G) for it within 70 s (none came before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

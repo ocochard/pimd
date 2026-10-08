@@ -356,7 +356,8 @@ the same message as the Join(\*,G) to the winner, read off r2's log of r1's mess
 the winner's RPT-bit Assert no longer renews (step 7g, M26), and SPTbit set on losing on the RPF
 interface while joined, with no data in the scenario, Actions A6 (step 7h, M28), the Joins kept with
 the Assert winner when the route to the source moves to another router on the same link (step 7k,
-M31), a (\*,G) Winner
+M31), a Join(S,G) taking an (S,G) off the shared tree where the source and the RP share r1's RPF
+interface, read off r2's log of r1's messages (step 7l, M32), a (\*,G) Winner
 that an (S,G) Assert for one source no longer takes off the LAN (step 7i, M29),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)

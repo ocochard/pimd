@@ -1840,6 +1840,9 @@ CRAFT_R1_LINK12_ADDR=${CRAFT_R1_LINK12_ADDR:-10.0.12.1}
 # crafted step 7i: a group ED1 joins at r1 and asserts for, with the same
 # source pruned off its shared tree on ED1's LAN
 CRAFT_WC_WIN_GROUP=${CRAFT_WC_WIN_GROUP:-225.1.4.10}
+# crafted step 7l: a group ED1 prunes a source behind r3 off the shared tree
+# from one address and joins that source from the other
+CRAFT_SG_ON_RPT_GROUP=${CRAFT_SG_ON_RPT_GROUP:-225.1.4.11}
 # crafted step 7g: a group r2 forwards that source onto its link to r1 for
 CRAFT_SG_RPT_GROUP=${CRAFT_SG_RPT_GROUP:-225.1.4.9}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
@@ -7542,6 +7545,52 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_WC_WIN_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	print "7l. A Join(S,G) takes an (S,G) off the shared tree, even on the RP's interface"
+	# Sec. 4.5.5: "JoinDesired(S,G) becomes True ... Send Join(S,G) to the
+	# appropriate upstream neighbor, which is RPF'(S,G)".  An (S,G) entry
+	# made by a neighbour's Prune(S,G,rpt) sits on the shared tree,
+	# MRTF_RP, and a Join(S,G) from another neighbour left it there when
+	# the source and the RP are reached through the same interface:
+	# change_interfaces() (src/route.c) clears the flag only on a change
+	# of interface, and join_or_prune() (src/pim_proto.c) can answer only
+	# Prune or nothing for an entry carrying it.  The router went on
+	# pruning the source off the shared tree and never joined it, and the
+	# neighbour that asked for it got nothing.  Map finding U1.  r1
+	# reaches 10.0.3.77, behind r3, and the RP through r2 on the same
+	# link: one ED1 address joins the group and prunes the source off its
+	# shared tree, the control being r1's Prune(S,G,rpt) on r2's log; the
+	# other joins (S,G), and r1 has to send r2 a Join(S,G) for it.
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+	m_sg=$(log_lines r2)
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR or $CRAFT_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_SG_ON_RPT_GROUP" ||
+	     ! craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535 ||
+	     ! wait_for 30 sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_ON_RPT_GROUP"; then
+		fail "r1 holds no (*,$CRAFT_SG_ON_RPT_GROUP) with $CRAFT_RPT_FOLLOW_SRC pruned off ${EP}101b, the step cannot be put"
+	elif ! wait_for 70 r1_sent_r2 "$m_sg" PRUNE "$CRAFT_SG_ON_RPT_GROUP" "$CRAFT_RPT_FOLLOW_SRC" "(S,G,rpt)"; then
+		fail "r1 never pruned $CRAFT_RPT_FOLLOW_SRC off the shared tree at r2, the step proves nothing"
+	else
+		ok "r1 prunes $CRAFT_RPT_FOLLOW_SRC off its shared tree at r2, the control"
+
+		m_sg=$(log_lines r2)
+		craft "$CRAFT_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535
+		if wait_for 70 r1_sent_r2 "$m_sg" JOIN "$CRAFT_SG_ON_RPT_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+			ok "and sends r2 a Join(S,G) for it once a neighbour joins (S,G)"
+		else
+			fail "r1 sent r2 no Join(S,G) for $CRAFT_RPT_FOLLOW_SRC in 70s after a neighbour joined it, sec. 4.5.5 sends one"
+		fi
+		craft "$CRAFT_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC"
+	fi
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" -w -r "$RP_ADDR"
+
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),
 	# sec. 4.6.3, and for the RP itself the route to RP(G) is its own
@@ -7556,7 +7605,10 @@ check_crafted() {
 	# a metric of 1: r2 has to win, and before the fix lost.  The control
 	# is an Assert at r2's own metric, 0 and 0, which r2 has to lose, on
 	# the address, 10.0.12.9 being above 10.0.12.2: the comparison is
-	# made, and it is not the Assert that is ignored.
+	# made, and it is not the Assert that is ignored.  The Hello is sent
+	# again rather than relied on: the steps before this one outlast its
+	# holdtime.
+	craft_on r2 "$SUPP_ADDR" hello -H 105
 	if ! wait_for 30 has_neighbor r2 "$SUPP_ADDR"; then
 		fail "r2 has no neighbour at $SUPP_ADDR on its link to r1, the step cannot be put"
 	elif ! craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_RP_ASSERT_GROUP" -w \
@@ -8840,6 +8892,22 @@ check_fuzz() {
 # step 7b?
 r1_supp_assert_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)" = "$1" ]
+}
+
+# Did r2 log, since line $1, an entry of a Join/Prune from r1 on their link
+# of kind $2 (JOIN or PRUNE) for group $3 and source $4, the entry's kind
+# being $5: "(S,G,rpt)", "(*,G)", or "" for an (S,G) one?
+r1_sent_r2() {
+	${SUDO} tail -n +$(($1 + 1)) "$WORKDIR/r2.log" 2>/dev/null | \
+		awk -v r1="$CRAFT_R1_LINK12_ADDR" -v k="$2" -v g="$3" -v s="$4" -v kind="$5" '
+		index($0, "Received PIM " k " from " r1 " to group " g " for source " s " on ") {
+			tail = substr($0, index($0, " on ") + 4)
+			n = split(tail, w, " ")
+			got = (n > 1) ? w[2] : ""
+			if (got == kind) { found = 1; exit }
+		}
+		END { exit !found }
+		'
 }
 
 r1_wc_win_state() {

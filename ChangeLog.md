@@ -18,6 +18,11 @@ issue of this repository is written out in full.
   route to the source changed to another router on the same link.  RFC
   7761 sec. 4.5.5 keeps them with the winner while the Assert holds.  Step
   7k of `crafted`.
+- A router that had pruned a source off the shared tree for one
+  downstream neighbour never joined that source for another neighbour
+  that asked for it with a Join(S,G), where the source and the RP were
+  reached through the same interface: the second neighbour received
+  nothing.  RFC 7761 sec. 4.5.5.  Step 7l of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

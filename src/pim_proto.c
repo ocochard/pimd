@@ -3400,10 +3400,20 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    send_pim_join(mrt->upstream, mrt, MRTF_SG, PIM_JOIN_PRUNE_HOLDTIME);
 		}
 
-		/* Note that we must create (S,G) without the RPbit set.
-		 * If we already had such entry, change_interfaces() will
-		 * reset the RPbit propertly.
-		 */
+		/* A Join(S,G) makes JoinDesired(S,G) true, sec. 4.5.5, so an
+		 * entry on the shared tree -- MRTF_RP, the (S,G,rpt) state a
+		 * neighbour's Prune made -- moves to the source tree.
+		 * change_interfaces() below does that on a change of
+		 * interface; where S and the RP are reached through the same
+		 * one it did nothing, the entry stayed on the shared tree and
+		 * join_or_prune() never answered Join for it, so the router
+		 * pruned S off the shared tree and never joined it.  The
+		 * (S,G,rpt) state on the entry's interfaces stays. */
+		if ((mrt->flags & MRTF_RP) && mrt->incoming == mrt->source->incoming) {
+		    mrt->flags &= ~MRTF_RP;
+		    mrt->upstream = assert_rpf_prime(mrt, mrt->source->upstream);
+		    jp_timer_fire(mrt);
+		}
 		change_interfaces(mrt,
 				  mrt->source->incoming,
 				  mrt->joined_oifs,
