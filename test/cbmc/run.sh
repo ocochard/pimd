@@ -293,7 +293,9 @@ mutant decide-worse-winner-clears  "$h" "$s" proof_decide       0 1 '/only the c
 mutant decide-sg-follows-rpt-upstream "$h" "$s" proof_decide    0 1 's/if (!v->wc)$/if (0)/'
 mutant decide-sg-loser-takes-rpt   "$h" "$s" proof_decide       0 1 's/if (v->wc ? !rptbit : rptbit != 0)/if (v->wc \&\& !rptbit)/'
 mutant decide-preferred-winner-dropped "$h" "$s" proof_decide   0 1 's/(!v->wc || rptbit))/0)/'
-mutant decide-wc-leaves-noinfo-bare "$h" "$s" proof_decide      0 1 's/if (v->wc \&\& !rptbit \&\& !winner)/if (0)/'
+mutant decide-wc-leaves-noinfo-bare "$h" "$s" proof_decide      0 1 's/^	if (v->wc \&\& !rptbit)$/	if (0)/'
+mutant decide-wc-winner-takes-sg   "$h" "$s" proof_decide       0 1 's/^	if (v->wc \&\& !rptbit)$/	if (v->wc \&\& !rptbit \&\& !winner)/'
+mutant decide-sg-winner-takes-rpt  "$h" "$s" proof_decide       0 1 's/^	if (!v->wc \&\& rptbit)$/	if (!v->wc \&\& rptbit \&\& !winner)/'
 mutant decide-sg-no-sptbit-asserts "$h" "$s" proof_decide       0 1 's/if (!v->wc \&\& rptbit \&\& !v->spt \&\& !winner)/if (0)/'
 mutant decide-untracked-loses      "$h" "$s" proof_decide       0 1 's/if (!v->tracking)/if (0)/'
 proof  decide-order                "$h" "$s" proof_order        0 1

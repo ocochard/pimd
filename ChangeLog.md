@@ -78,6 +78,12 @@ issue of this repository is written out in full.
   took the source's tree as its own only once the source's data reached
   it, where RFC 7761 sec. 4.6.1 has that happen on the election itself.
   Step 7h of `crafted`.
+- A router that had won the Assert election for a group on a LAN gave the
+  whole group up to an Assert about a single source, such as the first
+  hop router of a source on that LAN sends, and stopped forwarding every
+  other source of the group there.  RFC 7761 sec. 4.6.2 has the (*,G)
+  winner act on (*,G) Asserts alone.  Step 7i of `crafted`; it also made
+  step 13 of `shared-lan` fail on Linux two runs in five.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

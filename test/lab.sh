@@ -1834,6 +1834,9 @@ CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
 # off its shared tree, which gives r1 an (S,G) entry on the shared tree
 CRAFT_RPT_FOLLOW_GROUP=${CRAFT_RPT_FOLLOW_GROUP:-225.1.4.8}
 CRAFT_RPT_FOLLOW_SRC=${CRAFT_RPT_FOLLOW_SRC:-10.0.3.77}
+# crafted step 7i: a group ED1 joins at r1 and asserts for, with the same
+# source pruned off its shared tree on ED1's LAN
+CRAFT_WC_WIN_GROUP=${CRAFT_WC_WIN_GROUP:-225.1.4.10}
 # crafted step 7g: a group r2 forwards that source onto its link to r1 for
 CRAFT_SG_RPT_GROUP=${CRAFT_SG_RPT_GROUP:-225.1.4.9}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
@@ -7447,6 +7450,70 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
+	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
+	# set -- the prose says so where the table does not -- so the Winner
+	# state takes an Assert without the bit as nothing, whoever sent it
+	# and however good its metric: it is about one source, and the (S,G)
+	# machine's.  assert_decide() (src/pim_assert.c) took the (*,G) machine
+	# to Loser on it whenever the (S,G) machine passed it on, and an (S,G)
+	# Assert for one source took the whole group off the interface.  That
+	# is shared-lan step 13 failing on Linux two runs in five, the first
+	# hop router of the receivers' own replies asserting for them on the
+	# LAN.  Here: ED1 joins a group at r1 and prunes a source behind r3 off
+	# its shared tree, so that the only (S,G) r1 holds for it is on the
+	# shared tree and off the LAN, and the (S,G) machine has nothing to do
+	# with an Assert for it there; a second ED1 address takes r1's (*,G)
+	# to Winner with an inferior Assert with the bit, the control, then
+	# asserts for the source without the bit at a metric of 1.  r1 has to
+	# stay the Winner.  The second control is a better Assert with the bit,
+	# which has to take r1 to Loser.
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR or $CRAFT_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_WC_WIN_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_WC_WIN_GROUP" ||
+	     ! craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_WC_WIN_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535 ||
+	     ! wait_for 30 sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_WC_WIN_GROUP"; then
+		fail "r1 holds no (*,$CRAFT_WC_WIN_GROUP) with $CRAFT_RPT_FOLLOW_SRC pruned off ${EP}101b, the step cannot be put"
+	else
+		craft "$CRAFT_ADDR" assert -g "$CRAFT_WC_WIN_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" \
+			-R -P 200 -C 200
+		if ! wait_for 10 r1_wc_win_is W; then
+			fail "r1's (*,$CRAFT_WC_WIN_GROUP) did not win ${EP}101b against an inferior Assert with the RPT bit, the step proves nothing"
+		else
+			ok "r1's (*,$CRAFT_WC_WIN_GROUP) wins ${EP}101b against an inferior Assert with the RPT bit, the control"
+
+			craft "$CRAFT_ADDR" assert -g "$CRAFT_WC_WIN_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" \
+				-P 1 -C 1
+			sleep 3
+			if r1_wc_win_is W; then
+				ok "and stays the Winner on a better Assert without the bit, an (S,G) one"
+			else
+				fail "r1's (*,$CRAFT_WC_WIN_GROUP) reads '$(r1_wc_win_state)' after an (S,G) Assert for one source, sec. 4.6.2 has no (*,G) event for it"
+			fi
+
+			# r1 reaches the RP over a connected link, metric 0: the
+			# control asserts at that and wins on its address,
+			# 10.0.1.99 above 10.0.1.1
+			craft "$CRAFT_ADDR" assert -g "$CRAFT_WC_WIN_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" \
+				-R -P 0 -C 0
+			if wait_for 10 r1_wc_win_is L; then
+				ok "and loses to a better Assert with the bit, the second control"
+			else
+				fail "r1's (*,$CRAFT_WC_WIN_GROUP) reads '$(r1_wc_win_state)' after a better (*,G) Assert, it should be the Loser"
+			fi
+			craft "$CRAFT_ADDR" assert -g "$CRAFT_WC_WIN_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" \
+				-R -P 2147483647 -C 4294967295
+		fi
+
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_WC_WIN_GROUP" -w -r "$RP_ADDR"
+	fi
+
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),
 	# sec. 4.6.3, and for the RP itself the route to RP(G) is its own
@@ -8706,6 +8773,12 @@ check_fuzz() {
 r1_supp_assert_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$SUPP_GROUP" || true)" = "$1" ]
 }
+
+r1_wc_win_state() {
+	assert_char_of r1 "${EP}101b" ANY "$CRAFT_WC_WIN_GROUP" || true
+}
+
+r1_wc_win_is() { [ "$(r1_wc_win_state)" = "$1" ]; }
 
 r1_rpt_follow_wc_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$CRAFT_RPT_FOLLOW_GROUP" || true)" = "$1" ]

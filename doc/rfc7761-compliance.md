@@ -429,7 +429,9 @@ the committed `upcall-wrongvif.bin` seed: `FUZZ_DEBUG=1
 test/fuzz_igmp_replay test/fuzz/corpus/igmp/upcall-wrongvif.bin` logs "Assert
 Winner on fz1 for (10.0.1.9,239.1.1.1)" before the fix and "for
 (*,239.1.1.1)" after it.  The second half has no reproduction at all, the
-state it acted on being the first half's.*
+state it acted on being the first half's.*  *The second half was wrong and is
+undone by M29: sec. 4.6.1's prose makes the Winner state's "Receive Preferred
+Assert" "an (S,G) assert", RPT bit clear, which the table cell leaves out.*
 
 M22 was the RP's own metric.  Sec. 4.6.3 has rpt_assert_metric(G,I) from
 MRIB.pref(RP(G)) and MRIB.metric(RP(G)), and for the RP itself the route to
@@ -541,6 +543,26 @@ toward the RP, until some did.  The glue of `assert_machine()` asks it on the
 transition now.  *Test: `crafted` step 7h in `test/lab.sh`, inside 7d: r2's
 (S,G), joined downstream, has to carry SPTbit once it has lost on its RPF
 interface, with no data in the scenario (it did not before the fix).*
+
+M29 was the same reading of the tables without their prose, in the Winner
+state of both machines, and it was `proof_decide`'s spec that read them so.
+Sec. 4.6.2 calls every event of the (\*,G) machine "a (\*,G) assert", RPT bit
+set; sec. 4.6.1 calls the (S,G) Winner's preferred Assert "an (S,G) assert",
+bit clear.  `assert_decide()` took the (\*,G) Winner to Loser on any preferred
+Assert the (S,G) machine passed on, so an (S,G) Assert for one source took the
+whole group off the interface -- which is how `shared-lan` step 13 of
+`test/lab.sh` failed on Linux two runs in five, on every commit back to M20 at
+least and in CI on two pushes: R3 had won the LAN, and the first hop router of
+the receivers' own replies asserted for them there, R3's only (S,G) for that
+source being on the shared tree and off the LAN.  It was a race, whether that
+Assert came inside the step's window.  The spec in `test/cbmc/assert.c` follows
+the prose now, two mutants restore the old Winner states, and the code took
+the (S,G) half of the fix too, undoing M20's second half.  *Test: `crafted`
+step 7i in `test/lab.sh`: r1's (\*,G), Winner on ED1's LAN, has to stay Winner
+on a better Assert without the bit for a source pruned off its shared tree
+there (it went Loser before the fix), and a better Assert with the bit, the
+control, has to take it to Loser; and `shared-lan` step 13 on Linux, eight runs
+in a row.*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

@@ -217,10 +217,19 @@ static int spec_decide(const struct assert_view *v)
 	/* "Receive Preferred Assert ... an assert that has a better metric
 	 * than our own": the winner is this router, and its metric is the
 	 * one it would assert with now, not the one it stored at A1, which
-	 * the routing table may have moved since */
+	 * the routing table may have moved since.  The prose names the kind
+	 * of Assert each event is, which the tables leave out: every event
+	 * of the (*,G) machine is "a (*,G) assert", RPT bit set, and the
+	 * (S,G) machine's preferred one is "an (S,G) assert", bit clear,
+	 * while its inferior one is "an (S,G) assert or (*,G) assert
+	 * mentioning S", either. */
 	if (winner) {
+	    if (v->wc && !rpt)
+		return ASSERT_ACT_NONE;
 	    if (inferior)
 		return ASSERT_ACT_SEND;				/* A3 */
+	    if (!v->wc && rpt)
+		return ASSERT_ACT_NONE;
 	    return ASSERT_ACT_LOSE;				/* A2 */
 	}
 

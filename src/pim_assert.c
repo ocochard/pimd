@@ -126,10 +126,15 @@ int assert_decide(const struct assert_view *v)
 	    return ASSERT_ACT_NONE;
 	}
 
-	/* NoInfo, or "I am Assert Winner".  The (*,G) machine leaves NoInfo
-	 * only on an Assert with the RPT bit set, sec. 4.6.2; one without it
-	 * is the (S,G) machine's.  The Winner state answers either, A3. */
-	if (v->wc && !rptbit && !winner)
+	/* NoInfo, or "I am Assert Winner".  Every event the (*,G) machine has
+	 * in either state is "a (*,G) assert", sec. 4.6.2's prose, one with
+	 * the RPT bit set; one without it is the (S,G) machine's, whether or
+	 * not that machine has anything to do with it.  The Winner state used
+	 * to answer either, and an (S,G) Assert for one source -- from the
+	 * first hop router of a source on the LAN, say -- then took the whole
+	 * group off the interface: shared-lan step 13 of test/lab.sh, on
+	 * Linux, two runs in five. */
+	if (v->wc && !rptbit)
 	    return ASSERT_ACT_NONE;
 
 	/* And the (S,G) machine leaves NoInfo on an Assert with the bit only
@@ -142,11 +147,12 @@ int assert_decide(const struct assert_view *v)
 			    v->pref, v->metric, v->src))
 	    return ASSERT_ACT_SEND;
 
-	/* We lost, and sec. 4.6.1 has no NoInfo-to-Loser transition for an
-	 * Assert with the RPT bit: that one is the (*,G) machine's.  The
-	 * Winner state has one, "Receive Preferred Assert", whatever the bit.
-	 */
-	if (!v->wc && rptbit && !winner)
+	/* We lost, and the (S,G) machine has no transition for an Assert with
+	 * the RPT bit: NoInfo leaves for Loser only on one without it, A6,
+	 * and the Winner state only on "Receive Preferred Assert", which the
+	 * prose of sec. 4.6.1 makes "an (S,G) assert".  Its table cell does
+	 * not say so, and M20 read the cell. */
+	if (!v->wc && rptbit)
 	    return ASSERT_ACT_NONE;
 
 	/* A6, or A2 from the Winner state */
