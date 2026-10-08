@@ -4358,13 +4358,15 @@ static srcentry_t *assert_mrib_src(mrtentry_t *mrt)
  */
 pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib)
 {
-    struct assert_state *as;
+    struct assert_state *as = assert_state(mrt, mrt->incoming);
     pim_nbr_entry_t *nbr;
 
-    if (!assert_lost_on(mrt, mrt->incoming))
+    /* assert_lost_on(), spelled out on the slot itself so that the slot
+     * is fetched once and tested where it is used: asked twice, Coverity
+     * could not see that the first answer rules a NULL out (CID 1680417) */
+    if (!as || as->winner == INADDR_ANY_N || as->is_winner)
 	return mrib;
 
-    as  = assert_state(mrt, mrt->incoming);
     nbr = find_pim_nbr_on_vif(mrt->incoming, as->winner);
 
     return nbr ? nbr : mrib;
