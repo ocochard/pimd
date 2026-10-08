@@ -608,6 +608,34 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 
 
 /*
+ * joins(*,G) has lost @vifi, so it leaves inherited_olist(S,G), RFC 7761
+ * sec. 4.1.6, for every source of the group not held there by a Join(S,G).
+ * A new (S,G) is seeded with a copy of the (*,G)'s joined set, VOIF_COPY,
+ * which calc_oifs() adds to the (*,G)'s live one; this is the counterpart
+ * of that seeding, as the loop at the end of delete_leaf() is for an IGMP
+ * membership.  Without it a source with an (S,G) entry went on flowing out
+ * of a pruned interface until the copied Expiry Timer ran out, forever
+ * under a holdtime of 0xffff.  The caller's change_interfaces() on the
+ * (*,G) then pushes every (S,G)'s new set down.
+ */
+void wc_join_gone(mrtentry_t *wc, vifi_t vifi)
+{
+    mrtentry_t *srcs;
+
+    if (!(wc->flags & MRTF_WC) || !wc->group || vifi == PIMREG_VIF)
+	return;
+
+    for (srcs = wc->group->mrtlink; srcs; srcs = srcs->grpnext) {
+	if (PIMD_VIFM_ISSET(vifi, srcs->sg_joined_oifs))
+	    continue;
+
+	PIMD_VIFM_CLR(vifi, srcs->joined_oifs);
+	PIMD_VIFM_CLR(vifi, srcs->prune_pending_oifs);
+	RESET_TIMER(srcs->vif_timers[vifi]);
+    }
+}
+
+/*
  * "Prune-Pending Timer Expires" of RFC 7761 sec. 4.5.1 and sec. 4.5.2: the
  * downstream state machine goes to NoInfo and the router owes the LAN a
  * PruneEcho.  The interface is one pimd has just dropped from the outgoing
@@ -657,6 +685,8 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
 	if (!(mrt->flags & MRTF_WC))
 	    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
+	else
+	    wc_join_gone(mrt, vifi);
 	RESET_TIMER(mrt->vif_timers[vifi]);
 	expire_prune_pending(mrt, vifi);
 	change = TRUE;
@@ -2731,6 +2761,7 @@ static void age_routes_pass(void)
 
 			    IF_TIMEOUT(mrt_grp->vif_timers[vifi]) {
 				PIMD_VIFM_CLR(vifi, mrt_grp->joined_oifs);
+				wc_join_gone(mrt_grp, vifi);
 				expire_prune_pending(mrt_grp, vifi);
 				change_flag = TRUE;
 			    }

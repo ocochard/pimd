@@ -619,6 +619,24 @@ prunes the source off r1's shared tree, the control being r1's Prune(S,G,rpt)
 on r2's log, and the other joins (S,G), after which r2's log has to show r1's
 Join(S,G) for it within 70 s (none came before the fix).*
 
+M33 is D1 of the same map.  inherited_olist(S,G), sec. 4.1.6, is built from
+joins(\*,G) as it is now, so a Prune(\*,G) that takes an interface off the
+(\*,G) takes it off every source of the group not held there by a Join(S,G).
+A new (S,G) entry is seeded with a copy of the (\*,G)'s joined set, VOIF_COPY
+in `src/mrt.h`, and `calc_oifs()` adds that copy to the (\*,G)'s live set;
+`delete_leaf()` clears the copy of an IGMP membership that leaves, and nothing
+cleared the copy of a Join.  A source with an (S,G) entry went on flowing out
+of a pruned interface until the copied Expiry Timer ran out, up to the
+holdtime, and for good under a holdtime of 0xffff.  `wc_join_gone()`
+(`src/route.c`) is the counterpart now, at the three places a (\*,G) loses a
+joined interface: the Prune-Pending Timer, the Expiry Timer, and a Prune(\*,G)
+with no Prune-Pending time.  *Test: `crafted` step 7m in `test/lab.sh`, the
+one step with a link of its own, since it needs a router with three
+interfaces: ED1 joins (\*,G) on the LAN and (S,G) for a source behind r3
+across the new link, the (S,G) forwarding onto the LAN being the control;
+after ED1's Prune(\*,G) on the LAN it has to stop there (it went on before the
+fix) and keep the link its Join(S,G) holds.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

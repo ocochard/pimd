@@ -3191,6 +3191,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			prune_pending(mrt, vifi);
 			IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
 			    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
+			    wc_join_gone(mrt, vifi);
 			    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
 			    change_interfaces(mrt,
 					      mrt->incoming,

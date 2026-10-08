@@ -1843,6 +1843,12 @@ CRAFT_WC_WIN_GROUP=${CRAFT_WC_WIN_GROUP:-225.1.4.10}
 # crafted step 7l: a group ED1 prunes a source behind r3 off the shared tree
 # from one address and joins that source from the other
 CRAFT_SG_ON_RPT_GROUP=${CRAFT_SG_ON_RPT_GROUP:-225.1.4.11}
+# crafted step 7m: a third interface for r1, a link to ED1 built for the
+# step, and the group joined (*,G) on the LAN and (S,G) across it
+CRAFT_D1_GROUP=${CRAFT_D1_GROUP:-225.1.4.12}
+CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
+CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
+CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
 # crafted step 7g: a group r2 forwards that source onto its link to r1 for
 CRAFT_SG_RPT_GROUP=${CRAFT_SG_RPT_GROUP:-225.1.4.9}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
@@ -7590,6 +7596,66 @@ check_crafted() {
 			-s "$CRAFT_RPT_FOLLOW_SRC"
 	fi
 	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" -w -r "$RP_ADDR"
+
+	print "7m. A Prune(*,G) takes the interface off the sources with an (S,G) too"
+	# inherited_olist(S,G) is built from joins(*,G) as it is now, sec.
+	# 4.1.6, so a Prune(*,G) that takes an interface off the (*,G) takes
+	# it off every source of the group not held there by a Join(S,G).  A
+	# new (S,G) entry is seeded with a copy of the (*,G)'s joined set,
+	# VOIF_COPY in src/mrt.h, and calc_oifs() (src/route.c) adds that copy
+	# to the (*,G)'s live set; nothing cleared it when the (*,G) lost an
+	# interface -- delete_leaf() does for an IGMP membership, nothing did
+	# for a Join -- so a source with an (S,G) entry went on flowing out of
+	# a pruned interface until the copied Expiry Timer ran out, forever
+	# under a holdtime of 0xffff.  Map finding D1.  It needs three
+	# interfaces on one router, so r1 gets a link to ED1 for the step: ED1
+	# joins (*,G) on the LAN, and (S,G) for a source behind r3 across the
+	# new link, which makes the (S,G) with the LAN in its copy; the
+	# control is that (S,G) forwarding onto the LAN.  ED1 then prunes
+	# (*,G) on the LAN, and the (S,G) has to stop there and only there.
+	craft "$SRC_ADDR" hello -H 105
+	if ! box_link_add "$CRAFT_D1_EP" r1 ed1 ||
+	   ! box_addr_add r1 "${CRAFT_D1_EP}a" "$CRAFT_D1_R1_ADDR/24" ||
+	   ! box_addr_add ed1 "${CRAFT_D1_EP}b" "$CRAFT_D1_ED1_ADDR/24" ||
+	   ! box_if_up r1 "${CRAFT_D1_EP}a" || ! box_if_up ed1 "${CRAFT_D1_EP}b" ||
+	   ! wait_for 60 iface_is r1 "${CRAFT_D1_EP}a" "$CRAFT_D1_R1_ADDR"; then
+		fail "r1 never took the link built for this step, see $WORKDIR/r1.log"
+	else
+		craft "$CRAFT_D1_ED1_ADDR" hello -H 105
+		if ! wait_for 30 has_neighbor r1 "$CRAFT_D1_ED1_ADDR" ||
+		   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+			fail "r1 has no neighbour at $CRAFT_D1_ED1_ADDR or $SRC_ADDR, the step cannot be put"
+		elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_D1_GROUP" -w \
+				-r "$RP_ADDR" -H 65535 ||
+		     ! wait_for 30 has_mrt r1 "$CRAFT_D1_GROUP" ||
+		     ! craft "$CRAFT_D1_ED1_ADDR" join -u "$CRAFT_D1_R1_ADDR" -g "$CRAFT_D1_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535 ||
+		     ! wait_for 30 route_oif_has r1 "${CRAFT_D1_EP}a" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
+			fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) forwarding onto ${CRAFT_D1_EP}a, the step cannot be put"
+		elif ! route_oif_has r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
+			fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) does not forward onto ${EP}101b from the (*,G), the step proves nothing"
+		else
+			ok "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) forwards onto ${EP}101b, joined (*,G) there, the control"
+
+			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_D1_GROUP" -w -r "$RP_ADDR"
+			if wait_for 15 route_oif_gone r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
+				ok "and stops there once the (*,G) is pruned off it"
+			else
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) still forwards onto ${EP}101b 15s after the Prune(*,G), from a copy of the (*,G)'s joins"
+			fi
+			if route_oif_has r1 "${CRAFT_D1_EP}a" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
+				ok "and keeps ${CRAFT_D1_EP}a, where its own Join(S,G) holds it"
+			else
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) lost ${CRAFT_D1_EP}a with the Prune(*,G), where a Join(S,G) holds it"
+			fi
+		fi
+		craft "$CRAFT_D1_ED1_ADDR" prune -u "$CRAFT_D1_R1_ADDR" -g "$CRAFT_D1_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC"
+		craft "$CRAFT_D1_ED1_ADDR" hello -H 0
+	fi
+	# The link is the step's own, and a later run in this slot would find
+	# it there and fail to build it again
+	box_if_destroy r1 "${CRAFT_D1_EP}a" >/dev/null 2>&1 || true
 
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),

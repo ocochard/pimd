@@ -23,6 +23,10 @@ issue of this repository is written out in full.
   that asked for it with a Join(S,G), where the source and the RP were
   reached through the same interface: the second neighbour received
   nothing.  RFC 7761 sec. 4.5.5.  Step 7l of `crafted`.
+- A Prune(*,G) took the interface off the shared tree but not off the
+  sources of the group that had an (S,G) entry, which went on flowing onto
+  the pruned link until a copied timer ran out -- for good under a
+  holdtime of 0xffff.  RFC 7761 sec. 4.1.6.  Step 7m of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
