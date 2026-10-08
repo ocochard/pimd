@@ -2348,13 +2348,23 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 {
     int src_action = PIM_ACTION_NOTHING, src_action_rp = PIM_ACTION_NOTHING;
     int dont_calc_action = FALSE;
+    pim_nbr_entry_t *rpt_upstream;
     mrtentry_t *mrt_wide;
     int action;
 
     mrt_wide = mrt_srcs->group->grp_route;
 
+    /* Where the Join(*,G) of @grp_action went: RPF'(*,G), the Assert
+     * winner on the RPF interface while there is one.  The Prune(S,G,rpt)
+     * that has to ride with it, RFC 7761 sec. 4.5.6, is asked about the
+     * same neighbor; asked about the routing table's, as it was, an entry
+     * following RPF'(*,G) answered nothing once an Assert had moved it,
+     * and the winner got a bare Join(*,G) every period -- sec. 4.5.3's
+     * signal to forward the pruned source again. */
+    rpt_upstream = mrt_wide ? mrt_wide->upstream : rp->upstream;
+
     if (grp_action != PIM_ACTION_NOTHING) {
-	src_action_rp    = join_or_prune(mrt_srcs, rp->upstream);
+	src_action_rp    = join_or_prune(mrt_srcs, rpt_upstream);
 	src_action       = src_action_rp;
 	dont_calc_action = TRUE;
 
@@ -2370,7 +2380,7 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
     if (mrt_srcs->jp_expires > now)
 	return;
 
-    if ((dont_calc_action != TRUE) || (rp->upstream != mrt_srcs->upstream))
+    if ((dont_calc_action != TRUE) || (rpt_upstream != mrt_srcs->upstream))
 	src_action = join_or_prune(mrt_srcs, mrt_srcs->upstream);
 
     action = jp_timer_action(mrt_srcs, src_action);

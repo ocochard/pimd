@@ -3,6 +3,17 @@ This pimd is maintained at <https://github.com/ocochard/pimd>, a fork of
 below, `#93` say, is an issue of the tracker pimd was forked from; an
 issue of this repository is written out in full.
 
+[UNRELEASED][]
+--------------
+
+### Fixes
+- A router that had lost the Assert election toward the RP sent its
+  periodic Join(*,G) to the winner without the Prune(S,G,rpt) of the
+  sources it had pruned off the shared tree, so the winner put them back
+  on the LAN every period until the separate Prune arrived.  RFC 7761
+  sec. 4.5.6 has them in one message.  Step 7j of `crafted` in
+  `test/lab.sh`.
+
 [v3.3.0][] - 2026-10-08
 -----------------------
 

@@ -1834,6 +1834,9 @@ CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
 # off its shared tree, which gives r1 an (S,G) entry on the shared tree
 CRAFT_RPT_FOLLOW_GROUP=${CRAFT_RPT_FOLLOW_GROUP:-225.1.4.8}
 CRAFT_RPT_FOLLOW_SRC=${CRAFT_RPT_FOLLOW_SRC:-10.0.3.77}
+# crafted step 7j: r1's address on its link to r2, as r2 logs the
+# Join/Prune messages r1 sends there
+CRAFT_R1_LINK12_ADDR=${CRAFT_R1_LINK12_ADDR:-10.0.12.1}
 # crafted step 7i: a group ED1 joins at r1 and asserts for, with the same
 # source pruned off its shared tree on ED1's LAN
 CRAFT_WC_WIN_GROUP=${CRAFT_WC_WIN_GROUP:-225.1.4.10}
@@ -7408,6 +7411,7 @@ check_crafted() {
 		# r2 forwards the group's shared tree onto the same link and, being
 		# the RP, asserts at metric 0 (step 7c): the neighbour asserts at
 		# that metric and wins on its address, 10.0.12.9 above 10.0.12.2.
+		m_jp=$(log_lines r2)
 		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPT_FOLLOW_GROUP" \
 			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 0 -C 0
 		if wait_for 10 r1_rpt_follow_wc_is L; then
@@ -7436,6 +7440,25 @@ check_crafted() {
 				fail "($e,$CRAFT_RPT_FOLLOW_GROUP) went back to $(route_upstream r1 "$e" "$CRAFT_RPT_FOLLOW_GROUP") at a check of the unicast routes, the winner $SUPP_ADDR still holding the link"
 			fi
 		done
+
+		# 7j.  Sec. 4.5.6: "When a router is going to send a Join(*,G),
+		# it should use its own state ... to include a Prune(S,G,rpt)"
+		# in the same message, since sec. 4.5.3 reads a Join(*,G) without
+		# it as the prune dropped.  The pass that batches the two asked
+		# each (S,G) about the routing table's neighbour while the
+		# Join(*,G) went to RPF'(*,G); once an Assert had moved RPF'(*,G)
+		# the two parted, and the winner, given a bare Join(*,G) every
+		# period, put the pruned source back on the LAN until the
+		# separate Prune and its Prune-Pending time.  r2 logs every
+		# message r1 sends on the link, whoever it is addressed to; the
+		# first of them carrying the Join(*,G) after the Assert -- r1's
+		# triggered Join to the winner -- has to carry the Prune too.
+		jp=$(r1_first_wc_jp_since "$m_jp")
+		case $jp in
+		both)	ok "r1's Join(*,$CRAFT_RPT_FOLLOW_GROUP) to the winner carries the Prune($CRAFT_RPT_FOLLOW_SRC,G,rpt) in the same message (7j)" ;;
+		join)	fail "r1 sent its Join(*,$CRAFT_RPT_FOLLOW_GROUP) to the winner without the Prune($CRAFT_RPT_FOLLOW_SRC,G,rpt), sec. 4.5.6 has them in one message (7j)" ;;
+		*)	fail "r2 saw no Join(*,$CRAFT_RPT_FOLLOW_GROUP) from r1 after the Assert, the step proves nothing (7j)" ;;
+		esac
 
 		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_RPT_FOLLOW_GROUP" \
 			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 2147483647 -C 4294967295
@@ -8779,6 +8802,23 @@ r1_wc_win_state() {
 }
 
 r1_wc_win_is() { [ "$(r1_wc_win_state)" = "$1" ]; }
+
+# Of the Join/Prune messages r2 logged from r1 since line $1, the first
+# one that carries r1's Join(*,G) for step 7f's group: "both" when it
+# carries the Prune(S,G,rpt) of 7f's source too, "join" when not, nothing
+# when there is no such message.  A message is the entry lines following
+# one "Received PIM JOIN/PRUNE from" line.
+r1_first_wc_jp_since() {
+	${SUDO} tail -n +$(($1 + 1)) "$WORKDIR/r2.log" 2>/dev/null | \
+		awk -v r1="$CRAFT_R1_LINK12_ADDR" -v g="$CRAFT_RPT_FOLLOW_GROUP" -v s="$CRAFT_RPT_FOLLOW_SRC" '
+		function done() { if (wc && !said) { said = 1; print (rpt ? "both" : "join"); exit } }
+		/Received PIM JOIN\/PRUNE from / { done(); mine = ($0 ~ ("from " r1 " ")); wc = rpt = 0; next }
+		!mine { next }
+		$0 ~ ("Received PIM JOIN from " r1 " to group " g " for source .* \\(\\*,G\\)") { wc = 1 }
+		$0 ~ ("Received PIM PRUNE from " r1 " to group " g " for source " s " .*\\(S,G,rpt\\)") { rpt = 1 }
+		END { done() }
+		'
+}
 
 r1_rpt_follow_wc_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$CRAFT_RPT_FOLLOW_GROUP" || true)" = "$1" ]

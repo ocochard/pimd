@@ -564,6 +564,25 @@ there (it went Loser before the fix), and a better Assert with the bit, the
 control, has to take it to Loser; and `shared-lan` step 13 on Linux, eight runs
 in a row.*
 
+M30 was a side effect of M25, found by the map of the sec. 4.5 machines that
+followed the Assert work (`aidd_docs/plans/jp-machines-map.md`, U2).  Sec.
+4.5.6 has a router that "is going to send a Join(*,G)" include in the same
+message the Prune(S,G,rpt) of every source it holds pruned off the shared
+tree, since sec. 4.5.3 reads a Join(\*,G) without it as the prune dropped.
+`jp_timer_expire_sg()` (`src/route.c`) decides which (S,G) entries ride with
+the Join(\*,G) by asking each about the RP's routing table neighbour, while
+the Join(\*,G) goes to RPF'(\*,G).  The two are the same until an Assert moves
+RPF'(\*,G), and since M25 an (S,G) on the shared tree follows it there, so the
+question answered nothing: the winner got a bare Join(\*,G) every period and
+put the pruned source back on the LAN until the entry's own timer sent the
+Prune and its Prune-Pending time ran out.  A source-tree (S,G) whose
+Prune(S,G,rpt) goes toward the RP, clause 1 of sec. 4.5.6, was left out the
+same way.  It asks about RPF'(\*,G) now.  *Test: `crafted` step 7j in
+`test/lab.sh`, inside 7f: r2 logs every Join/Prune r1 sends on their link,
+and the first carrying r1's Join(\*,G) after the Assert -- its triggered Join
+to the winner -- has to carry the Prune(S,G,rpt) too (it went alone before
+the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
