@@ -54,6 +54,25 @@ style to FULL [KNF][] several times, but decided against changing
 to keep with the intent of the original authors.
 
 
+Tests and Proofs
+----------------
+
+Run what the change can break, on the systems it can break on:
+
+- Forwarding, the protocol machines, the kernel glue: `test/lab.sh run
+  all`, on FreeBSD and on Linux -- some steps only run on one of them.
+- How a message is encoded or decoded: `test/frr-interop.sh` too, and
+  `test/freebsd-interop.sh` if you have a vEOS image, since only a second
+  implementation can tell a wrong encoding from a matching pair of wrong
+  ones.
+- A wire decoder, `src/pim_encode.c`, `src/pim_assert.c` or `src/text.c`:
+  `test/cbmc/run.sh`, which proves them with CBMC and has to stay
+  green.  A new decoder or encoder comes with its proof, and with mutants
+  -- copies of the code broken on purpose -- that the proof rejects.
+
+[test/README.md](../test/README.md) says what each suite needs and covers.
+
+
 Commit Messages
 ---------------
 

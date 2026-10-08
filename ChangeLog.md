@@ -89,6 +89,15 @@ issue of this repository is written out in full.
 -----------------------
 
 ### Changes
+- Parts of pimd are proven with the bounded model checker CBMC, by
+  `test/cbmc/run.sh` and a job of the Linux CI workflow on every push:
+  the wire decoders, the configuration and `pimctl` text parsers and the
+  message writer read and write nothing out of bounds; the Assert
+  election follows the metric order and the state machine tables of RFC
+  7761 sec. 4.6; and every message pimd builds decodes back to what was
+  encoded.  Each proof is checked by broken variants of its code that it
+  has to reject.  The Assert proofs found or confirmed five of the Assert
+  fixes below, M23 to M27 of `doc/rfc7761-compliance.md`.
 - `pimctl show mrt detail` prints each entry's upstream neighbor, the one
   its Joins go to: the routing table's, or the winner of an Assert on the
   incoming interface (RFC 7761 sec. 4.1.6).

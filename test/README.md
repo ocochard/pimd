@@ -39,6 +39,7 @@ Table of Contents
 * [The FRR interoperability lab](#the-frr-interoperability-lab)
 * [The Arista vEOS interoperability lab](#the-arista-veos-interoperability-lab)
 * [What any of it reaches](#what-any-of-it-reaches)
+* [The CBMC proofs](#the-cbmc-proofs)
 * [Which suite sees what](#which-suite-sees-what)
 
 
@@ -547,6 +548,41 @@ host does not compile.  `.github/workflows/coverage.yml` is the weekly
 run of both.
 
 
+The CBMC proofs
+---------------
+
+    sh test/cbmc/run.sh            # pkg install cbmc, or apt-get install cbmc
+
+Everything else here tries inputs; `cbmc(1)` proves a property for every
+input up to a bound, over the code as it is compiled.  Each harness in
+`test/cbmc/` takes one file of `src/` that reads no global, and the
+files were split so that there would be such files:
+
+| Harness       | Proves                                                    |
+|---------------|-----------------------------------------------------------|
+| `autorp.c`, `pim.c`, `igmp.c` | the decoders of `src/autorp_parse.c`, `src/pim_parse.c` and `src/igmp_parse.c` read nothing past the message and keep their contracts, for every message |
+| `text.c`      | the word and line walkers of `src/text.c` that `pimd.conf` and `pimctl` are read with |
+| `encode.c`    | the bounded writer of `src/pim_encode.c`: no put writes past its buffer, and a message that did not fit says so |
+| `assert.c`    | `src/pim_assert.c`: the metric comparison is the order of RFC 7761 sec. 4.6.3, and `assert_decide()` and the ordering of the two machines are what sec. 4.6.1 and 4.6.2 describe -- the tables, and the prose that says which kind of Assert each event is |
+| `roundtrip.c` | every message `src/pim_encode.c` writes is read back by `src/pim_parse.c` field for field |
+
+`run.sh` runs each proof, then each harness against mutants of its
+code -- a bound removed, an offset moved, a fix undone -- and fails
+unless every mutant fails, printing the property that caught it: a proof
+that a broken decoder also passes proves nothing.  Proofs run in
+parallel, each under a memory cap (`CBMC_MEM`, 4096 MB) with the job
+count bounded by memory, because a proof whose input is too free can
+take a whole host's memory before it answers.  It takes a few minutes;
+it exits 77 without `cbmc`; the `CBMC proofs` job of
+`.github/workflows/ci-linux.yml` runs it on every push.
+
+What it does not cover is everything that keeps state -- the routing
+table, the timers, the kernel interface -- and what a round trip cannot
+see: a field the encoder and decoder get wrong the same way, which is
+what the interoperability labs are for.  `AGENTS.md` has the design of
+each proof and the measurements behind the bounds.
+
+
 Which suite sees what
 ---------------------
 
@@ -570,7 +606,9 @@ Bootstrap, Candidate-RP-Advertisement, Join/Prune, Register, Assert — wants
 an interoperability lab too, because those are the only ones that can tell
 a wrong encoding from a matching pair of wrong ones: the FRR lab first,
 being minutes and a package, and the vEOS lab for anything the two open
-source daemons might have read the same way.
+source daemons might have read the same way.  A change to a file a CBMC
+harness proves -- a decoder, `src/pim_encode.c`, `src/pim_assert.c`,
+`src/text.c` -- wants `test/cbmc/run.sh` as well.
 
 [arista-dl]: https://www.arista.com/en/support/software-download
 [185]: https://github.com/troglobit/pimd/issues/185

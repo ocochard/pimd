@@ -472,7 +472,31 @@ report` prints the table and the lines nothing reached.
 what the number cannot see; the [Coverage][] workflow runs both halves
 weekly.
 
-**[test/README.md][tests]** describes all three: what every scenario
+Parts of the code are proven rather than tested, with the bounded model
+checker [CBMC][].  The labs and the fuzzers try inputs; a proof covers
+every input of the sizes it is bounded to:
+
+- **The wire decoders** -- Auto-RP, every PIM message, the IGMP report
+  and mtrace -- the text parsers of `pimd.conf` and `pimctl`, and the
+  bounded writer every message is built through, read and write nothing
+  out of bounds.
+- **The Assert election** follows [RFC 7761][] sec. 4.6: the metric
+  comparison is the order of sec. 4.6.3, and the transitions of both
+  Assert state machines and the order they run in are the ones sec.
+  4.6.1 and 4.6.2 describe, tables and prose, under the approximations
+  pimd makes of them, which the [compliance][] list records.
+- **Every message pimd builds** decodes back, field for field, to what
+  was encoded -- all but a data Register, which is a copy of a packet.
+
+The rest of the daemon -- the routing table, the timers, the kernel
+interface -- is not proven, and is what the labs are for.  Each proof
+comes with deliberately broken versions of the code it covers, every one
+of which has to fail, so that a proof that proves nothing cannot pass
+unnoticed.  `test/cbmc/run.sh` runs them all, in a few minutes, and exits
+77 where `cbmc` is not installed; the [Linux][] workflow runs it on every
+push.
+
+**[test/README.md][tests]** describes all of it: what every scenario
 covers, what only it covers, and what each suite requires.  See also the
 header of each script for its topology, and the [Linux][] and
 [FreeBSD][] workflows for how CI runs them.
@@ -528,5 +552,6 @@ Stanford Junior University.
 [CodeQL Status]:   https://github.com/ocochard/pimd/actions/workflows/codeql.yml/badge.svg
 [coverage]:        https://github.com/ocochard/pimd/blob/master/doc/README-coverage.md
 [Coverage]:        https://github.com/ocochard/pimd/actions/workflows/coverage.yml
+[CBMC]:            https://www.cprover.org/cbmc/
 [Coverity Scan]:   https://scan.coverity.com/projects/33273
 [Coverity Status]: https://scan.coverity.com/projects/33273/badge.svg
