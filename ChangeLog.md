@@ -64,6 +64,11 @@ issue of this repository is written out in full.
   across the periodic check of the unicast routes, which put them back on
   the routing table's neighbour.  RFC 7761 sec. 4.1.6 and 4.6.2, step 7f of
   `crafted`.
+- A router that had lost the Assert election for a source it forwards off
+  the shared tree renewed that loss on every Assert its winner sent for the
+  group, including those that no longer named the source's own tree, and
+  so went on holding the interface out long after the winner had stopped
+  asserting for the source.  RFC 7761 sec. 4.6.1, step 7g of `crafted`.
 
 [v3.2.0][] - 2026-10-01
 -----------------------

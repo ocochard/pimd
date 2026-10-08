@@ -31,6 +31,9 @@
  *   proof_cancel      infinite_assert_metric(), the AssertCancel of sec.
  *                     4.6.4, never beats a metric that is not infinite,
  *                     and pimd.h spells it as sec. 4.6.3 does
+ *   proof_decide      assert_decide() against the tables of sec. 4.6.1 and
+ *                     4.6.2, below, one assertion per machine, interface
+ *                     and state so that each disagreement is reported apart
  *
  * What an order cannot say is the RFC's other two words: "an assert is
  * never considered acceptable if its metric is infinite", and "never
@@ -173,8 +176,10 @@ static int spec_decide(const struct assert_view *v)
     int noinfo = v->winner == 0;
     int winner = !noinfo && v->is_winner;
     int from_winner = !noinfo && v->src == v->winner;
+    /* "better than the current winner's", strictly: the winner sending its
+     * own metric again is not preferred over itself */
     int preferred = !noinfo &&
-	!compare_metrics(v->win_pref, v->win_metric, v->winner, v->pref, v->metric, v->src);
+	compare_metrics(v->pref, v->metric, v->src, v->win_pref, v->win_metric, v->winner);
     int acceptable, inferior, could;
 
     /* Deviation, M21: pimd answers no Assert at all on an interface its

@@ -282,6 +282,21 @@ mutant metric-higher-route-wins    "$h" "$s" proof_spec         0 1 's/if (remot
 mutant metric-preference-ignored   "$h" "$s" proof_cancel       0 1 's/if (remote_preference [<>] local_preference)/if (0)/'
 mutant metric-rpt-bit-ignored      "$h" "$s" proof_spec         0 1 's/if (remote_preference \([<>]\) local_preference)/if ((remote_preference \& 0x7fffffff) \1 (local_preference \& 0x7fffffff))/'
 
+# The decision itself, against the two tables of sec. 4.6.1 and 4.6.2 as
+# test/cbmc/assert.c writes them out: one proof, every cell of every
+# machine.  The controls undo the fixes it found -- M23, M24, M25 and the
+# (S,G) Loser's RPT-bit refresh, both halves -- and take out the gates the
+# tables have.
+proof  decide-spec                 "$h" "$s" proof_decide       0 1
+mutant decide-cancel-dropped-upstream "$h" "$s" proof_decide    0 1 's/if (loser \&\& v->src == v->winner \&\&/if (0 \&\& v->src == v->winner \&\&/'
+mutant decide-worse-winner-clears  "$h" "$s" proof_decide       0 1 '/only the cancel above ends the state/,/return ASSERT_ACT_STORE;/s/return ASSERT_ACT_STORE;/return ASSERT_ACT_CLEAR;/'
+mutant decide-sg-follows-rpt-upstream "$h" "$s" proof_decide    0 1 's/if (!v->wc)$/if (0)/'
+mutant decide-sg-loser-takes-rpt   "$h" "$s" proof_decide       0 1 's/if (v->wc ? !rptbit : rptbit != 0)/if (v->wc \&\& !rptbit)/'
+mutant decide-preferred-winner-dropped "$h" "$s" proof_decide   0 1 's/(!v->wc || rptbit))/0)/'
+mutant decide-wc-leaves-noinfo-bare "$h" "$s" proof_decide      0 1 's/if (v->wc \&\& !rptbit \&\& !winner)/if (0)/'
+mutant decide-sg-no-sptbit-asserts "$h" "$s" proof_decide       0 1 's/if (!v->wc \&\& rptbit \&\& !v->spt \&\& !winner)/if (0)/'
+mutant decide-untracked-loses      "$h" "$s" proof_decide       0 1 's/if (!v->tracking)/if (0)/'
+
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"
 

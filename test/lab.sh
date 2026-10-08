@@ -1834,6 +1834,8 @@ CRAFT_RPT_ASSERT_SRC=${CRAFT_RPT_ASSERT_SRC:-10.0.1.77}
 # off its shared tree, which gives r1 an (S,G) entry on the shared tree
 CRAFT_RPT_FOLLOW_GROUP=${CRAFT_RPT_FOLLOW_GROUP:-225.1.4.8}
 CRAFT_RPT_FOLLOW_SRC=${CRAFT_RPT_FOLLOW_SRC:-10.0.3.77}
+# crafted step 7g: a group r2 forwards that source onto its link to r1 for
+CRAFT_SG_RPT_GROUP=${CRAFT_SG_RPT_GROUP:-225.1.4.9}
 # crafted step 7c: a group whose shared tree the RP is made to forward onto
 # its link to R1, the only state behind it being the step's own Join
 CRAFT_RP_ASSERT_GROUP=${CRAFT_RP_ASSERT_GROUP:-225.1.4.6}
@@ -7565,6 +7567,55 @@ check_crafted() {
 	fi
 	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
 	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
+
+	print "7g. An (S,G) Loser does not take an Assert with the RPT bit from its winner"
+	# Sec. 4.6.1's Loser state stays and stores the winner's Assert again
+	# only with the RPT bit clear, "Receive Acceptable Assert with RPTbit
+	# clear from Current Winner"; one with the bit is no (S,G) event, and
+	# sec. 4.6.2 keeps the (*,G) machine out of it while the (S,G) one is
+	# not in NoInfo.  So the state runs out unless the winner asserts for
+	# the source again, Assert_Time.  assert_decide() (src/pim_assert.c)
+	# refreshed it on either, and stored the shared tree's metric as the
+	# winner's.  test/cbmc/assert.c's proof_decide found it.  Reachable
+	# only where the (S,G) entry has no SPTbit, so that its own metric
+	# carries the bit too and loses to the Assert; r2's (S,G) for a source
+	# behind r3, joined by step 5's neighbour on its link to r1, is one.
+	# That neighbour wins it without the bit, the control, and fifteen
+	# seconds later asserts with it at r2's own metric as the RP, winning
+	# on the address: r2's Assert Timer must not have gone back to 180.
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r2 "$SUPP_ADDR"; then
+		fail "r2 has no neighbour at $SUPP_ADDR, the step cannot be put"
+	elif ! craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_SG_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535 ||
+	     ! wait_for 30 has_sg r2 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_GROUP"; then
+		fail "r2 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_GROUP) from the Join, the step cannot be put"
+	elif route_has_flag r2 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_GROUP" SPT; then
+		fail "r2's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_GROUP) has SPTbit, its metric beats any Assert with the RPT bit and the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SG_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+		if ! wait_for 10 r2_sg_rpt_assert_is L; then
+			fail "r2 never lost ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_GROUP) on ${EPU}112b, the step proves nothing"
+		else
+			ok "r2 loses ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_GROUP) on ${EPU}112b without the RPT bit, the control"
+			sleep 15
+			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SG_RPT_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 0 -C 0
+			sleep 2
+			at=$(assert_timer_of r2 "${EPU}112b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_GROUP")
+			if [ "$(r2_sg_rpt_state)" = L ] && [ -n "$at" ] && [ "$at" -le 170 ]; then
+				ok "and keeps its Assert Timer, ${at}s, past the winner's Assert with the bit"
+			else
+				fail "r2 reads '$(r2_sg_rpt_state)' with an Assert Timer of '${at}'s after the winner's Assert with the RPT bit, sec. 4.6.1 has no (S,G) event for it"
+			fi
+		fi
+
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SG_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 2147483647 -C 4294967295
+		craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_SG_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC"
+	fi
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
@@ -8660,6 +8711,33 @@ route_upstream_is() { [ "$(route_upstream "$1" "$2" "$3")" = "$4" ]; }
 
 r2_rp_assert_is() {
 	[ "$(assert_char_of r2 "${EPU}112b" ANY "$CRAFT_RP_ASSERT_GROUP" || true)" = "$1" ]
+}
+
+r2_sg_rpt_state() {
+	assert_char_of r2 "${EPU}112b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_GROUP" || true
+}
+
+r2_sg_rpt_assert_is() { [ "$(r2_sg_rpt_state)" = "$1" ]; }
+
+# Whether ($2,$3) on router $1 carries the flag $4 "show mrt" prints
+route_has_flag() {
+	pimctl "$1" show mrt 2>/dev/null | awk -v s="$2" -v g="$3" -v f="$4" '
+		$1 == s && $2 == g { for (i = 4; i <= NF; i++) if ($i == f) found = 1 }
+		END { exit !found }
+	'
+}
+
+# The Assert Timer, in seconds, of ($3,$4) on interface $2 of router $1,
+# off the ASSERT TIMERS line of "show mrt detail": the two words of its
+# heading, then one per vif in vif order
+assert_timer_of() {
+	idx=$(vif_index "$1" "$2")
+	[ -n "$idx" ] || return 1
+
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$3" -v g="$4" -v n="$((idx + 3))" '
+		$1 == s && $2 == g { want = 1; next }
+		want && $1 == "ASSERT" { print $n; exit }
+	'
 }
 
 r2_rpf_cancel_assert_is() {

@@ -351,7 +351,8 @@ dropped for it (step 7d, M23, found by `proof_decide` of `test/cbmc/assert.c`), 
 Loser on the winner's Assert at a worse metric, which is still acceptable there (step 7e, M24), an
 Assert with the RPT bit taken by the (\*,G) machine rather than an (S,G) on the shared tree, and
 RPF'(\*,G) and RPF'(S,G,rpt) both following its winner across a check of the unicast routes, read off
-the "Upstream" line of `pimctl show mrt detail` (step 7f, M25),
+the "Upstream" line of `pimctl show mrt detail` (step 7f, M25), and an (S,G) Loser whose Assert Timer
+the winner's RPT-bit Assert no longer renews (step 7g, M26),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
 that does not carry it, and R1's own override Join(S,G,rpt) upstream, and `rpt-prune-limit` capping the (S,G) state those
@@ -766,9 +767,14 @@ proof of a decision rather than of memory safety: `compare_metrics()`, which eve
 comes down to, moved into `src/pim_assert.c` for it, proven equal to the order RFC 7761 sec. 4.6.3
 writes down -- a spec built from the fields and the address bytes rather than from the code's
 32-bit compares and `ntohl()` -- strict, transitive, and never letting the AssertCancel's infinite
-metric beat a real one (`aidd_docs/plans/assert-proofs.md`, step 1).  Two infinite metrics compare
-by address there, so the RFC's "never acceptable if infinite" is the state machines' to honour, which
-is step 2 of that plan. It exits 77 without `cbmc`; the `CBMC proofs` job of
+metric beat a real one (`aidd_docs/plans/assert-proofs.md`, step 1).  `proof_decide` beside them is
+the transitions themselves: `assert_decide()`, the decision half of `assert_machine()` that reads a
+`struct assert_view` rather than the routing table, against the two tables of sec. 4.6.1 and 4.6.2
+written out as a spec, one assertion per machine, interface and state.  It found M23 to M26 of
+`doc/rfc7761-compliance.md` -- each then reproduced by a `crafted` step before it was fixed -- and
+holds now for every cell, under the modelling choices its comments name: pimd's AssertTrackingDesired
+approximation gates every transition (M21), and "preferred" in the Winner state is against the metric
+the router would assert with now. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

@@ -499,6 +499,21 @@ send their Joins to the winner, still after a check of the unicast routes
 once the winner cancels.  The (\*,G) half of the `age_routes()` reset is not
 reached: the step's Join holds its interface timers at 65535.*
 
+M26 is the last of the four `proof_decide` reported.  Sec. 4.6.1's Loser state
+stays and stores the current winner's Assert again on "Receive Acceptable
+Assert with RPTbit clear from Current Winner"; one with the bit is no (S,G)
+event, unless it is preferred over the winner's own last one, and sec. 4.6.2
+keeps the (\*,G) machine out while the (S,G) machine is not in NoInfo.
+`assert_decide()` took it either way, refreshing the Assert Timer and storing
+the shared tree's metric as the winner's, so a winner that had moved to the
+shared tree held an (S,G) Loser state it no longer asserted for.  Reachable
+only where the (S,G) entry has no SPTbit, its own metric then carrying the bit
+too.  With it `proof_decide` holds for every cell, and `test/cbmc/run.sh` runs
+it with eight mutants, the four fixes undone among them.  *Test: `crafted` step
+7g in `test/lab.sh`: r2's (S,G) on its link to r1, without SPTbit, loses there
+without the bit, the control, and its Assert Timer has to run on past the
+winner's Assert with the bit (it went back to 178 before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

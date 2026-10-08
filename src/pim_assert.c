@@ -97,8 +97,18 @@ int assert_decide(const struct assert_view *v)
 
 		/* Acceptable Assert from the current winner: A2, it keeps
 		 * the interface.  The (*,G) machine takes it only with the
-		 * RPT bit set. */
-		if (v->wc && !rptbit)
+		 * RPT bit set, and the (S,G) machine only with it clear:
+		 * sec. 4.6.1 has no event for the other, which used to
+		 * refresh the Assert Timer and store the shared tree's
+		 * metric as the winner's.  A preferred Assert is A2 from
+		 * anyone, the winner included, and for the (S,G) machine
+		 * whatever the bit. */
+		if (compare_metrics(v->pref, v->metric, v->src,
+				    v->win_pref, v->win_metric, v->winner) &&
+		    (!v->wc || rptbit))
+		    return ASSERT_ACT_STORE;
+
+		if (v->wc ? !rptbit : rptbit != 0)
 		    return ASSERT_ACT_NONE;
 
 		return ASSERT_ACT_STORE;
