@@ -51,6 +51,12 @@ issue of this repository is written out in full.
   with a holdtime above 210 seconds between two refreshes.  The entry now
   lives as long as any Join(S,G) or Prune(S,G,rpt) on it does.  RFC 7761
   sec. 4.9.5.  Step 13c of `crafted`.
+- A Prune(*,G) overheard on the upstream link was overridden only when it
+  named this router's RP, so a neighbour whose group-to-RP mapping had
+  moved first -- whose Prune names the new RP -- had the group pruned off
+  the link under the routers still wanting it, until the upstream's own
+  PruneEcho brought the override, too late.  RFC 7761 sec. 4.5.4.  Step 7p
+  of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

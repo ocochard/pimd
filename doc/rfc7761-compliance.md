@@ -711,6 +711,18 @@ for 15 s with `msend`, the join on that link being the control, and pauses;
 225 s on, r1 has to hold the join still (the entry was gone before the
 fix).*
 
+M39 is U5 of the same map.  Sec. 4.5.4's "See Prune(\*,G) to RPF'(\*,G)"
+takes the Join Timer down to t_override whatever RP the Prune names, as it
+has to: sec. 4.5.1 has the upstream act on a Prune(\*,G) "even if the RP in
+the message does not match RP(G)", and a neighbour whose group-to-RP mapping
+moved first names its new RP in the Prune to its old upstream (M36).  pimd
+overrode only a Prune naming its own RP, so the upstream pruned the link
+under it; the override came only with the upstream's PruneEcho, which names
+the upstream's RP, after the J/P_Override_Interval.  *Test: `crafted` step
+7p in `test/lab.sh`: the trials of step 7, which is the control, with the
+overheard Prune naming another RP; r1's Join has to reach r2 inside its
+3000 ms (3.5 to 5.3 s before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

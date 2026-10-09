@@ -2867,11 +2867,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		s_flags = esrc.flags;
 		MASKLEN_TO_MASK(esrc.masklen, s_mask);
 		if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
-		    /* (*,G) prune suppression */
-		    rpentry = rp_match(group);
-		    if (!rpentry || (rpentry->address != source))
-			continue;  /* No such RP or it is different. Ignore */
-
+		    /* (*,G) prune suppression.  "See Prune(*,G) to
+		     * RPF'(*,G)", RFC 7761 sec. 4.5.4, whatever RP it names:
+		     * the upstream acts on a Prune(*,G) "even if the RP in the
+		     * message does not match RP(G)", sec. 4.5.1, and a
+		     * neighbour whose group-to-RP mapping moved first names
+		     * its new RP in the Prune to the old upstream.  An override
+		     * kept to Prunes naming our RP let that one prune the LAN
+		     * under us. */
 		    mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
 		    if (!mrt)
 			continue;

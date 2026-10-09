@@ -1933,6 +1933,8 @@ CRAFT_ASSERT_BETTER_METRIC=${CRAFT_ASSERT_BETTER_METRIC:-1}
 # t_suppressed, 66s, so one that does never runs out.  $SUPP_SHORT_WAIT is
 # the longest t_suppressed, 84s, left over from step 5, plus a tick.
 SUPP_ADDR=${SUPP_ADDR:-10.0.12.9}
+# crafted step 7p: an RP the overheard Prune names that is not r1's
+CRAFT_OTHER_RP=${CRAFT_OTHER_RP:-10.0.12.77}
 R1_UP_ADDR=${R1_UP_ADDR:-10.0.12.1}
 
 # rpt: the contested elections.  R1 takes the BSR with the higher priority
@@ -7319,6 +7321,37 @@ check_crafted() {
 			ok "trial $i: r1 overrode the Prune $((t1 - t0))ms after it, inside ${OVR_WINDOW}ms"
 		else
 			fail "trial $i: r1 overrode the Prune $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
+		fi
+		sleep 1
+	done
+
+	# The same Prune naming another RP.  Sec. 4.5.1 has the upstream act
+	# on a Prune(*,G) "even if the RP in the message does not match
+	# RP(G)", which is what a neighbour whose group-to-RP mapping moved
+	# first sends (M36), so "See Prune(*,G) to RPF'(*,G)" of sec. 4.5.4
+	# has no RP in it either.  pimd overrode only a Prune that named its
+	# own RP, and r2 pruned the LAN under it.  Map finding U5; step 7
+	# above is the control.
+	print "7p. A Prune overheard naming another RP is overridden all the same"
+	i=0
+	while [ "$i" -lt "$OVR_TRIALS" ]; do
+		i=$((i + 1))
+		m1=$(log_lines r1)
+		m2=$(log_lines r2)
+		craft_on r2 "$SUPP_ADDR" hello -H 105
+		craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$SUPP_GROUP" -w -r "$CRAFT_OTHER_RP"
+		if ! wait_for 10 log_since r2 "$m2" "Received PIM JOIN from $R1_UP_ADDR to group $SUPP_GROUP "; then
+			fail "trial $i: r1 sent no Join(*,$SUPP_GROUP) in 10s of hearing $SUPP_ADDR prune it naming RP $CRAFT_OTHER_RP"
+			continue
+		fi
+		t0=$(log_since r1 "$m1" "Received PIM PRUNE from $SUPP_ADDR to group $SUPP_GROUP " | log_msec | tail -1)
+		t1=$(log_since r2 "$m2" "Received PIM JOIN from $R1_UP_ADDR to group $SUPP_GROUP " | log_msec | head -1)
+		if [ -z "$t0" ]; then
+			fail "trial $i: r1 logged no Prune(*,$SUPP_GROUP) from $SUPP_ADDR, nothing to time the Join from"
+		elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
+			ok "trial $i: r1 overrode the Prune naming another RP $((t1 - t0))ms after it"
+		else
+			fail "trial $i: r1 overrode the Prune naming another RP $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
 		fi
 		sleep 1
 	done

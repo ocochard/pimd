@@ -339,7 +339,8 @@ lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two
 about what arrives (no shared tree for a group in the range, a Register for one answered
 rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents for it
 alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
-played by pimsend from R2's jail), the override Join to that router's Prune and the
+played by pimsend from R2's jail), the override Join to that router's Prune, whatever RP it names
+(step 7p, M39), and the
 triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
 several trials off the routers' logs), no PruneEcho where the Expiry Timer rather than the
 Prune-Pending Timer ends a Prune-Pending, on a LAN whose two crafted neighbours advertise a 20 s
