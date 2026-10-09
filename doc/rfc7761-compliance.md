@@ -739,6 +739,21 @@ holds the SPTbit 7h gave it and has seen no data: the downstream neighbour
 joins (\*,G) too and prunes (S,G), after which the bit has to clear (it
 was still set 15 s on before the fix).*
 
+M41 is U9 of the same map.  Sec. 4.1.6 makes RPF'(S,G,rpt) the (S,G) Assert
+winner on RPF_interface(RP(G)) while this router is the Loser there, and
+RPF'(\*,G) otherwise.  The check of the unicast routes in `age_routes()`
+(`src/route.c`) set an (S,G) on the shared tree back to RPF'(\*,G) every 20
+seconds whatever held the link, and sent the winner a Prune(S,G) on the way:
+sec. 4.5.7 has no message for a change of RPF'(S,G,rpt), and a Prune(S,G) is
+the source tree machine's, which at the winner put any Join(S,G) on that
+link into Prune-Pending.  The branch asks `assert_rpf_prime()` now, as the
+source tree branch beside it does since M31, and sends nothing.  *Test:
+`crafted` step 7r in `test/lab.sh`: 7f's setup with an Assert without the
+RPT bit, which is the (S,G) machine's; following the winner is the control,
+and after a check of the unicast routes the entry has to still follow it
+with no Prune(S,G) from r1 in r2's log (it went back, and pruned, before the
+fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

@@ -356,7 +356,8 @@ dropped for it (step 7d, M23, found by `proof_decide` of `test/cbmc/assert.c`), 
 Loser on the winner's Assert at a worse metric, which is still acceptable there (step 7e, M24), an
 Assert with the RPT bit taken by the (\*,G) machine rather than an (S,G) on the shared tree, and
 RPF'(\*,G) and RPF'(S,G,rpt) both following its winner across a check of the unicast routes, read off
-the "Upstream" line of `pimctl show mrt detail` (step 7f, M25) -- and the Prune(S,G,rpt) riding in
+the "Upstream" line of `pimctl show mrt detail` (step 7f, M25), RPF'(S,G,rpt) following an (S,G)
+Assert winner there as well across that check, with no Prune(S,G) sent it (step 7r, M41) -- and the Prune(S,G,rpt) riding in
 the same message as the Join(\*,G) to the winner, read off r2's log of r1's messages (step 7j, M30), and an (S,G) Loser whose Assert Timer
 the winner's RPT-bit Assert no longer renews (step 7g, M26), and SPTbit set on losing on the RPF
 interface while joined, with no data in the scenario, Actions A6 (step 7h, M28), and cleared again when

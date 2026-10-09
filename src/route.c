@@ -3030,27 +3030,27 @@ static void age_routes_pass(void)
 			    }
 			} else {
 			    /* (S,G)RPBit with iif toward RP.  Its upstream is
-			     * RPF'(S,G,rpt), which sec. 4.1.6 makes RPF'(*,G),
-			     * the (*,G) above being brought up to date first:
-			     * held to the RP's routing table neighbor, it went
-			     * back there on every check, the Assert winner the
-			     * (*,G) follows notwithstanding. */
-			    pim_nbr_entry_t *rpt_upstream = grp->grp_route
+			     * RPF'(S,G,rpt), which sec. 4.1.6 makes the (S,G)
+			     * Assert winner on RPF_interface(RP(G)) while we are
+			     * the Loser there and RPF'(*,G) otherwise, the (*,G)
+			     * above being brought up to date first: held to the
+			     * RP's routing table neighbor, it went back there on
+			     * every check, the Assert winner notwithstanding.
+			     * Nothing goes to the old one: sec. 4.5.7 has no
+			     * message for a change of RPF'(S,G,rpt), and the
+			     * Prune(S,G) sent here was another machine's. */
+			    pim_nbr_entry_t *rpt_base = grp->grp_route
 				? grp->grp_route->upstream : rp->upstream;
 
-			    if ((rpt_upstream != mrt_srcs->upstream) ||
+			    if ((assert_rpf_prime(mrt_srcs, rpt_base) != mrt_srcs->upstream) ||
 				(rp->incoming != mrt_srcs->incoming)) {
-				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
-
 				vifi_t old_iif = mrt_srcs->incoming;
 
 				update_src_iif = TRUE; /* XXX: a hack */
 				/* XXX: setup the iif now! */
 				mrt_srcs->incoming = rp->incoming;
-				mrt_srcs->upstream = rpt_upstream;
 				assert_iif_moved(mrt_srcs, old_iif);
-
-				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
+				mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, rpt_base);
 			    }
 			}
 		    }

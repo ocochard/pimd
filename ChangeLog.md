@@ -61,6 +61,11 @@ issue of this repository is written out in full.
   still forwarding the group off the shared tree kept the source's SPT
   bit, and went on pruning the source off the shared tree as well, until
   the entry expired.  RFC 7761 sec. 4.5.5.  Step 7q of `crafted`.
+- After losing an Assert for a source on its interface toward the RP, a
+  router holding that source off the shared tree went back to its routing
+  table's neighbour at the next check of the unicast routes, every 20
+  seconds, and sent the Assert winner a Prune for the source on the way.
+  RFC 7761 sec. 4.1.6 and 4.5.7.  Step 7r of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

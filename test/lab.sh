@@ -1852,6 +1852,9 @@ CRAFT_COMPOUND_GROUP=${CRAFT_COMPOUND_GROUP:-225.1.4.13}
 # crafted step 7o: a group whose (S,G,rpt) prune ED1 gives one holdtime and
 # then another
 CRAFT_RPT_ET_GROUP=${CRAFT_RPT_ET_GROUP:-225.1.4.14}
+# crafted step 7r: a group whose source r1 prunes off the shared tree and
+# loses an (S,G) Assert for on its link to the RP
+CRAFT_SG_RPT_LOSE_GROUP=${CRAFT_SG_RPT_LOSE_GROUP:-225.1.4.16}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7541,6 +7544,53 @@ check_crafted() {
 		done
 
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	print "7r. An (S,G) Assert lost toward the RP holds RPF'(S,G,rpt), and prunes nobody"
+	# Sec. 4.1.6: RPF'(S,G,rpt) is the (S,G) Assert winner on
+	# RPF_interface(RP(G)) while this router is the Loser there, and
+	# RPF'(*,G) otherwise.  The check of the unicast routes in
+	# age_routes() (src/route.c) set an (S,G) on the shared tree back to
+	# RPF'(*,G) every 20 seconds whatever held the link, and sent the
+	# winner a Prune(S,G) on the way -- sec. 4.5.7 sends nothing to an
+	# old RPF'(S,G,rpt), and a Prune(S,G) is another machine's message.
+	# Map finding U9.  7f's setup with an Assert without the RPT bit,
+	# which is the (S,G) machine's: following the winner is the control.
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SG_RPT_LOSE_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_SG_RPT_LOSE_GROUP" ||
+	     ! craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_RPT_LOSE_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535 ||
+	     ! wait_for 30 has_sg r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_LOSE_GROUP"; then
+		fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_LOSE_GROUP) from the Prune(S,G,rpt), the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SG_RPT_LOSE_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+		if ! wait_for 10 route_upstream_is r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_LOSE_GROUP" "$SUPP_ADDR"; then
+			fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_LOSE_GROUP) sends its Joins to $(route_upstream r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_LOSE_GROUP"), not to the winner $SUPP_ADDR: the step proves nothing"
+		else
+			ok "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_LOSE_GROUP) on the shared tree follows the (S,G) Assert winner, the control"
+			m_jp=$(log_lines r2)
+			sleep 26
+			if route_upstream_is r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_LOSE_GROUP" "$SUPP_ADDR"; then
+				ok "and still does after a check of the unicast routes"
+			else
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_LOSE_GROUP) went back to $(route_upstream r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SG_RPT_LOSE_GROUP") at a check of the unicast routes, the winner $SUPP_ADDR still holding the link"
+			fi
+			if r1_sent_r2 "$m_jp" PRUNE "$CRAFT_SG_RPT_LOSE_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+				fail "r1 sent a Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_RPT_LOSE_GROUP) without the RPT bit on its link to the RP, sec. 4.5.7 sends the old RPF'(S,G,rpt) nothing"
+			else
+				ok "and sends no Prune(S,G) on the link"
+			fi
+		fi
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SG_RPT_LOSE_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 2147483647 -C 4294967295
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_RPT_LOSE_GROUP" -w -r "$RP_ADDR"
 	fi
 
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
