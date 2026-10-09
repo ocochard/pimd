@@ -98,6 +98,7 @@ static void   process_wrong_iif   (struct igmpmsg *igmpctl);
 static void   process_whole_pkt   (char *buf, size_t len);
 static void   check_spt_threshold (mrtentry_t *mrt);
 static void   check_keepalive     (mrtentry_t *mrt, const struct sg_count *count);
+static uint16_t sg_state_wants   (const mrtentry_t *mrt, uint64_t now);
 static void   check_sptbit        (mrtentry_t *mrt, const struct sg_count *count);
 
 /*
@@ -3101,6 +3102,18 @@ static void age_routes_pass(void)
 		    /* routing entry, held as the (*,G) one above is */
 		    if (mrt_srcs->entry_timer != PIM_HELLO_HOLDTIME_FOREVER &&
 			TIMEOUT(mrt_srcs->entry_timer)) {
+			uint16_t want = sg_state_wants(mrt_srcs, now);
+
+			/* Downstream state outlives the Keepalive Timer:
+			 * the entry is not deleted with it in, and is
+			 * looked at again no later than one data timeout
+			 * on, a held Join being one a Prune can still end */
+			if (want) {
+			    SET_TIMER(mrt_srcs->entry_timer,
+				      want < PIM_DATA_TIMEOUT ? want : PIM_DATA_TIMEOUT);
+			    continue;
+			}
+
 			if (PIMD_VIFM_ISEMPTY(mrt_srcs->leaves)) {
 			    delete_mrtentry(mrt_srcs);
 			    continue;
@@ -3125,6 +3138,46 @@ static void age_routes_pass(void)
     } /* For all cand RPs */
 
     jp_flush();
+}
+
+/*
+ * How much longer the downstream state of (S,G) entry @mrt wants it, in
+ * seconds: a Join(S,G) whose Expiry Timer still runs, sec. 4.5.2, and a
+ * Prune(S,G,rpt) whose own has not run out, sec. 4.5.3.  The entry timer
+ * is also the Keepalive Timer, which data sets to PIM_DATA_TIMEOUT
+ * whatever a Join asked for, and RFC 7761 sec. 4.9.5 has the HoldTime be
+ * what a receiver "MUST keep the Join/Prune state alive" for.  0 is
+ * nothing, PIM_HELLO_HOLDTIME_FOREVER a HoldTime of 0xffff.
+ */
+static uint16_t sg_state_wants(const mrtentry_t *mrt, uint64_t now)
+{
+    uint32_t want = 0;
+    vifi_t vifi;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs)) {
+	    if (mrt->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
+		return PIM_HELLO_HOLDTIME_FOREVER;
+	    if (mrt->vif_timers[vifi] > want)
+		want = mrt->vif_timers[vifi];
+	}
+
+	if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) ||
+	    PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs)) {
+	    uint64_t left;
+
+	    if (!mrt->rpt_expires[vifi])
+		return PIM_HELLO_HOLDTIME_FOREVER;
+	    if (mrt->rpt_expires[vifi] <= now)
+		continue;
+	    left = (mrt->rpt_expires[vifi] - now + 999) / 1000;
+	    if (left > want)
+		want = left < PIM_HELLO_HOLDTIME_FOREVER ? (uint32_t)left
+							 : PIM_HELLO_HOLDTIME_FOREVER - 1;
+	}
+    }
+
+    return (uint16_t)want;
 }
 
 /*

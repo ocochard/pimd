@@ -2027,6 +2027,10 @@ CRAFT_OUT_GROUP=${CRAFT_OUT_GROUP:-225.1.3.3}
 CRAFT_REMAP_RANGE=${CRAFT_REMAP_RANGE:-225.1.7.0}
 CRAFT_REMAP_GROUP=${CRAFT_REMAP_GROUP:-225.1.7.1}
 CRAFT_R2_LINK12_ADDR=${CRAFT_R2_LINK12_ADDR:-10.0.12.2}	# r1's upstream toward the RP
+# crafted step 13c: a group ED1 sends to while a held Join(S,G) asks for it
+CRAFT_HELD_GROUP=${CRAFT_HELD_GROUP:-225.1.8.2}
+# how long the source then pauses: past PIM_DATA_TIMEOUT, 210 s, and a tick
+CRAFT_HELD_PAUSE=${CRAFT_HELD_PAUSE:-225}
 
 # A group in the default SSM range, and the RP config.c invents for such a
 # range: a link-local address that leads nowhere, which is what an SSM group
@@ -3944,6 +3948,11 @@ start() {
 	if [ "$SCENARIO" = scale ]; then
 		print "Building mflood (one packet per group) ..."
 		build_mflood
+	fi
+
+	if [ "$SCENARIO" = crafted ]; then
+		print "Building msend (a source that joins nothing) ..."
+		build_msend
 	fi
 
 	if [ "$SCENARIO" = keepalive ]; then
@@ -8363,6 +8372,50 @@ check_crafted() {
 		return 1
 	fi
 
+	# RFC 7761 sec. 4.9.5: the HoldTime is how long a receiver "MUST keep
+	# the Join/Prune state alive", and 0xffff holds it until canceled;
+	# the Keepalive Timer of sec. 4.1.2 keeps (S,G) state alive "in the
+	# absence of explicit (S,G) Joins" and is no reason to end them.
+	# pimd's data path set the entry timer to 210 s outright, under a Join
+	# that had raised it higher, and age_routes() (src/route.c) deleted
+	# the entry when it ran out, Join state and all: a source pausing
+	# past 210 s lost a held Join for good, the neighbour never sending it
+	# again.  Map finding D6.  A second router on r1's link to r2 holds a
+	# Join(S,G) for ED1 with 0xffff, ED1 streams to the group for a few
+	# seconds, the join on that link being the control, and pauses.  It
+	# sits ahead of step 14, whose Bootstrap makes ED1 the BSR: the RP set
+	# that leaves behind times out, and an (S,G) whose group loses its RP
+	# goes with it (D9 of the map), which would end the step for another
+	# reason.
+	print "13c. A held Join(S,G) outlives a pause of its source"
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24"
+	craft_on r2 "$SUPP_ADDR" hello -H 65535
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR"; then
+		fail "r1 never took $SUPP_ADDR as a neighbour on its link to r2, the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" join -u "$CRAFT_R1_LINK12" -g "$CRAFT_HELD_GROUP" \
+			-s "$SRC_ADDR" -H 65535
+		box_daemon ed1 "$WORKDIR/msend-held.pid" "$WORKDIR/msend-held.log" \
+			"$MSEND" "$SRC_ADDR" "$CRAFT_HELD_GROUP" 1
+		sleep 15
+		${SUDO} pkill -F "$WORKDIR/msend-held.pid" 2>/dev/null || true
+		if ! sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_HELD_GROUP"; then
+			fail "r1's ($SRC_ADDR,$CRAFT_HELD_GROUP) holds no Join on ${EP}112a after the stream, the step cannot be put"
+		else
+			ok "r1's ($SRC_ADDR,$CRAFT_HELD_GROUP) holds the Join on ${EP}112a while ED1 streams, the control"
+			dprint "letting the source pause ${CRAFT_HELD_PAUSE}s ..."
+			sleep "$CRAFT_HELD_PAUSE"
+			if sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_HELD_GROUP"; then
+				ok "and still holds it ${CRAFT_HELD_PAUSE}s into a pause of the source"
+			else
+				fail "r1 lost the held Join(S,G) on ${EP}112a ${CRAFT_HELD_PAUSE}s into a pause of the source"
+			fi
+		fi
+		craft_on r2 "$SUPP_ADDR" prune -u "$CRAFT_R1_LINK12" -g "$CRAFT_HELD_GROUP" -s "$SRC_ADDR"
+		craft_on r2 "$SUPP_ADDR" hello -H 0
+	fi
+	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
+
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
 	# it is the longer match, rather than leaving it on the RP it had.  The
@@ -8433,6 +8486,7 @@ check_crafted() {
 		fi
 	fi
 	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_REMAP_GROUP" -w -r "$RP_ADDR"
+
 
 	# The unicast branch is reachable only while this router knows no
 	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the

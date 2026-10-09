@@ -529,7 +529,7 @@ rule are `assert_rc()` and `assert_wc_may_run()` in `src/pim_assert.c` now,
 (S,G) machine and message, with three mutants -- the old, wider exception
 among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
 SPTbit, which the message needs to be inferior to, while `crafted` sends it:
-`crafted` forwards no data.*
+`crafted` forwards data in step 13c alone, with no Assert in it.*
 
 M28 was the last action of the (S,G) machine pimd did not take when the
 transition happened.  Actions A6, NoInfo to Loser, end "If (I is
@@ -690,6 +690,26 @@ Override Interval in a Hello LAN Prune Delay option (`pimsend -O`), so a
 Prune-Pending Timer outlasts a 6 s Expiry Timer; a held Join pruned the same
 way waits the whole interval for its PruneEcho, the control, and the 6 s
 Join pruned has to send none (it sent one 5 to 10 s in before the fix).*
+
+M38 is D6 of the same map.  Sec. 4.9.5 makes the HoldTime "the amount of
+time a receiver MUST keep the Join/Prune state alive", 0xffff holding it
+until canceled, and sec. 4.1.2 has the Keepalive Timer keep (S,G) state
+alive "in the absence of explicit (S,G) Joins" -- a reason to keep an entry,
+never one to end Join state.  pimd keeps both in the entry timer: data sets
+it to PIM_DATA_TIMEOUT, 210 s, outright (`check_keepalive()` and five other
+sites), under a Join that had raised it higher, and `age_routes()` deleted
+the entry when it ran out, its Join and (S,G,rpt) state with it.  A source
+pausing past 210 s lost a held Join(S,G) for good, the neighbour never
+sending it again, and one with a HoldTime above 210 s between two
+refreshes.  `sg_state_wants()` (`src/route.c`) answers how much longer the
+downstream state wants the entry, and an expiry with any left re-arms the
+timer -- capped at the data timeout, so that a held Join a Prune later ends
+does not hold the entry for ever.  *Test: `crafted` step 13c in
+`test/lab.sh`, the one step that forwards data: a second router on r1's
+link to r2 holds a Join(S,G) for ED1 with 0xffff, ED1 streams to the group
+for 15 s with `msend`, the join on that link being the control, and pauses;
+225 s on, r1 has to hold the join still (the entry was gone before the
+fix).*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

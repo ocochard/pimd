@@ -45,6 +45,12 @@ issue of this repository is written out in full.
   pending sent a PruneEcho onto the link, which only the end of the
   Prune-Pending wait itself calls for.  RFC 7761 sec. 4.5.1 and 4.5.2.
   Step 9b of `crafted`.
+- A source pausing for more than 210 seconds took its (S,G) entry with
+  it, together with the Joins downstream routers held for it: a Join sent
+  with a holdtime of 0xffff, never refreshed, was lost for good, and one
+  with a holdtime above 210 seconds between two refreshes.  The entry now
+  lives as long as any Join(S,G) or Prune(S,G,rpt) on it does.  RFC 7761
+  sec. 4.9.5.  Step 13c of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
