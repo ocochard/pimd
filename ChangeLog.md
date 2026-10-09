@@ -57,6 +57,10 @@ issue of this repository is written out in full.
   the link under the routers still wanting it, until the upstream's own
   PruneEcho brought the override, too late.  RFC 7761 sec. 4.5.4.  Step 7p
   of `crafted`.
+- A router that stopped wanting a source on its shortest path tree while
+  still forwarding the group off the shared tree kept the source's SPT
+  bit, and went on pruning the source off the shared tree as well, until
+  the entry expired.  RFC 7761 sec. 4.5.5.  Step 7q of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

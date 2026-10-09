@@ -7972,6 +7972,34 @@ check_crafted() {
 			box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R1_LINK12" >/dev/null
 			craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 0
 			box_addr_del r1 "${EP}112a" "$CRAFT_R2_ALT_NBR" 2>/dev/null
+
+			# 7q.  Sec. 4.5.5, Joined state, "JoinDesired(S,G) ->
+			# False": send Prune(S,G) and "set SPTbit(S,G) to FALSE".
+			# pimd cleared the bit only when the entry's outgoing list
+			# went empty, and JoinDesired(S,G) can go false with it
+			# still full off the (*,G): no Join(S,G) left and no
+			# Keepalive Timer, which an entry that got its SPTbit from
+			# Actions A6 and never saw data does not have.  With the bit
+			# kept, PruneDesired(S,G,rpt) stays true and the source is
+			# pruned off the shared tree as well as the source tree.
+			# Map finding U11.  The downstream neighbour joins (*,G) as
+			# well, so the list stays full, and then prunes (S,G).
+			if ! route_has_flag r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" SPT; then
+				fail "r2's ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) has no SPTbit left to clear, 7q cannot be put"
+			else
+				craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
+					-w -r "$RP_ADDR" -H 65535
+				sleep 2
+				craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
+					-s "$CRAFT_RPT_ASSERT_SRC"
+				if wait_for 15 route_lacks_flag r2 "$CRAFT_RPT_ASSERT_SRC" "$CRAFT_RPF_CANCEL_GROUP" SPT; then
+					ok "and clears SPTbit when the Join(S,G) goes, JoinDesired(S,G) false with the (*,G) still joined (7q)"
+				else
+					fail "r2's ($CRAFT_RPT_ASSERT_SRC,$CRAFT_RPF_CANCEL_GROUP) keeps SPTbit 15s after its last Join(S,G) went, JoinDesired(S,G) is false (7q)"
+				fi
+				craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
+					-w -r "$RP_ADDR"
+			fi
 		fi
 
 		craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_RPF_CANCEL_GROUP" \
@@ -9293,6 +9321,8 @@ r2_sg_rpt_state() {
 r2_sg_rpt_assert_is() { [ "$(r2_sg_rpt_state)" = "$1" ]; }
 
 # Whether ($2,$3) on router $1 carries the flag $4 "show mrt" prints
+route_lacks_flag() { has_sg "$1" "$2" "$3" && ! route_has_flag "$@"; }
+
 route_has_flag() {
 	pimctl "$1" show mrt 2>/dev/null | awk -v s="$2" -v g="$3" -v f="$4" '
 		$1 == s && $2 == g { for (i = 4; i <= NF; i++) if ($i == f) found = 1 }

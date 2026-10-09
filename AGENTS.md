@@ -359,7 +359,8 @@ RPF'(\*,G) and RPF'(S,G,rpt) both following its winner across a check of the uni
 the "Upstream" line of `pimctl show mrt detail` (step 7f, M25) -- and the Prune(S,G,rpt) riding in
 the same message as the Join(\*,G) to the winner, read off r2's log of r1's messages (step 7j, M30), and an (S,G) Loser whose Assert Timer
 the winner's RPT-bit Assert no longer renews (step 7g, M26), and SPTbit set on losing on the RPF
-interface while joined, with no data in the scenario, Actions A6 (step 7h, M28), the Joins kept with
+interface while joined, with no data in the scenario, Actions A6 (step 7h, M28), and cleared again when
+JoinDesired(S,G) goes false with the (\*,G) still forwarding (step 7q, M40), the Joins kept with
 the Assert winner when the route to the source moves to another router on the same link (step 7k,
 M31), a Join(S,G) taking an (S,G) off the shared tree where the source and the RP share r1's RPF
 interface, read off r2's log of r1's messages (step 7l, M32), a Prune(\*,G) taking the interface off

@@ -723,6 +723,22 @@ the upstream's RP, after the J/P_Override_Interval.  *Test: `crafted` step
 overheard Prune naming another RP; r1's Join has to reach r2 inside its
 3000 ms (3.5 to 5.3 s before the fix).*
 
+M40 is U11 of the same map.  Sec. 4.5.5, Joined state, "JoinDesired(S,G) ->
+False": send Prune(S,G) and "set SPTbit(S,G) to FALSE".  pimd cleared the
+bit only when the entry's outgoing list went empty (`change_interfaces()`,
+`src/route.c`), and JoinDesired(S,G) can go false with the list still full
+off the (\*,G): no Join(S,G) left and no Keepalive Timer, which an entry
+that got its SPTbit from Actions A6 of sec. 4.6.1 and never saw data does
+not have.  With the bit kept PruneDesired(S,G,rpt) stayed true, and the
+source was pruned off the shared tree as well as the source tree until the
+entry expired.  `change_interfaces()` asks `join_desired()` now, ahead of
+its "nothing to change" return, since the list need not change for this to,
+and fires the Join Timer so that the Prune(S,G) goes at once.  *Test:
+`crafted` step 7q in `test/lab.sh`, at the end of 7d, where r2's (S,G)
+holds the SPTbit 7h gave it and has seen no data: the downstream neighbour
+joins (\*,G) too and prunes (S,G), after which the bit has to clear (it
+was still set 15 s on before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

@@ -1506,6 +1506,18 @@ int change_interfaces(mrtentry_t *mrt,
 	    result = 0;
     }
 
+    /* JoinDesired(S,G) can go false with the list still full off the
+     * (*,G): no Join(S,G) left and no Keepalive Timer, which an entry that
+     * got its SPTbit from Actions A6 of sec. 4.6.1 and never saw data does
+     * not have.  Sec. 4.5.5 clears the bit all the same and prunes the
+     * source tree; with the bit kept, PruneDesired(S,G,rpt) stayed true
+     * and the source was pruned off the shared tree as well.  Asked before
+     * the list is compared, since it need not change for this to. */
+    if ((mrt->flags & MRTF_SPT) && !PIMD_VIFM_ISEMPTY(new_real_oifs) && !join_desired(mrt)) {
+	mrt->flags &= ~MRTF_SPT;
+	jp_timer_fire(mrt);
+    }
+
     if ((PIMD_VIFM_SAME(new_real_oifs, old_real_oifs))
 	&& (new_iif == old_iif)
 	&& !(flags & MFC_UPDATE_FORCE))
