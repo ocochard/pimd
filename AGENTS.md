@@ -341,7 +341,9 @@ rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents 
 alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
 played by pimsend from R2's jail), the override Join to that router's Prune and the
 triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
-several trials off the routers' logs),
+several trials off the routers' logs), no PruneEcho where the Expiry Timer rather than the
+Prune-Pending Timer ends a Prune-Pending, on a LAN whose two crafted neighbours advertise a 20 s
+Override Interval with `pimsend -O` so the order is certain (step 9b, M37),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1) and the old upstream of
 a group so moved pruned (step 14b, M36), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
@@ -804,9 +806,12 @@ Join/Prune counterpart of `proof_decide`, step 2 of `aidd_docs/plans/jp-machines
 `src/pim_jp.c` holds the downstream machines of RFC 7761 sec. 4.5.1 to 4.5.3 as a state and an
 event in and an action out -- `jp_ds_decide()` for the (\*,G) and (S,G) table, `rpt_ds_decide()`
 for the (S,G,rpt) one with its two transient states, `rpt_et_after()` for its Expiry Timer, where
-D3 (M35) lived -- proven against Figures 2 to 4 written out cell by cell; the (S,G,rpt) machine
-of `src/pim_proto.c` and `src/route.c` goes through it, read off and written back to the entry by
-`rpt_ds_state()` and `rpt_ds_apply()`. It exits 77 without `cbmc`; the `CBMC proofs` job of
+D3 (M35) lived -- proven against Figures 2 to 4 written out cell by cell; every site of the three
+machines in `src/pim_proto.c` and `src/route.c` goes through it, the state read off the entry and
+the action written back by `jp_ds_state()`/`jp_ds_apply()` and `rpt_ds_state()`/`rpt_ds_apply()`.
+An (S,G) entry's Join state is `sg_joined_oifs`, joins(S,G), and not `joined_oifs`, which also
+holds the copy of joins(\*,G) a new entry is seeded with.  Cutting the (\*,G) and (S,G) table out
+turned up M37, a PruneEcho on the Expiry Timer's expiry that the table does not have. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

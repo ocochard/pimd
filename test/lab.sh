@@ -1991,6 +1991,10 @@ PP_GROUP=${PP_GROUP:-225.1.5.5}
 PP_WINDOW=${PP_WINDOW:-3000}
 PP_EARLY=${PP_EARLY:-50}
 PP_LATE=${PP_LATE:-500}
+# crafted step 9b: the Override Interval two crafted neighbours advertise,
+# long enough that a short Expiry Timer runs out inside Prune-Pending
+ET_PP_GROUP=${ET_PP_GROUP:-225.1.4.15}
+ET_PP_OVERRIDE=${ET_PP_OVERRIDE:-20000}
 
 # crafted, the (S,G,rpt) steps, M1 of doc/rfc7761-compliance.md.  A group of
 # their own each, so no state an earlier step left decides an answer:
@@ -8026,6 +8030,51 @@ check_crafted() {
 			fi
 		done
 	fi
+	# Figure 2 of sec. 4.5.1: the Expiry Timer running out in Prune-Pending
+	# is NoInfo and nothing else -- the PruneEcho belongs to the
+	# Prune-Pending Timer's expiry alone, "when the router stops
+	# forwarding on an interface as a result of a prune".  age_routes()
+	# (src/route.c) sent one for either.  Map finding D5.  The two
+	# neighbours advertise a long Override Interval, sec. 4.3.3, so the
+	# Prune-Pending Timer outlasts an Expiry Timer of a few seconds; the
+	# control is a held Join pruned the same way, whose PruneEcho has to
+	# wait the whole interval.
+	print "9b. An Expiry Timer that runs out in Prune-Pending sends no PruneEcho"
+	craft "$SRC_ADDR" hello -H 105 -O "$ET_PP_OVERRIDE"
+	craft "$CRAFT_ADDR" hello -H 105 -O "$ET_PP_OVERRIDE"
+	sleep 2
+	m1=$(log_lines r1)
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$ET_PP_GROUP" -w -r "$RP_ADDR" -H 65535
+	if ! wait_for 10 log_since r1 "$m1" "Received PIM JOIN from $SRC_ADDR to group $ET_PP_GROUP "; then
+		fail "r1 logged no Join(*,$ET_PP_GROUP) from $SRC_ADDR, the step cannot be put"
+	else
+		sleep 1
+		m1=$(log_lines r1)
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$ET_PP_GROUP" -w -r "$RP_ADDR"
+		if ! wait_for $((ET_PP_OVERRIDE / 1000 + 10)) log_since r1 "$m1" "Send PruneEcho for ($RP_ADDR,$ET_PP_GROUP) on ${EP}101b"; then
+			fail "r1 sent no PruneEcho for a held Join pruned, the control"
+		else
+			t0=$(log_since r1 "$m1" "Received PIM PRUNE from $SRC_ADDR to group $ET_PP_GROUP " | log_msec | head -1)
+			t1=$(log_since r1 "$m1" "Send PruneEcho for ($RP_ADDR,$ET_PP_GROUP) on ${EP}101b" | log_msec | head -1)
+			if [ $((t1 - t0)) -lt $((ET_PP_OVERRIDE - PP_EARLY)) ]; then
+				fail "r1 let a held Join go $((t1 - t0))ms after the Prune, short of the ${ET_PP_OVERRIDE}ms advertised: the step proves nothing"
+			else
+				ok "r1 holds a pruned held Join $((t1 - t0))ms, the Override Interval advertised, the control"
+
+				m1=$(log_lines r1)
+				craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$ET_PP_GROUP" -w -r "$RP_ADDR" -H 6
+				craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$ET_PP_GROUP" -w -r "$RP_ADDR"
+				if wait_for $((ET_PP_OVERRIDE / 1000 + 5)) log_since r1 "$m1" "Send PruneEcho for ($RP_ADDR,$ET_PP_GROUP) on ${EP}101b"; then
+					fail "r1 sent a PruneEcho when the Expiry Timer of a 6s Join ran out in Prune-Pending"
+				else
+					ok "and none when the Expiry Timer of a 6s Join runs out in Prune-Pending"
+				fi
+			fi
+		fi
+	fi
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+
 	# M1 of doc/rfc7761-compliance.md, the steps from here to 13: RFC 7761
 	# keeps (S,G,rpt) state apart from (S,G) state, and pimd had only the
 	# one (S,G) entry for both.  $SRC_ADDR and $CRAFT_ADDR are two

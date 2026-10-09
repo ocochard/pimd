@@ -2331,44 +2331,23 @@ void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
 }
 
 /*
- * "Receive Prune(*,G)" and "Receive Prune(S,G)" of sec. 4.5.1 and sec. 4.5.2:
- * the downstream state machine on I goes to Prune-Pending and starts the
- * Prune-Pending Timer, J/P_Override_Interval(I), or zero where the router has
- * no more than one neighbor on the interface and nobody is left to override.
- *
- * The state is `prune_pending_oifs` (src/mrt.h) and the timer a deadline in
- * `pp_expires`, which expire_prune_pending_timers() in src/route.c acts on:
- * the interface leaves the outgoing list and the LAN gets its PruneEcho.
- * "For forwarding purposes, the Prune-Pending state functions exactly like
- * the Join state", and a Join arriving meanwhile clears the bit, which is the
- * transition back to Join.  The timer used to be the Expiry Timer lowered to
- * the pending delay, and that is aged five seconds at a time: a 3-second
- * interval ran out on whichever tick came first, possibly a moment after the
- * Prune and before any downstream router could override it.
- *
- * What this replaces was `holdtime/3`, 70 seconds for the usual holdtime and
- * six hours for a Join asking for 0xffff, compounding at every hop.
+ * "Receive Prune(*,G)" and "Receive Prune(S,G)" of sec. 4.5.1 and sec. 4.5.2,
+ * by jp_ds_decide() (src/pim_jp.c): Join goes to Prune-Pending with the
+ * Prune-Pending Timer J/P_Override_Interval(I), or to NoInfo at once where
+ * the router has no more than one neighbor on the interface and nobody is
+ * left to override; NoInfo and Prune-Pending stay where they are.  The timer
+ * is a deadline in `pp_expires`, acted on by expire_prune_pending_timers() in
+ * src/route.c, not the Expiry Timer lowered: that is aged five seconds at a
+ * time, and a 3-second interval ran out on whichever tick came first.
+ * Returns TRUE where the interface left the joined set.
  */
-static void prune_pending(mrtentry_t *mrt, vifi_t vifi)
+static int jp_prune(mrtentry_t *mrt, vifi_t vifi)
 {
     uint32_t delay = prune_pending_delay(vifi);
 
-    if (delay == 0) {
-	/* Nobody to wait for, and nobody to echo to either: a zero delay is
-	 * the single-neighbor case, which sec. 4.5.1 excuses the PruneEcho
-	 * on.  So the interface is not marked pending at all. */
-	FIRE_TIMER(mrt->vif_timers[vifi]);
-	return;
-    }
-
-    /* A Prune in the Prune-Pending state changes nothing, sec. 4.5.1: the
-     * timer runs from the first one. */
-    if (PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
-	return;
-
-    mrt->pp_expires[vifi] = timer_now() + delay;
-    PIMD_VIFM_SET(vifi, mrt->prune_pending_oifs);
-    route_timers_schedule(mrt->pp_expires[vifi]);
+    return jp_ds_apply(mrt, vifi,
+		       jp_ds_decide(jp_ds_state(mrt, vifi), JP_EV_PRUNE, delay == 0),
+		       0, timer_now() + delay);
 }
 
 /*
@@ -3106,14 +3085,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (!mrt)
 		    continue;   /* I don't have (S,G) to prune. Ignore. */
 
-		/* TODO: XXX: increase the entry timer? */
-		prune_pending(mrt, vifi);
-		IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
-		    /* Joins(S,G) and nothing else: an (S,G) Prune ends the
-		     * Join state of sec. 4.5.2, where marking the interface
-		     * pruned took it off what the (*,G) gives the entry too. */
-		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-		    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
+		/* Joins(S,G) and nothing else: an (S,G) Prune ends the Join
+		 * state of sec. 4.5.2, where marking the interface pruned took
+		 * it off what the (*,G) gives the entry too */
+		if (jp_prune(mrt, vifi)) {
 		    change_interfaces(mrt,
 				      mrt->incoming,
 				      mrt->joined_oifs,
@@ -3167,10 +3142,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 			 * left us forwarding to that router for the whole expiry
 			 * time.
 			 */
-			prune_pending(mrt, vifi);
-			IF_TIMER_NOT_SET(mrt->vif_timers[vifi]) {
-			    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-			    wc_join_gone(mrt, vifi);
+			if (jp_prune(mrt, vifi)) {
 			    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
 			    change_interfaces(mrt,
 					      mrt->incoming,
@@ -3276,21 +3248,15 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (!mrt)
 		    continue;
 
-		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
+		/* "Receive Join(*,G)" of sec. 4.5.1, by jp_ds_decide() */
+		jp_ds_apply(mrt, vifi, jp_ds_decide(jp_ds_state(mrt, vifi), JP_EV_JOIN, 0),
+			    holdtime, 0);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
 		/* "Receive Join(*,G) on interface I" in the Loser state of
 		 * RFC 7761 sec. 4.6.2: whoever sent it may know the winner
 		 * has died, so give the interface back and let the election
 		 * run again if it was wrong. */
 		assert_clear(mrt, vifi);
-		/* "The Prune-Pending Timer is canceled (without triggering an
-		 * expiry event)", sec. 4.5.1 and sec. 4.5.2, and the Expiry
-		 * Timer goes back to the maximum of its value and the holdtime.
-		 */
-		PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
-		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->vif_timers[vifi] < holdtime)
-		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
 		if (mrt->entry_timer < holdtime)
 		    SET_TIMER(mrt->entry_timer, holdtime);
 		change_interfaces(mrt,
@@ -3360,23 +3326,16 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    continue;
 
 		new_join = (PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) == 0);
-		PIMD_VIFM_SET(vifi, mrt->joined_oifs);
-		/* joins(S,G), which a new entry does not inherit from the
-		 * (*,G) the way joined_oifs does -- see sg_joined_oifs in
+		/* "Receive Join(S,G)" of sec. 4.5.2, by jp_ds_decide(): the
+		 * state is joins(S,G), sg_joined_oifs, which a new entry does
+		 * not inherit from the (*,G) the way joined_oifs does -- see
 		 * src/mrt.h and join_desired() in src/route.c */
-		PIMD_VIFM_SET(vifi, mrt->sg_joined_oifs);
+		jp_ds_apply(mrt, vifi, jp_ds_decide(jp_ds_state(mrt, vifi), JP_EV_JOIN, 0),
+			    holdtime, 0);
 		PIMD_VIFM_CLR(vifi, mrt->pruned_oifs);
 		/* "Receive Join(S,G) on interface I", the same transition in
 		 * sec. 4.6.1. */
 		assert_clear(mrt, vifi);
-		/* "The Prune-Pending Timer is canceled (without triggering an
-		 * expiry event)", sec. 4.5.1 and sec. 4.5.2, and the Expiry
-		 * Timer goes back to the maximum of its value and the holdtime.
-		 */
-		PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
-		/* TODO: XXX: TIMER implem. dependency! */
-		if (mrt->vif_timers[vifi] < holdtime)
-		    SET_TIMER(mrt->vif_timers[vifi], holdtime);
 		if (mrt->entry_timer < holdtime)
 		    SET_TIMER(mrt->entry_timer, holdtime);
 		/* If this is a new entry, send immediately the

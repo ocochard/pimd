@@ -678,6 +678,19 @@ from r2, then a Bootstrap makes ED1 the RP for it, the (\*,G)'s upstream moving
 to ED1 being the control; r2's log has to show r1's Prune(\*,G) naming ED1
 (none came before the fix).*
 
+M37 is D5 of the same map.  Figures 2 and 3 of sec. 4.5.1 and 4.5.2 give the
+Expiry Timer's expiry in Prune-Pending one action, NoInfo: the PruneEcho is
+the Prune-Pending Timer's, "triggered when the router stops forwarding on an
+interface as a result of a prune".  `age_routes()` (`src/route.c`) sent one
+on either expiry.  It came out of step 2 of the plan, the downstream machines
+cut out as `jp_ds_decide()` (`src/pim_jp.c`), whose table has no PruneEcho in
+that cell and which the six (\*,G) and (S,G) sites go through now.  *Test:
+`crafted` step 9b in `test/lab.sh`: ED1's two addresses advertise a 20 s
+Override Interval in a Hello LAN Prune Delay option (`pimsend -O`), so a
+Prune-Pending Timer outlasts a 6 s Expiry Timer; a held Join pruned the same
+way waits the whole interval for its PruneEcho, the control, and the 6 s
+Join pruned has to send none (it sent one 5 to 10 s in before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

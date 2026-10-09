@@ -41,6 +41,10 @@ issue of this repository is written out in full.
   router unpruned, which went on forwarding the group onto the link beside
   the new upstream until its own state aged out.  A Prune(*,G) goes to the
   old upstream now, RFC 7761 sec. 4.5.7.  Step 14b of `crafted`.
+- A downstream Join whose holdtime ran out while a Prune for it was
+  pending sent a PruneEcho onto the link, which only the end of the
+  Prune-Pending wait itself calls for.  RFC 7761 sec. 4.5.1 and 4.5.2.
+  Step 9b of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

@@ -636,24 +636,88 @@ void wc_join_gone(mrtentry_t *wc, vifi_t vifi)
 }
 
 /*
- * "Prune-Pending Timer Expires" of RFC 7761 sec. 4.5.1 and sec. 4.5.2: the
- * downstream state machine goes to NoInfo and the router owes the LAN a
- * PruneEcho.  The interface is one pimd has just dropped from the outgoing
- * list, and the bitmap says whether a Prune put it on its way out or the
- * Expiry Timer simply ran its full course, which owes nothing.
+ * The state of the downstream (*,G) or (S,G) machine of RFC 7761 sec. 4.5.1
+ * and sec. 4.5.2 on @vifi.  Join state is `joined_oifs` on a (*,G) entry and
+ * `sg_joined_oifs` on an (S,G) one, whose `joined_oifs` also holds the copy
+ * of joins(*,G) VOIF_COPY() seeded it with, and Prune-Pending is
+ * `prune_pending_oifs` on top of either.
  */
-static void expire_prune_pending(mrtentry_t *mrt, vifi_t vifi)
+int jp_ds_state(const mrtentry_t *mrt, vifi_t vifi)
 {
-    if (!PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
-	return;
+    int joined = (mrt->flags & MRTF_WC) ? PIMD_VIFM_ISSET(vifi, mrt->joined_oifs)
+					 : PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs);
 
-    PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
-    send_prune_echo(mrt, vifi);
+    if (!joined)
+	return JP_DS_NI;
+
+    return PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs) ? JP_DS_PP : JP_DS_J;
+}
+
+/*
+ * An action of jp_ds_decide() (src/pim_jp.c) written back to the entry:
+ * @holdtime is what a Join asks the Expiry Timer for, `vif_timers` in
+ * seconds, 0xffff held; @ppt_at is the Prune-Pending Timer's deadline.
+ * NoInfo also takes out of an (S,G) entry the copy of the (*,G)'s joins on
+ * the interface, which is how an Expiry Timer the copy shares ages it out,
+ * and a (*,G) leaving Join takes the interface off its sources' copies,
+ * wc_join_gone().  Returns TRUE where `joined_oifs` changed, which the
+ * caller owes a change_interfaces() for.
+ */
+int jp_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint16_t holdtime, uint64_t ppt_at)
+{
+    int wc = (mrt->flags & MRTF_WC) != 0;
+    int was = PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) ? 1 : 0;
+    int now;
+
+    switch (act.et) {
+	case JP_ET_SET:
+	    SET_TIMER(mrt->vif_timers[vifi], holdtime);
+	    break;
+
+	case JP_ET_MAX:
+	    /* 0xffff, held, is also the largest there is */
+	    if (mrt->vif_timers[vifi] < holdtime)
+		SET_TIMER(mrt->vif_timers[vifi], holdtime);
+	    break;
+
+	case JP_ET_CANCEL:
+	    RESET_TIMER(mrt->vif_timers[vifi]);
+	    break;
+    }
+
+    if (act.state == JP_DS_NI) {
+	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
+	if (wc)
+	    wc_join_gone(mrt, vifi);
+	else
+	    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
+    } else {
+	PIMD_VIFM_SET(vifi, mrt->joined_oifs);
+	if (!wc)
+	    PIMD_VIFM_SET(vifi, mrt->sg_joined_oifs);
+    }
+
+    if (act.state == JP_DS_PP)
+	PIMD_VIFM_SET(vifi, mrt->prune_pending_oifs);
+    else
+	PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
+
+    if (act.ppt == JP_PPT_START) {
+	mrt->pp_expires[vifi] = ppt_at;
+	route_timers_schedule(ppt_at);
+    }
+
+    if (act.echo)
+	send_prune_echo(mrt, vifi);
+
+    now = PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) ? 1 : 0;
+
+    return was != now;
 }
 
 /*
  * The Prune-Pending Timers of an entry that have run out by @now, see
- * prune_pending() in src/pim_proto.c.  The interface leaves the joined set
+ * jp_prune() in src/pim_proto.c.  The interface leaves the joined set
  * the way an expired Expiry Timer takes it out in age_routes(), and @next is
  * lowered to any timer still running.  Returns TRUE when the caller owes a
  * change_interfaces().
@@ -670,8 +734,8 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 	if (!PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs))
 	    continue;
 
-	/* Pruned where nothing was joined, or taken out another way since */
-	if (!PIMD_VIFM_ISSET(vifi, mrt->joined_oifs)) {
+	/* Taken out another way since */
+	if (jp_ds_state(mrt, vifi) != JP_DS_PP) {
 	    PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
 	    continue;
 	}
@@ -682,13 +746,7 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 	    continue;
 	}
 
-	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-	if (!(mrt->flags & MRTF_WC))
-	    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
-	else
-	    wc_join_gone(mrt, vifi);
-	RESET_TIMER(mrt->vif_timers[vifi]);
-	expire_prune_pending(mrt, vifi);
+	jp_ds_apply(mrt, vifi, jp_ds_decide(JP_DS_PP, JP_EV_PPT, 0), 0, 0);
 	change = TRUE;
     }
 
@@ -2816,10 +2874,12 @@ static void age_routes_pass(void)
 			    if (mrt_grp->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
 				continue;
 
+			    /* NoInfo, and no PruneEcho out of Prune-Pending:
+			     * that is the Prune-Pending Timer's, Figure 2 */
 			    IF_TIMEOUT(mrt_grp->vif_timers[vifi]) {
-				PIMD_VIFM_CLR(vifi, mrt_grp->joined_oifs);
-				wc_join_gone(mrt_grp, vifi);
-				expire_prune_pending(mrt_grp, vifi);
+				jp_ds_apply(mrt_grp, vifi,
+					    jp_ds_decide(jp_ds_state(mrt_grp, vifi), JP_EV_ET, 0),
+					    0, 0);
 				change_flag = TRUE;
 			    }
 			}
@@ -2903,10 +2963,12 @@ static void age_routes_pass(void)
 				if (mrt_srcs->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
 				    continue;
 
+				/* A copy of the (*,G)'s joins with no Join(S,G)
+				 * beside it is NoInfo here, and goes too */
 				IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
-				    PIMD_VIFM_CLR(vifi, mrt_srcs->joined_oifs);
-				    PIMD_VIFM_CLR(vifi, mrt_srcs->sg_joined_oifs);
-				    expire_prune_pending(mrt_srcs, vifi);
+				    jp_ds_apply(mrt_srcs, vifi,
+						jp_ds_decide(jp_ds_state(mrt_srcs, vifi), JP_EV_ET, 0),
+						0, 0);
 				    change_flag = TRUE;
 				}
 			    }

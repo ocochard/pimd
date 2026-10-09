@@ -773,6 +773,9 @@ extern pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib)
 extern void	update_sptbit		(mrtentry_t *mrt, vifi_t iif);
 extern void	wc_join_gone		(mrtentry_t *wc, vifi_t vifi);
 extern void	prune_old_upstream	(mrtentry_t *mrt, pim_nbr_entry_t *old, uint16_t flags);
+extern int	jp_ds_state		(const mrtentry_t *mrt, vifi_t vifi);
+extern int	jp_ds_apply		(mrtentry_t *mrt, vifi_t vifi, struct jp_act act,
+					 uint16_t holdtime, uint64_t ppt_at);
 extern int	rpt_ds_state		(const mrtentry_t *mrt, vifi_t vifi, int tmp);
 extern int	rpt_ds_apply		(mrtentry_t *mrt, vifi_t vifi, struct jp_act act,
 					 uint64_t et_want, uint64_t ppt_at);

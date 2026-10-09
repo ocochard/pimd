@@ -58,6 +58,8 @@
  *   -Z         set the admin-scope bit of the group
  *   -H TIME    holdtime, default per message     (sec. 4.9.2, 4.9.5)
  *   -A ADDR    a Hello Address List entry        (sec. 4.3.4, 4.9.2)
+ *   -O MSEC    a Hello LAN Prune Delay option with this Override
+ *              Interval, propagation delay 500 ms (sec. 4.3.3, 4.9.2)
  *
  * And two that build what a correct router sends, but only in a state a
  * test cannot easily put one in:
@@ -169,6 +171,8 @@
 
 #define PIM_HELLO_HOLDTIME		1
 #define PIM_HELLO_DR_PRIO		19
+#define PIM_HELLO_LAN_PRUNE_DELAY	2
+#define PIM_HELLO_LAN_PRUNE_DELAY_LEN	4
 #define PIM_HELLO_GENID			20
 #define PIM_HELLO_ADDR_LIST		24
 
@@ -220,6 +224,7 @@ struct opts {
 	int	 bidir;
 	int	 scope;
 	long	 holdtime;		/* -1 until -H overrides it */
+	long	 override;		/* -1 until -O asks for LAN Prune Delay */
 
 	struct in_addr group;
 	struct in_addr upstream;	/* Join/Prune target, Bootstrap BSR */
@@ -426,6 +431,16 @@ static uint8_t *build_hello(uint8_t *p, const struct opts *o)
 	p = put_short(p, PIM_HELLO_GENID);
 	p = put_short(p, 4);
 	p = put_long(p, 0x0badcafe);
+
+	/* RFC 7761 sec. 4.9.2, option 2: T bit clear, Propagation_Delay and
+	 * Override_Interval in milliseconds.  Every neighbour on a link has
+	 * to send it before anyone uses it, sec. 4.3.3. */
+	if (o->override >= 0) {
+		p = put_short(p, PIM_HELLO_LAN_PRUNE_DELAY);
+		p = put_short(p, PIM_HELLO_LAN_PRUNE_DELAY_LEN);
+		p = put_short(p, 500);
+		p = put_short(p, (unsigned)o->override);
+	}
 
 	/* Only when asked for: a Hello without the option is the one that
 	 * has to clear a neighbour's secondaries, RFC 7761 sec. 4.3.4.  -f
@@ -668,6 +683,7 @@ static int usage(int rc)
 		"  -g GROUP   Multicast group the message is about\n"
 		"  -s SOURCE  Source address, repeatable for a Join/Prune\n"
 		"  -A ADDR    A Hello Address List entry, repeatable\n"
+		"  -O MSEC    A Hello LAN Prune Delay option, this Override Interval\n"
 		"  -u ADDR    Join/Prune upstream neighbour, or the BSR of a Bootstrap\n"
 		"  -r ADDR    The RP: of a Bootstrap, a candrp, or a (*,G) Join\n"
 		"  -w         Make the Join/Prune a (*,G) rather than an (S,G)\n"
@@ -779,6 +795,7 @@ int main(int argc, char *argv[])
 	o.version  = PIM_VERSION;
 	o.type     = -1;
 	o.holdtime = -1;
+	o.override = -1;
 	o.gmasklen = 32;
 	o.smasklen = 32;
 	o.family   = 1;			/* ADDRF_IPv4 */
@@ -812,7 +829,7 @@ int main(int argc, char *argv[])
 	optind++;
 
 	while ((c = getopt(argc, argv,
-			  "0A:Bb:C:c:D:d:E:e:F:f:G:g:H:h?i:KM:m:Nno:p:P:Rr:S:s:T:t:u:V:wx:X:Z")) != -1) {
+			  "0A:Bb:C:c:D:d:E:e:F:f:G:g:H:h?i:KM:m:NnO:o:p:P:Rr:S:s:T:t:u:V:wx:X:Z")) != -1) {
 		switch (c) {
 		case '0': o.zerosum = 1;				break;
 		case 'b': rawfile = optarg;				break;
@@ -824,6 +841,7 @@ int main(int argc, char *argv[])
 		case 'F': o.rec_family = num(optarg, "address family"); rec_set |= 2; break;
 		case 'B': o.bidir = 1;					break;
 		case 'C': o.metric = num(optarg, "metric");		break;
+		case 'O': o.override = num(optarg, "override interval");	break;
 		case 'c': count = num(optarg, "count");		break;
 		case 'd': dest = optarg;				break;
 		case 'e': o.encoding = num(optarg, "encoding type");	break;
