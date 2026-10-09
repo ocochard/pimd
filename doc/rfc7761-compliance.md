@@ -765,6 +765,19 @@ link: pimsend from r3's end of the tunnel joins ED1's source at r1 addressed
 to r1, the control, and addressed to 0.0.0.0, which r1 has to take as well
 (it dropped it before the fix).*
 
+M43 is U7 of the same map.  Sec. 4.5.4 and 4.5.5 start an entry in NotJoined
+and send a Prune upstream only on the transition out of Joined.  Losing an
+(S,G) Assert on an interface the (\*,G) forwards onto makes an (S,G) entry
+to hold the state, and its first Join Timer pass sent a Prune(S,G) to
+RPF'(S,G): `jp_timer_action()` (`src/route.c`) lets the first Prune of an
+entry through and holds back the repeats, MRTF_PRUNE_SENT, and a new entry
+did not have the flag.  `alloc_mrtentry()` (`src/mrt.c`) sets it now, the
+first Join clearing it as before.  *Test: `crafted` step 7v in
+`test/lab.sh`: ED1 joins (\*,G) on the LAN and its other address wins an
+(S,G) Assert there, r1 holding the entry the control; r2's log, which has
+every message r1 sends on that link, has to show no Prune(S,G) in the 10 s
+after (one came before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

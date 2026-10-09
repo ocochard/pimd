@@ -1866,6 +1866,11 @@ CRAFT_RPT_ET_GROUP=${CRAFT_RPT_ET_GROUP:-225.1.4.14}
 CRAFT_SG_RPT_LOSE_GROUP=${CRAFT_SG_RPT_LOSE_GROUP:-225.1.4.16}
 # crafted step 7t: a group ED1 joins (*,G) and then (S,G) on the same LAN
 CRAFT_JD_GROUP=${CRAFT_JD_GROUP:-225.1.4.18}
+# crafted step 7u: a group whose (S,G) r1 loses an Assert for, joined
+CRAFT_SPT_RPT_GROUP=${CRAFT_SPT_RPT_GROUP:-225.1.4.19}
+# crafted step 7v: a group whose (*,G) r1 forwards on the LAN and loses an
+# (S,G) Assert for there
+CRAFT_ASSERT_NEW_GROUP=${CRAFT_ASSERT_NEW_GROUP:-225.1.4.20}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7720,6 +7725,102 @@ craft_step_7t() {
 	return 0
 }
 
+craft_step_7u() {
+	print "7u. An Assert that sets SPTbit prunes the source off the shared tree at once"
+	# Sec. 4.5.7, Figure 7: PruneDesired(S,G,rpt) going true in NotPruned
+	# sends Prune(S,G,rpt) to RPF'(S,G,rpt) there and then, and losing
+	# an Assert on RPF_interface(S) while joined both sets SPTbit, Actions
+	# A6 of sec. 4.6.1, and moves RPF'(S,G) to the winner, away from
+	# RPF'(*,G) -- PruneDesired(S,G,rpt)'s two conditions at once.  The
+	# Assert path of receive_pim_assert() (src/pim_proto.c) set the bit
+	# and left the Prune to the next periodic Join(*,G), up to t_periodic
+	# later; the data path fires the Join Timer.  Map finding U13.  ED1
+	# joins (*,G) and (S,G) for 7f's source, and step 5's neighbour on
+	# r1's link to r2 wins an (S,G) Assert for it: r1's SPTbit and its
+	# Joins going to the winner are the control.
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SPT_RPT_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_SPT_RPT_GROUP" ||
+	     ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SPT_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535 ||
+	     ! wait_for 30 sg_joined_on r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SPT_RPT_GROUP"; then
+		fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SPT_RPT_GROUP) joined on ${EP}101b, the step cannot be put"
+	else
+		sleep 2
+		m_jp=$(log_lines r2)
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SPT_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+		if ! wait_for 10 route_has_flag r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SPT_RPT_GROUP" SPT ||
+		   ! route_upstream_is r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_SPT_RPT_GROUP" "$SUPP_ADDR"; then
+			fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SPT_RPT_GROUP) has no SPTbit or does not follow the winner $SUPP_ADDR after losing its Assert, the step proves nothing"
+		else
+			ok "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SPT_RPT_GROUP) sets SPTbit and follows the winner on losing the Assert, the control"
+			if wait_for 5 r1_sent_r2 "$m_jp" PRUNE "$CRAFT_SPT_RPT_GROUP" "$CRAFT_RPT_FOLLOW_SRC" "(S,G,rpt)"; then
+				ok "and prunes it off the shared tree within 5s"
+			else
+				fail "r1 sent no Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SPT_RPT_GROUP,rpt) within 5s of the Assert that set SPTbit"
+			fi
+		fi
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_SPT_RPT_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 2147483647 -C 4294967295
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SPT_RPT_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SPT_RPT_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	return 0
+}
+
+craft_step_7v() {
+	print "7v. An (S,G) entry an Assert made sends no Prune(S,G)"
+	# Sec. 4.5.5: an (S,G) entry starts in NotJoined, and a Prune(S,G) goes
+	# upstream only on leaving Joined.  Losing an (S,G) Assert on an
+	# interface the (*,G) forwards onto makes an entry to hold the state,
+	# and pimd's first Join Timer pass sent a Prune(S,G) for it to
+	# RPF'(S,G), for a tree it never joined -- answered with an override
+	# from any router on that link joined to the source.  Map finding U7.
+	# ED1 joins (*,G) on the LAN, ED1's other address wins an (S,G)
+	# Assert there, r1 losing it the control, and r2's log, which has
+	# every message r1 sends on that link, has to show no Prune(S,G).
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR or $CRAFT_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_ASSERT_NEW_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_ASSERT_NEW_GROUP"; then
+		fail "r1 made no (*,$CRAFT_ASSERT_NEW_GROUP), the step cannot be put"
+	elif has_sg r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_ASSERT_NEW_GROUP"; then
+		fail "r1 already holds ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_ASSERT_NEW_GROUP), the Assert would make nothing"
+	else
+		sleep 2
+		m_jp=$(log_lines r2)
+		craft "$CRAFT_ADDR" assert -g "$CRAFT_ASSERT_NEW_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+		if ! wait_for 10 has_sg r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_ASSERT_NEW_GROUP"; then
+			fail "r1 made no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_ASSERT_NEW_GROUP) on losing the Assert, the step proves nothing"
+		else
+			ok "r1 holds ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_ASSERT_NEW_GROUP) for the Assert it lost on the LAN, the control"
+			sleep 10
+			if r1_sent_r2 "$m_jp" PRUNE "$CRAFT_ASSERT_NEW_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+				fail "r1 sent a Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_ASSERT_NEW_GROUP) for an entry that never joined the source tree"
+			else
+				ok "and sends no Prune(S,G) for it in 10s"
+			fi
+		fi
+		craft "$CRAFT_ADDR" assert -g "$CRAFT_ASSERT_NEW_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" \
+			-R -P 2147483647 -C 4294967295
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_ASSERT_NEW_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	return 0
+}
+
 craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
@@ -9338,7 +9439,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

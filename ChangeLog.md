@@ -70,6 +70,11 @@ issue of this repository is written out in full.
   point-to-point link is taken as addressed to this router, as RFC 7761
   sec. 4.5.1 recommends for backwards compatibility; it was dropped whole.
   Step 9 of `gif-tunnel`.
+- A router that lost an Assert for a source on an interface it forwarded
+  the group onto sent a Prune for that source toward it, for a tree it had
+  never joined, which every router on that link joined to the source had
+  to override.  A routing entry starts not joined now and prunes only on
+  leaving the joined state.  RFC 7761 sec. 4.5.5.  Step 7v of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

@@ -837,7 +837,12 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     for (i = 0, timer = mrt->vif_timers; i < vif_numbers; i++, timer++)
 	RESET_TIMER(*timer);
 
-    mrt->flags = MRTF_NEW;
+    /* NotJoined, RFC 7761 sec. 4.5.4 and sec. 4.5.5: a Prune goes upstream
+     * only on leaving Joined, so an entry that never sent a Join owes none.
+     * One an Assert made sent its first Prune(S,G) for a tree it had never
+     * joined, M43.  The first Join clears it, see jp_timer_action() in
+     * src/route.c. */
+    mrt->flags = MRTF_NEW | MRTF_PRUNE_SENT;
     RESET_TIMER(mrt->entry_timer);
     mrt->jp_expires = 0;
     mrt->rpt_override = 0;
