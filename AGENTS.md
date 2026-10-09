@@ -206,6 +206,12 @@ an empty directory reads exactly like a clean run.  What the chroot still costs 
 which the runtime would have to `exec()`: frames from that half come back as addresses, and
 `SAN_NO_PRIVSEP=yes` trades the split for a readable trace (never on the `privsep` scenario, where
 the split is the subject), the way `COVERAGE=yes` already trades it for `.gcda` files.
+`CRAFT_STEPS="7t 9b"` runs only those steps of `crafted`, after its step 1 and a wait for r1's RP
+set, which is twenty seconds or so a step where the whole scenario is half an hour -- what a
+reproduction wants, written and run again while a fix is made.  Each step is a function of its own,
+`craft_step_7t()`, walked in file order by `check_crafted()`; a step run alone is only as good as it
+stands alone, some leaning on what an earlier one left, so the full run is still the gate.  sudo(8)
+strips the environment: `sudo env CRAFT_STEPS=7t sh test/lab.sh run crafted`.
 `.github/workflows/sanitize.yml` is that run automated, weekly on Linux and in a FreeBSD VM -- the
 only sanitizer coverage `routesock.c` and the `kern.c` BSD branches get, the Linux job compiling
 `netlink.c` instead -- and by `workflow_dispatch` for a scenario or two by hand.  It configures that

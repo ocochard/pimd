@@ -957,6 +957,12 @@
 # COVERAGE=yes runs them against a pimd built --enable-coverage and leaves
 # the counters behind for test/coverage.sh to turn into a table of which
 # lines the suite reaches; see the knob below and doc/README-coverage.md.
+#
+# CRAFT_STEPS="7t 9b" runs only those steps of the crafted scenario, after
+# its step 1, which is minutes rather than the half hour of the whole of it;
+# sudo(8) strips the environment, so "sudo env CRAFT_STEPS=7t sh test/lab.sh
+# run crafted".  For reproducing one step while it is written; the full run
+# is still the one that counts.  See check_crafted().
 
 set -eu
 
@@ -1179,6 +1185,9 @@ SAN_REPORT_RE=${SAN_REPORT_RE:-'ERROR: (Address|Leak|Memory|Thread)Sanitizer|run
 # doc/README-coverage.md, because a number nobody knows the edges of is
 # worse than none.
 COVERAGE=${COVERAGE:-no}
+
+# The steps of crafted to run, empty for all of them; see check_crafted()
+CRAFT_STEPS=${CRAFT_STEPS:-}
 
 # What the daemons are run with, empty unless a knob above asks for
 # something.  The lab wraps every privileged command in sudo(8), which
@@ -1855,6 +1864,8 @@ CRAFT_RPT_ET_GROUP=${CRAFT_RPT_ET_GROUP:-225.1.4.14}
 # crafted step 7r: a group whose source r1 prunes off the shared tree and
 # loses an (S,G) Assert for on its link to the RP
 CRAFT_SG_RPT_LOSE_GROUP=${CRAFT_SG_RPT_LOSE_GROUP:-225.1.4.16}
+# crafted step 7t: a group ED1 joins (*,G) and then (S,G) on the same LAN
+CRAFT_JD_GROUP=${CRAFT_JD_GROUP:-225.1.4.18}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -6961,7 +6972,7 @@ has_dynamic_rp() {
 # passes every "was it refused?" assertion ever written, and the labs this
 # file is made of cannot notice: nothing else here sends a Join or a
 # Bootstrap that R1 would act on.
-check_crafted() {
+craft_step_1() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
 		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
@@ -6991,6 +7002,10 @@ check_crafted() {
 		ok "$CRAFT_ADDR is on the link and is nobody's neighbour"
 	fi
 
+	return 0
+}
+
+craft_step_2() {
 	print "2. A Join/Prune carrying a mask length no address has is refused"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC" -M "$CRAFT_BADLEN"
 	if wait_for 10 logged r1 "source mask length $CRAFT_BADLEN is not 32"; then
@@ -7005,6 +7020,10 @@ check_crafted() {
 		fail "r1 acted on a group mask length of $CRAFT_BADLEN"
 	fi
 
+	return 0
+}
+
+craft_step_2b() {
 	# A message that stops in the middle, which no pimd sends and which no
 	# lab of pimds could ask for one of.  Every receive_pim_*() that reads
 	# past the header tests the length it was handed first -- that is what
@@ -7031,6 +7050,10 @@ check_crafted() {
 		fail "r1 handed a message with no PIM header in it to a parser"
 	fi
 
+	return 0
+}
+
+craft_step_2c() {
 	# The control.  Without it every assertion above is satisfied by a
 	# parser that drops Join/Prunes altogether.
 	print "2c. An Assert naming one source does not take the group off the interface"
@@ -7111,6 +7134,10 @@ check_crafted() {
 		fail "the loss for $CRAFT_FAR_SRC was recorded on the (*,G) as well"
 	fi
 
+	return 0
+}
+
+craft_step_3() {
 	print "3. And the same Join, correctly formed, is acted on"
 	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "Received PIM JOIN/PRUNE from $SRC_ADDR"; then
@@ -7120,6 +7147,10 @@ check_crafted() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	return 0
+}
+
+craft_step_4() {
 	# sec. 4.9.5: a Join/Prune Holdtime of 0xffff has the receiver "hold
 	# the state until canceled by the appropriate canceling Join/Prune
 	# message".  Both timers the holdtime raises are asked, because
@@ -7156,6 +7187,10 @@ check_crafted() {
 		fi
 	fi
 
+	return 0
+}
+
+craft_step_4b() {
 	# RFC 7761 sec. 4.5.4, T2 of doc/rfc7761-compliance.md: a router that
 	# RFC 7761 removed (*,*,RP): Appendix A lists "(*,*,RP) State" among
 	# the features taken out of RFC 4601 for want of deployment
@@ -7205,6 +7240,10 @@ check_crafted() {
 		return 1
 	fi
 
+	return 0
+}
+
+craft_step_4c() {
 	# sec. 4.5.1 arms the Prune-Pending Timer so that another router on the
 	# link can override a Prune, and excuses both it and the PruneEcho
 	# where there is nobody to override and nobody to echo to:
@@ -7221,6 +7260,10 @@ check_crafted() {
 		fail "r1 still forwards $CRAFT_FAR_SRC on a link where the only neighbour pruned it"
 	fi
 
+	return 0
+}
+
+craft_step_5() {
 	# sees another router on its upstream interface send the Join(*,G) it
 	# was about to send holds its own back, for t_suppressed or the HoldTime
 	# of the Join it saw, whichever is shorter.  pimd computed the guards
@@ -7279,6 +7322,10 @@ check_crafted() {
 		fail "r2 dropped (*,$SUPP_GROUP) on the link to r1"
 	fi
 
+	return 0
+}
+
+craft_step_6() {
 	print "6. But no longer than the HoldTime of the Join it overheard"
 	n=$(r1_wc_joins)
 	elapsed=0
@@ -7297,6 +7344,10 @@ check_crafted() {
 		fail "r1 stayed quiet ${SUPP_SHORT_WAIT}s behind Joins that hold r2's state ${SUPP_SHORT_HOLD}s"
 	fi
 
+	return 0
+}
+
+craft_step_7() {
 	# RFC 7761 sec. 4.5.4 and the t_override row of sec. 4.11, T1 of
 	# doc/rfc7761-compliance.md: a router that hears a Prune(*,G) on its
 	# upstream interface while it still wants the group overrides it with a
@@ -7332,6 +7383,10 @@ check_crafted() {
 		sleep 1
 	done
 
+	return 0
+}
+
+craft_step_7p() {
 	# The same Prune naming another RP.  Sec. 4.5.1 has the upstream act
 	# on a Prune(*,G) "even if the RP in the message does not match
 	# RP(G)", which is what a neighbour whose group-to-RP mapping moved
@@ -7363,6 +7418,10 @@ check_crafted() {
 		sleep 1
 	done
 
+	return 0
+}
+
+craft_step_8() {
 	# RFC 7761 sec. 4.3.1, T3: the Hello answering a new neighbour waits
 	# rand(0, Triggered_Hello_Delay), 5 seconds, so that a LAN does not
 	# answer a rebooting router in the same instant.  pimd sent it at once.
@@ -7402,6 +7461,10 @@ check_crafted() {
 		fail "every answer came within ${HELLO_PROMPT}ms of the Hello, r1 answers new neighbours at once"
 	fi
 
+	return 0
+}
+
+craft_step_7b() {
 	print "7b. Only an Assert with the RPT bit moves the (*,G) machine upstream"
 	# RFC 7761 sec. 4.6.2 takes the (*,G) machine on RPF_interface(RP(G))
 	# from NoInfo to Loser only on an Assert with the RPT bit set, and moves
@@ -7456,6 +7519,10 @@ check_crafted() {
 			dprint "   r1 is still the Loser on ${EP}112a after the AssertCancel"
 	fi
 
+	return 0
+}
+
+craft_step_7f() {
 	print "7f. An Assert with the RPT bit moves RPF'(*,G), and RPF'(S,G,rpt) with it"
 	# On RPF_interface(RP(G)) an Assert with the RPT bit is the (*,G)
 	# machine's, sec. 4.6.1 having no transition there for one, and
@@ -7550,6 +7617,10 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_FOLLOW_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7r() {
 	print "7r. An (S,G) Assert lost toward the RP holds RPF'(S,G,rpt), and prunes nobody"
 	# Sec. 4.1.6: RPF'(S,G,rpt) is the (S,G) Assert winner on
 	# RPF_interface(RP(G)) while this router is the Loser there, and
@@ -7597,6 +7668,59 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_RPT_LOSE_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7t() {
+	print "7t. A Join(S,G) on an interface the (*,G) already gives goes upstream at once"
+	# Sec. 4.5.5, NotJoined state: "JoinDesired(S,G) -> True ... Send
+	# Join(S,G) to the appropriate upstream neighbor".  pimd sent one at
+	# once only for a new entry or a changed outgoing list, and a Join(S,G)
+	# arriving where the (*,G) already forwards changes neither, so the
+	# Join waited for the entry's Join Timer, up to t_periodic.  Map
+	# finding U8.  ED1 joins (*,G), then (S,G) for 7f's source, which is a
+	# new entry and goes at once -- the control -- then prunes the (S,G),
+	# and joins it again: the entry exists, the LAN stays in its list off
+	# the (*,G), and r1's Join(S,G) still has to reach r2 within seconds.
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_JD_GROUP"; then
+		fail "r1 made no (*,$CRAFT_JD_GROUP), the step cannot be put"
+	else
+		m_jp=$(log_lines r2)
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -H 210
+		if ! wait_for 5 r1_sent_r2 "$m_jp" JOIN "$CRAFT_JD_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+			fail "r1 sent r2 no Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_JD_GROUP) within 5s of a new entry's Join, the step proves nothing"
+		else
+			ok "r1 sends r2 a Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_JD_GROUP) at once for a new entry, the control"
+			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC"
+			if ! wait_for 15 sg_not_joined_on r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_JD_GROUP"; then
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_JD_GROUP) kept its Join(S,G) past the Prune, the step cannot go on"
+			else
+				sleep 2
+				m_jp=$(log_lines r2)
+				craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" \
+					-s "$CRAFT_RPT_FOLLOW_SRC" -H 210
+				if wait_for 5 r1_sent_r2 "$m_jp" JOIN "$CRAFT_JD_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+					ok "and again within 5s when the Join(S,G) comes back to an entry that holds the LAN off the (*,G)"
+				else
+					fail "r1 sent r2 no Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_JD_GROUP) within 5s of a Join(S,G) on a LAN its (*,G) already forwards to"
+				fi
+			fi
+		fi
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_JD_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	return 0
+}
+
+craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
 	# set -- the prose says so where the table does not -- so the Winner
@@ -7661,6 +7785,10 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_WC_WIN_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7l() {
 	print "7l. A Join(S,G) takes an (S,G) off the shared tree, even on the RP's interface"
 	# Sec. 4.5.5: "JoinDesired(S,G) becomes True ... Send Join(S,G) to the
 	# appropriate upstream neighbor, which is RPF'(S,G)".  An (S,G) entry
@@ -7707,6 +7835,10 @@ check_crafted() {
 	fi
 	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_ON_RPT_GROUP" -w -r "$RP_ADDR"
 
+	return 0
+}
+
+craft_step_7m() {
 	print "7m. A Prune(*,G) takes the interface off the sources with an (S,G) too"
 	# inherited_olist(S,G) is built from joins(*,G) as it is now, sec.
 	# 4.1.6, so a Prune(*,G) that takes an interface off the (*,G) takes
@@ -7779,6 +7911,10 @@ check_crafted() {
 	# it there and fail to build it again
 	box_if_destroy r1 "${CRAFT_D1_EP}a" >/dev/null 2>&1 || true
 
+	return 0
+}
+
+craft_step_7n() {
 	print "7n. A Join(*,G) and a Prune(S,G,rpt) in one message, for a new group"
 	# The periodic message of sec. 4.5.6 carries a Join(*,G) and the
 	# Prune(S,G,rpt) of every source its sender holds off the shared tree
@@ -7810,6 +7946,10 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_COMPOUND_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7o() {
 	print "7o. A shorter Prune(S,G,rpt) holdtime does not cut a longer one"
 	# Sec. 4.5.3, in the Prune state and the two transient ones: the
 	# Expiry Timer "is restarted and is then set to the maximum of its
@@ -7857,6 +7997,10 @@ check_crafted() {
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" -w -r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7c() {
 	print "7c. The RP contends from the shared tree with the metric of its own address"
 	# rpt_assert_metric(G,I) is MRIB.pref(RP(G)) and MRIB.metric(RP(G)),
 	# sec. 4.6.3, and for the RP itself the route to RP(G) is its own
@@ -7908,6 +8052,10 @@ check_crafted() {
 			-r "$RP_ADDR"
 	fi
 
+	return 0
+}
+
+craft_step_7d() {
 	print "7d. The winner's AssertCancel ends the (S,G) Loser state on the RPF interface"
 	# Sec. 4.6.1's Loser state goes back to NoInfo on "Receive Inferior
 	# Assert or Assert Cancel from Current Winner", on the RPF interface as
@@ -8062,6 +8210,10 @@ check_crafted() {
 	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
 	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
 
+	return 0
+}
+
+craft_step_7g() {
 	print "7g. An (S,G) Loser does not take an Assert with the RPT bit from its winner"
 	# Sec. 4.6.1's Loser state stays and stores the winner's Assert again
 	# only with the RPT bit clear, "Receive Acceptable Assert with RPTbit
@@ -8112,6 +8264,10 @@ check_crafted() {
 	fi
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
+	return 0
+}
+
+craft_step_9() {
 	# RFC 7761 sec. 4.5.1, the upstream end of step 7: a Prune(*,G) on a
 	# link with more than one PIM neighbour holds the interface in
 	# Prune-Pending for J/P_Override_Interval, 3 seconds on defaults, so that
@@ -8154,6 +8310,11 @@ check_crafted() {
 			fi
 		done
 	fi
+
+	return 0
+}
+
+craft_step_9b() {
 	# Figure 2 of sec. 4.5.1: the Expiry Timer running out in Prune-Pending
 	# is NoInfo and nothing else -- the PruneEcho belongs to the
 	# Prune-Pending Timer's expiry alone, "when the router stops
@@ -8199,6 +8360,10 @@ check_crafted() {
 	craft "$SRC_ADDR" hello -H 105
 	craft "$CRAFT_ADDR" hello -H 105
 
+	return 0
+}
+
+craft_step_10() {
 	# M1 of doc/rfc7761-compliance.md, the steps from here to 13: RFC 7761
 	# keeps (S,G,rpt) state apart from (S,G) state, and pimd had only the
 	# one (S,G) entry for both.  $SRC_ADDR and $CRAFT_ADDR are two
@@ -8248,6 +8413,10 @@ check_crafted() {
 		fi
 	fi
 
+	return 0
+}
+
+craft_step_11() {
 	# Sec. 4.5.3 again, on a group joined from the shared tree: the Prune
 	# takes the source off the interface once the Prune-Pending Timer runs
 	# out, and until then "functions exactly like the NoInfo state".  A
@@ -8323,6 +8492,10 @@ check_crafted() {
 		fi
 	fi
 
+	return 0
+}
+
+craft_step_12() {
 	# Sec. 4.5.3's two transient states, which is how a Join(*,G) and the
 	# Prune(S,G,rpt)s in the same group set are read: the Join moves every
 	# pruned source to PruneTmp, the Prunes that follow it put theirs back,
@@ -8353,6 +8526,10 @@ check_crafted() {
 		fi
 	fi
 
+	return 0
+}
+
+craft_step_13() {
 	# Sec. 4.5.7 from the other side of R1: $SUPP_ADDR is a router on R1's
 	# link to R2 again, played from R2's jail as in step 5, and it prunes
 	# $CRAFT_FAR_SRC off the shared tree at R2.  R1 still wants the source
@@ -8390,6 +8567,10 @@ check_crafted() {
 		done
 	fi
 
+	return 0
+}
+
+craft_step_13b() {
 	# rpt-prune-limit: every Prune(S,G,rpt) naming a source R1 holds no
 	# entry for makes one, lasting the HoldTime the neighbour chose, so the
 	# number is capped.  Past the cap a Prune addressed to R1 is not applied,
@@ -8487,6 +8668,10 @@ check_crafted() {
 		return 1
 	fi
 
+	return 0
+}
+
+craft_step_13c() {
 	# RFC 7761 sec. 4.9.5: the HoldTime is how long a receiver "MUST keep
 	# the Join/Prune state alive", and 0xffff holds it until canceled;
 	# the Keepalive Timer of sec. 4.1.2 keeps (S,G) state alive "in the
@@ -8531,6 +8716,10 @@ check_crafted() {
 	fi
 	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
 
+	return 0
+}
+
+craft_step_14() {
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
 	# it is the longer match, rather than leaving it on the RP it had.  The
@@ -8570,6 +8759,10 @@ check_crafted() {
 		fi
 	fi
 
+	return 0
+}
+
+craft_step_14b() {
 	# RFC 7761 sec. 4.5.7, "RPF'(*,G) changes not due to an Assert", which
 	# a change of the group-to-RP mapping is: Join(*,G) to the new upstream
 	# and Prune(*,G) to the old one, naming the new RP.  remap_grpentry()
@@ -8602,7 +8795,10 @@ check_crafted() {
 	fi
 	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_REMAP_GROUP" -w -r "$RP_ADDR"
 
+	return 0
+}
 
+craft_step_15() {
 	# The unicast branch is reachable only while this router knows no
 	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the
 	# RP set to a router that has just come up -- so R2 has to stop being
@@ -8619,6 +8815,10 @@ check_crafted() {
 		return 1
 	fi
 
+	return 0
+}
+
+craft_step_16() {
 	print "16. A unicast Bootstrap from a stranger on the LAN is refused"
 	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
 	      -g 224.0.0.0 -m 4 -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
@@ -8633,6 +8833,10 @@ check_crafted() {
 		ok "r1's RP set is untouched"
 	fi
 
+	return 0
+}
+
+craft_step_17() {
 	# The other half, and the reason the check is safe: the DR that
 	# unicasts an RP set has sent its Hello first, on the same path,
 	# immediately before.  Here that Hello is sent explicitly.
@@ -8653,6 +8857,10 @@ check_crafted() {
 		return 1
 	fi
 
+	return 0
+}
+
+craft_step_18() {
 	# Now that R1 holds an RP from a sender it trusts, a malformed
 	# Bootstrap from that same sender must cost it nothing.  Rejecting
 	# one after the BSR address, the fragment tag and the segmented RP
@@ -8699,6 +8907,10 @@ check_crafted() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	return 0
+}
+
+craft_step_19() {
 	# The packet format section of doc/rfc7761-compliance.md, which is
 	# every entry that wanted a message pimd will not build.  R1 is the
 	# RP here as well as the DR's router, so the Register assertions have
@@ -8711,6 +8923,10 @@ check_crafted() {
 		fail "r1 parsed a v3 message as though it were v2, sec. 4.9 says discard"
 	fi
 
+	return 0
+}
+
+craft_step_20() {
 	print "20. And one sent to a destination its type may not use"
 	craft "$SRC_ADDR" hello -d "$R1_LAN_ADDR" -H 105
 	if wait_for 10 logged r1 "not a destination that message may use"; then
@@ -8719,6 +8935,10 @@ check_crafted() {
 		fail "r1 acted on a unicast Hello, sec. 4.9's table has that one multicast"
 	fi
 
+	return 0
+}
+
+craft_step_21() {
 	# Three encoded addresses in one Join/Prune and three separate checks,
 	# so the family is moved on each in turn: -f moves every one of them,
 	# which the upstream address is read first of, and -F and -E move the
@@ -8745,6 +8965,10 @@ check_crafted() {
 		fail "r1 ignored the encoding type, sec. 4.9.1"
 	fi
 
+	return 0
+}
+
+craft_step_22() {
 	print "22. A group range this router does not implement"
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 224.0.0.0 -m 4 \
 	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO" -B
@@ -8761,6 +8985,10 @@ check_crafted() {
 		fail "r1 treated a scoped range as global, and it has no scope zones"
 	fi
 
+	return 0
+}
+
+craft_step_23() {
 	# sec. 4.9.3 gives the receiver of a Null-Register one rule and all
 	# three of its cases are here: a wrong checksum is discarded, a zero
 	# one MUST NOT be checked, and a correct one is the control that says
@@ -8784,6 +9012,10 @@ check_crafted() {
 		ok "r1 built no state for $SSM_GROUP at all"
 	fi
 
+	return 0
+}
+
+craft_step_23b() {
 	# The other direction of the same rule, and the arm sec. 4.8.1 rule 4
 	# needs as much: a Prune carrying the RP bit is a shared tree Prune,
 	# and a group in the SSM range has no shared tree to take anything off.
@@ -8811,6 +9043,10 @@ check_crafted() {
 		ok "and the same Prune for $CRAFT_PRUNE_GROUP was not refused for the range"
 	fi
 
+	return 0
+}
+
+craft_step_24() {
 	print "24. And a Register for one is answered, not merely dropped"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -g "$SSM_GROUP" -s "$CRAFT_FAR_SRC"
 	if wait_for 10 logged r1 "REGISTER STOP.*group = $SSM_GROUP"; then
@@ -8819,6 +9055,10 @@ check_crafted() {
 		fail "r1 dropped it silently, so an SSM-unaware DR keeps encapsulating at the data rate"
 	fi
 
+	return 0
+}
+
+craft_step_25() {
 	print "25. A Null-Register is believed only where its checksum allows"
 	craft "$SRC_ADDR" register -d "$R1_LAN_ADDR" -N -K -g "$GROUP" -s "$CRAFT_SRC"
 	if wait_for 10 logged r1 "bad checksum in the dummy IP header"; then
@@ -8836,6 +9076,10 @@ check_crafted() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	return 0
+}
+
+craft_step_26() {
 	# RFC 5059 sec. 3.5.1's No-Forward bit, whose whole point is that the
 	# receiver skips the RPF check.  $NOFWD_BSR is an address nothing in
 	# the lab has a route to, so the check cannot pass: without the bit
@@ -8872,6 +9116,10 @@ check_crafted() {
 		fail "r1 lost a neighbour the list names, so the filter refuses more than it was told to"
 	fi
 
+	return 0
+}
+
+craft_step_27() {
 	print "27. The No-Forward bit is what waives the RPF check"
 	craft "$SRC_ADDR" bootstrap -u "$NOFWD_BSR" -g "$NOFWD_RANGE" -m 16 \
 	      -r "$SRC_ADDR" -p "$CRAFT_PRIO"
@@ -8889,6 +9137,10 @@ check_crafted() {
 		fail "r1 dropped it even with the bit set, which is the one thing the bit is for"
 	fi
 
+	return 0
+}
+
+craft_step_28() {
 	# And the other half of the same section: it is not passed on.  This
 	# one names a BSR both routers have a route to and whose RPF
 	# neighbour is the sender, so nothing but the bit stops R1 forwarding
@@ -8929,6 +9181,10 @@ check_crafted() {
 		ok "r2 never saw it, r1 kept a No-Forward Bootstrap to itself"
 	fi
 
+	return 0
+}
+
+craft_step_29() {
 	# RFC 7761 sec. 4.3.4, from an encoder that is not pimd's.  Each Hello
 	# replaces the list the last one left, so every step here is also the
 	# control for the one after it: the list is seen to be there before
@@ -8990,6 +9246,10 @@ check_crafted() {
 		ok "a Hello without the option cleared the list"
 	fi
 
+	return 0
+}
+
+craft_step_30() {
 	print "30. A fragmented RP set is held apart until the rest of it arrives"
 	# RFC 5059 sec. 4.1: a group set whose RP count is larger than the
 	# fragment count is part of a set split across messages, and the
@@ -9028,6 +9288,10 @@ check_crafted() {
 		fail "r1 took no RP for $CRAFT_FRAG_NET.99.0.0 even from a complete Bootstrap"
 	fi
 
+	return 0
+}
+
+craft_step_31() {
 	print "31. A Bootstrap's next group set is behind the RP records it carries"
 	# A group set whose RP count is zero and whose fragment RP count is
 	# not carries RP records the count says are not there.  The checks of
@@ -9064,6 +9328,45 @@ check_crafted() {
 	else
 		ok "and nothing out of the RP records of set A, whose RP count said there were none"
 	fi
+
+	return 0
+}
+
+# CRAFT_STEPS="7t 9b" runs those steps of crafted and no others, after step 1,
+# which brings up the neighbour every other step needs.  Empty, the default,
+# runs them all.  A step runs alone only as well as it stands alone: most set
+# up what they use, but some lean on state an earlier step left -- a
+# neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
+# run is still the one that counts.
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+
+has_dynamic_rp() { ! no_dynamic_rp "$1"; }
+
+craft_wanted() {
+	[ -z "$CRAFT_STEPS" ] && return 0
+	case " 1 $CRAFT_STEPS " in
+	*" $1 "*) return 0 ;;
+	esac
+	return 1
+}
+
+# The steps run in the order of CRAFT_STEP_ORDER, which is the order they
+# were written in, not their numbers.  A step's own "return 1" -- giving up
+# the scenario, a neighbour never answering -- stops the walk.
+check_crafted() {
+	for cs in $CRAFT_STEP_ORDER; do
+		craft_wanted "$cs" || continue
+		"craft_step_$cs" || return 1
+
+		# What the steps before it give a step in a full run and not
+		# here: the time for r2's Bootstrap to reach r1, so that there
+		# is an RP to build a shared tree on.
+		if [ "$cs" = 1 ] && [ -n "$CRAFT_STEPS" ] &&
+		   ! wait_for 120 has_dynamic_rp r1; then
+			fail "r1 learned no RP from r2's Bootstrap in 120s, no step can be put"
+			return 1
+		fi
+	done
 
 	result
 }
