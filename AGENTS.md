@@ -799,7 +799,14 @@ wire that is proven; the Join/Prune and Bootstrap ones write a header, a group s
 apiece, and the builders keep their walks of the routing table and the RP set.  A round trip cannot see a field both halves get wrong the same way, which stays the
 interop labs'.  The Hello proofs fix the number of secondary addresses per proof: left
 nondeterministic it made every offset of the option walk symbolic, and one proof ran to 49G before
-it was stopped, where the two that replace it take under a second. It exits 77 without `cbmc`; the `CBMC proofs` job of
+it was stopped, where the two that replace it take under a second.  `test/cbmc/jp.c` is the
+Join/Prune counterpart of `proof_decide`, step 2 of `aidd_docs/plans/jp-machines.md`:
+`src/pim_jp.c` holds the downstream machines of RFC 7761 sec. 4.5.1 to 4.5.3 as a state and an
+event in and an action out -- `jp_ds_decide()` for the (\*,G) and (S,G) table, `rpt_ds_decide()`
+for the (S,G,rpt) one with its two transient states, `rpt_et_after()` for its Expiry Timer, where
+D3 (M35) lived -- proven against Figures 2 to 4 written out cell by cell; the (S,G,rpt) machine
+of `src/pim_proto.c` and `src/route.c` goes through it, read off and written back to the entry by
+`rpt_ds_state()` and `rpt_ds_apply()`. It exits 77 without `cbmc`; the `CBMC proofs` job of
 `.github/workflows/ci-linux.yml` installs Ubuntu's (6.6.0, against FreeBSD's 6.11.0 -- the two
 were compared property for property and agree) and runs it on every push.
 

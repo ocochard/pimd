@@ -2433,62 +2433,21 @@ static mrtentry_t *rpt_prune_entry(uint32_t src, uint32_t source, uint32_t group
  * this Prune to its Join state, so on a LAN it cancelled the Join(S,G)
  * another router still wanted.
  *
- * NoInfo goes to Prune-Pending with the same Prune-Pending Timer as the other
- * two machines, and straight to Prune where that timer is zero.  Prune
- * restarts its Expiry Timer, and so does Prune-Pending when a Join(*,G)
- * earlier in the same group set had it in Prune-Pending-Tmp: @wc_join says
- * so.  The two transient states are otherwise left to the end of the group
- * set, see receive_pim_join_prune().
+ * rpt_ds_decide() (src/pim_jp.c) has the transitions; @wc_join says a
+ * Join(*,G) earlier in the same group set has put the interface in one of
+ * the two transient states, which the end of the group set resolves, see
+ * receive_pim_join_prune().
  */
 static void rpt_prune(mrtentry_t *mrt, vifi_t vifi, uint16_t holdtime, int wc_join)
 {
     uint64_t now = timer_now();
-    uint32_t delay;
+    uint32_t delay = prune_pending_delay(vifi);
+    struct jp_act act;
 
-    if (!PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs) || wc_join) {
-	/* 0 is held, 0xffff on the wire, and the longest there is */
-	uint64_t want = holdtime == PIM_HELLO_HOLDTIME_FOREVER
-	    ? 0 : now + holdtime * 1000ULL;
-	int noinfo = !PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) &&
-	    !PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs);
-
-	/* From NoInfo the Expiry Timer is set to the HoldTime; in the Prune
-	 * state and the two transient ones it "is restarted and is then set
-	 * to the maximum of its current value and the HoldTime", sec. 4.5.3.
-	 * It was set outright in all of them, so a neighbour's shorter Prune
-	 * cut another's longer one short, and a finite one ended a held one. */
-	if (noinfo || (mrt->rpt_expires[vifi] && (!want || want > mrt->rpt_expires[vifi])))
-	    mrt->rpt_expires[vifi] = want;
-    }
-
-    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) || PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs))
-	return;
-
-    delay = prune_pending_delay(vifi);
-    if (delay == 0) {
-	PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
-	return;
-    }
-
-    mrt->rpt_pp_expires[vifi] = now + delay;
-    PIMD_VIFM_SET(vifi, mrt->rpt_pp_oifs);
-    route_timers_schedule(mrt->rpt_pp_expires[vifi]);
-}
-
-/*
- * The (S,G,rpt) machine on @vifi back to NoInfo, its timers cancelled, which
- * is "Receive Join(S,G,rpt)" and the "End of Message" of the two transient
- * states.  TRUE where the source had been pruned off the interface, so that
- * what the entry forwards changes.
- */
-static int rpt_noinfo(mrtentry_t *mrt, vifi_t vifi)
-{
-    int pruned = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs);
-
-    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
-    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
-
-    return pruned;
+    act = rpt_ds_decide(rpt_ds_state(mrt, vifi, wc_join), RPT_EV_PRUNE_RPT, delay == 0);
+    rpt_ds_apply(mrt, vifi, act,
+		 holdtime == PIM_HELLO_HOLDTIME_FOREVER ? 0 : now + holdtime * 1000ULL,
+		 now + delay);
 }
 
 /*
@@ -3268,7 +3227,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (jp_prunes_rpt(&gset, mrt_srcs->source->address))
 		    continue;
 
-		if (rpt_noinfo(mrt_srcs, vifi))
+		if (rpt_ds_apply(mrt_srcs, vifi,
+				 rpt_ds_decide(rpt_ds_state(mrt_srcs, vifi, TRUE), RPT_EV_EOM, 0),
+				 0, 0))
 		    change_interfaces(mrt_srcs,
 				      mrt_srcs->incoming,
 				      mrt_srcs->joined_oifs,
@@ -3372,9 +3333,14 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		/* "Receive Join(S,G,rpt)", sec. 4.5.3: Prune and Prune-Pending
 		 * go to NoInfo, which is how another router on the LAN
 		 * overrides a Prune(S,G,rpt).  pimd had no branch for it, and
-		 * the source stayed pruned for the life of the Prune. */
+		 * the source stayed pruned for the life of the Prune.  The
+		 * transient states of a Join(*,G) in the set are behind us,
+		 * resolved before this loop, so the state is read without. */
 		mrt = find_route(source, group, MRTF_SG, DONT_CREATE);
-		if (mrt && rpt_noinfo(mrt, vifi))
+		if (mrt && rpt_ds_apply(mrt, vifi,
+					rpt_ds_decide(rpt_ds_state(mrt, vifi, FALSE),
+						      RPT_EV_JOIN_RPT, 0),
+					0, 0))
 		    change_interfaces(mrt,
 				      mrt->incoming,
 				      mrt->joined_oifs,

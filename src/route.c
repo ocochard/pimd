@@ -697,6 +697,64 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 
 
 /*
+ * The state of the downstream (S,G,rpt) machine of RFC 7761 sec. 4.5.3 on
+ * @vifi, as the entry's two bitmaps hold it: Prune in `rpt_pruned_oifs`,
+ * Prune-Pending in `rpt_pp_oifs`, NoInfo in neither.  @tmp is a Join(*,G)
+ * read earlier in the group set being processed, which makes the two the
+ * transient PruneTmp and Prune-Pending-Tmp; they forward as Prune and
+ * Prune-Pending do, so the bitmaps need not tell them apart.
+ */
+int rpt_ds_state(const mrtentry_t *mrt, vifi_t vifi, int tmp)
+{
+    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs))
+	return tmp ? RPT_DS_PT : RPT_DS_P;
+
+    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs))
+	return tmp ? RPT_DS_PPT : RPT_DS_PP;
+
+    return RPT_DS_NI;
+}
+
+/*
+ * An action of rpt_ds_decide() (src/pim_jp.c) written back to the entry:
+ * @et_want is the Expiry Timer the HoldTime asks for and @ppt_at the
+ * Prune-Pending Timer's deadline, read only by the actions that set them.
+ * Returns TRUE where the source was pruned off the interface before and is
+ * not now or the other way round, so that the caller owes a
+ * change_interfaces().
+ */
+int rpt_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint64_t et_want, uint64_t ppt_at)
+{
+    int was = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) ? 1 : 0;
+    int now;
+
+    mrt->rpt_expires[vifi] = rpt_et_after(act.et, mrt->rpt_expires[vifi], et_want);
+
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
+    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
+    switch (act.state) {
+	case RPT_DS_P:
+	case RPT_DS_PT:
+	    PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
+	    break;
+
+	case RPT_DS_PP:
+	case RPT_DS_PPT:
+	    PIMD_VIFM_SET(vifi, mrt->rpt_pp_oifs);
+	    break;
+    }
+
+    if (act.ppt == JP_PPT_START) {
+	mrt->rpt_pp_expires[vifi] = ppt_at;
+	route_timers_schedule(ppt_at);
+    }
+
+    now = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) ? 1 : 0;
+
+    return was != now;
+}
+
+/*
  * The two timers of the downstream (S,G,rpt) machine, RFC 7761 sec. 4.5.3, by
  * @now: the Prune-Pending Timer takes an interface on to Prune, the Expiry
  * Timer takes it back to NoInfo.  @next is lowered to a Prune-Pending Timer
@@ -719,9 +777,8 @@ static int expire_rpt_timers(mrtentry_t *mrt, uint64_t now, uint64_t *next)
 		continue;
 	    }
 
-	    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
-	    PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
-	    change = TRUE;
+	    if (rpt_ds_apply(mrt, vifi, rpt_ds_decide(RPT_DS_PP, RPT_EV_PPT, 0), 0, 0))
+		change = TRUE;
 	}
 
 	if (!PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs))
@@ -729,8 +786,8 @@ static int expire_rpt_timers(mrtentry_t *mrt, uint64_t now, uint64_t *next)
 
 	/* Zero is a HoldTime of 0xffff, held until a Join cancels it */
 	if (mrt->rpt_expires[vifi] && mrt->rpt_expires[vifi] <= now) {
-	    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
-	    change = TRUE;
+	    if (rpt_ds_apply(mrt, vifi, rpt_ds_decide(RPT_DS_P, RPT_EV_ET, 0), 0, 0))
+		change = TRUE;
 	}
     }
 

@@ -565,6 +565,7 @@ files were split so that there would be such files:
 | `encode.c`    | the bounded writer of `src/pim_encode.c`: no put writes past its buffer, and a message that did not fit says so |
 | `assert.c`    | `src/pim_assert.c`: the metric comparison is the order of RFC 7761 sec. 4.6.3, and `assert_decide()` and the ordering of the two machines are what sec. 4.6.1 and 4.6.2 describe -- the tables, and the prose that says which kind of Assert each event is |
 | `roundtrip.c` | every message `src/pim_encode.c` writes is read back by `src/pim_parse.c` field for field |
+| `jp.c`        | `src/pim_jp.c`: the downstream Join/Prune machines decide as Figures 2 to 4 of RFC 7761 sec. 4.5 say, cell by cell, and the (S,G,rpt) Expiry Timer is set or raised as the prose says |
 
 `run.sh` runs each proof, then each harness against mutants of its
 code -- a bound removed, an offset moved, a fix undone -- and fails

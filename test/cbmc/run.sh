@@ -303,6 +303,32 @@ mutant order-any-clear-cancels     "$h" "$s" proof_order        0 1 's/if (act =
 mutant order-held-ignored          "$h" "$s" proof_order        0 1 's/return sg_rc == ASSERT_NOTHING \&\& !sg_held;/return sg_rc == ASSERT_NOTHING;/'
 mutant order-no-cancel-exception   "$h" "$s" proof_order        0 1 's/if (sg_rc == ASSERT_CANCELLED)$/if (0)/'
 
+# The downstream Join/Prune machines, src/pim_jp.c, against Figures 2 to 4
+# of RFC 7761 sec. 4.5 as test/cbmc/jp.c writes them out.  No buffer and no
+# loop.  The controls are the slips the tables invite: D3 put back (the ET
+# set rather than raised), a Prune-Pending Timer started where the Prune
+# should change nothing, the immediate expiry forgotten, the PruneEcho
+# dropped, a Join that leaves the PPT running, the end of a message that
+# keeps a transient state.
+h="$here/jp.c"
+s="$top/src/pim_jp.c"
+proof  ds-spec                     "$h" "$s" proof_ds           0 1
+proof  ds-rpt-spec                 "$h" "$s" proof_rpt          0 1
+proof  ds-rpt-et                   "$h" "$s" proof_et           0 1
+mutant ds-pp-prune-restarts     "$h" "$s" proof_ds           0 1 's/	    if (state != JP_DS_J)$/	    if (state == JP_DS_NI)/'
+mutant ds-zero-ppt-waits        "$h" "$s" proof_ds           0 1 's/	    if (ppt_zero)$/	    if (0)/'
+mutant ds-no-prune-echo         "$h" "$s" proof_ds           0 1 's/JP_ET_CANCEL, JP_PPT_KEEP, 1);/JP_ET_CANCEL, JP_PPT_KEEP, 0);/'
+mutant ds-join-keeps-ppt        "$h" "$s" proof_ds           0 1 's/return jp_act(JP_DS_J, JP_ET_MAX, JP_PPT_CANCEL, 0);/return jp_act(JP_DS_J, JP_ET_MAX, JP_PPT_KEEP, 0);/'
+mutant ds-join-sets-et          "$h" "$s" proof_ds           0 1 's/return jp_act(JP_DS_J, JP_ET_MAX, JP_PPT_KEEP, 0);/return jp_act(JP_DS_J, JP_ET_SET, JP_PPT_KEEP, 0);/'
+mutant ds-rpt-prune-sets-et        "$h" "$s" proof_rpt          0 1 's/return jp_act(RPT_DS_P, JP_ET_MAX, JP_PPT_KEEP, 0);/return jp_act(RPT_DS_P, JP_ET_SET, JP_PPT_KEEP, 0);/'
+mutant ds-rpt-zero-ppt-waits       "$h" "$s" proof_rpt          0 1 's/		if (ppt_zero)$/		if (0)/'
+mutant ds-rpt-eom-keeps-tmp        "$h" "$s" proof_rpt          0 1 's/	    if (state == RPT_DS_PT)$/	    if (0)/'
+mutant ds-rpt-wc-join-ignored      "$h" "$s" proof_rpt          0 1 's/	    if (state == RPT_DS_PP)$/	    if (0)/'
+mutant ds-rpt-ppt-forgotten       "$h" "$s" proof_rpt          0 1 '/case RPT_EV_PPT:/,/break;/s/if (state == RPT_DS_PP)/if (0)/'
+mutant ds-rpt-pp-prune-restarts    "$h" "$s" proof_rpt          0 1 's/if (state == RPT_DS_P || state == RPT_DS_PT)$/if (state == RPT_DS_P || state == RPT_DS_PT || state == RPT_DS_PP)/'
+mutant ds-et-max-is-set            "$h" "$s" proof_et           0 1 's/if (et == JP_ET_MAX \&\& cur \&\& (!want || want > cur))/if (et == JP_ET_MAX)/'
+mutant ds-et-held-cut              "$h" "$s" proof_et           0 1 's/if (et == JP_ET_MAX \&\& cur \&\& (!want || want > cur))/if (et == JP_ET_MAX \&\& (!want || want > cur))/'
+
 # Round trips, step 3 of aidd_docs/plans/assert-proofs.md: the bodies
 # src/pim_encode.c writes, read back by src/pim_parse.c, for every value
 # of every field.  The controls are encoders that disagree with their

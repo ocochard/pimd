@@ -7647,6 +7647,18 @@ check_crafted() {
 		else
 			ok "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) forwards onto ${EP}101b, joined (*,G) there, the control"
 
+			# Map finding D8: a Prune(S,G) where the (S,G) machine is in
+			# NoInfo, the LAN holding no Join(S,G), is "-" in Figure 3 of
+			# sec. 4.5.2.  The source reaches the LAN off joins(*,G), and
+			# only a Prune(S,G,rpt) takes it from there.
+			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_D1_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+			sleep 10
+			if route_oif_has r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
+				ok "and keeps forwarding there after a Prune(S,G) on a LAN with no Join(S,G) state"
+			else
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_D1_GROUP) left ${EP}101b on a Prune(S,G) there, where the (S,G) machine is in NoInfo and the (*,G) still joins it"
+			fi
+
 			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_D1_GROUP" -w -r "$RP_ADDR"
 			if wait_for 15 route_oif_gone r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_D1_GROUP"; then
 				ok "and stops there once the (*,G) is pruned off it"

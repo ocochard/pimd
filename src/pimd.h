@@ -819,6 +819,53 @@ int    assert_decide    (const struct assert_view *v);
 int    assert_rc        (int act, uint32_t pref, uint32_t metric);
 int    assert_wc_may_run(int sg_held, int sg_rc);
 
+/*
+ * The downstream machines of RFC 7761 sec. 4.5.1 to 4.5.3, src/pim_jp.c.
+ * The (*,G) and (S,G) ones share a table and its states; the (S,G,rpt) one
+ * has five, two of them transient while one message is read.
+ */
+#define JP_DS_NI		0	/* NoInfo */
+#define JP_DS_J			1	/* Join */
+#define JP_DS_PP		2	/* Prune-Pending */
+
+#define JP_EV_JOIN		0	/* Receive Join(*,G) / Join(S,G) */
+#define JP_EV_PRUNE		1	/* Receive Prune(*,G) / Prune(S,G) */
+#define JP_EV_PPT		2	/* Prune-Pending Timer expires */
+#define JP_EV_ET		3	/* Expiry Timer expires */
+
+#define RPT_DS_NI		0	/* NoInfo */
+#define RPT_DS_P		1	/* Prune */
+#define RPT_DS_PP		2	/* Prune-Pending */
+#define RPT_DS_PT		3	/* PruneTmp, P' */
+#define RPT_DS_PPT		4	/* Prune-Pending-Tmp, PP' */
+
+#define RPT_EV_JOIN_WC		0	/* Receive Join(*,G) */
+#define RPT_EV_JOIN_RPT		1	/* Receive Join(S,G,rpt) */
+#define RPT_EV_PRUNE_RPT	2	/* Receive Prune(S,G,rpt) */
+#define RPT_EV_EOM		3	/* End of Message */
+#define RPT_EV_PPT		4	/* Prune-Pending Timer expires */
+#define RPT_EV_ET		5	/* Expiry Timer expires */
+
+/* What becomes of the two timers */
+#define JP_ET_KEEP		0
+#define JP_ET_SET		1	/* to the HoldTime */
+#define JP_ET_MAX		2	/* to the maximum of it and the HoldTime */
+#define JP_ET_CANCEL		3
+#define JP_PPT_KEEP		0
+#define JP_PPT_START		1
+#define JP_PPT_CANCEL		2
+
+struct jp_act {
+    uint8_t  state;		/* the next state */
+    uint8_t  et;		/* JP_ET_* */
+    uint8_t  ppt;		/* JP_PPT_* */
+    uint8_t  echo;		/* send PruneEcho */
+};
+
+struct jp_act jp_ds_decide (int state, int event, int ppt_zero);
+struct jp_act rpt_ds_decide(int state, int event, int ppt_zero);
+uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 
