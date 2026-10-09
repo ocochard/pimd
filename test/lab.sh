@@ -1849,6 +1849,9 @@ CRAFT_D1_GROUP=${CRAFT_D1_GROUP:-225.1.4.12}
 # crafted step 7n: a group r1 holds nothing for until ED1's compound
 # Join(*,G) and Prune(S,G,rpt)
 CRAFT_COMPOUND_GROUP=${CRAFT_COMPOUND_GROUP:-225.1.4.13}
+# crafted step 7o: a group whose (S,G,rpt) prune ED1 gives one holdtime and
+# then another
+CRAFT_RPT_ET_GROUP=${CRAFT_RPT_ET_GROUP:-225.1.4.14}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7689,6 +7692,53 @@ check_crafted() {
 			fi
 		fi
 		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_COMPOUND_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	print "7o. A shorter Prune(S,G,rpt) holdtime does not cut a longer one"
+	# Sec. 4.5.3, in the Prune state and the two transient ones: the
+	# Expiry Timer "is restarted and is then set to the maximum of its
+	# current value and the HoldTime".  rpt_prune() (src/pim_proto.c) set
+	# it to the HoldTime outright, so a neighbour's Prune with a shorter
+	# one cut another's longer prune short, and a finite one ended a prune
+	# held with 0xffff.  Map finding D3.  The control is the expiry itself:
+	# a Prune(S,G,rpt) held 10 s lets the source back onto the LAN after
+	# them.  Then a held one, followed by the same Prune held 10 s, has to
+	# keep the source off past those 10 s.
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_RPT_ET_GROUP"; then
+		fail "r1 made no (*,$CRAFT_RPT_ET_GROUP) from the Join(*,G), the step cannot be put"
+	else
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 10
+		if ! wait_for 15 sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_ET_GROUP"; then
+			fail "r1 never pruned $CRAFT_RPT_FOLLOW_SRC off ${EP}101b, the step proves nothing"
+		elif ! wait_for 30 sg_not_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_ET_GROUP"; then
+			fail "r1 kept $CRAFT_RPT_FOLLOW_SRC pruned off ${EP}101b past a 10 s holdtime, the expiry the step relies on does not run"
+		else
+			ok "a Prune(S,G,rpt) held 10 s lets $CRAFT_RPT_FOLLOW_SRC back onto ${EP}101b after them, the control"
+
+			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535
+			if ! wait_for 15 sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_ET_GROUP"; then
+				fail "r1 did not prune $CRAFT_RPT_FOLLOW_SRC off ${EP}101b again on a held Prune(S,G,rpt)"
+			else
+				craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" \
+					-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 10
+				sleep 20
+				if sg_pruned_off r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_ET_GROUP"; then
+					ok "and a held one keeps it off past a later Prune held 10 s"
+				else
+					fail "r1 let $CRAFT_RPT_FOLLOW_SRC back onto ${EP}101b 20 s after a Prune held 10 s, cutting a held one short"
+				fi
+			fi
+		fi
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_ET_GROUP" -w -r "$RP_ADDR"
 	fi
 
 	print "7c. The RP contends from the shared tree with the metric of its own address"

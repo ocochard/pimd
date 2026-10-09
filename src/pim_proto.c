@@ -2446,10 +2446,19 @@ static void rpt_prune(mrtentry_t *mrt, vifi_t vifi, uint16_t holdtime, int wc_jo
     uint32_t delay;
 
     if (!PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs) || wc_join) {
-	if (holdtime == PIM_HELLO_HOLDTIME_FOREVER)
-	    mrt->rpt_expires[vifi] = 0;
-	else
-	    mrt->rpt_expires[vifi] = now + holdtime * 1000ULL;
+	/* 0 is held, 0xffff on the wire, and the longest there is */
+	uint64_t want = holdtime == PIM_HELLO_HOLDTIME_FOREVER
+	    ? 0 : now + holdtime * 1000ULL;
+	int noinfo = !PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) &&
+	    !PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs);
+
+	/* From NoInfo the Expiry Timer is set to the HoldTime; in the Prune
+	 * state and the two transient ones it "is restarted and is then set
+	 * to the maximum of its current value and the HoldTime", sec. 4.5.3.
+	 * It was set outright in all of them, so a neighbour's shorter Prune
+	 * cut another's longer one short, and a finite one ended a held one. */
+	if (noinfo || (mrt->rpt_expires[vifi] && (!want || want > mrt->rpt_expires[vifi])))
+	    mrt->rpt_expires[vifi] = want;
     }
 
     if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) || PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs))

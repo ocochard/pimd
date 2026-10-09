@@ -653,6 +653,18 @@ pruning a source behind r3 off its shared tree, the (\*,G) being the control,
 after which r1 has to hold the source pruned off the LAN (it held no (S,G)
 before the fix).*
 
+M35 is D3 of the same map.  Sec. 4.5.3 sets the (S,G,rpt) Expiry Timer to the
+HoldTime from NoInfo, and in the Prune state and the two transient ones has it
+"restarted and ... set to the maximum of its current value and the HoldTime".
+`rpt_prune()` set it outright in all of them, so a neighbour's Prune with a
+shorter HoldTime cut another's longer prune short, and a finite one ended a
+prune held with 0xffff -- the hold of dial-on-demand links.  The (\*,G) and
+(S,G) machines took the maximum already.  It does here now, a held prune
+counting as the longest.  *Test: `crafted` step 7o in `test/lab.sh`: a
+Prune(S,G,rpt) held 10 s lets the source back onto the LAN after them, the
+control; a held one followed by the same Prune held 10 s has to keep it off
+20 s later (it came back before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

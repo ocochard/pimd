@@ -32,6 +32,11 @@ issue of this repository is written out in full.
   new upstream after an RPF change -- created the group and dropped the
   prune, so the pruned source was forwarded until the next periodic
   message.  RFC 7761 sec. 4.5.3.  Step 7n of `crafted`.
+- A Prune(S,G,rpt) with a shorter holdtime than the one already held for
+  that source and interface replaced it, so one neighbour's short prune
+  cut another's longer one short, and a finite one ended a prune held with
+  0xffff.  The longer of the two is kept now, RFC 7761 sec. 4.5.3.  Step
+  7o of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
