@@ -66,6 +66,10 @@ issue of this repository is written out in full.
   table's neighbour at the next check of the unicast routes, every 20
   seconds, and sent the Assert winner a Prune for the source on the way.
   RFC 7761 sec. 4.1.6 and 4.5.7.  Step 7r of `crafted`.
+- A Join/Prune with an upstream neighbour address of 0.0.0.0 on a
+  point-to-point link is taken as addressed to this router, as RFC 7761
+  sec. 4.5.1 recommends for backwards compatibility; it was dropped whole.
+  Step 9 of `gif-tunnel`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

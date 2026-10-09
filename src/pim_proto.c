@@ -2670,6 +2670,13 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     holdtime   = jp.holdtime;
     log_pim_join_prune(src, &jp, v->uv_name);
 
+    /* RFC 7761 sec. 4.5.1 to 4.5.3: "on point-to-point links it is
+     * RECOMMENDED that for backwards compatibility PIM Join/Prune messages
+     * with an upstream neighbor address field of all zeros also be
+     * accepted".  There is nobody else on the link it could be for. */
+    if (jp.upstream == INADDR_ANY_N && (v->uv_flags & VIFF_POINT_TO_POINT))
+	jp.upstream = v->uv_lcl_addr;
+
     if (jp.upstream != v->uv_lcl_addr) {
 	/* if I am not the target of the join message */
 	/* Join/Prune suppression code. This either modifies the J/P timers

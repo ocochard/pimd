@@ -754,6 +754,17 @@ and after a check of the unicast routes the entry has to still follow it
 with no Prune(S,G) from r1 in r2's log (it went back, and pruned, before the
 fix).*
 
+M42 is D7a of the same map.  Sec. 4.5.1 to 4.5.3: "on point-to-point links it
+is RECOMMENDED that for backwards compatibility PIM Join/Prune messages with
+an upstream neighbor address field of all zeros also be accepted".
+`receive_pim_join_prune()` read 0.0.0.0 as a message for another router on
+the link, found no neighbour by that address and dropped the whole message.
+On a `VIFF_POINT_TO_POINT` interface it is this router's address now.  *Test:
+`gif-tunnel` step 9 in `test/lab.sh`, the one scenario with a point-to-point
+link: pimsend from r3's end of the tunnel joins ED1's source at r1 addressed
+to r1, the control, and addressed to 0.0.0.0, which r1 has to take as well
+(it dropped it before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

@@ -2205,6 +2205,10 @@ GIF_IF=gif0
 GIF_R1=172.16.0.1
 GIF_R3=172.16.0.2
 GIF_MASK=255.255.255.0
+# gif-tunnel step 9: two groups no traffic is sent to, one joined with an
+# upstream of 0.0.0.0 and one, the control, with r1's tunnel address
+GIF_ZERO_GROUP=${GIF_ZERO_GROUP:-225.1.11.1}
+GIF_CTRL_GROUP=${GIF_CTRL_GROUP:-225.1.11.2}
 
 die() { echo -n "EXIT: " >&2; echo "$@" >&2; exit 1; }
 print() { printf "\033[7m>> %-76s\033[0m\n" "$1"; }
@@ -11686,6 +11690,30 @@ check_gif_tunnel() {
 	else
 		fail "r3 decapsulated $regs registers for $STREAM_PKTS packets, it never register-stopped r1"
 	fi
+
+	# RFC 7761 sec. 4.5.1 to 4.5.3: "on point-to-point links it is
+	# RECOMMENDED that for backwards compatibility PIM Join/Prune messages
+	# with an upstream neighbor address field of all zeros also be
+	# accepted".  receive_pim_join_prune() (src/pim_proto.c) read 0.0.0.0
+	# as a message for another router, found no neighbour by that address
+	# and dropped the whole message.  Map finding D7a.  pimsend from r3's
+	# end of the tunnel joins ED1's source at r1 twice: addressed to r1,
+	# the control, and to 0.0.0.0.
+	print "9. A Join/Prune with an upstream of 0.0.0.0 is taken on a point-to-point link"
+	craft_on r3 "$GIF_R3" join -u "$GIF_R1" -g "$GIF_CTRL_GROUP" -s "$SRC_ADDR" -H 65535
+	if ! wait_for 15 sg_joined_on r1 "$GIF_IF" "$SRC_ADDR" "$GIF_CTRL_GROUP"; then
+		fail "r1 took no Join($SRC_ADDR,$GIF_CTRL_GROUP) addressed to it on $GIF_IF, the step proves nothing"
+	else
+		ok "r1 takes a Join($SRC_ADDR,$GIF_CTRL_GROUP) addressed to it on $GIF_IF, the control"
+		craft_on r3 "$GIF_R3" join -u 0.0.0.0 -g "$GIF_ZERO_GROUP" -s "$SRC_ADDR" -H 65535
+		if wait_for 15 sg_joined_on r1 "$GIF_IF" "$SRC_ADDR" "$GIF_ZERO_GROUP"; then
+			ok "and one with an upstream of 0.0.0.0"
+		else
+			fail "r1 dropped a Join($SRC_ADDR,$GIF_ZERO_GROUP) with an upstream of 0.0.0.0 on the point-to-point $GIF_IF"
+		fi
+	fi
+	craft_on r3 "$GIF_R3" prune -u "$GIF_R1" -g "$GIF_CTRL_GROUP" -s "$SRC_ADDR"
+	craft_on r3 "$GIF_R3" prune -u "$GIF_R1" -g "$GIF_ZERO_GROUP" -s "$SRC_ADDR"
 
 	echo
 	if [ "$FAILED" -eq 0 ]; then
