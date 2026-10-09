@@ -342,7 +342,8 @@ alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second 
 played by pimsend from R2's jail), the override Join to that router's Prune and the
 triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
 several trials off the routers' logs),
-a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1), an Assert without the RPT
+a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1) and the old upstream of
+a group so moved pruned (step 14b, M36), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
 the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
 as infinite, and losing to that metric from a higher address, the control (step 7c, M22), an (S,G)

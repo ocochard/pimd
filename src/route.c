@@ -1078,7 +1078,7 @@ static void check_sptbit(mrtentry_t *mrt, const struct sg_count *count)
  * paths that tear a neighbor or a VIF down reach change_interfaces() too, and
  * there the old upstream is a router that has already gone.
  */
-static void prune_old_upstream(mrtentry_t *mrt, pim_nbr_entry_t *old, uint16_t flags)
+void prune_old_upstream(mrtentry_t *mrt, pim_nbr_entry_t *old, uint16_t flags)
 {
     if (!old || old == mrt->upstream)
 	return;

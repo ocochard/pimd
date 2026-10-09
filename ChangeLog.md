@@ -37,6 +37,10 @@ issue of this repository is written out in full.
   cut another's longer one short, and a finite one ended a prune held with
   0xffff.  The longer of the two is kept now, RFC 7761 sec. 4.5.3.  Step
   7o of `crafted`.
+- A group moved to another RP by a new RP set left its old upstream
+  router unpruned, which went on forwarding the group onto the link beside
+  the new upstream until its own state aged out.  A Prune(*,G) goes to the
+  old upstream now, RFC 7761 sec. 4.5.7.  Step 14b of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

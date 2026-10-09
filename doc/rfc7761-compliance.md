@@ -665,6 +665,19 @@ Prune(S,G,rpt) held 10 s lets the source back onto the LAN after them, the
 control; a held one followed by the same Prune held 10 s has to keep it off
 20 s later (it came back before the fix).*
 
+M36 is U4 of the same map.  Sec. 4.5.7 counts a change of the group-to-RP
+mapping among the "RPF'(\*,G) changes not due to an Assert": Join(\*,G) to the
+new upstream and Prune(\*,G) to the old one, naming the new RP.
+`remap_grpentry()` (`src/rp.c`) moved the (\*,G) to the new RP's upstream and
+sent no Prune, so the old upstream went on forwarding the group onto the link
+beside the new one until its own state for it aged out, up to the holdtime.
+It calls `prune_old_upstream()` now, which an MRIB change of the same upstream
+already went through and which sends nothing when the neighbour is the same
+or has gone.  *Test: `crafted` step 14b in `test/lab.sh`: r1 takes a group
+from r2, then a Bootstrap makes ED1 the RP for it, the (\*,G)'s upstream moving
+to ED1 being the control; r2's log has to show r1's Prune(\*,G) naming ED1
+(none came before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

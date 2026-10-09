@@ -2019,6 +2019,10 @@ RPT_LIMIT_HOLD=${RPT_LIMIT_HOLD:-90}
 CRAFT_RANGE=${CRAFT_RANGE:-225.1.2.0}
 CRAFT_RANGE_LEN=${CRAFT_RANGE_LEN:-24}
 CRAFT_OUT_GROUP=${CRAFT_OUT_GROUP:-225.1.3.3}
+# crafted step 14b: a (*,G) whose group a Bootstrap maps to another RP
+CRAFT_REMAP_RANGE=${CRAFT_REMAP_RANGE:-225.1.7.0}
+CRAFT_REMAP_GROUP=${CRAFT_REMAP_GROUP:-225.1.7.1}
+CRAFT_R2_LINK12_ADDR=${CRAFT_R2_LINK12_ADDR:-10.0.12.2}	# r1's upstream toward the RP
 
 # A group in the default SSM range, and the RP config.c invents for such a
 # range: a link-local address that leads nowhere, which is what an SSM group
@@ -8336,6 +8340,38 @@ check_crafted() {
 			fail "($CRAFT_FAR_SRC,$CRAFT_OUT_GROUP) moved to $(route_rp r1 "$CRAFT_FAR_SRC" "$CRAFT_OUT_GROUP"), and it is not in $CRAFT_RANGE/$CRAFT_RANGE_LEN"
 		fi
 	fi
+
+	# RFC 7761 sec. 4.5.7, "RPF'(*,G) changes not due to an Assert", which
+	# a change of the group-to-RP mapping is: Join(*,G) to the new upstream
+	# and Prune(*,G) to the old one, naming the new RP.  remap_grpentry()
+	# (src/rp.c) moved the upstream and sent no Prune, so the old upstream
+	# forwarded the group onto the LAN beside the new one until its own
+	# state aged out.  Map finding U4.  Here r1 takes the group from r2 and
+	# a Bootstrap makes ED1 the RP for it, reached on the LAN; the control
+	# is the upstream moving, and r2's log has to show r1's Prune(*,G).
+	# The same place as step 14 for the same reason, and the same short
+	# holdtime, inside step 15's wait.
+	print "14b. A group moved to another RP is pruned off the old upstream"
+	craft "$SRC_ADDR" hello -H 105
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_REMAP_GROUP" -w -r "$RP_ADDR" -H 65535
+	if ! wait_for 15 route_upstream_is r1 ANY "$CRAFT_REMAP_GROUP" "$CRAFT_R2_LINK12_ADDR"; then
+		fail "r1's (*,$CRAFT_REMAP_GROUP) is not upstream of r2 at $CRAFT_R2_LINK12_ADDR but '$(route_upstream r1 ANY "$CRAFT_REMAP_GROUP")', the step cannot be put"
+	else
+		r2_mark=$(${SUDO} wc -l < "$WORKDIR/r2.log")
+		craft "$SRC_ADDR" bootstrap -u "$SRC_ADDR" -g "$CRAFT_REMAP_RANGE" -m 24 \
+		      -r "$SRC_ADDR" -p "$CRAFT_PRIO" -H 30
+		if ! wait_for 15 route_upstream_is r1 ANY "$CRAFT_REMAP_GROUP" "$SRC_ADDR"; then
+			fail "r1's (*,$CRAFT_REMAP_GROUP) did not move to $SRC_ADDR, the RP of $CRAFT_REMAP_RANGE/24, but stayed on '$(route_upstream r1 ANY "$CRAFT_REMAP_GROUP")'"
+		else
+			ok "r1's (*,$CRAFT_REMAP_GROUP) moved to $SRC_ADDR with the RP, the control"
+			if wait_for 10 r1_sent_r2 "$r2_mark" PRUNE "$CRAFT_REMAP_GROUP" "$SRC_ADDR" "(*,G)"; then
+				ok "and r2, the old upstream, got r1's Prune(*,G) naming the new RP"
+			else
+				fail "r2 got no Prune(*,$CRAFT_REMAP_GROUP) from r1 after the group moved to $SRC_ADDR"
+			fi
+		fi
+	fi
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_REMAP_GROUP" -w -r "$RP_ADDR"
 
 	# The unicast branch is reachable only while this router knows no
 	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the

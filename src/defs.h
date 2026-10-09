@@ -772,6 +772,7 @@ extern int	assert_iif_moved	(mrtentry_t *mrt, vifi_t old_iif);
 extern pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib);
 extern void	update_sptbit		(mrtentry_t *mrt, vifi_t iif);
 extern void	wc_join_gone		(mrtentry_t *wc, vifi_t vifi);
+extern void	prune_old_upstream	(mrtentry_t *mrt, pim_nbr_entry_t *old, uint16_t flags);
 extern mrtentry_t *switch_shortest_path	(uint32_t source, uint32_t group);
 extern void	age_routes		(void);
 /* How long the last pass of it took, and the longest one so far, in

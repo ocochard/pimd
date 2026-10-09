@@ -1016,6 +1016,8 @@ int remap_grpentry(grpentry_t *grpentry_ptr)
 
     grp_route = grpentry_ptr->grp_route;
     if (grp_route) {
+	pim_nbr_entry_t *old_upstream = grp_route->upstream;
+
 	grp_route->upstream   = rpentry_ptr->upstream;
 	grp_route->metric     = rpentry_ptr->metric;
 	grp_route->preference = rpentry_ptr->preference;
@@ -1024,6 +1026,15 @@ int remap_grpentry(grpentry_t *grpentry_ptr)
 			  grp_route->pruned_oifs,
 			  grp_route->leaves,
 			  grp_route->asserted_oifs, MFC_UPDATE_FORCE);
+
+	/* RFC 7761 sec. 4.5.4, "RPF'(*,G) changes not due to an Assert",
+	 * of which a change of the group-to-RP mapping is one: Join the new
+	 * upstream, which the forced change_interfaces() above does, and
+	 * send the old one a Prune(*,G) naming the new RP.  It was left to
+	 * age the group out over its holdtime, forwarding it onto the LAN
+	 * beside the new upstream meanwhile.  Nothing goes where the
+	 * upstream did not change. */
+	prune_old_upstream(grp_route, old_upstream, MRTF_RP | MRTF_WC);
     }
 
     for (mrtentry_ptr = grpentry_ptr->mrtlink; mrtentry_ptr; mrtentry_ptr = mrtentry_ptr->grpnext) {
