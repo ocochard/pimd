@@ -12039,6 +12039,7 @@ run_stream_and_sample_offpath() {
 
 	sg_first=
 	sg_last=
+	mfc_seen=
 	direct=$(vif_index r3 "$OFFPATH_R3_IF")
 	deadline=$(($(date +%s) + STREAM_PKTS + 30))
 	while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -12046,8 +12047,12 @@ run_stream_and_sample_offpath() {
 		if [ -n "$iif" ]; then
 			[ -n "$sg_first" ] || sg_first=$iif
 			sg_last=$iif
-			[ "$iif" = "$direct" ] && break
 		fi
+		# Step 7's question too, for the same reason: read after the
+		# receiver has gone, it raced the membership expiring and lost
+		# under load, three times in a week of -j 14 runs.
+		has_mfc r3 "$SRC_ADDR" && mfc_seen=yes
+		[ "$sg_last" = "$direct" ] && [ -n "$mfc_seen" ] && break
 		sleep 1
 	done
 
@@ -12158,10 +12163,10 @@ check_rp_offpath() {
 	fi
 
 	print "7. The kernel MFC on the last hop router agrees with pimd"
-	if has_mfc r3 "$SRC_ADDR"; then
-		ok "r3 kernel has an MFC entry for $SRC_ADDR"
+	if [ -n "$mfc_seen" ]; then
+		ok "r3 kernel had an MFC entry for $SRC_ADDR while the stream ran"
 	else
-		fail "r3 kernel MFC has nothing for $SRC_ADDR, pimd never pushed the route down"
+		fail "r3 kernel MFC had nothing for $SRC_ADDR while the stream ran, pimd never pushed the route down"
 	fi
 
 	echo
