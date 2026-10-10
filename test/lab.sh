@@ -9136,9 +9136,9 @@ craft_step_15b() {
 	# make a group no RP covers, for an (S,G) as well as a (*,G), so a
 	# router with no RP set -- a booting one, a BSR outage past the RP
 	# holdtime -- could build no source tree at all.  r1 holds no dynamic
-	# RP here, which is step 15's assertion and this one's control.  Both
-	# report KNOWN until aidd_docs/plans/groups-without-rp.md lands, M48
-	# and M49 of doc/rfc7761-compliance.md.
+	# RP here, which is step 15's assertion and this one's control.  M48
+	# and M49 of doc/rfc7761-compliance.md, fixed by the RP-less groups of
+	# aidd_docs/plans/groups-without-rp.md.
 	if ! no_dynamic_rp r1; then
 		fail "r1 still holds an RP, the step proves nothing"
 	elif ! has_neighbor r1 "$CRAFT_NORP_ED1_ADDR"; then
@@ -9148,14 +9148,14 @@ craft_step_15b() {
 		if sg_joined_on r1 "${CRAFT_NORP_EP}a" "$SRC_ADDR" "$CRAFT_NORP_HELD_GROUP"; then
 			ok "and still holds the Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a its group lost the RP under (D9)"
 		else
-			xfail "r1 lost the held Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a when its group lost its RP (D9)"
+			fail "r1 lost the held Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a when its group lost its RP (D9)"
 		fi
 		craft "$CRAFT_NORP_ED1_ADDR" join -u "$CRAFT_NORP_R1_ADDR" -g "$CRAFT_NORP_NEW_GROUP" \
 			-s "$SRC_ADDR" -H 65535
 		if wait_for 15 sg_joined_on r1 "${CRAFT_NORP_EP}a" "$SRC_ADDR" "$CRAFT_NORP_NEW_GROUP"; then
 			ok "and makes ($SRC_ADDR,$CRAFT_NORP_NEW_GROUP) for a Join(S,G) with no RP anywhere (D10)"
 		else
-			xfail "r1 made no ($SRC_ADDR,$CRAFT_NORP_NEW_GROUP) for a Join(S,G) while it holds no RP (D10)"
+			fail "r1 made no ($SRC_ADDR,$CRAFT_NORP_NEW_GROUP) for a Join(S,G) while it holds no RP (D10)"
 		fi
 	fi
 	for g in "$CRAFT_NORP_HELD_GROUP" "$CRAFT_NORP_NEW_GROUP"; do

@@ -1607,7 +1607,7 @@ int change_interfaces(mrtentry_t *mrt,
 
     /* (S,G) entry */
     if (mrt->flags & MRTF_SG) {
-	mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
+	mrp = mrt->group->active_rp_grp ? mrt->group->active_rp_grp->rp->rpentry->mrtlink : NULL;
 	mwc = mrt->group->grp_route;
 
 #ifdef KERNEL_MFC_WC_G
@@ -2000,7 +2000,9 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	 * the other members learn of it is a Register from this router.
 	 * send_pim_register() sends it to them rather than to itself.
 	 */
-	if ((!i_am_rp(mrt->group->rpaddr) || anycast_rp_peers(mrt->group->rpaddr)) &&
+	/* And nobody to register to in a group no RP covers */
+	if (mrt->group->active_rp_grp &&
+	    (!i_am_rp(mrt->group->rpaddr) || anycast_rp_peers(mrt->group->rpaddr)) &&
 	    !IN_PIM_SSM_RANGE(group))
 	    PIMD_VIFM_SET(PIMREG_VIF, mrt->joined_oifs);
 	change_interfaces(mrt,
@@ -2083,7 +2085,7 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	    return;
 
 	mrp = mrt->group->grp_route;
-	if (!mrp)
+	if (!mrp && mrt->group->active_rp_grp)
 	    mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
 
 	if (mrp) {
@@ -2531,7 +2533,7 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
      * following RPF'(*,G) answered nothing once an Assert had moved it,
      * and the winner got a bare Join(*,G) every period -- sec. 4.5.3's
      * signal to forward the pruned source again. */
-    rpt_upstream = mrt_wide ? mrt_wide->upstream : rp->upstream;
+    rpt_upstream = mrt_wide ? mrt_wide->upstream : rp ? rp->upstream : NULL;
 
     if (grp_action != PIM_ACTION_NOTHING) {
 	src_action_rp    = join_or_prune(mrt_srcs, rpt_upstream);
@@ -2776,6 +2778,17 @@ static void route_timers_run(void *arg __attribute__((unused)))
 	}
     }
 
+    /* And the groups no RP covers */
+    for (grp = grp_norp_list; grp; grp = grp->rpnext) {
+	for (mrt = grp->mrtlink; mrt; mrt = mrt_next) {
+	    mrt_next = mrt->grpnext;
+	    route_timers_expire_oifs(mrt, now, &next);
+	    jp_timer_expire_sg(mrt, NULL, PIM_ACTION_NOTHING, now);
+	    if (!next_jp || mrt->jp_expires < next_jp)
+		next_jp = mrt->jp_expires;
+	}
+    }
+
     jp_flush();
 
     now = timer_now();
@@ -2785,6 +2798,207 @@ static void route_timers_run(void *arg __attribute__((unused)))
 	route_timers_schedule(next);
 }
 
+
+/*
+ * One (S,G) entry's share of age_routes_pass(): its interface timers, a
+ * change of the route to the source, the SPT switch and the Keepalive, its
+ * Join and Register-Suppression timers, and the entry's own lifetime.  @rp is
+ * the RP its group maps to, NULL for an RP-less group, which holds no
+ * (S,G)RPbit entry, the one kind that reads it; @grp_action is what the
+ * group's (*,G) timer asked for in the same pass.
+ */
+static void age_route_sg(mrtentry_t *mrt_srcs, grpentry_t *grp, rpentry_t *rp, int grp_action,
+			 uint64_t now, uint8_t ucast_flag, uint8_t rate_flag)
+{
+    uint8_t new_pruned_oifs[MAXVIFS];
+    int update_src_iif;
+    int change_flag;
+    vifi_t vifi;
+
+    /* outgoing interfaces timers */
+    change_flag = age_asserts(mrt_srcs, FALSE);
+    if (expire_prune_pending_timers(mrt_srcs, now, NULL))
+	change_flag = TRUE;
+    if (expire_rpt_timers(mrt_srcs, now, NULL))
+	change_flag = TRUE;
+
+    for (vifi = 0; vifi < numvifs; vifi++) {
+	if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {
+	    /* TODO: checking for reg_num_vif is slow! */
+	    if (vifi != PIMREG_VIF) {
+		/* Held until canceled, as above */
+		if (mrt_srcs->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
+		    continue;
+
+		/* A copy of the (*,G)'s joins with no Join(S,G)
+		 * beside it is NoInfo here, and goes too */
+		IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
+		    jp_ds_apply(mrt_srcs, vifi,
+				jp_ds_decide(jp_ds_state(mrt_srcs, vifi), JP_EV_ET, 0),
+				0, 0);
+		    change_flag = TRUE;
+		}
+	    }
+	}
+    }
+
+    update_src_iif = FALSE;
+    if (ucast_flag == TRUE) {
+	if (!(mrt_srcs->flags & MRTF_RP)) {
+	    /* iif toward the source */
+	    srcentry_save.incoming = mrt_srcs->source->incoming;
+	    srcentry_save.upstream = mrt_srcs->source->upstream;
+	    if (set_incoming(mrt_srcs->source, PIM_IIF_SOURCE) != TRUE) {
+		/* XXX: not in the spec!
+		 * Cannot find route toward that source.
+		 * This is bad. Delete the entry.
+		 */
+		delete_mrtentry(mrt_srcs);
+		return;
+	    }
+
+	    /* iif info found */
+	    if ((srcentry_save.incoming != mrt_srcs->source->incoming) ||
+		(srcentry_save.upstream != mrt_srcs->source->upstream)) {
+		pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
+
+		/* Route change has occur */
+		vifi_t old_iif = mrt_srcs->incoming;
+
+		update_src_iif = TRUE;
+		mrt_srcs->incoming = mrt_srcs->source->incoming;
+		assert_iif_moved(mrt_srcs, old_iif);
+		/* RPF'(S,G): the routing table's new neighbor,
+		 * unless an Assert still holds the incoming
+		 * interface -- RFC 7761 sec. 4.5.5, the change
+		 * "does not occur if an Assert is active and the
+		 * upstream interface does not change".  A moved
+		 * interface has dropped the Loser state above. */
+		mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, mrt_srcs->source->upstream);
+
+		/* Prune the router we used to take S from, the
+		 * half of RFC 7761 sec. 4.5.5 that pairs with
+		 * the Join to the new one; nothing, where the
+		 * winner keeps it. */
+		prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
+	    }
+	} else if (rp) {
+	    /* (S,G)RPBit with iif toward RP.  Its upstream is
+	     * RPF'(S,G,rpt), which sec. 4.1.6 makes the (S,G)
+	     * Assert winner on RPF_interface(RP(G)) while we are
+	     * the Loser there and RPF'(*,G) otherwise, the (*,G)
+	     * above being brought up to date first: held to the
+	     * RP's routing table neighbor, it went back there on
+	     * every check, the Assert winner notwithstanding.
+	     * Nothing goes to the old one: sec. 4.5.7 has no
+	     * message for a change of RPF'(S,G,rpt), and the
+	     * Prune(S,G) sent here was another machine's. */
+	    pim_nbr_entry_t *rpt_base = grp->grp_route
+		? grp->grp_route->upstream : rp->upstream;
+
+	    if ((assert_rpf_prime(mrt_srcs, rpt_base) != mrt_srcs->upstream) ||
+		(rp->incoming != mrt_srcs->incoming)) {
+		vifi_t old_iif = mrt_srcs->incoming;
+
+		update_src_iif = TRUE; /* XXX: a hack */
+		/* XXX: setup the iif now! */
+		mrt_srcs->incoming = rp->incoming;
+		assert_iif_moved(mrt_srcs, old_iif);
+		mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, rpt_base);
+	    }
+	}
+    }
+
+    if ((change_flag == TRUE) || (update_src_iif == TRUE))
+	/* Flush the changes */
+	change_interfaces(mrt_srcs,
+			  mrt_srcs->incoming,
+			  mrt_srcs->joined_oifs,
+			  mrt_srcs->pruned_oifs,
+			  mrt_srcs->leaves,
+			  mrt_srcs->asserted_oifs, MFC_UPDATE_FORCE);
+
+    if (rate_flag == TRUE)
+	check_spt_threshold(mrt_srcs);
+
+    /* Sec. 4.2 sets the Keepalive Timer and decides SPTbit on
+     * receipt of data, which pimd only sees when the kernel
+     * hands it a packet.  Ask the kernel instead. */
+    check_data_from_source(mrt_srcs);
+
+    /* Join/Prune timer */
+    jp_timer_expire_sg(mrt_srcs, rp, grp_action, now);
+    rpt_timers_expire(mrt_srcs, now, NULL);
+
+    /* Register-Suppression timer */
+    /* TODO: to reduce the kernel calls, if the timer
+     * is running, install a negative cache entry in
+     * the kernel? */
+    IF_TIMER_SET(mrt_srcs->rs_timer) {
+	IF_TIMEOUT(mrt_srcs->rs_timer) {
+	    /* Start encapsulating the packets */
+	    PIMD_VIFM_COPY(mrt_srcs->pruned_oifs, new_pruned_oifs);
+	    PIMD_VIFM_CLR(PIMREG_VIF, new_pruned_oifs);
+	    change_interfaces(mrt_srcs,
+			      mrt_srcs->incoming,
+			      mrt_srcs->joined_oifs,
+			      new_pruned_oifs,
+			      mrt_srcs->leaves,
+			      mrt_srcs->asserted_oifs, 0);
+	}
+	ELSE {
+	    /* The register suppression timer is running. Check
+	     * whether it is time to send PIM_NULL_REGISTER.
+	     */
+	    /* TODO: XXX: TIMER implem. dependency! */
+	    if (mrt_srcs->rs_timer <= PIM_REGISTER_PROBE_TIME)
+		/* Time to send a PIM_NULL_REGISTER */
+		/* XXX: a (bad) hack! This will be sending
+		 * periodically NULL_REGISTERS between
+		 * PIM_REGISTER_PROBE_TIME and 0. Well,
+		 * because PROBE_TIME is 5 secs, it will
+		 * happen only once, so it helps to avoid
+		 * adding a flag to the routing entry whether
+		 * a NULL_REGISTER was sent.
+		 */
+		send_pim_null_register(mrt_srcs);
+	}
+    }
+
+    /* routing entry, held as the (*,G) one above is */
+    if (mrt_srcs->entry_timer != PIM_HELLO_HOLDTIME_FOREVER &&
+	TIMEOUT(mrt_srcs->entry_timer)) {
+	uint16_t want = sg_state_wants(mrt_srcs, now);
+
+	/* Downstream state outlives the Keepalive Timer:
+	 * the entry is not deleted with it in, and is
+	 * looked at again no later than one data timeout
+	 * on, a held Join being one a Prune can still end */
+	if (want) {
+	    SET_TIMER(mrt_srcs->entry_timer,
+		      want < PIM_DATA_TIMEOUT ? want : PIM_DATA_TIMEOUT);
+	    return;
+	}
+
+	if (PIMD_VIFM_ISEMPTY(mrt_srcs->leaves)) {
+	    delete_mrtentry(mrt_srcs);
+	    return;
+	}
+	/* XXX: if DR, Register suppressed,
+	 * and leaf oif inherited from (*,G), the
+	 * directly connected source is not active anymore,
+	 * this (S,G) entry won't timeout. Check if the leaf
+	 * oifs are inherited from (*,G); if true. delete the
+	 * (S,G) entry.
+	 */
+	if (mrt_srcs->group->grp_route) {
+	    if (PIMD_VIFM_LASTHOP_ROUTER(mrt_srcs->group->grp_route->leaves, mrt_srcs->leaves)) {
+		delete_mrtentry(mrt_srcs);
+		return;
+	    }
+	}
+    }
+}
 
 /*
  * Scan the whole routing table and timeout a bunch of timers:
@@ -2847,8 +3061,6 @@ static void age_routes_pass(void)
     int grp_action;
     uint64_t now = timer_now();
     rpentry_t *rp;
-    int update_src_iif;
-    uint8_t new_pruned_oifs[MAXVIFS];
     uint8_t ucast_flag = FALSE;
     uint8_t rate_flag = FALSE;
 
@@ -3002,196 +3214,21 @@ static void age_routes_pass(void)
 		/* For all (S,G) for this group */
 		/* XXX: mrt_srcs was set before */
 		for (; mrt_srcs; mrt_srcs = mrt_srcs_next) {
-		    /* routing entry */
 		    mrt_srcs_next = mrt_srcs->grpnext;
-
-		    /* outgoing interfaces timers */
-		    change_flag = age_asserts(mrt_srcs, FALSE);
-		    if (expire_prune_pending_timers(mrt_srcs, now, NULL))
-			change_flag = TRUE;
-		    if (expire_rpt_timers(mrt_srcs, now, NULL))
-			change_flag = TRUE;
-
-		    for (vifi = 0; vifi < numvifs; vifi++) {
-			if (PIMD_VIFM_ISSET(vifi, mrt_srcs->joined_oifs)) {
-			    /* TODO: checking for reg_num_vif is slow! */
-			    if (vifi != PIMREG_VIF) {
-				/* Held until canceled, as above */
-				if (mrt_srcs->vif_timers[vifi] == PIM_HELLO_HOLDTIME_FOREVER)
-				    continue;
-
-				/* A copy of the (*,G)'s joins with no Join(S,G)
-				 * beside it is NoInfo here, and goes too */
-				IF_TIMEOUT(mrt_srcs->vif_timers[vifi]) {
-				    jp_ds_apply(mrt_srcs, vifi,
-						jp_ds_decide(jp_ds_state(mrt_srcs, vifi), JP_EV_ET, 0),
-						0, 0);
-				    change_flag = TRUE;
-				}
-			    }
-			}
-		    }
-
-		    update_src_iif = FALSE;
-		    if (ucast_flag == TRUE) {
-			if (!(mrt_srcs->flags & MRTF_RP)) {
-			    /* iif toward the source */
-			    srcentry_save.incoming = mrt_srcs->source->incoming;
-			    srcentry_save.upstream = mrt_srcs->source->upstream;
-			    if (set_incoming(mrt_srcs->source, PIM_IIF_SOURCE) != TRUE) {
-				/* XXX: not in the spec!
-				 * Cannot find route toward that source.
-				 * This is bad. Delete the entry.
-				 */
-				delete_mrtentry(mrt_srcs);
-				continue;
-			    }
-
-			    /* iif info found */
-			    if ((srcentry_save.incoming != mrt_srcs->source->incoming) ||
-				(srcentry_save.upstream != mrt_srcs->source->upstream)) {
-				pim_nbr_entry_t *old_upstream = mrt_srcs->upstream;
-
-				/* Route change has occur */
-				vifi_t old_iif = mrt_srcs->incoming;
-
-				update_src_iif = TRUE;
-				mrt_srcs->incoming = mrt_srcs->source->incoming;
-				assert_iif_moved(mrt_srcs, old_iif);
-				/* RPF'(S,G): the routing table's new neighbor,
-				 * unless an Assert still holds the incoming
-				 * interface -- RFC 7761 sec. 4.5.5, the change
-				 * "does not occur if an Assert is active and the
-				 * upstream interface does not change".  A moved
-				 * interface has dropped the Loser state above. */
-				mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, mrt_srcs->source->upstream);
-
-				/* Prune the router we used to take S from, the
-				 * half of RFC 7761 sec. 4.5.5 that pairs with
-				 * the Join to the new one; nothing, where the
-				 * winner keeps it. */
-				prune_old_upstream(mrt_srcs, old_upstream, MRTF_SG);
-			    }
-			} else {
-			    /* (S,G)RPBit with iif toward RP.  Its upstream is
-			     * RPF'(S,G,rpt), which sec. 4.1.6 makes the (S,G)
-			     * Assert winner on RPF_interface(RP(G)) while we are
-			     * the Loser there and RPF'(*,G) otherwise, the (*,G)
-			     * above being brought up to date first: held to the
-			     * RP's routing table neighbor, it went back there on
-			     * every check, the Assert winner notwithstanding.
-			     * Nothing goes to the old one: sec. 4.5.7 has no
-			     * message for a change of RPF'(S,G,rpt), and the
-			     * Prune(S,G) sent here was another machine's. */
-			    pim_nbr_entry_t *rpt_base = grp->grp_route
-				? grp->grp_route->upstream : rp->upstream;
-
-			    if ((assert_rpf_prime(mrt_srcs, rpt_base) != mrt_srcs->upstream) ||
-				(rp->incoming != mrt_srcs->incoming)) {
-				vifi_t old_iif = mrt_srcs->incoming;
-
-				update_src_iif = TRUE; /* XXX: a hack */
-				/* XXX: setup the iif now! */
-				mrt_srcs->incoming = rp->incoming;
-				assert_iif_moved(mrt_srcs, old_iif);
-				mrt_srcs->upstream = assert_rpf_prime(mrt_srcs, rpt_base);
-			    }
-			}
-		    }
-
-		    if ((change_flag == TRUE) || (update_src_iif == TRUE))
-			/* Flush the changes */
-			change_interfaces(mrt_srcs,
-					  mrt_srcs->incoming,
-					  mrt_srcs->joined_oifs,
-					  mrt_srcs->pruned_oifs,
-					  mrt_srcs->leaves,
-					  mrt_srcs->asserted_oifs, MFC_UPDATE_FORCE);
-
-		    if (rate_flag == TRUE)
-			check_spt_threshold(mrt_srcs);
-
-		    /* Sec. 4.2 sets the Keepalive Timer and decides SPTbit on
-		     * receipt of data, which pimd only sees when the kernel
-		     * hands it a packet.  Ask the kernel instead. */
-		    check_data_from_source(mrt_srcs);
-
-		    /* Join/Prune timer */
-		    jp_timer_expire_sg(mrt_srcs, rp, grp_action, now);
-		    rpt_timers_expire(mrt_srcs, now, NULL);
-
-		    /* Register-Suppression timer */
-		    /* TODO: to reduce the kernel calls, if the timer
-		     * is running, install a negative cache entry in
-		     * the kernel? */
-		    IF_TIMER_SET(mrt_srcs->rs_timer) {
-			IF_TIMEOUT(mrt_srcs->rs_timer) {
-			    /* Start encapsulating the packets */
-			    PIMD_VIFM_COPY(mrt_srcs->pruned_oifs, new_pruned_oifs);
-			    PIMD_VIFM_CLR(PIMREG_VIF, new_pruned_oifs);
-			    change_interfaces(mrt_srcs,
-					      mrt_srcs->incoming,
-					      mrt_srcs->joined_oifs,
-					      new_pruned_oifs,
-					      mrt_srcs->leaves,
-					      mrt_srcs->asserted_oifs, 0);
-			}
-			ELSE {
-			    /* The register suppression timer is running. Check
-			     * whether it is time to send PIM_NULL_REGISTER.
-			     */
-			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (mrt_srcs->rs_timer <= PIM_REGISTER_PROBE_TIME)
-				/* Time to send a PIM_NULL_REGISTER */
-				/* XXX: a (bad) hack! This will be sending
-				 * periodically NULL_REGISTERS between
-				 * PIM_REGISTER_PROBE_TIME and 0. Well,
-				 * because PROBE_TIME is 5 secs, it will
-				 * happen only once, so it helps to avoid
-				 * adding a flag to the routing entry whether
-				 * a NULL_REGISTER was sent.
-				 */
-				send_pim_null_register(mrt_srcs);
-			}
-		    }
-
-		    /* routing entry, held as the (*,G) one above is */
-		    if (mrt_srcs->entry_timer != PIM_HELLO_HOLDTIME_FOREVER &&
-			TIMEOUT(mrt_srcs->entry_timer)) {
-			uint16_t want = sg_state_wants(mrt_srcs, now);
-
-			/* Downstream state outlives the Keepalive Timer:
-			 * the entry is not deleted with it in, and is
-			 * looked at again no later than one data timeout
-			 * on, a held Join being one a Prune can still end */
-			if (want) {
-			    SET_TIMER(mrt_srcs->entry_timer,
-				      want < PIM_DATA_TIMEOUT ? want : PIM_DATA_TIMEOUT);
-			    continue;
-			}
-
-			if (PIMD_VIFM_ISEMPTY(mrt_srcs->leaves)) {
-			    delete_mrtentry(mrt_srcs);
-			    continue;
-			}
-			/* XXX: if DR, Register suppressed,
-			 * and leaf oif inherited from (*,G), the
-			 * directly connected source is not active anymore,
-			 * this (S,G) entry won't timeout. Check if the leaf
-			 * oifs are inherited from (*,G); if true. delete the
-			 * (S,G) entry.
-			 */
-			if (mrt_srcs->group->grp_route) {
-			    if (PIMD_VIFM_LASTHOP_ROUTER(mrt_srcs->group->grp_route->leaves, mrt_srcs->leaves)) {
-				delete_mrtentry(mrt_srcs);
-				continue;
-			    }
-			}
-		    }
+		    age_route_sg(mrt_srcs, grp, rp, grp_action, now, ucast_flag, rate_flag);
 		} /* End of (S,G) loop */
 	    } /* End of (*,G) loop */
 	}
     } /* For all cand RPs */
+
+    /* The groups no RP covers, which hold source tree entries alone */
+    for (grp = grp_norp_list; grp; grp = grp_next) {
+	grp_next = grp->rpnext;
+	for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs_next) {
+	    mrt_srcs_next = mrt_srcs->grpnext;
+	    age_route_sg(mrt_srcs, grp, NULL, PIM_ACTION_NOTHING, now, ucast_flag, rate_flag);
+	}
+    }
 
     jp_flush();
 }

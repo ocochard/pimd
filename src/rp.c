@@ -640,7 +640,17 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
      * segmented list holds no groups, and rp_grp_match() never reads it.
      */
     if (mask_ptr->group_rp_number == 1 && used_grp_mask_list == &grp_mask_list) {
+	grpentry_t *grp_ptr, *grp_ptr_next;
+
 	remap_covered_groups(mask_ptr);
+	/* The RP-less groups the prefix covers: a prefix gaining its first
+	 * RP is the one way one of them gains an RP */
+	for (grp_ptr = grp_norp_list; grp_ptr; grp_ptr = grp_ptr_next) {
+	    grp_ptr_next = grp_ptr->rpnext;
+	    if ((grp_ptr->group & mask_ptr->group_mask) ==
+		(mask_ptr->group_addr & mask_ptr->group_mask))
+		remap_grpentry(grp_ptr);
+	}
 	/* And the local members that had no RP to be joined towards */
 	igmp_resync_leaves();
     }
@@ -986,21 +996,16 @@ int remap_grpentry(grpentry_t *grpentry_ptr)
     if (grpentry_ptr == NULL)
 	return FALSE;
 
-    /* Remove from the list of all groups matching to the same RP */
-    if (grpentry_ptr->rpprev) {
-	grpentry_ptr->rpprev->rpnext = grpentry_ptr->rpnext;
-    } else {
-	if (grpentry_ptr->active_rp_grp)
-	    grpentry_ptr->active_rp_grp->grplink = grpentry_ptr->rpnext;
-    }
-
-    if (grpentry_ptr->rpnext)
-	grpentry_ptr->rpnext->rpprev = grpentry_ptr->rpprev;
+    /* Remove from the list of all groups matching to the same RP, or from
+     * the RP-less list */
+    grp_chain_unlink(grpentry_ptr);
 
     entry_ptr = rp_grp_match(grpentry_ptr->group);
     if (entry_ptr == NULL) {
-	/* If cannot remap, delete the group */
-	delete_grpentry(grpentry_ptr);
+	/* No RP left: the source tree state stays, RP-less, and the group
+	 * goes only where there is none (M48) */
+	if (!grp_keep_without_rp(grpentry_ptr))
+	    delete_grpentry(grpentry_ptr);
 	return FALSE;
     }
     rpentry_ptr = entry_ptr->rp->rpentry;

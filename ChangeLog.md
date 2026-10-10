@@ -94,6 +94,14 @@ issue of this repository is written out in full.
   group off its shared tree, or a Prune taking that Join away, could wait
   up to a minute before the router passed it on upstream.  RFC 7761 sec.
   4.5.5.  Step 7t of `crafted`.
+- A router's source tree state no longer depends on its RP set.  A group
+  whose RP mapping went away -- a BSR outage past the RP holdtime, a
+  changed Bootstrap -- was deleted with every Join for a source in it, for
+  good where a downstream router held the Join with a holdtime of 0xffff;
+  and a router with no RP for a group refused Joins for its sources
+  altogether.  Such a group is kept, with its source trees alone, until an
+  RP covers it again.  RFC 7761 sec. 4.5.2.  Steps 14c and 15b of
+  `crafted`.
 - A routing entry made after interfaces had come and gone could have its
   per-interface state sized for fewer interfaces than the router had, and
   reading it -- `pimctl show mrt` among others -- went past its end.  The

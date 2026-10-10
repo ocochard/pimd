@@ -1896,6 +1896,10 @@ int send_pim_null_register(mrtentry_t *mrtentry)
     vifi_t vifi;
     uint32_t reg_src, reg_dst;
 
+    /* A group no RP covers has nobody to probe */
+    if (!mrtentry->group->active_rp_grp)
+	return FALSE;
+
     /* No directly connected source; no local address */
     if ((vifi = find_vif_direct_local(mrtentry->source->address, TRUE))== NO_VIF)
 	return FALSE;

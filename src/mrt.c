@@ -38,6 +38,15 @@
 srcentry_t		*srclist;
 grpentry_t		*grplist;
 
+/* The groups no RP covers, which hold (S,G) entries without MRTF_RP and
+ * nothing else -- no (*,G), no (S,G)RPbit -- linked through the same
+ * rpnext/rpprev an RP's groups are linked through on its grplink, so that a
+ * group is on exactly one such chain.  RFC 7761 keeps source tree state apart
+ * from the RP; pimd had every group belong to one, and deleted a group, its
+ * (S,G) Join state with it, when its RP mapping went (M48), and refused to
+ * make one no RP covered (M49).  See aidd_docs/plans/groups-without-rp.md. */
+grpentry_t		*grp_norp_list;
+
 /*
  * Local functions definition
  */
@@ -65,6 +74,7 @@ void init_pim_mrt(void)
      * source writes to the one before it, the head for the first source.
      * What sources are left then have no entry at all.
      */
+    grp_norp_list = NULL;
     if (grplist != NULL) {
 	while (grplist->next != NULL)
 	    delete_grpentry(grplist->next);
@@ -144,6 +154,84 @@ srcentry_t *find_source(uint32_t source)
     return NULL;
 }
 
+
+/* Take @grp off the chain it is on, an RP mapping's grplink or the RP-less
+ * list, leaving active_rp_grp as it is. */
+void grp_chain_unlink(grpentry_t *grp)
+{
+    if (grp->rpnext)
+	grp->rpnext->rpprev = grp->rpprev;
+
+    if (grp->rpprev)
+	grp->rpprev->rpnext = grp->rpnext;
+    else if (grp->active_rp_grp)
+	grp->active_rp_grp->grplink = grp->rpnext;
+    else if (grp_norp_list == grp)
+	grp_norp_list = grp->rpnext;
+
+    grp->rpnext = grp->rpprev = NULL;
+}
+
+/* @grp, on no chain, to the head of the RP-less list */
+static void grp_norp_link(grpentry_t *grp)
+{
+    grp->active_rp_grp = NULL;
+    grp->rpaddr = INADDR_ANY_N;
+    grp->rpprev = NULL;
+    grp->rpnext = grp_norp_list;
+    if (grp_norp_list)
+	grp_norp_list->rpprev = grp;
+    grp_norp_list = grp;
+}
+
+/*
+ * @grp has lost its last RP, remap_grpentry() (src/rp.c) has taken it off the
+ * RP's chain, and the RP it pointed to may be freed already: what an RP-less
+ * group may hold is kept, the rest goes.  The pointers are cleared first, so
+ * that nothing deleted below reaches the RP.  Returns FALSE where nothing is
+ * left to keep, for the caller to delete the group.
+ */
+int grp_keep_without_rp(grpentry_t *grp)
+{
+    mrtentry_t *mrt, *next;
+    int keep = FALSE;
+
+    grp->active_rp_grp = NULL;
+    grp->rpaddr = INADDR_ANY_N;
+    grp->rpnext = grp->rpprev = NULL;
+
+    for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+	if (!(mrt->flags & MRTF_RP)) {
+	    keep = TRUE;
+	    break;
+	}
+    }
+    if (!keep)
+	return FALSE;
+
+    /* A source tree entry stays, so neither deletion below can take the
+     * group with it */
+    if (grp->grp_route)
+	delete_mrtentry(grp->grp_route);
+    for (mrt = grp->mrtlink; mrt; mrt = next) {
+	next = mrt->grpnext;
+	if (mrt->flags & MRTF_RP)
+	    delete_mrtentry(mrt);
+    }
+
+    /* Nobody to register to: the register vif and its suppression go */
+    for (mrt = grp->mrtlink; mrt; mrt = mrt->grpnext) {
+	PIMD_VIFM_CLR(PIMREG_VIF, mrt->joined_oifs);
+	PIMD_VIFM_CLR(PIMREG_VIF, mrt->pruned_oifs);
+	RESET_TIMER(mrt->rs_timer);
+	change_interfaces(mrt, mrt->incoming, mrt->joined_oifs, mrt->pruned_oifs,
+			  mrt->leaves, mrt->asserted_oifs, MFC_UPDATE_FORCE);
+    }
+
+    grp_norp_link(grp);
+
+    return TRUE;
+}
 
 mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char create)
 {
@@ -233,7 +321,7 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 
 	if (!grp->active_rp_grp) {
 	    rp_grp = rp_grp_match(group);
-	    if (!rp_grp) {
+	    if (!rp_grp && (flags & (MRTF_WC | MRTF_RP))) {
 		IF_DEBUG(DEBUG_MRT)
 		    logit(LOG_DEBUG, 0, "%s: no RP for group %s, return NULL",
 			  __func__, inet_fmt(group, s1, sizeof(s1)));
@@ -244,6 +332,18 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 
 		return NULL;
 	    }
+
+	    if (!rp_grp) {
+		/* A source tree needs no RP, RFC 7761 sec. 4.5.2 and 4.5.5:
+		 * the group is made RP-less, or stays so */
+		if (!grp->rpprev && grp_norp_list != grp)
+		    grp_norp_link(grp);
+		rp = NULL;
+		goto rp_done;
+	    }
+
+	    /* An RP-less group an RP now covers is attached to it */
+	    grp_chain_unlink(grp);
 
 	    rp = rp_grp->rp->rpentry;
 	    grp->active_rp_grp = rp_grp;
@@ -258,6 +358,7 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	    rp = grp->active_rp_grp->rp->rpentry;
 	}
     }
+rp_done:
 
     mrt_wc = mrt_pmbr = NULL;
 
@@ -335,7 +436,7 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 
 	if (mrt->flags & MRTF_NEW) {
 	    mrt2 = grp->grp_route;
-	    if (!mrt2)
+	    if (!mrt2 && rp)
 		mrt2 = rp->mrtlink;
 
 	    /* Copy the oif list from the existing (*,G) or (*,*,RP) entry */
@@ -424,16 +525,8 @@ void delete_grpentry(grpentry_t *grp)
 	FREE_MRTENTRY(grp->grp_route);
     }
 
-    /* Delete from the rp_grp_entry chain */
-    if (grp->active_rp_grp) {
-	if (grp->rpnext)
-	    grp->rpnext->rpprev = grp->rpprev;
-
-	if (grp->rpprev)
-	    grp->rpprev->rpnext = grp->rpnext;
-	else
-	    grp->active_rp_grp->grplink = grp->rpnext;
-    }
+    /* Delete from the rp_grp_entry chain, or the RP-less one */
+    grp_chain_unlink(grp);
 
     for (node = grp->mrtlink; node; node = next) {
 	next = node->grpnext;
@@ -496,7 +589,8 @@ void delete_mrtentry(mrtentry_t *mrt)
 	    mrt->group->mrtlink = mrt->grpnext;
 	    if (!mrt->grpnext) {
 		/* All (S,G) MRT entries are gone. Allow creating (*,G) MFC entries. */
-		mrt_rp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
+		mrt_rp = mrt->group->active_rp_grp
+		    ? mrt->group->active_rp_grp->rp->rpentry->mrtlink : NULL;
 		mrt_wc = mrt->group->grp_route;
 		if (mrt_rp)
 		    mrt_rp->flags &= ~MRTF_MFC_CLONE_SG;
@@ -1140,6 +1234,8 @@ static void move_kernel_cache(mrtentry_t *mrt, uint16_t flags)
 /*	move_kernel_cache(mrt->group->grp_route, flags); */
 	mrtentry_rp = mrt->group->grp_route;
 	if (!mrtentry_rp) {
+	    if (!mrt->group->active_rp_grp)
+		return;		/* RP-less: no (*,G) or (*,*,RP) to move from */
 	    mrtentry_rp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
 	    if (!mrtentry_rp)
 		return;

@@ -381,6 +381,7 @@ extern uint32_t		igmp_querier_timeout;
 /* mrt.c */
 extern srcentry_t 	*srclist;
 extern grpentry_t 	*grplist;
+extern grpentry_t	*grp_norp_list;
 
 /* vif.c */
 extern struct uvif	uvifs[MAXVIFS];
@@ -697,6 +698,8 @@ extern srcentry_t *find_source		(uint32_t source);
 extern void	delete_mrtentry		(mrtentry_t *mrtentry_ptr);
 extern void	delete_srcentry		(srcentry_t *srcentry_ptr);
 extern void	delete_grpentry		(grpentry_t *grpentry_ptr);
+extern void	grp_chain_unlink	(grpentry_t *grp);
+extern int	grp_keep_without_rp	(grpentry_t *grp);
 extern void	delete_mrtentry_all_kernel_cache (mrtentry_t *mrtentry_ptr);
 extern void	delete_single_kernel_cache (mrtentry_t *mrtentry_ptr, kernel_cache_t *kernel_cache_ptr);
 extern void	delete_single_kernel_cache_addr (mrtentry_t *mrtentry_ptr, uint32_t source, uint32_t group);
