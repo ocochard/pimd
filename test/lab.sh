@@ -2407,6 +2407,12 @@ set_scenario() {
 		# one are both behind IF_DEBUG(DEBUG_PIM_HELLO), and which
 		# interfaces they name is half of what this scenario reads.
 		DEBUG="$DEBUG_DEFAULT,pim_hello"
+	elif [ "$SCENARIO" = privsep ]; then
+		# Its control step has lost every reply twice in CI's FreeBSD
+		# VM and never here: r2 dropped its entry for ED2's source
+		# when r1 came back --no-privsep, and the log had no Join or
+		# Hello to say why.  These are what would.
+		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
 	else
 		DEBUG=$DEBUG_DEFAULT
 	fi
@@ -13963,6 +13969,15 @@ privsep_stream() {
 	fi
 
 	fail "only $ps_replies replies over $ps_what, want >= $MIN_REPLIES, see $WORKDIR/sender.log"
+	# The state a run that only fails in CI's VM leaves nowhere else:
+	# the routes and neighbours of the three routers, read before the
+	# lab is taken down
+	for r in r1 r2 r3; do
+		dprint "--- $r: pimctl show mrt detail ---"
+		pimctl "$r" show mrt detail 2>&1 || true
+		dprint "--- $r: pimctl show neighbor ---"
+		pimctl "$r" show neighbor 2>&1 || true
+	done
 	return 1
 }
 

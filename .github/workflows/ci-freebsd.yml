@@ -162,7 +162,7 @@ jobs:
                     for f in "$d"/*.log; do
                             test -f "$f" || continue
                             echo "===== $f ====="
-                            tail -n 400 "$f"
+                            tail -n 3000 "$f"
                     done
             done
 
