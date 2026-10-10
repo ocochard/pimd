@@ -819,12 +819,20 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->rpt_pp_expires	    = calloc(numvifs, sizeof(mrt->rpt_pp_expires[0]));
     vif_numbers = numvifs;
 #else
-    mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * total_interfaces);
-    mrt->asserts	    = calloc(total_interfaces, sizeof(mrt->asserts[0]));
-    mrt->pp_expires	    = calloc(total_interfaces, sizeof(mrt->pp_expires[0]));
-    mrt->rpt_expires	    = calloc(total_interfaces, sizeof(mrt->rpt_expires[0]));
-    mrt->rpt_pp_expires	    = calloc(total_interfaces, sizeof(mrt->rpt_pp_expires[0]));
-    vif_numbers = total_interfaces;
+    /* Every potential vif is MAXVIFS, the kernel's own bound.  It was
+     * total_interfaces, which counts the interfaces getifaddrs() reports at
+     * the last scan, while a VIF keeps its slot when its interface goes and a
+     * new one takes the next: a router whose links came and went held VIF
+     * numbers past it, and every loop to numvifs read and wrote off the end
+     * of an entry made in between -- AddressSanitizer's heap-buffer-overflow
+     * in assert_winner_is_me() under crafted's steps 7m, 7w and 14c, each
+     * building a link of its own. */
+    mrt->vif_timers	    = calloc(MAXVIFS, sizeof(mrt->vif_timers[0]));
+    mrt->asserts	    = calloc(MAXVIFS, sizeof(mrt->asserts[0]));
+    mrt->pp_expires	    = calloc(MAXVIFS, sizeof(mrt->pp_expires[0]));
+    mrt->rpt_expires	    = calloc(MAXVIFS, sizeof(mrt->rpt_expires[0]));
+    mrt->rpt_pp_expires	    = calloc(MAXVIFS, sizeof(mrt->rpt_pp_expires[0]));
+    vif_numbers = MAXVIFS;
 #endif /* SAVE_MEMORY */
     if (!mrt->vif_timers || !mrt->asserts || !mrt->pp_expires ||
 	!mrt->rpt_expires || !mrt->rpt_pp_expires) {

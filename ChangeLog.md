@@ -94,6 +94,11 @@ issue of this repository is written out in full.
   group off its shared tree, or a Prune taking that Join away, could wait
   up to a minute before the router passed it on upstream.  RFC 7761 sec.
   4.5.5.  Step 7t of `crafted`.
+- A routing entry made after interfaces had come and gone could have its
+  per-interface state sized for fewer interfaces than the router had, and
+  reading it -- `pimctl show mrt` among others -- went past its end.  The
+  state is sized for every interface the kernel allows now.  Found by
+  AddressSanitizer under `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
