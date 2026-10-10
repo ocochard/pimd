@@ -1871,6 +1871,15 @@ CRAFT_SPT_RPT_GROUP=${CRAFT_SPT_RPT_GROUP:-225.1.4.19}
 # crafted step 7v: a group whose (*,G) r1 forwards on the LAN and loses an
 # (S,G) Assert for there
 CRAFT_ASSERT_NEW_GROUP=${CRAFT_ASSERT_NEW_GROUP:-225.1.4.20}
+# crafted step 7w: a group whose source r1 is joined to on 7m's link and
+# pruned off the shared tree on the LAN
+CRAFT_RPT_EMPTY_GROUP=${CRAFT_RPT_EMPTY_GROUP:-225.1.4.21}
+# ... and the link it builds for that, of its own: 7m after it builds ${EP}117
+# again, and the VIF pimd keeps for a name that comes back came back after
+# the Hello 7m sent on it
+CRAFT_W_EP=${CRAFT_W_EP:-${EP}118}
+CRAFT_W_R1_ADDR=${CRAFT_W_R1_ADDR:-10.0.18.1}
+CRAFT_W_ED1_ADDR=${CRAFT_W_ED1_ADDR:-10.0.18.10}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7821,6 +7830,63 @@ craft_step_7v() {
 	return 0
 }
 
+craft_step_7w() {
+	print "7w. An empty inherited_olist(S,G,rpt) prunes the source off the shared tree"
+	# Sec. 4.5.6's second clause and Figure 7's PruneDesired(S,G,rpt):
+	# with SPTbit clear, an inherited_olist(S,G,rpt) that every (*,G)
+	# interface has emptied by a Prune(S,G,rpt) takes the source off the
+	# shared tree, triggered and in every Join(*,G) after.  pimd asked
+	# only an (S,G) on the shared tree, MRTF_RP, and one with SPTbit; an
+	# (S,G) joined on the source tree and still waiting for its first
+	# packet went on taking the source down the shared tree into
+	# interfaces that had all pruned it.  Map finding U10.  A link like
+	# 7m's carries a Join(S,G) for 7f's source, so that r1's entry is a source
+	# tree one, and ED1 joins (*,G) on the LAN and prunes the source off
+	# it there; r2's log has to show r1's Prune(S,G,rpt) within a Join
+	# period.  The control is the entry: on the source tree, no SPTbit.
+	craft "$SRC_ADDR" hello -H 105
+	if ! box_link_add "$CRAFT_W_EP" r1 ed1 ||
+	   ! box_addr_add r1 "${CRAFT_W_EP}a" "$CRAFT_W_R1_ADDR/24" ||
+	   ! box_addr_add ed1 "${CRAFT_W_EP}b" "$CRAFT_W_ED1_ADDR/24" ||
+	   ! box_if_up r1 "${CRAFT_W_EP}a" || ! box_if_up ed1 "${CRAFT_W_EP}b" ||
+	   ! wait_for 60 iface_is r1 "${CRAFT_W_EP}a" "$CRAFT_W_R1_ADDR"; then
+		fail "r1 never took the link built for this step, see $WORKDIR/r1.log"
+	else
+		craft "$CRAFT_W_ED1_ADDR" hello -H 105
+		if ! wait_for 30 has_neighbor r1 "$CRAFT_W_ED1_ADDR" ||
+		   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+			fail "r1 has no neighbour at $CRAFT_W_ED1_ADDR or $SRC_ADDR, the step cannot be put"
+		elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_EMPTY_GROUP" -w \
+				-r "$RP_ADDR" -H 65535 ||
+		     ! wait_for 30 has_mrt r1 "$CRAFT_RPT_EMPTY_GROUP" ||
+		     ! craft "$CRAFT_W_ED1_ADDR" join -u "$CRAFT_W_R1_ADDR" -g "$CRAFT_RPT_EMPTY_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535 ||
+		     ! wait_for 30 sg_joined_on r1 "${CRAFT_W_EP}a" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_EMPTY_GROUP"; then
+			fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_RPT_EMPTY_GROUP) joined on ${CRAFT_W_EP}a, the step cannot be put"
+		elif route_has_flag r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_EMPTY_GROUP" RP ||
+		     route_has_flag r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_RPT_EMPTY_GROUP" SPT; then
+			fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_RPT_EMPTY_GROUP) is on the shared tree or has SPTbit already, the step proves nothing"
+		else
+			ok "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_RPT_EMPTY_GROUP) is a source tree entry without SPTbit, the control"
+			m_jp=$(log_lines r2)
+			craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_EMPTY_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535
+			if wait_for 70 r1_sent_r2 "$m_jp" PRUNE "$CRAFT_RPT_EMPTY_GROUP" "$CRAFT_RPT_FOLLOW_SRC" "(S,G,rpt)"; then
+				ok "and r1 prunes it off the shared tree once the LAN, the (*,G)'s only interface, has"
+			else
+				fail "r1 sent r2 no Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_RPT_EMPTY_GROUP,rpt) in 70s, every (*,G) interface having pruned it"
+			fi
+		fi
+		craft "$CRAFT_W_ED1_ADDR" prune -u "$CRAFT_W_R1_ADDR" -g "$CRAFT_RPT_EMPTY_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC"
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_RPT_EMPTY_GROUP" -w -r "$RP_ADDR"
+		craft "$CRAFT_W_ED1_ADDR" hello -H 0
+	fi
+	box_if_destroy r1 "${CRAFT_W_EP}a" >/dev/null 2>&1 || true
+
+	return 0
+}
+
 craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
@@ -9439,7 +9505,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

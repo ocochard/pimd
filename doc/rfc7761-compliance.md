@@ -778,6 +778,24 @@ first Join clearing it as before.  *Test: `crafted` step 7v in
 every message r1 sends on that link, has to show no Prune(S,G) in the 10 s
 after (one came before the fix).*
 
+M44 is U10 of the same map.  The second clause of sec. 4.5.6: with SPTbit
+clear, an inherited_olist(S,G,rpt) that Prune(S,G,rpt) has emptied on every
+(\*,G) interface adds a Prune(S,G,rpt) to the Join(\*,G), and Figure 7's
+PruneDesired(S,G,rpt) says the same.  `jp_timer_expire_sg()` (`src/route.c`)
+asked `join_or_prune()` about the neighbour the Join(\*,G) went to, which for
+an (S,G) not on the shared tree and reached through that same neighbour
+answers the source tree's question, a Join(S,G); the shared tree's was asked
+only where the two upstreams differed.  An (S,G) joined on the source tree
+and waiting for its first packet so took the source down the shared tree as
+well, into interfaces that had all pruned it.  The pass that sends the
+Join(\*,G) asks `prune_desired_rpt()` for such an entry now and adds the
+Prune(S,G,rpt) to the same message, MRTF_RPT_PRUNED marking it for the
+Join(S,G,rpt) that takes it back.  *Test: `crafted` step 7w in `test/lab.sh`,
+on a link like 7m's: ED1 joins (S,G) for a source behind r3 across the link and
+(\*,G) on the LAN, r1's entry being on the source tree with no SPTbit the
+control, then prunes the source off the shared tree on the LAN; r2's log has
+to show r1's Prune(S,G,rpt) within 70 s (none came before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

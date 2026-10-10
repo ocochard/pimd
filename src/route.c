@@ -2533,6 +2533,28 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	    if (grp_action == PIM_ACTION_JOIN)
 		jp_timer_fire(mrt_srcs);
 	}
+
+	/* The second clause of sec. 4.5.6 for an entry on the source tree
+	 * that has not seen its first packet: SPTbit clear and
+	 * inherited_olist(S,G,rpt) emptied by Prune(S,G,rpt) on every (*,G)
+	 * interface prunes the source off the shared tree with the
+	 * Join(*,G).  Where RPF'(S,G) is RPF'(*,G), join_or_prune() above
+	 * answered the source tree's question, a Join(S,G), and the shared
+	 * tree's was never asked, so the source came down both into
+	 * interfaces that had all pruned it.  The two go in one message,
+	 * the receiver reading each for its own machine. */
+	if (grp_action == PIM_ACTION_JOIN && rpt_upstream == mrt_srcs->upstream &&
+	    !(mrt_srcs->flags & (MRTF_RP | MRTF_SPT)) && prune_desired_rpt(mrt_srcs)) {
+	    add_jp_entry(rpt_upstream,
+			 PIM_JOIN_PRUNE_HOLDTIME,
+			 mrt_srcs->group->group,
+			 SINGLE_GRP_MSKLEN,
+			 mrt_srcs->source->address,
+			 SINGLE_SRC_MSKLEN,
+			 MRTF_RP,
+			 PIM_ACTION_PRUNE);
+	    mrt_srcs->flags |= MRTF_RPT_PRUNED;
+	}
     }
 
     if (mrt_srcs->jp_expires > now)

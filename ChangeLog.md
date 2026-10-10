@@ -75,6 +75,12 @@ issue of this repository is written out in full.
   never joined, which every router on that link joined to the source had
   to override.  A routing entry starts not joined now and prunes only on
   leaving the joined state.  RFC 7761 sec. 4.5.5.  Step 7v of `crafted`.
+- A router joined to a source on its shortest path tree, before the first
+  packet, kept taking that source down the shared tree when every
+  interface the group was joined on had pruned it there, as long as both
+  trees came in from the same neighbour.  The source is pruned off the
+  shared tree with the group's Join now.  RFC 7761 sec. 4.5.6.  Step 7w of
+  `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
