@@ -796,6 +796,22 @@ on a link like 7m's: ED1 joins (S,G) for a source behind r3 across the link and
 control, then prunes the source off the shared tree on the LAN; r2's log has
 to show r1's Prune(S,G,rpt) within 70 s (none came before the fix).*
 
+M45 is U3 of the same map.  Sec. 4.5.6 puts the periodic Prune(S,G,rpt)
+inside the Join(\*,G), and sec. 4.5.7 sends one alone only on the transition
+to Pruned; while a neighbour's Join(\*,G) suppresses ours, sec. 4.5.4, nothing
+is owed, the upstream keeping the prune for its HoldTime.  pimd's (S,G) on
+the shared tree ran a Join Timer of its own, t_periodic, against the (\*,G)'s
+66 to 84 s of suppression, and sent its Prune(S,G,rpt) bare whenever it fired
+first.  `jp_timer_expire_sg()` (`src/route.c`) lets it go alone only while
+MRTF_RPT_PRUNED is clear, which is the transition, and otherwise only in a
+pass that sends the Join(\*,G).  The comment there, and the one above, cited
+"sec. 4.5.8", which is RFC 4601's number for this section.  *Test: `crafted`
+step 7x in `test/lab.sh`: ED1 joins (\*,G) and prunes a source behind r3 off
+the shared tree, r1's first Prune(S,G,rpt) reaching r2 the control; step 5's
+neighbour then keeps r1's Join(\*,G) suppressed for 140 s, in which r2's log
+has to show no message from r1 with the prune and without the Join(\*,G) (two
+came before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router
@@ -1151,7 +1167,7 @@ upstream after the 3 seconds it waits.  A Prune goes out once on the transition
 to NotJoined, where it used to be repeated every period, though the timer is
 left running so that a transition back that nothing fires the timer for is
 still found within a period; an (S,G)RPbit entry keeps repeating its Prune,
-which is the (S,G,rpt) one sec. 4.5.8 sends with every Join(\*,G).  T3 was
+which is the (S,G,rpt) one sec. 4.5.6 sends with every Join(\*,G).  T3 was
 the Hello answering a new or rebooted neighbor, sent at once rather than after
 rand(0, `Triggered_Hello_Delay`), because the Bootstrap RFC 5059 sec. 3.5 has
 the DR unicast to that neighbor followed it, and a router drops a Bootstrap

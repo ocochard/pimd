@@ -376,7 +376,8 @@ the sources with an (S,G) entry as well, on a link r1 gets for the step to have 
 (step 7n, M34), a held Prune(S,G,rpt) not cut short by a later one with a shorter holdtime (step 7o,
 M35), no Prune(S,G) from an (S,G) entry an Assert made, never joined (step 7v, M43), the Prune(S,G,rpt)
 an emptied inherited_olist(S,G,rpt) calls for from a source tree entry without SPTbit, on a link of its own
-(step 7w, M44), and two tripwires
+(step 7w, M44), a Prune(S,G,rpt) never sent bare while a neighbour's Join(\*,G) holds r1's back (step
+7x, M45), and two tripwires
 of the same map that did not reproduce: a Join(S,G) where the (\*,G) already forwards going upstream at
 once (step 7t, U8), and the Prune(S,G,rpt) an Assert that sets SPTbit calls for (step 7u, U13), a (\*,G) Winner
 that an (S,G) Assert for one source no longer takes off the LAN (step 7i, M29),

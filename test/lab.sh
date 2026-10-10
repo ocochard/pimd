@@ -1880,6 +1880,9 @@ CRAFT_RPT_EMPTY_GROUP=${CRAFT_RPT_EMPTY_GROUP:-225.1.4.21}
 CRAFT_W_EP=${CRAFT_W_EP:-${EP}118}
 CRAFT_W_R1_ADDR=${CRAFT_W_R1_ADDR:-10.0.18.1}
 CRAFT_W_ED1_ADDR=${CRAFT_W_ED1_ADDR:-10.0.18.10}
+# crafted step 7x: a group whose source r1 prunes off the shared tree while
+# a neighbour's Join(*,G) suppresses r1's own
+CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -2040,11 +2043,13 @@ RPT_PROMPT=${RPT_PROMPT:-2}
 RPT_OVR_TRIALS=${RPT_OVR_TRIALS:-3}
 
 # crafted, step 13b: the rpt-prune-limit R1 runs with, low enough for one
-# Prune to fill, and the sources it is filled with.  They sit beside
+# Prune to fill and high enough for the entries the 7x steps before it
+# leave held, which counted 8 by 7x and left the step no room, and the
+# sources it is filled with.  They sit beside
 # $CRAFT_FAR_SRC so that R1 has a route to them, which an entry needs, and
 # $RPT_LIMIT_HOLD is short enough that they are gone before anything later
 # could meet them.
-RPT_LIMIT=${RPT_LIMIT:-8}
+RPT_LIMIT=${RPT_LIMIT:-16}
 RPT_LIMIT_NET=${RPT_LIMIT_NET:-10.0.3}
 RPT_LIMIT_HOLD=${RPT_LIMIT_HOLD:-90}
 
@@ -7887,6 +7892,57 @@ craft_step_7w() {
 	return 0
 }
 
+craft_step_7x() {
+	print "7x. A Prune(S,G,rpt) goes with a Join(*,G), not alone, while that Join is suppressed"
+	# Sec. 4.5.6 puts the periodic Prune(S,G,rpt) inside the Join(*,G),
+	# and sec. 4.5.7 sends one alone only on the transition to Pruned.
+	# While a neighbour's Join(*,G) suppresses ours, sec. 4.5.4, nothing
+	# is owed: the upstream keeps the prune for its HoldTime.  pimd's
+	# (S,G) on the shared tree ran a Join Timer of its own, t_periodic,
+	# against the (*,G)'s 66 to 84 s of suppression, and sent its
+	# Prune(S,G,rpt) bare whenever it fired first.  Map finding U3.  ED1
+	# joins (*,G) and prunes 7f's source off the shared tree, r1's first
+	# Prune(S,G,rpt) reaching r2 the control; step 5's neighbour then
+	# keeps r1's Join(*,G) suppressed for 140 s, in which r2's log has to
+	# show no message from r1 with the prune and without the Join(*,G).
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$SUPP_ADDR" hello -H 210
+	craft "$SRC_ADDR" hello -H 210
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+	else
+		m_jp=$(log_lines r2)
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_BARE_GROUP" -w -r "$RP_ADDR" -H 65535
+		wait_for 30 has_mrt r1 "$CRAFT_BARE_GROUP" || true
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_BARE_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -H 65535
+		if ! wait_for 70 r1_sent_r2 "$m_jp" PRUNE "$CRAFT_BARE_GROUP" "$CRAFT_RPT_FOLLOW_SRC" "(S,G,rpt)"; then
+			fail "r1 sent r2 no Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_BARE_GROUP,rpt) at all, the step proves nothing"
+		else
+			ok "r1 prunes $CRAFT_RPT_FOLLOW_SRC off the shared tree of $CRAFT_BARE_GROUP at r2, the control"
+			sleep 2
+			m_jp=$(log_lines r2)
+			i=0
+			while [ "$i" -lt 7 ]; do
+				craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_BARE_GROUP" -w -r "$RP_ADDR"
+				sleep 20
+				i=$((i + 1))
+			done
+			n=$(r1_bare_rpt_prunes_since "$m_jp" "$CRAFT_BARE_GROUP" "$CRAFT_RPT_FOLLOW_SRC")
+			if [ "$n" -eq 0 ]; then
+				ok "and sends it no bare Prune(S,G,rpt) in 140s of its Join(*,G) being suppressed"
+			else
+				fail "r1 sent $n bare Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_BARE_GROUP,rpt) in 140s of its Join(*,G) being suppressed, sec. 4.5.6 has it inside the Join(*,G)"
+			fi
+		fi
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_BARE_GROUP" -w -r "$RP_ADDR"
+		craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_BARE_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	return 0
+}
+
 craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
@@ -9505,7 +9561,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 
@@ -9821,6 +9877,22 @@ r1_first_wc_jp_since() {
 
 r1_rpt_follow_wc_is() {
 	[ "$(assert_char_of r1 "${EP}112a" ANY "$CRAFT_RPT_FOLLOW_GROUP" || true)" = "$1" ]
+}
+
+# How many of the Join/Prune messages r2 logged from r1 since line $1 carry
+# a Prune(S,G,rpt) for group $2 and source $3 and no Join(*,G) for $2.  A
+# message is the entry lines following one "Received PIM JOIN/PRUNE from"
+# line.
+r1_bare_rpt_prunes_since() {
+	${SUDO} tail -n +$(($1 + 1)) "$WORKDIR/r2.log" 2>/dev/null | \
+		awk -v r1="$CRAFT_R1_LINK12_ADDR" -v g="$2" -v s="$3" '
+		function done() { if (mine && rpt && !wc) n++ }
+		/Received PIM JOIN\/PRUNE from / { done(); mine = ($0 ~ ("from " r1 " ")); wc = rpt = 0; next }
+		!mine { next }
+		$0 ~ ("Received PIM JOIN from " r1 " to group " g " for source .* \\(\\*,G\\)") { wc = 1 }
+		index($0, "Received PIM PRUNE from " r1 " to group " g " for source " s " on ") && / \(S,G,rpt\)$/ { rpt = 1 }
+		END { done(); print n + 0 }
+		'
 }
 
 # The neighbor ($2,$3) on router $1 sends its Joins to, RPF' of RFC 7761

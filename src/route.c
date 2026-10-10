@@ -2453,8 +2453,9 @@ uint32_t jp_timer_left(mrtentry_t *mrt)
  * sending it every period.  The timer keeps running here all the same, so
  * that a transition back to Joined which nothing fires the timer for is still
  * picked up within a period.  An (S,G)RPbit entry is left out: its Prune is
- * the (S,G,rpt) one, which sec. 4.5.8 repeats with every Join(*,G), and the
- * upstream router forgets it once the HoldTime is out.
+ * the (S,G,rpt) one, which RFC 7761 sec. 4.5.6 repeats with every Join(*,G),
+ * and the upstream router forgets it once the HoldTime is out; see
+ * jp_timer_expire_sg() for when it goes alone.
  */
 static int jp_timer_action(mrtentry_t *mrt, int action)
 {
@@ -2564,6 +2565,16 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	src_action = join_or_prune(mrt_srcs, mrt_srcs->upstream);
 
     action = jp_timer_action(mrt_srcs, src_action);
+
+    /* A Prune(S,G,rpt) goes alone once, on the transition to Pruned of
+     * sec. 4.5.7; after that sec. 4.5.6 has it inside the Join(*,G), and
+     * while a neighbour's Join(*,G) suppresses ours nothing is owed.  The
+     * entry's own Join Timer, t_periodic against the (*,G)'s 66 to 84 s of
+     * suppression, sent it bare whenever it fired first. */
+    if ((mrt_srcs->flags & MRTF_RP) && action == PIM_ACTION_PRUNE &&
+	(mrt_srcs->flags & MRTF_RPT_PRUNED) && grp_action != PIM_ACTION_JOIN)
+	action = PIM_ACTION_NOTHING;
+
     if (action != PIM_ACTION_NOTHING) {
 	add_jp_entry(mrt_srcs->upstream,
 		     PIM_JOIN_PRUNE_HOLDTIME,

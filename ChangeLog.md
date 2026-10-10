@@ -81,6 +81,10 @@ issue of this repository is written out in full.
   trees came in from the same neighbour.  The source is pruned off the
   shared tree with the group's Join now.  RFC 7761 sec. 4.5.6.  Step 7w of
   `crafted`.
+- While another router's Join for a group held this router's own back, a
+  source it had pruned off the group's shared tree was pruned again in a
+  message of its own every minute, where the prune belongs inside the
+  group's Join.  RFC 7761 sec. 4.5.6.  Step 7x of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
