@@ -1887,6 +1887,14 @@ CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
 # joined (S,G) on r1's RPF interface toward the source
 CRAFT_IIF_CTRL_GROUP=${CRAFT_IIF_CTRL_GROUP:-225.1.4.23}
 CRAFT_IIF_JOIN_GROUP=${CRAFT_IIF_JOIN_GROUP:-225.1.4.24}
+# crafted steps 14c and 15b: a link r1 gets for (S,G) state that depends
+# on nothing r2 has, the group joined before r2's RP set goes and the one
+# joined after
+CRAFT_NORP_EP=${CRAFT_NORP_EP:-${EP}119}
+CRAFT_NORP_R1_ADDR=${CRAFT_NORP_R1_ADDR:-10.0.19.1}
+CRAFT_NORP_ED1_ADDR=${CRAFT_NORP_ED1_ADDR:-10.0.19.10}
+CRAFT_NORP_HELD_GROUP=${CRAFT_NORP_HELD_GROUP:-225.1.12.1}
+CRAFT_NORP_NEW_GROUP=${CRAFT_NORP_NEW_GROUP:-225.1.12.2}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -9068,6 +9076,39 @@ craft_step_14b() {
 	return 0
 }
 
+craft_step_14c() {
+	print "14c. A Join(S,G) held on a link of its own, before the RP set goes"
+	# The setup of step 15b, D9 and D10 of the J/P machines map and step 0
+	# of aidd_docs/plans/groups-without-rp.md.  RFC 7761 keeps source tree
+	# state apart from the RP: nothing in sec. 4.5.2, 4.5.5 or 4.1.2
+	# reads RP(G).  pimd hangs every group off an RP and deleted a group
+	# whose RP mapping went, its (S,G) Join state with it.  ED1's address
+	# on a link of its own holds a Join(S,G) with 0xffff for ED1's own
+	# source on the LAN, so that neither interface of the entry, nor its
+	# RPF neighbour, is r2's: step 15 takes r2 away, and only the RP set
+	# is meant to go with it.  The Join held is the control.
+	if ! box_link_add "$CRAFT_NORP_EP" r1 ed1 ||
+	   ! box_addr_add r1 "${CRAFT_NORP_EP}a" "$CRAFT_NORP_R1_ADDR/24" ||
+	   ! box_addr_add ed1 "${CRAFT_NORP_EP}b" "$CRAFT_NORP_ED1_ADDR/24" ||
+	   ! box_if_up r1 "${CRAFT_NORP_EP}a" || ! box_if_up ed1 "${CRAFT_NORP_EP}b" ||
+	   ! wait_for 60 iface_is r1 "${CRAFT_NORP_EP}a" "$CRAFT_NORP_R1_ADDR"; then
+		fail "r1 never took the link built for this step, see $WORKDIR/r1.log"
+		return 0
+	fi
+	craft "$CRAFT_NORP_ED1_ADDR" hello -H 65535
+	if ! wait_for 30 has_neighbor r1 "$CRAFT_NORP_ED1_ADDR"; then
+		fail "r1 has no neighbour at $CRAFT_NORP_ED1_ADDR, steps 14c and 15b cannot be put"
+	elif ! craft "$CRAFT_NORP_ED1_ADDR" join -u "$CRAFT_NORP_R1_ADDR" -g "$CRAFT_NORP_HELD_GROUP" \
+			-s "$SRC_ADDR" -H 65535 ||
+	     ! wait_for 30 sg_joined_on r1 "${CRAFT_NORP_EP}a" "$SRC_ADDR" "$CRAFT_NORP_HELD_GROUP"; then
+		fail "r1 holds no Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a, step 15b proves nothing"
+	else
+		ok "r1 holds a Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a while the group has an RP, the control"
+	fi
+
+	return 0
+}
+
 craft_step_15() {
 	# The unicast branch is reachable only while this router knows no
 	# dynamic RP -- it is there for RFC 5059 sec. 3.5.2, a DR handing the
@@ -9084,6 +9125,44 @@ craft_step_15() {
 		fail "r1 still holds $(pimctl r1 show rp 2>/dev/null | awk '$4 != "Forever" && NF { print $2 }' | tr '\n' ' ')after ${CRAFT_RP_WAIT}s"
 		return 1
 	fi
+
+	return 0
+}
+
+craft_step_15b() {
+	print "15b. (S,G) state needs no RP: kept when the RP set goes, made with none"
+	# D9: the Join(S,G) step 14c holds has to survive its group losing
+	# every RP.  D10, its other face: find_route() (src/mrt.c) refused to
+	# make a group no RP covers, for an (S,G) as well as a (*,G), so a
+	# router with no RP set -- a booting one, a BSR outage past the RP
+	# holdtime -- could build no source tree at all.  r1 holds no dynamic
+	# RP here, which is step 15's assertion and this one's control.  Both
+	# report KNOWN until aidd_docs/plans/groups-without-rp.md lands, M48
+	# and M49 of doc/rfc7761-compliance.md.
+	if ! no_dynamic_rp r1; then
+		fail "r1 still holds an RP, the step proves nothing"
+	elif ! has_neighbor r1 "$CRAFT_NORP_ED1_ADDR"; then
+		fail "r1 has no neighbour at $CRAFT_NORP_ED1_ADDR, step 14c did not put the step"
+	else
+		ok "r1 holds no RP for any group, the control"
+		if sg_joined_on r1 "${CRAFT_NORP_EP}a" "$SRC_ADDR" "$CRAFT_NORP_HELD_GROUP"; then
+			ok "and still holds the Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a its group lost the RP under (D9)"
+		else
+			xfail "r1 lost the held Join($SRC_ADDR,$CRAFT_NORP_HELD_GROUP) on ${CRAFT_NORP_EP}a when its group lost its RP (D9)"
+		fi
+		craft "$CRAFT_NORP_ED1_ADDR" join -u "$CRAFT_NORP_R1_ADDR" -g "$CRAFT_NORP_NEW_GROUP" \
+			-s "$SRC_ADDR" -H 65535
+		if wait_for 15 sg_joined_on r1 "${CRAFT_NORP_EP}a" "$SRC_ADDR" "$CRAFT_NORP_NEW_GROUP"; then
+			ok "and makes ($SRC_ADDR,$CRAFT_NORP_NEW_GROUP) for a Join(S,G) with no RP anywhere (D10)"
+		else
+			xfail "r1 made no ($SRC_ADDR,$CRAFT_NORP_NEW_GROUP) for a Join(S,G) while it holds no RP (D10)"
+		fi
+	fi
+	for g in "$CRAFT_NORP_HELD_GROUP" "$CRAFT_NORP_NEW_GROUP"; do
+		craft "$CRAFT_NORP_ED1_ADDR" prune -u "$CRAFT_NORP_R1_ADDR" -g "$g" -s "$SRC_ADDR"
+	done
+	craft "$CRAFT_NORP_ED1_ADDR" hello -H 0
+	box_if_destroy r1 "${CRAFT_NORP_EP}a" >/dev/null 2>&1 || true
 
 	return 0
 }
@@ -9608,7 +9687,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

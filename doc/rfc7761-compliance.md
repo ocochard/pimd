@@ -841,6 +841,29 @@ changes, but for a new entry, whose Join the Join(S,G) branch sends itself.
 control, prunes it and joins it again; r1's Join(S,G) has to reach r2 within
 5 s of the second (it did not in a full run before the fix).*
 
+M48, open: D9 of the same map.  RFC 7761 keeps source tree state apart from
+the RP -- nothing in sec. 4.5.2, 4.5.5 or 4.1.2 reads RP(G) -- and pimd hangs
+every group off one: `remap_grpentry()` (`src/rp.c`) deletes a group whose RP
+mapping is gone, its (S,G) entries and their Join state with it, and
+`age_routes()` reaches groups only through the RP lists, so keeping one
+without an RP is a redesign rather than a fix,
+`aidd_docs/plans/groups-without-rp.md`.  What it costs: a source tree joined
+explicitly is torn down when the RP set changes under it, for good where the
+downstream holds the Join with 0xffff.  *Test: `crafted` steps 14c and 15b in
+`test/lab.sh`: a Join(S,G) held with 0xffff on a link r1 gets for it, for
+ED1's own source, so that nothing of the entry is r2's, the control; after
+step 15 has taken r2 and with it every RP, r1 has to hold it still.  Reports
+KNOWN.*
+
+M49, open: D10, M48's other face.  `find_route()` (`src/mrt.c`) refuses to
+make a group no RP covers, for an (S,G) as well as a (\*,G), so a router with
+no RP set -- a booting one, a BSR outage past the RP holdtime -- builds no
+source tree at all, and a Join(S,G) for such a group is dropped.  The SSM
+range works only through the virtual RP 169.254.0.1 `find_route()` installs
+for it, under a TODO asking for the same redesign.  *Test: `crafted` step
+15b: with no RP anywhere, r1's holding none the control, a Join(S,G) from the
+same link has to make an (S,G) entry.  Reports KNOWN.*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

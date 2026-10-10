@@ -468,8 +468,10 @@ deviation M1, the (S,G,rpt) state, and they report `ok` the same way. `test/free
 four report `ok` as well: two for deviation M3, now that the assert state is per interface -- an
 AssertCancel is acted on and a winner resends before the losers time out -- one for M10, the SPTbit
 evaluated per packet rather than only on an upcall, and one for M14, the (S,G) Assert machine
-reachable after the shared tree has lost the interface. No `xfail()` in either file is live -- a
-`KNOWN` line in a run is a regression, not an expected result.
+reachable after the shared tree has lost the interface. Two `xfail()` are live, both in `crafted`
+step 15b: M48 and M49, an (S,G) Join lost with its group's RP and none made with no RP at all, which
+`aidd_docs/plans/groups-without-rp.md` is the redesign for.  Any other `KNOWN` line in a run is a
+regression, not an expected result.
 
 `doc/rfc7761-compliance.md` is the list these come from: every entry there ends with a `Test:` note
 naming what reproduces it, or `none`, so which deviations are covered and which are only written
