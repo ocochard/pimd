@@ -1883,6 +1883,10 @@ CRAFT_W_ED1_ADDR=${CRAFT_W_ED1_ADDR:-10.0.18.10}
 # crafted step 7x: a group whose source r1 prunes off the shared tree while
 # a neighbour's Join(*,G) suppresses r1's own
 CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
+# crafted step 7y: a group joined (S,G) on r1's LAN, the control, and one
+# joined (S,G) on r1's RPF interface toward the source
+CRAFT_IIF_CTRL_GROUP=${CRAFT_IIF_CTRL_GROUP:-225.1.4.23}
+CRAFT_IIF_JOIN_GROUP=${CRAFT_IIF_JOIN_GROUP:-225.1.4.24}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -7943,6 +7947,49 @@ craft_step_7x() {
 	return 0
 }
 
+craft_step_7y() {
+	print "7y. A Join(S,G) on the RPF interface toward the source is acted on"
+	# Sec. 4.5.2 keeps joins(S,G) on whatever interface a Join(S,G)
+	# arrives on, and sec. 4.1.6 takes the incoming interface out of
+	# forwarding afterwards; JoinDesired(S,G) reads immediate_olist(S,G),
+	# which it does not subtract.  A neighbour on the link r1 takes S from
+	# can have r1 as its RPF'(S) -- a static route, or metrics that
+	# disagree -- and then only r1's Join upstream brings S onto that
+	# link.  receive_pim_join_prune() (src/pim_proto.c) dropped a Join(S,G)
+	# arriving on RPF_interface(S) outright.  Map finding D7b.  ED1 joins
+	# (S,G) for 7f's source on the LAN, r1's Join(S,G) to r2 the control;
+	# step 5's neighbour on r1's link to r2 does the same there.
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+	else
+		m_jp=$(log_lines r2)
+		craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_IIF_CTRL_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -H 210
+		if ! wait_for 5 r1_sent_r2 "$m_jp" JOIN "$CRAFT_IIF_CTRL_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+			fail "r1 sent r2 no Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_IIF_CTRL_GROUP) within 5s of one on the LAN, the step proves nothing"
+		else
+			ok "r1 joins ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_IIF_CTRL_GROUP) at r2 for a Join(S,G) on the LAN, the control"
+			m_jp=$(log_lines r2)
+			craft_on r2 "$SUPP_ADDR" join -u "$CRAFT_R1_LINK12" -g "$CRAFT_IIF_JOIN_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -H 210
+			if wait_for 5 r1_sent_r2 "$m_jp" JOIN "$CRAFT_IIF_JOIN_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+				ok "and for one on its RPF interface toward the source"
+			else
+				fail "r1 sent r2 no Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_IIF_JOIN_GROUP) within 5s of one on ${EP}112a, its RPF interface toward the source"
+			fi
+		fi
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_IIF_CTRL_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+		craft_on r2 "$SUPP_ADDR" prune -u "$CRAFT_R1_LINK12" -g "$CRAFT_IIF_JOIN_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC"
+	fi
+
+	return 0
+}
+
 craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
@@ -9561,7 +9608,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 15 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

@@ -85,6 +85,15 @@ issue of this repository is written out in full.
   source it had pruned off the group's shared tree was pruned again in a
   message of its own every minute, where the prune belongs inside the
   group's Join.  RFC 7761 sec. 4.5.6.  Step 7x of `crafted`.
+- A Join for a source arriving on the interface the source itself is
+  reached through was dropped.  A neighbour on that link that reaches the
+  source through this router, while this router reaches it through a third
+  one there, then got nothing; the Join is kept now, and the interface is
+  still never forwarded onto.  RFC 7761 sec. 4.5.2.  Step 7y of `crafted`.
+- A Join for a source arriving where the router already forwarded the
+  group off its shared tree, or a Prune taking that Join away, could wait
+  up to a minute before the router passed it on upstream.  RFC 7761 sec.
+  4.5.5.  Step 7t of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

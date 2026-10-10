@@ -812,6 +812,35 @@ neighbour then keeps r1's Join(\*,G) suppressed for 140 s, in which r2's log
 has to show no message from r1 with the prune and without the Join(\*,G) (two
 came before the fix).*
 
+M46 is D7b of the same map.  Sec. 4.5.2 keeps joins(S,G) on whatever
+interface a Join(S,G) arrives on, sec. 4.1.6 takes the incoming interface out
+of forwarding afterwards ("oiflist = oiflist (-) iif"), and JoinDesired(S,G)
+reads immediate_olist(S,G), which does not subtract it.
+`receive_pim_join_prune()` dropped a Join(S,G) arriving on RPF_interface(S)
+outright.  A neighbour on the link this router takes S from can have this
+router as RPF'(S) -- a static route, or metrics that disagree -- and then only
+this router's Join upstream brings S onto the link.  The Join is kept now.
+*Test: `crafted` step 7y in `test/lab.sh`: ED1 joins (S,G) for a source behind
+r3 on the LAN, r1's Join(S,G) to r2 within 5 s the control, and step 5's
+neighbour on r1's link to r2, its RPF interface toward the source, does the
+same there (no Join came before the fix).*
+
+M47 is U8 of the same map.  Sec. 4.5.5 sends the Join(S,G) on "JoinDesired(S,G)
+-> True" and the Prune(S,G) on its reverse, there and then.  pimd fired the
+Join Timer for them only in `change_interfaces()`, on a change of outgoing
+list or incoming interface, or for a new entry; a Join(S,G) arriving on an
+interface the (\*,G) already forwards onto changes neither, and nor does its
+Prune, so the message waited for the entry's Join Timer, up to t_periodic,
+unless something else fired it first -- which is why step 7t passed four
+times out of four run alone and failed in a full run.  `jp_ds_apply()`
+(`src/route.c`), which every downstream (S,G) transition goes through, asks
+`join_desired()` before and after and fires the Join Timer when the answer
+changes, but for a new entry, whose Join the Join(S,G) branch sends itself.
+*Test: `crafted` step 7t in `test/lab.sh`: ED1 joins (\*,G) on the LAN, then
+(S,G) for a source behind r3, a new entry's Join reaching r2 within 5 s the
+control, prunes it and joins it again; r1's Join(S,G) has to reach r2 within
+5 s of the second (it did not in a full run before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

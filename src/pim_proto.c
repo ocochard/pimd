@@ -3327,10 +3327,13 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    }
 
 	    if (!(s_flags & (USADDR_WC_BIT | USADDR_RP_BIT))) {
-		/* (S,G) Join toward S */
-		if (vifi == get_iif(source))
-		    continue;  /* Ignore this (S,G) Join */
-
+		/* (S,G) Join toward S.  One arriving on RPF_interface(S) is
+		 * kept like any other, RFC 7761 sec. 4.5.2: calc_oifs() takes
+		 * the incoming interface out of forwarding, sec. 4.1.6, and
+		 * JoinDesired(S,G) reads joins(S,G) as it is.  A neighbour on
+		 * that link can have us as RPF'(S) while we take S from a
+		 * third router there, and only our Join brings S onto it; pimd
+		 * dropped the message. */
 		mrt = find_route(source, group, MRTF_SG, CREATE);
 		if (!mrt)
 		    continue;

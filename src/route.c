@@ -663,11 +663,19 @@ int jp_ds_state(const mrtentry_t *mrt, vifi_t vifi)
  * and a (*,G) leaving Join takes the interface off its sources' copies,
  * wc_join_gone().  Returns TRUE where `joined_oifs` changed, which the
  * caller owes a change_interfaces() for.
+ *
+ * On an (S,G) entry the action can flip JoinDesired(S,G) with the
+ * outgoing list unchanged -- a Join(S,G) where the (*,G) already forwards,
+ * or its Prune -- and sec. 4.5.5 sends the Join(S,G) or Prune(S,G) on that
+ * transition, where change_interfaces() fires the Join Timer only on a
+ * change of list or interface.  So it is fired here, but for a new entry,
+ * whose Join the Join(S,G) branch sends itself.
  */
 int jp_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint16_t holdtime, uint64_t ppt_at)
 {
     int wc = (mrt->flags & MRTF_WC) != 0;
     int was = PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) ? 1 : 0;
+    int jd = (!wc && mrt->source && !(mrt->flags & MRTF_NEW)) ? join_desired(mrt) : -1;
     int now;
 
     switch (act.et) {
@@ -710,6 +718,9 @@ int jp_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint16_t holdti
 
     if (act.echo)
 	send_prune_echo(mrt, vifi);
+
+    if (jd >= 0 && jd != join_desired(mrt))
+	jp_timer_fire(mrt);
 
     now = PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) ? 1 : 0;
 
