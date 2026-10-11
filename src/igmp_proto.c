@@ -292,12 +292,8 @@ void accept_membership_query(int ifi, uint32_t src, uint32_t dst, uint32_t group
 
 		v->uv_querier->al_next = (struct listaddr *)NULL;
 		v->uv_querier->al_timer = 0;
-		v->uv_querier->al_genid = 0;
-		v->uv_querier->al_mv = 0;
-		v->uv_querier->al_index = 0;
 		v->uv_querier->al_timerid = 0;
 		v->uv_querier->al_query = 0;
-		v->uv_querier->al_flags = 0;
 
 		v->uv_flags &= ~VIFF_QUERIER;
 	    }

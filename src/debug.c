@@ -763,12 +763,8 @@ static void dump_route(FILE *fp, mrtentry_t *r)
     if (r->flags & MRTF_KAT)	       fprintf(fp, " KAT");
     if (r->flags & MRTF_WC)	       fprintf(fp, " WC");
     if (r->flags & MRTF_RP)	       fprintf(fp, " RP");
-    if (r->flags & MRTF_REGISTER)      fprintf(fp, " REG");
-    if (r->flags & MRTF_IIF_REGISTER)  fprintf(fp, " IIF_REG");
-    if (r->flags & MRTF_NULL_OIF)      fprintf(fp, " NULL_OIF");
     if (r->flags & MRTF_KERNEL_CACHE)  fprintf(fp, " CACHE");
     if (r->flags & MRTF_ASSERTED)      fprintf(fp, " ASSERTED");
-    if (r->flags & MRTF_REG_SUPP)      fprintf(fp, " REG_SUPP");
     if (r->flags & MRTF_SG)	       fprintf(fp, " SG");
     fprintf(fp, "\n");
 

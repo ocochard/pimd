@@ -946,12 +946,8 @@ static const char *route_flags(mrtentry_t *r, char *buf, size_t len)
 		{ MRTF_KAT,	    "KAT"      },
 		{ MRTF_WC,	    "WC"       },
 		{ MRTF_RP,	    "RP"       },
-		{ MRTF_REGISTER,    "REG"      },
-		{ MRTF_IIF_REGISTER,"IIF_REG"  },
-		{ MRTF_NULL_OIF,    "NULL_OIF" },
 		{ MRTF_KERNEL_CACHE,"CACHE"    },
 		{ MRTF_ASSERTED,    "ASSERTED" },
-		{ MRTF_REG_SUPP,    "REG_SUPP" },
 		{ MRTF_SG,	    "SG"       },
 	};
 

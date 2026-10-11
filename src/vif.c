@@ -225,30 +225,23 @@ void zero_vif(struct uvif *v, int t)
 
     v->uv_flags		= 0;	/* Default to IGMPv3 */
     v->uv_metric	= DEFAULT_METRIC;
-    v->uv_admetric	= 0;
     v->uv_threshold	= DEFAULT_THRESHOLD;
     v->uv_rate_limit	= t ? DEFAULT_REG_RATE_LIMIT : DEFAULT_PHY_RATE_LIMIT;
     v->uv_lcl_addr	= INADDR_ANY_N;
     v->uv_rmt_addr	= INADDR_ANY_N;
-    v->uv_dst_addr	= t ? INADDR_ANY_N : allpimrouters_group;
     v->uv_subnet	= INADDR_ANY_N;
     v->uv_subnetmask	= INADDR_ANY_N;
     v->uv_subnetbcast	= INADDR_ANY_N;
     strlcpy(v->uv_name, "", IFNAMSIZ);
     v->uv_groups	= (struct listaddr *)NULL;
-    v->uv_dvmrp_neighbors = (struct listaddr *)NULL;
-    NBRM_CLRALL(v->uv_nbrmap);
     v->uv_querier	= (struct listaddr *)NULL;
     v->uv_igmp_warn	= 0;
-    v->uv_prune_lifetime = 0;
     v->uv_acl		= (struct vif_acl *)NULL;
-    RESET_TIMER(v->uv_leaf_timer);
     v->uv_addrs		= (struct phaddr *)NULL;
     v->uv_nsecaddrs	= 0;
     v->uv_nbr_acl	= (struct phaddr *)NULL;
     v->uv_grp_acl	= (struct vif_acl *)NULL;
     v->uv_grp_warn	= 0;
-    v->uv_filter	= (struct vif_filter *)NULL;
 
     RESET_TIMER(v->uv_hello_timer);
     v->uv_hello_trigger = 0;

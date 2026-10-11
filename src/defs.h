@@ -362,10 +362,8 @@ extern char		s4[MAX_INET_BUF_LEN];
 /* For timeout. The timers count down */
 #define SET_TIMER(timer, value) (timer) = (value)
 #define RESET_TIMER(timer) (timer) = 0
-#define COPY_TIMER(timer_1, timer_2) (timer_2) = (timer_1)
 #define IF_TIMER_SET(timer) if ((timer) > 0)
 #define IF_TIMER_NOT_SET(timer) if ((timer) <= 0)
-#define FIRE_TIMER(timer)       (timer) = 0
 
 #define IF_TIMEOUT(timer)		\
 	if (!((timer) -= (MIN(timer, TIMER_INTERVAL))))
@@ -375,9 +373,6 @@ extern char		s4[MAX_INET_BUF_LEN];
 
 #define TIMEOUT(timer)			\
 	(!((timer) -= (MIN(timer, TIMER_INTERVAL))))
-
-#define NOT_TIMEOUT(timer)		\
-	((timer) -= (MIN(timer, TIMER_INTERVAL)))
 
 #define ELSE else           /* To make emacs cc-mode happy */
 

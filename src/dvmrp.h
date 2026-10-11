@@ -111,12 +111,6 @@
 #define DVMRP_NF_LEAF		0x80	/* Neighbor reports that it is a leaf */
 
 /*
- * Request/reply types for info queries/replies
- */
-#define DVMRP_INFO_VERSION	1	/* version string */
-#define DVMRP_INFO_NEIGHBORS	2	/* neighbors2 data */
-
-/*
  * Limit on length of route data
  */
 /* TODO: now in defs.h
@@ -126,40 +120,3 @@
 */
 #define MAX_DVMRP_DATA_LEN \
 		( MAX_IP_PACKET_LEN - MAX_IP_HEADER_LEN - IGMP_MINLEN )
-
-/*
- * Various protocol constants (all times in seconds)
- */
-				        /* address for multicast DVMRP msgs */
-#define INADDR_DVMRP_GROUP	(uint32_t)0xe0000004     /* 224.0.0.4 */
-
-#define DVMRP_ROUTE_MAX_REPORT_DELAY  5	/* max delay for reporting changes  */
-					/*  (This is the timer interrupt    */
-					/*  interval; all times must be     */
-					/*  multiples of this value.)       */
-
-#define	DVMRP_ROUTE_REPORT_INTERVAL  60	/* periodic route report interval   */
-#define DVMRP_ROUTE_SWITCH_TIME	    140	/* time to switch to equivalent gw  */
-#define	DVMRP_ROUTE_EXPIRE_TIME	    200	/* time to mark route invalid       */
-#define	DVMRP_ROUTE_DISCARD_TIME    340	/* time to garbage collect route    */
-#define DVMRP_LEAF_CONFIRMATION_TIME 200 /* time to consider subnet a leaf   */
-#define DVMRP_NEIGHBOR_PROBE_INTERVAL 10 /* periodic neighbor probe interval */
-#define DVMRP_NEIGHBOR_EXPIRE_TIME    30 /* time to consider neighbor gone   */
-#define DVMRP_OLD_NEIGHBOR_EXPIRE_TIME 140 /* time to consider neighbor gone */
-#define DVMRP_UNREACHABLE	      32 /* "infinity" metric, must be <= 64 */
-
-  /* TODO: remove the DVMRP prefix and merge it with the PIM code? */
-#define DVMRP_MAX_RATE_LIMIT      100000 /* max rate limit     	    	    */
-#define DVMRP_DEFAULT_PHY_RATE_LIMIT   0 /* default phyint rate limit  	    */
-#define DVMRP_DEFAULT_TUN_RATE_LIMIT 500 /* default tunnel rate limit	    */
-
-#define DVMRP_DEFAULT_CACHE_LIFETIME 300 /* kernel route entry discard time */
-#define DVMRP_MIN_CACHE_LIFETIME      60 /* minimum allowed cache lifetime  */
-#define DVMRP_AVERAGE_PRUNE_LIFETIME 7200 /* average lifetime of prunes sent */
-#define	DVMRP_MIN_PRUNE_LIFETIME      120 /* minimum allowed prune lifetime  */
-#define DVMRP_GRAFT_TIMEOUT_VAL	        5 /* retransmission time for grafts  */
-#define	DVMRP_PRUNE_REXMIT_VAL	       3 /* initial time for prune rexmission*/
-
-					 /* XXX NOTE that this technically   */
-					 /* violates IGMPv2 draft as the     */
-					 /* timer is 5 seconds too short     */

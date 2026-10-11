@@ -120,7 +120,6 @@ struct tr_resp {
 #define PROTO_PIM_STATIC   6
 #define PROTO_DVMRP_STATIC 7
 
-#define NBR_VERS(n)	(((n)->al_pv << 8) + (n)->al_mv)
 
 /*
  * An mtrace query or one in transit, as src/igmp_parse.c decodes it: the

@@ -92,83 +92,6 @@ inline static int PIMD_VIFM_LASTHOP_ROUTER(uint8_t *leaves, uint8_t *oifs)
 }
 
 /*
- * Bitmap handling functions.
- * These should be fast but generic.  bytes can be slow to zero and compare,
- * words are hard to make generic.  Thus two sets of macros (yuk).
- */
-
-/*
- * The VIFM_ functions should migrate out of <netinet/ip_mroute.h>, since
- * the kernel no longer uses vifbitmaps.
- */
-#ifndef VIFM_SET
-
-typedef	uint32_t vifbitmap_t;
-
-#define	VIFM_SET(n, m)			((m) |=  (1U << (n)))
-#define	VIFM_CLR(n, m)			((m) &= ~(1U << (n)))
-#define	VIFM_ISSET(n, m)		((m) &   (1U << (n)))
-#define VIFM_CLRALL(m)			((m) = 0x00000000)
-#define VIFM_COPY(mfrom, mto)		((mto) = (mfrom))
-#define VIFM_SAME(m1, m2)		((m1) == (m2))
-#endif
-/*
- * And <netinet/ip_mroute.h> was missing some required functions anyway
- */
-#if !defined(VIFM_SETALL)
-#define	VIFM_SETALL(m)			((m) = ~0)
-#endif
-#define	VIFM_ISSET_ONLY(n, m)		((m) == (1U << (n)))
-#define	VIFM_ISEMPTY(m)			((m) == 0)
-#define	VIFM_CLR_MASK(m, mask)		((m) &= ~(mask))
-#define	VIFM_SET_MASK(m, mask)		((m) |= (mask))
-#define VIFM_MERGE(m1, m2, result)      ((result) = (m1) | (m2))
-
-/* Check whether I am the last hop on some LAN */
-#define VIFM_LASTHOP_ROUTER(leaves, oifs)    ((leaves) & (oifs))
-
-/*
- * Neighbor bitmaps are, for efficiency, implemented as a struct
- * containing two variables of a native machine type.  If you
- * have a native type that's bigger than a long, define it below.
- */
-#define	NBRTYPE		uint32_t
-#define NBRBITS		sizeof(NBRTYPE) * 8
-
-typedef struct {
-    NBRTYPE hi;
-    NBRTYPE lo;
-} nbrbitmap_t;
-#define	MAXNBRS		2 * NBRBITS
-
-#define	NBRM_SET(n, m)		(((n) < NBRBITS) ? ((m).lo |= (1U << (n))) :  \
-				      ((m).hi |= (1U << (n - NBRBITS))))
-#define	NBRM_CLR(n, m)		(((n) < NBRBITS) ? ((m).lo &= ~(1U << (n))) : \
-				      ((m).hi &= ~(1U << (n - NBRBITS))))
-#define	NBRM_ISSET(n, m)	(((n) < NBRBITS) ? ((m).lo & (1U << (n))) :   \
-				      ((m).hi & (1U << ((n) - NBRBITS))))
-#define	NBRM_CLRALL(m)		((m).lo = (m).hi = 0)
-#define	NBRM_COPY(mfrom, mto)	((mto).lo = (mfrom).lo, (mto).hi = (mfrom).hi)
-#define	NBRM_SAME(m1, m2)	(((m1).lo == (m2).lo) && ((m1).hi == (m2).hi))
-#define	NBRM_ISEMPTY(m)		(((m).lo == 0) && ((m).hi == 0))
-#define	NBRM_SETMASK(m, mask)	(((m).lo |= (mask).lo),((m).hi |= (mask).hi))
-#define	NBRM_CLRMASK(m, mask)	(((m).lo &= ~(mask).lo),((m).hi &= ~(mask).hi))
-#define	NBRM_MASK(m, mask)	(((m).lo &= (mask).lo),((m).hi &= (mask).hi))
-#define	NBRM_ISSETMASK(m, mask)	(((m).lo & (mask).lo) || ((m).hi & (mask).hi))
-#define	NBRM_ISSETALLMASK(m, mask)\
-				((((m).lo & (mask).lo) == (mask).lo) && \
-				 (((m).hi & (mask).hi) == (mask).hi))
-/*
- * This macro is TRUE if all the subordinates have been pruned, or if
- * there are no subordinates on this vif.
- * The arguments is the map of subordinates, the map of neighbors on the
- * vif, and the map of received prunes.
- */
-#define	SUBS_ARE_PRUNED(sub, vifmask, prunes)	\
-    (((sub).lo & (vifmask).lo) == ((prunes).lo & (vifmask).lo & (sub).lo) && \
-     ((sub).hi & (vifmask).hi) == ((prunes).hi & (vifmask).hi & (sub).hi))
-
-/*
  * Secondary addresses one vif advertises in its Hello.  Each costs six bytes
  * of a message that has to fit the smallest MTU a PIM link may have, and an
  * interface carrying more than this many is not one pimd has been asked to
@@ -191,25 +114,19 @@ typedef struct {
 struct uvif {
     u_int	     uv_flags;	    /* VIFF_ flags defined below            */
     uint8_t	     uv_metric;     /* cost of this vif                     */
-    uint8_t	     uv_admetric;   /* advertised cost of this vif          */
     uint8_t	     uv_threshold;  /* min ttl required to forward on vif   */
     u_int	     uv_rate_limit; /* rate limit on this vif               */
     int              uv_mtu;        /* Initially interface MTU, then PMTU   */
     uint32_t	     uv_lcl_addr;   /* local address of this vif            */
     uint32_t	     uv_rmt_addr;   /* remote end-point addr (tunnels only) */
-    uint32_t	     uv_dst_addr;   /* destination for DVMRP/PIM messages   */
     uint32_t	     uv_subnet;     /* subnet number         (phyints only) */
     uint32_t	     uv_subnetmask; /* subnet mask           (phyints only) */
     uint32_t	     uv_subnetbcast;/* subnet broadcast addr (phyints only) */
     char	     uv_name[IFNAMSIZ]; /* interface name                   */
     struct listaddr *uv_groups;     /* list of local groups  (phyints only) */
-    struct listaddr *uv_dvmrp_neighbors; /* list of neighboring routers     */
-    nbrbitmap_t	     uv_nbrmap;	    /* bitmap of active neighboring routers */
     struct listaddr *uv_querier;    /* IGMP querier on vif                  */
     int		     uv_igmp_warn;  /* Rate-limits the version warnings */
-    int		     uv_prune_lifetime; /* Prune lifetime or 0 for default  */
     struct vif_acl  *uv_acl;	    /* access control list of groups        */
-    int		     uv_leaf_timer; /* time until this vif is considrd leaf */
     struct phaddr   *uv_addrs;	    /* Additional subnets on this vif       */
     uint32_t	     uv_secaddrs[MAX_SECADDRS]; /* Our other addresses on the
 				     * interface, for the Hello Address List
@@ -225,7 +142,6 @@ struct uvif {
 				     * which drops the traffic and keeps
 				     * the membership                      */
     int		     uv_grp_warn;   /* Rate-limits the refusals above      */
-    struct vif_filter *uv_filter;   /* Route filters on this vif	    */
     uint16_t	    uv_hello_timer; /* Timer for sending PIM hello msgs     */
     uint32_t	    uv_hello_trigger;/* The triggered Hello pending, 0 none,
 				     * see trigger_hello() in pim_proto.c   */
@@ -241,16 +157,6 @@ struct uvif {
     int             uv_ifindex;     /* because RTNETLINK returns only index */
 };
 
-/* The kernel's own vif flags, as opposed to the daemon's private ones below.
- * Neither is reachable here: nothing in pimd ever sets VIFF_TUNNEL on a
- * uv_flags -- there is no tunnel keyword in pimd.conf, and the kernels that
- * still define the flag call it a no-op -- and VIFF_SRCRT is obsolete, so
- * uvif_to_vifctl() in kern.c hands the kernel neither.  Every
- * `uv_flags & VIFF_TUNNEL' in this tree is therefore false, and the filters
- * that name it exclude nothing.  The macro has no users; it is kept here
- * beside the flags it names.
- */
-#define VIFF_KERNEL_FLAGS	(VIFF_TUNNEL | VIFF_SRCRT)
 #ifndef VIFF_REGISTER
 #define VIFF_REGISTER           0x000004       /* Missing on OpenBSD        */
 #endif
@@ -261,8 +167,6 @@ struct uvif {
 #define VIFF_LEAF		0x001000       /* all neighbors are leaves  */
 #define	VIFF_REXMIT_PRUNES	0x004000       /* retransmit prunes         */
 #define VIFF_PASSIVE		0x008000       /* IGMP here, no PIM on the wire */
-#define	VIFF_ALLOW_NONPRUNERS	0x010000       /* ok to peer with nonprunrs */
-#define VIFF_NOFLOOD		0x020000       /* don't flood on this vif   */
 #define	VIFF_DR			0x040000       /* designated router	    */
 /* TODO: VIFF_NONBRS == VIFF_ONEWAY? */
 #define	VIFF_NONBRS		0x080000       /* no neighbor on vif	    */
@@ -285,23 +189,6 @@ struct vif_acl {
     uint32_t	     acl_mask;	    /* Group addr. mask        */
 };
 
-struct vif_filter {
-    int			vf_type;
-#define	VFT_ACCEPT	1
-#define	VFT_DENY	2
-    int			vf_flags;
-#define	VFF_BIDIR	1
-    struct vf_element  *vf_filter;
-};
-
-struct vf_element {
-    struct vf_element  *vfe_next;
-    uint32_t		vfe_addr;
-    uint32_t		vfe_mask;
-    int			vfe_flags;
-#define	VFEF_EXACT	0x0001
-};
-
 struct listaddr {
     struct listaddr *al_next;		/* link to next addr, MUST BE FIRST */
     uint32_t	     al_addr;		/* local group or neighbor address  */
@@ -313,29 +200,11 @@ struct listaddr {
 	uint32_t     alu_reporter;	/* a host which reported membership */
     } al_alu;
     uint8_t	     al_pv;		/* router protocol version	    */
-    uint8_t	     al_mv;		/* router mrouted version	    */
-    uint8_t	     al_index;		/* neighbor index		    */
     int		     al_timerid;        /* timer for group membership	    */
     int		     al_query;		/* timer for repeated leave query   */
-    uint16_t	     al_flags;		/* flags related to this neighbor   */
     int		     al_versiontimer;	/* timer for version switch         */
 };
-#define	al_genid	al_alu.alu_genid
 #define	al_reporter	al_alu.alu_reporter
-
-#define	NBRF_LEAF		0x0001	/* This neighbor is a leaf 	    */
-#define	NBRF_GENID		0x0100	/* I know this neighbor's genid	    */
-#define	NBRF_WAITING		0x0200	/* Waiting for peering to come up   */
-#define	NBRF_ONEWAY		0x0400	/* One-way peering 		    */
-#define	NBRF_TOOOLD		0x0800	/* Too old (policy decision) 	    */
-#define	NBRF_TOOMANYROUTES	0x1000	/* Neighbor is spouting routes 	    */
-#define	NBRF_NOTPRUNING		0x2000	/* Neighbor doesn't appear to prune */
-
-/*
- * Don't peer with neighbors with any of these flags set
- */
-#define	NBRF_DONTPEER		(NBRF_WAITING|NBRF_ONEWAY|NBRF_TOOOLD| \
-				 NBRF_TOOMANYROUTES|NBRF_NOTPRUNING)
 
 #define PIMREG_VIF	0		  /* Always first VIF */
 #define NO_VIF		((vifi_t)MAXVIFS) /* An invalid vif index */

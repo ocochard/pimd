@@ -41,20 +41,16 @@
 					 * we pulled onto the shortest path
 					 * tree ourselves.  See join_desired()
 					 * in src/route.c		    */
-#define MRTF_IIF_REGISTER	0x0020	/* ???				    */
 #define MRTF_PRUNE_SENT		0x0040	/* The Join Timer last sent a Prune,
 					 * which RFC 7761 sec. 4.5.4 and
 					 * sec. 4.5.5 send once, see
 					 * jp_timer_action() in src/route.c */
-#define MRTF_REGISTER		0x0080	/* ???				    */
 #define MRTF_RPT_PRUNED		0x0100	/* Pruned(S,G,rpt) of the upstream
 					 * machine of RFC 7761 sec. 4.5.7: a
 					 * Prune(S,G,rpt) went out and no
 					 * Join(S,G,rpt) since, so wanting the
 					 * source again owes one	    */
 #define MRTF_KERNEL_CACHE	0x0200	/* a mirror for the kernel cache    */
-#define MRTF_NULL_OIF		0x0400	/* null oif cache..	???	    */
-#define MRTF_REG_SUPP		0x0800	/* register suppress	???	    */
 #define MRTF_ASSERTED		0x1000	/* upstream is not that of src ???  */
 #define MRTF_SG			0x2000	/* (S,G) pure, not hanging off of (*,G)*/
 

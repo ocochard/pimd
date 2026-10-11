@@ -65,7 +65,6 @@ extern int              log_nmsgs;
 #define DEBUG_IGMP_PROTO      0x00000010
 #define DEBUG_IGMP_TIMER      0x00000020
 #define DEBUG_IGMP_MEMBER     0x00000040
-#define DEBUG_MEMBER          DEBUG_IGMP_MEMBER
 #define DEBUG_IGMP            ( DEBUG_IGMP_PROTO | DEBUG_IGMP_TIMER | \
 				DEBUG_IGMP_MEMBER )
 
@@ -98,10 +97,8 @@ extern int              log_nmsgs;
 				DEBUG_PIM_RPF ) 
 
 #define DEBUG_MRT             ( DEBUG_DVMRP_ROUTE | DEBUG_PIM_MRT )
-#define DEBUG_NEIGHBORS       ( DEBUG_DVMRP_PEER | DEBUG_PIM_HELLO )
 #define DEBUG_TIMER           ( DEBUG_IGMP_TIMER | DEBUG_DVMRP_TIMER | \
 				DEBUG_PIM_TIMER )
-#define DEBUG_ASSERT          ( DEBUG_PIM_ASSERT )
 #define DEBUG_PARSE_FAIL      0x80000000
 #define DEBUG_ALL             0xfffffeff /* All except noisy timer */
 
