@@ -115,8 +115,6 @@ void init_pim(void)
 	free(build_jp_message_pool->jp_message);
 	free(build_jp_message_pool->join_list);
 	free(build_jp_message_pool->prune_list);
-	free(build_jp_message_pool->rp_list_join);
-	free(build_jp_message_pool->rp_list_prune);
 
 	build_jp_message_t *bjpm = build_jp_message_pool;
 	build_jp_message_pool = build_jp_message_pool->next;

@@ -761,12 +761,6 @@ void delete_rp_list(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     for (cand_ptr = *used_cand_rp_list; cand_ptr; ) {
 	cand_next = cand_ptr->next;
 
-	/* Free the mrtentry (if any) for this RP */
-	if (cand_ptr->rpentry->mrtlink) {
-	    if (cand_ptr->rpentry->mrtlink->flags & MRTF_KERNEL_CACHE)
-		delete_mrtentry_all_kernel_cache(cand_ptr->rpentry->mrtlink);
-	    FREE_MRTENTRY(cand_ptr->rpentry->mrtlink);
-	}
 	free(cand_ptr->rpentry);
 
 	/* Free the whole chain of entry for this RP */
@@ -939,12 +933,6 @@ static void delete_rp_entry(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp
     if (cand_rp_delete->next)
 	cand_rp_delete->next->prev = cand_rp_delete->prev;
 
-    if (cand_rp_delete->rpentry->mrtlink) {
-	if (cand_rp_delete->rpentry->mrtlink->flags & MRTF_KERNEL_CACHE)
-	    delete_mrtentry_all_kernel_cache(cand_rp_delete->rpentry->mrtlink);
-
-	FREE_MRTENTRY(cand_rp_delete->rpentry->mrtlink);
-    }
     free ((char *)cand_rp_delete->rpentry);
 
     /* Remove all rp_grp entries for this RP */

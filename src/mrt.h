@@ -115,12 +115,6 @@ typedef struct build_jp_message_ {
     uint8_t *prune_list;       /* The working area for the prune addresses   */
     uint32_t prune_list_size;  /* The size of the prune_list (in bytes)      */
     uint16_t prune_addr_number;/* Number of the prune addresses in prune_list*/
-    uint8_t *rp_list_join;     /* The working area for RP join addresses     */
-    uint32_t rp_list_join_size;/* The size of the rp_list_join (in bytes)    */
-    uint16_t rp_list_join_number;/* Number of RP addresses in rp_list_join   */
-    uint8_t *rp_list_prune;     /* The working area for RP prune addresses   */
-    uint32_t rp_list_prune_size;/* The size of the rp_list_prune (in bytes)  */
-    uint16_t rp_list_prune_number;/* Number of RP addresses in rp_list_prune */
     uint8_t *num_groups_ptr;   /* Pointer to number_of_groups in jp_message  */
 } build_jp_message_t;
 

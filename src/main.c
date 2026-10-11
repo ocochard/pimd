@@ -629,14 +629,6 @@ static void cleanup(void)
 
     for (cand_rp = cand_rp_list; cand_rp; cand_rp = cand_rp->next) {
 	rp_grp_entry_t *rp_grp;
-	mrtentry_t *mrt_rp;
-
-	mrt_rp = cand_rp->rpentry->mrtlink;
-	if (mrt_rp)
-	    delete_mrtentry(mrt_rp);
-
-	/* Just in case if that (*,*,RP) was deleted */
-	mrt_rp = cand_rp->rpentry->mrtlink;
 
 	for (rp_grp = cand_rp->rp_grp_next; rp_grp; rp_grp = rp_grp->rp_grp_next) {
 	    grpentry_t *grp;

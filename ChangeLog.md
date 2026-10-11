@@ -24,6 +24,12 @@ issue of this repository is written out in full.
 - On DragonFly, `configure` added the bundled `ip_mroute.h` to the include
   path relative to the build directory, which missed it from `test/fuzz/`
   and from a build outside the source tree.
+- A Prune overheard on a LAN with a (*,*,RP) group set, which RFC 7761
+  Appendix A removed, naming an RP this router knew, scheduled override
+  Joins for the (*,G) and (S,G) entries of that RP's groups.  Such a group
+  set is now skipped as it already was in a Join/Prune addressed to this
+  router, and the rest of the (*,*,RP) code, which could build no state,
+  is gone.
 - A router that had lost the Assert election toward the RP sent its
   periodic Join(*,G) to the winner without the Prune(S,G,rpt) of the
   sources it had pruned off the shared tree, so the winner put them back

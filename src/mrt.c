@@ -225,7 +225,6 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
     grpentry_t *grp	   = NULL;
     mrtentry_t *mrt	   = NULL;
     mrtentry_t *mrt_wc	   = NULL;
-    mrtentry_t *mrt_pmbr   = NULL;
     mrtentry_t *mrt2	   = NULL;
     rpentry_t  *rp	   = NULL;
     rp_grp_entry_t *rp_grp = NULL;
@@ -339,7 +338,7 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
     }
 rp_done:
 
-    mrt_wc = mrt_pmbr = NULL;
+    mrt_wc = NULL;
 
     if (flags & MRTF_WC) {
 	/* Setup the (*,G) routing entry */
@@ -357,12 +356,6 @@ rp_done:
 	}
 
 	if (mrt_wc->flags & MRTF_NEW) {
-	    mrt_pmbr = rp->mrtlink;
-
-	    /* Copy the oif list from the (*,*,RP) entry */
-	    if (mrt_pmbr)
-		VOIF_COPY(mrt_pmbr, mrt_wc);
-
 	    mrt_wc->incoming = rp->incoming;
 	    mrt_wc->upstream = rp->upstream;
 	    mrt_wc->metric   = rp->metric;
@@ -425,10 +418,8 @@ rp_done:
 
 	if (mrt->flags & MRTF_NEW) {
 	    mrt2 = grp->grp_route;
-	    if (!mrt2 && rp)
-		mrt2 = rp->mrtlink;
 
-	    /* Copy the oif list from the existing (*,G) or (*,*,RP) entry */
+	    /* Copy the oif list from the existing (*,G) entry */
 	    if (mrt2) {
 		VOIF_COPY(mrt2, mrt);
 		if (flags & MRTF_RP) {
@@ -1215,13 +1206,8 @@ static void move_kernel_cache(mrtentry_t *mrt, uint16_t flags)
 	/* TODO: XXX: No need for this? Thinking.... */
 /*	move_kernel_cache(mrt->group->grp_route, flags); */
 	mrtentry_rp = mrt->group->grp_route;
-	if (!mrtentry_rp) {
-	    if (!mrt->group->active_rp_grp)
-		return;		/* RP-less: no (*,G) or (*,*,RP) to move from */
-	    mrtentry_rp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
-	    if (!mrtentry_rp)
-		return;
-	}
+	if (!mrtentry_rp)
+	    return;		/* No (*,G) to move from */
 
 	if (mrtentry_rp->incoming != mrt->incoming) {
 	    /* XXX: the (*,*,RP) (or (*,G)) iif is different from the

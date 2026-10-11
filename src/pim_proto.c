@@ -50,7 +50,6 @@ static int build_null_register     (uint32_t source, uint32_t group);
 static build_jp_message_t *get_jp_working_buff (void);
 static void return_jp_working_buff (pim_nbr_entry_t *pim_nbr);
 static void pack_jp_message_grp    (pim_nbr_entry_t *pim_nbr);
-static void pack_jp_message_rp     (pim_nbr_entry_t *pim_nbr);
 static void send_jp_message        (pim_nbr_entry_t *pim_nbr);
 static int flush_packed_groups     (pim_nbr_entry_t *pim_nbr);
 static void jp_message_restart     (pim_nbr_entry_t *pim_nbr, build_jp_message_t *bjpm);
@@ -587,19 +586,6 @@ void delete_pim_nbr(pim_nbr_entry_t *nbr_delete)
 	} else {
 	    rp->incoming = PIMREG_VIF;
 	    rp->upstream = NULL;
-	}
-
-	mrt = rp->mrtlink;
-	if (mrt) {
-	    mrt->upstream   = rp->upstream;
-	    mrt->metric     = rp->metric;
-	    mrt->preference = rp->preference;
-	    change_interfaces(mrt,
-			      rp->incoming,
-			      mrt->joined_oifs,
-			      mrt->pruned_oifs,
-			      mrt->leaves,
-			      mrt->asserted_oifs, 0);
 	}
 
 	/* Update the group entries for this RP */
@@ -1799,8 +1785,6 @@ int send_pim_register(char *packet, size_t len)
 	mrtentry->flags &= ~MRTF_NEW;
 	RESET_TIMER(mrtentry->rs_timer); /* Reset the Register-Suppression timer */
 	mrtentry2 = mrtentry->group->grp_route;
-	if (!mrtentry2)
-	    mrtentry2 = mrtentry->group->active_rp_grp->rp->rpentry->mrtlink;
 	if (mrtentry2) {
 	    jp_timer_fire(mrtentry2); /* Timeout the Join/Prune timer */
 	    /* TODO: explicitly call this function?
@@ -2168,11 +2152,8 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 	    return PIM_ACTION_NOTHING;
 
 	mrtentry_grp = mrtentry->group->grp_route;
-	if (!mrtentry_grp) {
-	    mrtentry_grp = mrtentry->group->active_rp_grp->rp->rpentry->mrtlink;
-	    if (!mrtentry_grp)
-		return PIM_ACTION_NOTHING;
-	}
+	if (!mrtentry_grp)
+	    return PIM_ACTION_NOTHING;
 
 	if (mrtentry_grp->upstream != upstream_router)
 	    return PIM_ACTION_NOTHING; /* XXX: shoudn't happen */
@@ -2533,7 +2514,6 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
     rpentry_t *rpentry;
     mrtentry_t *mrt;
     mrtentry_t *mrt_srcs;
-    mrtentry_t *mrt_rp;
     grpentry_t *grp;
     uint32_t jp_value;
     pim_nbr_entry_t *upstream_router;
@@ -2697,113 +2677,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	    if (!IN_MULTICAST(ntohl(group)))
 		continue; /* Ignore this group and jump to the next */
 
-	    if ((ntohl(group) == CLASSD_PREFIX) && (gset.masklen == STAR_STAR_RP_MSKLEN)) {
-		/* (*,*,RP) Join suppression */
-
-		for (si = 0; si < gset.num_j; si++) {
-		    pim_jp_source(&gset, si, &esrc);
-		    source = esrc.addr;
-		    if (!inet_valid_host(source))
-			continue;
-
-		    s_flags = esrc.flags;
-		    MASKLEN_TO_MASK(esrc.masklen, s_mask);
-		    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
-			/* This is the RP address. */
-			rpentry = rp_find(source);
-			if (!rpentry)
-			    continue; /* Don't have such RP. Ignore */
-
-			mrt_rp = rpentry->mrtlink;
-			my_action = join_or_prune(mrt_rp, upstream_router);
-			if (my_action != PIM_ACTION_JOIN)
-			    continue;
-
-			/* Check the holdtime */
-			/* TODO: XXX: TIMER implem. dependency! */
-			if (JP_TIMER_SECS(mrt_rp) > holdtime)
-			    continue;
-
-			if ((JP_TIMER_SECS(mrt_rp) == holdtime) && (ntohl(src) > ntohl(v->uv_lcl_addr)))
-			    continue;
-
-			/* Set the Join/Prune suppression timer for this
-			 * routing entry by increasing the current
-			 * Join/Prune timer.
-			 */
-			jp_value = jp_suppression_timeout();
-			/* TODO: XXX: TIMER implem. dependency! */
-			if (jp_timer_left(mrt_rp) < jp_value * 1000)
-			    jp_timer_set(mrt_rp, jp_value * 1000);
-		    }
-		} /* the Joins */
-
-		for (si = gset.num_j; si < (uint32_t)gset.num_j + gset.num_p; si++) {
-		    /* TODO: XXX: Can we have (*,*,RP) prune message?
-		     * Not in the spec, but anyway, the code below
-		     * can handle them: either suppress
-		     * the local (*,*,RP) prunes or override the prunes by
-		     * sending (*,*,RP) and/or (*,G) and/or (S,G) Join.
-		     */
-		    pim_jp_source(&gset, si, &esrc);
-		    source = esrc.addr;
-		    if (!inet_valid_host(source))
-			continue;
-
-		    s_flags = esrc.flags;
-		    MASKLEN_TO_MASK(esrc.masklen, s_mask);
-		    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
-			/* This is the RP address. */
-			rpentry = rp_find(source);
-			if (!rpentry)
-			    continue; /* Don't have such RP. Ignore */
-
-			mrt_rp = rpentry->mrtlink;
-			my_action = join_or_prune(mrt_rp, upstream_router);
-			if (my_action == PIM_ACTION_PRUNE) {
-			    /* TODO: XXX: TIMER implem. dependency! */
-			    if ((JP_TIMER_SECS(mrt_rp) < holdtime)
-				|| ((JP_TIMER_SECS(mrt_rp) == holdtime) &&
-				    (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
-				/* Suppress the Prune */
-				jp_value = jp_suppression_timeout();
-				if (jp_timer_left(mrt_rp) < jp_value * 1000)
-				    jp_timer_set(mrt_rp, jp_value * 1000);
-			    }
-			} else if (my_action == PIM_ACTION_JOIN) {
-			    /* Override the Prune by scheduling a Join */
-			    jp_value = jp_override_timeout(vifi);
-			    /* TODO: XXX: TIMER implem. dependency! */
-			    if (jp_timer_left(mrt_rp) > jp_value)
-				jp_timer_set(mrt_rp, jp_value);
-			}
-
-			/* Check all (*,G) and (S,G) matching to this RP.
-			 * If my_action == JOIN, then send a Join and override
-			 * the (*,*,RP) Prune.
-			 */
-			for (grp = rpentry->cand_rp->rp_grp_next->grplink; grp; grp = grp->rpnext) {
-			    my_action = join_or_prune(grp->grp_route, upstream_router);
-			    if (my_action == PIM_ACTION_JOIN) {
-				jp_value = jp_override_timeout(vifi);
-				/* TODO: XXX: TIMER implem. dependency! */
-				if (jp_timer_left(grp->grp_route) > jp_value)
-				    jp_timer_set(grp->grp_route, jp_value);
-			    }
-			    for (mrt_srcs = grp->mrtlink; mrt_srcs; mrt_srcs = mrt_srcs->grpnext) {
-				my_action = join_or_prune(mrt_srcs, upstream_router);
-				if (my_action == PIM_ACTION_JOIN) {
-				    jp_value = jp_override_timeout(vifi);
-				    /* TODO: XXX: TIMER implem. dependency! */
-				    if (jp_timer_left(mrt_srcs) > jp_value)
-					jp_timer_set(mrt_srcs, jp_value);
-				}
-			    } /* For all (S,G) */
-			} /* For all (*,G) */
-		    }
-		} /* the Prunes */
-		continue;  /* This was (*,*,RP) suppression */
-	    }
+	    /* (*,*,RP), which RFC 7761 Appendix A removed: nothing to suppress */
+	    if ((ntohl(group) == CLASSD_PREFIX) && (gset.masklen == STAR_STAR_RP_MSKLEN))
+		continue;
 
 	    /* (*,G) or (S,G) suppression */
 	    /* TODO: XXX: currently, accumulated groups
@@ -2982,10 +2858,8 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
      *   forwarding on wrong interface.
      *   Hopefully, in the future will find a better way to implement it.
      */
-    /*
-     * Start processing the groups. If this is (*,*,RP), skip it, but process
-     * it at the end.
-     */
+    /* Start processing the groups.  A (*,*,RP) one, which RFC 7761 Appendix A
+     * removed, is skipped. */
     set = jp.groups;
     while (num_groups--) {
 	set = pim_jp_group(set, &gset);
@@ -2995,7 +2869,7 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	if ((ntohl(group) == CLASSD_PREFIX)
 	    && (gset.masklen == STAR_STAR_RP_MSKLEN)) {
-	    /* This is (*,*,RP). Jump to the next group. */
+	    /* (*,*,RP). Jump to the next group. */
 	    continue;
 	}
 
@@ -3490,7 +3364,7 @@ static void jp_overrun(const char *what)
  * working area is packed into it and one more source entry is added.  The
  * group set costs its own header the first time anything lands in it.
  */
-static uint32_t jp_pending_size(build_jp_message_t *bjpm, int new_grp, int rp_flag)
+static uint32_t jp_pending_size(build_jp_message_t *bjpm, int new_grp)
 {
     uint32_t size = bjpm->jp_message_size;
 
@@ -3499,14 +3373,6 @@ static uint32_t jp_pending_size(build_jp_message_t *bjpm, int new_grp, int rp_fl
 	size += bjpm->join_list_size;
 	size += bjpm->prune_list_size;
     } else if (new_grp == TRUE) {
-	size += sizeof(pim_jp_encod_grp_t);
-    }
-
-    if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
-	size += sizeof(pim_jp_encod_grp_t);
-	size += bjpm->rp_list_join_size;
-	size += bjpm->rp_list_prune_size;
-    } else if (rp_flag == TRUE) {
 	size += sizeof(pim_jp_encod_grp_t);
     }
 
@@ -3582,23 +3448,16 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
     uint32_t *size;
     uint16_t *number;
     uint8_t flags = 0;
-    int rp_flag;
     int new_grp = FALSE;
 
     bjpm = pim_nbr->build_jp_message;
 
-    if (group == htonl(CLASSD_PREFIX) && grp_msklen == STAR_STAR_RP_MSKLEN) {
-	rp_flag = TRUE;
-    } else {
-	rp_flag = FALSE;
+    if (bjpm) {
+	if ((bjpm->curr_group != group)
+	    || (bjpm->curr_group_msklen != grp_msklen)
+	    || (bjpm->holdtime != holdtime)) {
 
-	if (bjpm) {
-	    if ((bjpm->curr_group != group)
-	        || (bjpm->curr_group_msklen != grp_msklen)
-	        || (bjpm->holdtime != holdtime)) {
-
-		new_grp = TRUE;
-	    }
+	    new_grp = TRUE;
 	}
     }
 
@@ -3628,10 +3487,10 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	 * that the split falls between sets rather than through the middle of
 	 * one.
 	 */
-	int unsplittable = rp_flag == FALSE && new_grp == FALSE && bjpm->curr_group_wc;
+	int unsplittable = new_grp == FALSE && bjpm->curr_group_wc;
 
 	/* TODO: Should check the jp_message_size also against MTU. */
-	if (jp_pending_size(bjpm, new_grp, rp_flag) > MAX_JP_MESSAGE_SIZE) {
+	if (jp_pending_size(bjpm, new_grp) > MAX_JP_MESSAGE_SIZE) {
 	    if (unsplittable) {
 		flush_packed_groups(pim_nbr);
 	    } else {
@@ -3644,7 +3503,7 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	 * pending than any one message can carry.  The same section says
 	 * which N to send and to ignore the rest; anything else in the set
 	 * still has to go out, split or not. */
-	if (bjpm && jp_pending_size(bjpm, new_grp, rp_flag) > MAX_JP_MESSAGE_SIZE) {
+	if (bjpm && jp_pending_size(bjpm, new_grp) > MAX_JP_MESSAGE_SIZE) {
 	    if (unsplittable && join_prune == PIM_ACTION_PRUNE && (addr_flags & MRTF_RP))
 		return jp_prune_keep_smallest(bjpm, source, src_msklen);
 
@@ -3663,9 +3522,7 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 	pim_nbr->build_jp_message = bjpm;
 	bjpm->holdtime = holdtime;
 	jp_message_restart(pim_nbr, bjpm);
-
-	if (rp_flag == FALSE)
-	    new_grp = TRUE;
+	new_grp = TRUE;
     }
 
     if (new_grp == TRUE) {
@@ -3676,27 +3533,15 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 
     switch (join_prune) {
 	case PIM_ACTION_JOIN:
-	    if (rp_flag == TRUE) {
-		list   = bjpm->rp_list_join;
-		size   = &bjpm->rp_list_join_size;
-		number = &bjpm->rp_list_join_number;
-	    } else {
-		list   = bjpm->join_list;
-		size   = &bjpm->join_list_size;
-		number = &bjpm->join_addr_number;
-	    }
+	    list   = bjpm->join_list;
+	    size   = &bjpm->join_list_size;
+	    number = &bjpm->join_addr_number;
 	    break;
 
 	case PIM_ACTION_PRUNE:
-	    if (rp_flag == TRUE) {
-		list   = bjpm->rp_list_prune;
-		size   = &bjpm->rp_list_prune_size;
-		number = &bjpm->rp_list_prune_number;
-	    } else {
-		list   = bjpm->prune_list;
-		size   = &bjpm->prune_list_size;
-		number = &bjpm->prune_addr_number;
-	    }
+	    list   = bjpm->prune_list;
+	    size   = &bjpm->prune_list_size;
+	    number = &bjpm->prune_addr_number;
 	    break;
 
 	default:
@@ -3719,7 +3564,7 @@ int add_jp_entry(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group,
 
     /* The WC bit on a Joined entry is what makes this group set one sec.
      * 4.9.5.2 will not let us split, from here until it is packed. */
-    if (rp_flag == FALSE && join_prune == PIM_ACTION_JOIN && (flags & USADDR_WC_BIT))
+    if (join_prune == PIM_ACTION_JOIN && (flags & USADDR_WC_BIT))
 	bjpm->curr_group_wc = TRUE;
 
     return TRUE;
@@ -3763,29 +3608,6 @@ static build_jp_message_t *get_jp_working_buff(void)
 	    return NULL;
 	}
 
-	bjpm->rp_list_join_size = 0;
-	bjpm->rp_list_join_number = 0;
-	bjpm->rp_list_join = calloc(1, JP_LIST_CAP);
-	if (!bjpm->rp_list_join) {
-	    free(bjpm->prune_list);
-	    free(bjpm->join_list);
-	    free(bjpm->jp_message);
-	    free(bjpm);
-	    return NULL;
-	}
-
-	bjpm->rp_list_prune_size = 0;
-	bjpm->rp_list_prune_number = 0;
-	bjpm->rp_list_prune = calloc(1, JP_LIST_CAP);
-	if (!bjpm->rp_list_prune) {
-	    free(bjpm->rp_list_join);
-	    free(bjpm->prune_list);
-	    free(bjpm->join_list);
-	    free(bjpm->jp_message);
-	    free(bjpm);
-	    return NULL;
-	}
-
 	bjpm->curr_group = INADDR_ANY_N;
 	bjpm->curr_group_msklen = 0;
 	bjpm->curr_group_wc = FALSE;
@@ -3823,8 +3645,6 @@ static void return_jp_working_buff(pim_nbr_entry_t *pim_nbr)
 	free(bjpm->jp_message);
 	free(bjpm->join_list);
 	free(bjpm->prune_list);
-	free(bjpm->rp_list_join);
-	free(bjpm->rp_list_prune);
 	free(bjpm);
     } else {
 	bjpm->next = build_jp_message_pool;
@@ -3867,34 +3687,6 @@ static void pack_jp_message_grp(pim_nbr_entry_t *pim_nbr)
     }
 }
 
-static void pack_jp_message_rp(pim_nbr_entry_t *pim_nbr)
-{
-    build_jp_message_t *bjpm;
-    struct pim_writer w;
-
-    bjpm = pim_nbr->build_jp_message;
-    if (!bjpm)
-	return;
-
-    if (bjpm->rp_list_join_size + bjpm->rp_list_prune_size) {
-	pim_writer_init(&w, bjpm->jp_message + bjpm->jp_message_size,
-			JP_MESSAGE_CAP - bjpm->jp_message_size);
-	if (!pim_encode_jp_group(&w, htonl(CLASSD_PREFIX), STAR_STAR_RP_MSKLEN,
-				 bjpm->rp_list_join_number, bjpm->rp_list_prune_number,
-				 bjpm->rp_list_join, bjpm->rp_list_join_size,
-				 bjpm->rp_list_prune, bjpm->rp_list_prune_size))
-	    jp_overrun("(*,*,RP) set");
-	else {
-	    bjpm->jp_message_size += pim_writer_used(&w, bjpm->jp_message + bjpm->jp_message_size);
-	    (*bjpm->num_groups_ptr)++;
-	}
-	bjpm->rp_list_join_size = 0;
-	bjpm->rp_list_join_number = 0;
-	bjpm->rp_list_prune_size = 0;
-	bjpm->rp_list_prune_number = 0;
-    }
-}
-
 
 void pack_and_send_jp_message(pim_nbr_entry_t *pim_nbr)
 {
@@ -3902,7 +3694,6 @@ void pack_and_send_jp_message(pim_nbr_entry_t *pim_nbr)
 	return;
 
     pack_jp_message_grp(pim_nbr);
-    pack_jp_message_rp(pim_nbr);
     send_jp_message(pim_nbr);
 }
 
@@ -3954,10 +3745,6 @@ static int flush_packed_groups(pim_nbr_entry_t *pim_nbr)
 
     if (!bjpm || !bjpm->num_groups_ptr || *bjpm->num_groups_ptr == 0)
 	return FALSE;
-
-    /* A (*,*,RP) set is a group set of its own and has no reason to wait
-     * behind this one. */
-    pack_jp_message_rp(pim_nbr);
 
     jp_message_send(pim_nbr, bjpm);
     jp_message_restart(pim_nbr, bjpm);

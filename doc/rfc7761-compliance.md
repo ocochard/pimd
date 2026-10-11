@@ -1509,25 +1509,17 @@ Checked, no action
   `src/pim_proto.c:1424` can go.  Its security dimension is real but belongs to
   V3.  *Check: sec. 4.4.2, `doc/rfc7761.txt:2364` for the pseudocode and `:2402`
   for its Note (\*).*
-- **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  The
-  promise of a second pass in the comment at `src/pim_proto.c:2181-2182` is
-  stale — there is no second pass — but the resulting behaviour is correct.  The
-  suppression half of the same function still reads such a group set, and
-  `pack_and_send_jp_message()` can still encode one, though no caller asks it
-  to; what that suppression code can do, however, is nothing.  Every branch of
-  it works on `rpentry->mrtlink`, the (\*,\*,RP) entry, and nothing in this tree
-  ever sets it: `create_mrtentry()` returns NULL for flags that are neither
-  `MRTF_SG` nor `MRTF_WC` (`src/mrt.c:884`), so the pointer read at
-  `src/pim_proto.c:2959` and `:3003` is always NULL, `join_or_prune()` answers
-  `PIM_ACTION_NOTHING` for it, and the hundred lines past that cannot execute.
-  Measured rather than read: those lines are unreached by the whole lab suite in
-  `doc/README-coverage.md`'s table, and they stay unreached with a (\*,\*,RP)
-  message on the wire.  The right change is deletion, which is a separate
-  question from conformance and belongs in `doc/TODO.org`.  *Check: Appendix A,
-  `doc/rfc7761.txt:7567`, which is where RFC 4601's (\*,\*,RP) support was
-  removed.  Test: step 4b of `crafted` in `test/lab.sh`, which sends the shape
-  three ways -- addressed to R1, overheard, and as a Prune -- and asserts the
-  parser walks it, builds nothing, and goes on acting on the Join after it.*
+- **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  Both
+  halves of `receive_pim_join_prune()` step over a group set of 224.0.0.0/4,
+  and nothing builds or sends one.  Until the support was deleted the
+  suppression half still read such a set, and an overheard Prune naming a
+  known RP with the RP and WC bits shortened the Join Timers of the (\*,G) and
+  (S,G) entries of that RP's groups, scheduling override Joins for a Prune
+  RFC 7761 no longer has.  *Check: Appendix A, `doc/rfc7761.txt:7567`, which
+  is where RFC 4601's (\*,\*,RP) support was removed.  Test: step 4b of
+  `crafted` in `test/lab.sh`, which sends the shape three ways -- addressed to
+  R1, overheard, and as a Prune -- and asserts the parser walks it, builds
+  nothing, and goes on acting on the Join after it.*
 - **Sec. 4.5.6's compound Join(\*,G)+Prune(S,G,rpt) is implemented**, through
   `MRTF_RP` entries pulled into the same group set (`src/route.c:1933-1952`) and
   the RPT bit set from that flag.  The triggered half of sec. 4.5.7 beside it
@@ -1552,10 +1544,9 @@ Checked, no action
   bit is IGMP state, not a forwarding decision; read the order in
   `calc_oifs()` before concluding otherwise.
 - **`rpentry->mrtlink` is always NULL.**  The only write to any `mrtlink` is
-  `grp->mrtlink` in `insert_grpmrtlink()` (`src/mrt.c:732`), so with (\*,\*,RP)
-  gone nothing hangs an entry off an RP entry any more.  The blocks that read
-  `rp->mrtlink` — in `delete_pim_nbr()` and in `find_route()` — are dead.  This
-  is also what makes the V4 sweep over `grplist` complete: every live
+  `grp->mrtlink` in `insert_grpmrtlink()` (`src/mrt.c`), so with (\*,\*,RP)
+  gone nothing hangs an entry off an RP entry, and nothing reads one either.
+  This is also what makes the V4 sweep over `grplist` complete: every live
   `mrtentry_t` is either a group's `grp_route` or on its `mrtlink`.
 - **The group-to-RP mapping algorithm is the one sec. 4.7.1 writes.**
   `rp_grp_match()` (`src/rp.c:862`) takes the longest match first, then the

@@ -1473,7 +1473,6 @@ int change_interfaces(mrtentry_t *mrt,
     kernel_cache_t *kc;
     mrtentry_t     *srcs;
     mrtentry_t     *mwc;
-    mrtentry_t     *mrp;
     int delete_mrt_flag;
     int result;
     int fire_timer_flag;
@@ -1606,7 +1605,6 @@ int change_interfaces(mrtentry_t *mrt,
 
     /* (S,G) entry */
     if (mrt->flags & MRTF_SG) {
-	mrp = mrt->group->active_rp_grp ? mrt->group->active_rp_grp->rp->rpentry->mrtlink : NULL;
 	mwc = mrt->group->grp_route;
 
 	if (PIMD_VIFM_ISEMPTY(new_real_oifs)) {
@@ -1648,8 +1646,7 @@ int change_interfaces(mrtentry_t *mrt,
 		*/
 	    }
 
-	    if ((mwc && mwc->incoming == new_iif) ||
-		(mrp && mrp->incoming == new_iif)) {
+	    if (mwc && mwc->incoming == new_iif) {
 		/* The new iif points toward the RP, so this entry is back on
 		 * the shared tree.  It does not clear the SPTbit with it: RFC
 		 * 2362 sec. 2.10 had a routing change do that, RFC 7761
@@ -2046,8 +2043,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	    return;
 
 	mrp = mrt->group->grp_route;
-	if (!mrp && mrt->group->active_rp_grp)
-	    mrp = mrt->group->active_rp_grp->rp->rpentry->mrtlink;
 
 	if (mrp) {
 	    /* Forward on (*,G) or (*,*,RP) */
