@@ -1,6 +1,6 @@
 # https://fedoraproject.org/wiki/How_to_create_an_RPM_package
 Name:           pimd
-Version:        3.0.0
+Version:        3.3.0
 Release:        1%{?dist}
 Summary:        pimd, the PIM-SM/SSM v2 multicast daemon
 
@@ -68,6 +68,9 @@ chkconfig --add %{name}
 
 
 %changelog
+* Mon Oct 12 2026 olivier@cochard.me - 3.3.0
+  Update to the 3.3.0 release.
+
 * Fri Sep 18 2026 olivier@cochard.me - 3.0.0
   Build from a release tarball rather than a branch export, package pimctl
   and the pimctl(8) and pimd.conf(5) manual pages, and take the binaries
