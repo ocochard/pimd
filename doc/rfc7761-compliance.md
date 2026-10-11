@@ -874,7 +874,12 @@ for it, under a TODO asking for the same redesign.  *Test: `crafted` step
 same link has to make an (S,G) entry (none was made before the fix).*
 `find_route()` refuses only a (\*,G) or an RPbit entry without an RP now, and
 makes the group of a plain (S,G) RP-less.  The SSM range keeps its virtual RP
-for now: step 5 of the plan, its own decision.
+for now: step 5 of the plan, its own decision.  `my_assert_metric()` answers
+infinite_assert_metric() for an RP-less (S,G) without SPTbit, sec. 4.6.3
+having neither CouldAssert(S,G,I) nor CouldAssert(\*,G,I) to offer it; such an
+entry sets SPTbit on its first packet, so no lab step can reach the case.
+`crafted` step 15c asserts the other thing a group gaining an RP owes: a
+source this router is the DR of is registered to it from then on.
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

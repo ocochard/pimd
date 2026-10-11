@@ -1895,6 +1895,10 @@ CRAFT_NORP_R1_ADDR=${CRAFT_NORP_R1_ADDR:-10.0.19.1}
 CRAFT_NORP_ED1_ADDR=${CRAFT_NORP_ED1_ADDR:-10.0.19.10}
 CRAFT_NORP_HELD_GROUP=${CRAFT_NORP_HELD_GROUP:-225.1.12.1}
 CRAFT_NORP_NEW_GROUP=${CRAFT_NORP_NEW_GROUP:-225.1.12.2}
+# crafted step 15c: a group ED1 sends to while no RP covers it, and the
+# range a Bootstrap then gives an RP
+CRAFT_NORP_SRC_GROUP=${CRAFT_NORP_SRC_GROUP:-225.1.12.3}
+CRAFT_NORP_RANGE=${CRAFT_NORP_RANGE:-225.1.12.0}
 CRAFT_D1_EP=${CRAFT_D1_EP:-${EP}117}
 CRAFT_D1_R1_ADDR=${CRAFT_D1_R1_ADDR:-10.0.17.1}
 CRAFT_D1_ED1_ADDR=${CRAFT_D1_ED1_ADDR:-10.0.17.10}
@@ -9173,6 +9177,55 @@ craft_step_15b() {
 	return 0
 }
 
+craft_step_15c() {
+	print "15c. A source a group with no RP holds starts registering once an RP covers it"
+	# An RP-less group (M48, M49) has no register vif: nobody to register
+	# to.  When an RP comes to cover it, a source this router is the DR of
+	# has to be registered to that RP from then on, as it would have been
+	# had the RP been there first; remap_grpentry() (src/rp.c) attached
+	# the group and left its (S,G) without the register vif until the
+	# next cache miss, which an installed MFC entry does not raise.  ED1
+	# says Hello at DR priority 0, so that r1 stays the DR of its LAN, and
+	# streams to a group no RP covers -- r1's (S,G) with no register vif
+	# the control -- then a Bootstrap of its own gives the group an RP.
+	if ! no_dynamic_rp r1; then
+		fail "r1 holds an RP, the step cannot be put"
+		return 0
+	fi
+	craft "$SRC_ADDR" hello -H 105 -p 0
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR, the step cannot be put"
+		return 0
+	fi
+	box_daemon ed1 "$WORKDIR/msend-norp.pid" "$WORKDIR/msend-norp.log" \
+		"$MSEND" "$SRC_ADDR" "$CRAFT_NORP_SRC_GROUP" 1
+	if ! wait_for 20 has_sg r1 "$SRC_ADDR" "$CRAFT_NORP_SRC_GROUP"; then
+		fail "r1 made no ($SRC_ADDR,$CRAFT_NORP_SRC_GROUP) for its own source with no RP, the step proves nothing"
+	elif sg_registers r1 "$SRC_ADDR" "$CRAFT_NORP_SRC_GROUP"; then
+		fail "r1's ($SRC_ADDR,$CRAFT_NORP_SRC_GROUP) has the register vif with no RP to register to"
+	else
+		ok "r1 holds ($SRC_ADDR,$CRAFT_NORP_SRC_GROUP) with no register vif while no RP covers it, the control"
+		craft "$SRC_ADDR" bootstrap -u "$SRC_ADDR" -g "$CRAFT_NORP_RANGE" -m 24 \
+			-r "$SRC_ADDR" -p "$CRAFT_PRIO" -H 30
+		if ! wait_for 15 has_rp r1 "$CRAFT_NORP_RANGE"; then
+			fail "r1 never took the RP for $CRAFT_NORP_RANGE/24 from the Bootstrap"
+		elif wait_for 15 sg_registers r1 "$SRC_ADDR" "$CRAFT_NORP_SRC_GROUP"; then
+			ok "and gives it the register vif once an RP covers the group"
+		else
+			fail "r1's ($SRC_ADDR,$CRAFT_NORP_SRC_GROUP) has no register vif 15s after an RP came to cover the group"
+		fi
+	fi
+	${SUDO} pkill -F "$WORKDIR/msend-norp.pid" 2>/dev/null || true
+	# ED1 back as step 14b left it, a neighbour at the default DR
+	# priority: from step 21 on its Join/Prunes are what is being read,
+	# and r1 drops those of a sender it holds no Hello from
+	craft "$SRC_ADDR" hello -H 105
+	# Step 16 wants r1 with no RP again, which the Bootstrap's 30 s give
+	wait_for 90 no_dynamic_rp r1 || fail "r1 kept the RP of step 15c past its holdtime"
+
+	return 0
+}
+
 craft_step_16() {
 	print "16. A unicast Bootstrap from a stranger on the LAN is refused"
 	craft "$CRAFT_ADDR" bootstrap -d "$R1_LAN_ADDR" -u "$CRAFT_ADDR" \
@@ -9693,7 +9746,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 
@@ -10105,6 +10158,14 @@ log_since() {
 sg_joined_on()   { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Joined)"; }
 sg_forwards_on() { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Outgoing)"; }
 sg_not_joined_on() { ! sg_joined_on "$@"; }
+
+# Does router $1's ($2,$3) have the register vif in its Joined map?  It is
+# VIF #0, the first slot, and `show interface` does not list it, so
+# vif_index() cannot name it.  False for an entry that does not exist.
+sg_registers() {
+	rm_map=$(route_map "$1" "$2" "$3" Joined)
+	[ -n "$rm_map" ] && [ "$(printf '%s' "$rm_map" | cut -c 1)" != "." ]
+}
 
 # Has router $1 taken source $3 of group $4 off interface $2?  Only an
 # (S,G) entry can say so: without one the (*,G) forwards every source.

@@ -1081,7 +1081,7 @@ static int show_pim_mrt(FILE *fp)
 					? "SSM"
 					: (g->active_rp_grp
 					   ? inet_fmt(g->rpaddr, s2, sizeof(s2))
-					   : "NULL")),
+					   : "none")),
 				IPC_STR("Flags",       -5, route_flags(r, flags, sizeof(flags))),
 				IPC_END
 			};
@@ -1101,7 +1101,7 @@ static int show_pim_mrt(FILE *fp)
 					? "SSM"
 					: (g->active_rp_grp
 					   ? inet_fmt(g->rpaddr, s3, sizeof(s3))
-					   : "NULL")),
+					   : "none")),
 				IPC_STR("Flags",       -5, route_flags(r, flags, sizeof(flags))),
 				IPC_END
 			};

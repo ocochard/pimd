@@ -5150,8 +5150,19 @@ static void my_assert_metric(mrtentry_t *mrt, uint32_t *preference, uint32_t *me
 
     if (mrt->group)
 	mrp = mrt->group->grp_route;
-    if (!mrp)
-	mrp = mrt;
+
+    /* An (S,G) of a group no RP covers, without SPTbit: no (*,G), so
+     * neither CouldAssert(S,G,I) nor CouldAssert(*,G,I) holds, and sec.
+     * 4.6.3 has my_assert_metric be infinite_assert_metric().  It used to be
+     * the entry's own metric with the RPT bit, a shared tree it is not on.
+     * Not reachable in practice: such an entry sets SPTbit on its first
+     * packet, sec. 4.2.2 -- different_iif holds with no RP -- so it never
+     * forwards, nor asserts, without it. */
+    if (!mrp) {
+	*preference = PIM_ASSERT_INFINITE_PREFERENCE;
+	*metric     = PIM_ASSERT_INFINITE_METRIC;
+	return;
+    }
 
     *preference = mrp->preference | PIM_ASSERT_RPT_BIT;
     *metric     = mrp->metric;

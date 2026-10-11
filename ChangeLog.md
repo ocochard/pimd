@@ -101,7 +101,8 @@ issue of this repository is written out in full.
   and a router with no RP for a group refused Joins for its sources
   altogether.  Such a group is kept, with its source trees alone, until an
   RP covers it again.  RFC 7761 sec. 4.5.2.  Steps 14c and 15b of
-  `crafted`.
+  `crafted`.  `pimctl show mrt` prints `none` for such a group's RP, where
+  it printed `NULL`.
 - A routing entry made after interfaces had come and gone could have its
   per-interface state sized for fewer interfaces than the router had, and
   reading it -- `pimctl show mrt` among others -- went past its end.  The
