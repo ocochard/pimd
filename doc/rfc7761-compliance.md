@@ -881,6 +881,28 @@ entry sets SPTbit on its first packet, so no lab step can reach the case.
 `crafted` step 15c asserts the other thing a group gaining an RP owes: a
 source this router is the DR of is registered to it from then on.
 
+M50: sec. 4.6.1 keeps (S,G) Assert state per (S,G,I), and nothing in it reads a
+route to S: a router forwarding a source onto a link off its (\*,G), losing an
+Assert for it there, stops.  pimd keeps that state on an (S,G) entry, and
+`find_route()` made none for a source with no unicast route --
+`create_srcentry()` refused it -- so the loss was dropped, "Lost the Assert
+... no (S,G) to keep it on", and the router went on forwarding beside the
+winner.  That is what assert-recover hit on Linux once the renumbering had
+flushed r4's routes (fixed in the test by c0695c2; this is the protocol
+half).  A source entry may now be made with no route, incoming `NO_VIF` and no
+upstream, for an (S,G) on the shared tree only, whose own incoming interface
+and upstream are the (\*,G)'s, and the Assert-loss path makes one there when
+it cannot make a source tree entry.  Everything that reads such a source's
+incoming interface compares it, `NO_VIF` matching none; the Join(S,G) branch,
+`switch_shortest_path()` and a source tree entry's creation ask
+`source_resolve()` for a route first and do nothing without one; and
+DirectlyConnected(S) asks for an interface as well as no upstream
+(`source_directly_connected()`).  *Test: `crafted` step 7z in `test/lab.sh`:
+ED1 joins (\*,G) on the LAN, and its other address wins an (S,G) Assert there
+for a source behind r3, r1 holding the Loser state the control, then for
+10.99.0.1, which r1 has no route to; r1 has to hold the loss for that one too
+(it dropped it before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

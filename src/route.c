@@ -864,6 +864,33 @@ static int expire_rpt_timers(mrtentry_t *mrt, uint64_t now, uint64_t *next)
     return change;
 }
 
+/* DirectlyConnected(S) of RFC 7761: no upstream router, and an interface S
+ * is reached on.  A source with no route at all has neither, see
+ * create_srcentry() in src/mrt.c, and is not a neighbour on a LAN. */
+static int source_directly_connected(const srcentry_t *src)
+{
+    return !src->upstream && src->incoming != NO_VIF;
+}
+
+/*
+ * A source made with no unicast route, for an (S,G) on the shared tree, asked
+ * for one again before anything takes its incoming interface as one: TRUE
+ * where it has a route, now or already, FALSE and left route-less where not.
+ */
+int source_resolve(srcentry_t *src)
+{
+    if (src->incoming != NO_VIF)
+	return TRUE;
+
+    if (set_incoming(src, PIM_IIF_SOURCE) == TRUE)
+	return TRUE;
+
+    src->incoming = NO_VIF;
+    src->upstream = NULL;
+
+    return FALSE;
+}
+
 /*
  * RFC 7761 sec. 4.5.5:
  *
@@ -931,7 +958,7 @@ int join_desired(mrtentry_t *mrt)
 
     /* KeepaliveTimer(S,G) is running: a directly connected source, sec. 4.2,
      * or one CheckSwitchToSpt(S,G) started for us, sec. 4.2.1 */
-    if (!(mrt->flags & MRTF_KAT) && mrt->source->upstream)
+    if (!(mrt->flags & MRTF_KAT) && !source_directly_connected(mrt->source))
 	return FALSE;
 
     /* AND inherited_olist(S,G) != NULL */
@@ -1009,7 +1036,7 @@ void update_sptbit(mrtentry_t *mrt, vifi_t iif)
 	rp = mrt->group->active_rp_grp->rp->rpentry;
     mwc = mrt->group->grp_route;
 
-    directly_connected = !mrt->source->upstream;
+    directly_connected = source_directly_connected(mrt->source);
     different_iif      = !rp || mrt->source->incoming != rp->incoming;
     no_rpt_olist       = !mwc || PIMD_VIFM_ISEMPTY(mwc->oifs);
     same_rpf_nbr       = mwc && mrt->upstream && mrt->upstream == mwc->upstream;
@@ -1124,7 +1151,7 @@ static void check_keepalive(mrtentry_t *mrt, const struct sg_count *count)
 	return;
 
     /* DirectlyConnected(S) */
-    if (!mrt->source->upstream) {
+    if (source_directly_connected(mrt->source)) {
 	SET_TIMER(mrt->entry_timer, PIM_DATA_TIMEOUT);
 	mrt->flags |= MRTF_KAT;
 	return;
@@ -2231,6 +2258,10 @@ mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)
 
     /* TODO: XXX: prepare and send immediately the (S,G) join? */
     mrt = find_route(source, group, MRTF_SG, CREATE);
+    /* No source tree to switch to without a route to S, see
+     * source_resolve() */
+    if (mrt && !source_resolve(mrt->source))
+	return NULL;
     if (mrt) {
 	if (mrt->flags & MRTF_NEW) {
 	    mrt->flags &= ~MRTF_NEW;

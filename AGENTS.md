@@ -377,7 +377,8 @@ the sources with an (S,G) entry as well, on a link r1 gets for the step to have 
 M35), no Prune(S,G) from an (S,G) entry an Assert made, never joined (step 7v, M43), the Prune(S,G,rpt)
 an emptied inherited_olist(S,G,rpt) calls for from a source tree entry without SPTbit, on a link of its own
 (step 7w, M44), a Prune(S,G,rpt) never sent bare while a neighbour's Join(\*,G) holds r1's back (step
-7x, M45), a Join(S,G) on r1's RPF interface toward the source acted on (step 7y, M46), a Join(S,G) where the (\*,G) already
+7x, M45), a Join(S,G) on r1's RPF interface toward the source acted on (step 7y, M46), an (S,G) Assert lost for a source r1 has
+no route to kept all the same (step 7z, M50), a Join(S,G) where the (\*,G) already
 forwards going upstream at once (step 7t, M47, which passes run alone by luck and failed in a full run),
 and a tripwire of the same map that did not reproduce, the Prune(S,G,rpt) an Assert that sets SPTbit
 calls for (step 7u, U13), a (\*,G) Winner

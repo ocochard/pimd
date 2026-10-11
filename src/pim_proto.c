@@ -3341,6 +3341,11 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		mrt = find_route(source, group, MRTF_SG, CREATE);
 		if (!mrt)
 		    continue;
+		/* An entry kept on the shared tree for a source with no route,
+		 * see create_srcentry(): no tree to join towards it until there
+		 * is one */
+		if (!source_resolve(mrt->source))
+		    continue;
 
 		new_join = (PIMD_VIFM_ISSET(vifi, mrt->joined_oifs) == 0);
 		/* "Receive Join(S,G)" of sec. 4.5.2, by jp_ds_decide(): the
@@ -4782,6 +4787,12 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 		 * its own now.
 		 */
 		own = find_route(source, group, MRTF_SG, CREATE);
+		/* No route to S makes no source tree entry, and sec. 4.6.1's
+		 * state needs none: the interface is one the shared tree forwards
+		 * S onto, so the entry goes on the shared tree, its incoming
+		 * interface and upstream the (*,G)'s */
+		if (!own)
+		    own = find_route(source, group, MRTF_SG | MRTF_RP, CREATE);
 		if (!own) {
 		    /* Nowhere to keep it: no unicast route to S, no RP for
 		     * the group, or an (S,G) refused for a limit.  The message

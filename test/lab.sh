@@ -1887,6 +1887,10 @@ CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
 # joined (S,G) on r1's RPF interface toward the source
 CRAFT_IIF_CTRL_GROUP=${CRAFT_IIF_CTRL_GROUP:-225.1.4.23}
 CRAFT_IIF_JOIN_GROUP=${CRAFT_IIF_JOIN_GROUP:-225.1.4.24}
+# crafted step 7z: a group r1 forwards on its LAN, and a source r1 has no
+# route to at all, beside the routable one of 7f as the control
+CRAFT_NOROUTE_GROUP=${CRAFT_NOROUTE_GROUP:-225.1.4.25}
+CRAFT_NOROUTE_SRC=${CRAFT_NOROUTE_SRC:-10.99.0.1}
 # crafted steps 14c and 15b: a link r1 gets for (S,G) state that depends
 # on nothing r2 has, the group joined before r2's RP set goes and the one
 # joined after
@@ -8016,6 +8020,49 @@ craft_step_7y() {
 	return 0
 }
 
+craft_step_7z() {
+	print "7z. An (S,G) Assert lost for a source with no route is kept all the same"
+	# Sec. 4.6.1 keeps (S,G) Assert state per (S,G,I) and reads no route
+	# to S: a router forwarding a source onto a LAN off its (*,G), losing
+	# an Assert for it there, stops.  pimd kept the state on an (S,G)
+	# entry, and find_route() makes none for a source it has no route to,
+	# so the loss was dropped ("no (S,G) to keep it on") and the router
+	# went on forwarding beside the winner: two forwarders on the LAN, as
+	# assert-recover had on Linux.  ED1 joins (*,G) on the LAN and its
+	# other address wins an (S,G) Assert there, first for 7f's source,
+	# which r1 has a route to -- the control -- then for one it has none
+	# to; r1 has to hold Loser state on the LAN for both.
+	craft "$SRC_ADDR" hello -H 105
+	craft "$CRAFT_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$CRAFT_ADDR"; then
+		fail "r1 has no neighbour at $SRC_ADDR or $CRAFT_ADDR, the step cannot be put"
+	elif ! craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_NOROUTE_GROUP" -w \
+			-r "$RP_ADDR" -H 65535 ||
+	     ! wait_for 30 has_mrt r1 "$CRAFT_NOROUTE_GROUP"; then
+		fail "r1 made no (*,$CRAFT_NOROUTE_GROUP), the step cannot be put"
+	else
+		craft "$CRAFT_ADDR" assert -g "$CRAFT_NOROUTE_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+		if ! wait_for 10 assert_char_is r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_NOROUTE_GROUP" L; then
+			fail "r1 holds no Loser state for ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_NOROUTE_GROUP) on ${EP}101b, a source it has a route to: the step proves nothing"
+		else
+			ok "r1 holds the Assert it lost for ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_NOROUTE_GROUP) on ${EP}101b, the control"
+			craft "$CRAFT_ADDR" assert -g "$CRAFT_NOROUTE_GROUP" -s "$CRAFT_NOROUTE_SRC" -P 1 -C 1
+			if wait_for 10 assert_char_is r1 "${EP}101b" "$CRAFT_NOROUTE_SRC" "$CRAFT_NOROUTE_GROUP" L; then
+				ok "and the one it lost for ($CRAFT_NOROUTE_SRC,$CRAFT_NOROUTE_GROUP), a source it has no route to"
+			else
+				fail "r1 dropped the Assert it lost for ($CRAFT_NOROUTE_SRC,$CRAFT_NOROUTE_GROUP) on ${EP}101b: it has no route to the source and kept no state"
+			fi
+		fi
+		for s in "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_NOROUTE_SRC"; do
+			craft "$CRAFT_ADDR" assert -g "$CRAFT_NOROUTE_GROUP" -s "$s" -R -P 2147483647 -C 4294967295
+		done
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_NOROUTE_GROUP" -w -r "$RP_ADDR"
+	fi
+
+	return 0
+}
+
 craft_step_7i() {
 	print "7i. A (*,G) Assert Winner leaves only on a (*,G) Assert"
 	# Every event of sec. 4.6.2's machine is "a (*,G) assert", the RPT bit
@@ -9754,7 +9801,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

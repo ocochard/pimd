@@ -50,7 +50,7 @@ grpentry_t		*grp_norp_list;
 /*
  * Local functions definition
  */
-static srcentry_t *create_srcentry   (uint32_t);
+static srcentry_t *create_srcentry  (uint32_t, int);
 static int	   search_srclist    (uint32_t, srcentry_t **);
 static int	   search_srcmrtlink (srcentry_t *, uint32_t, mrtentry_t **);
 static void	   insert_srcmrtlink (mrtentry_t *, mrtentry_t *, srcentry_t *);
@@ -397,7 +397,7 @@ rp_done:
 
     if (flags & MRTF_SG) {
 	/* Setup the (S,G) routing entry */
-	src = create_srcentry(source);
+	src = create_srcentry(source, flags & MRTF_RP);
 	if (!src) {
 	    IF_DEBUG(DEBUG_MRT)
 		logit(LOG_DEBUG, 0, "%s: no source entry for %s, return NULL",
@@ -410,6 +410,16 @@ rp_done:
 		delete_grpentry(grp);
 	    }
 
+	    return NULL;
+	}
+
+	/* A source made route-less for an entry on the shared tree takes a
+	 * route before it gives a source tree entry an incoming interface */
+	if (!(flags & MRTF_RP) && !source_resolve(src)) {
+	    if ((!grp->grp_route || (grp->grp_route->flags & MRTF_NEW)) && !grp->mrtlink)
+		delete_grpentry(grp);
+	    if (!src->mrtlink)
+		delete_srcentry(src);
 	    return NULL;
 	}
 
@@ -680,7 +690,16 @@ static int search_grplist(uint32_t group, grpentry_t **found)
 }
 
 
-static srcentry_t *create_srcentry(uint32_t source)
+/*
+ * @any: the entry may be made with no unicast route to @source, incoming
+ * NO_VIF and no upstream router.  Only an (S,G) on the shared tree asks, its
+ * own incoming interface and upstream being the (*,G)'s: RFC 7761 keeps
+ * (S,G,rpt) and (S,G) Assert state per interface with no route to S in it.
+ * Everything that reads such a source's incoming interface compares it, and
+ * NO_VIF matches no interface; what would take it as one asks
+ * source_resolve() (src/route.c) first.
+ */
+static srcentry_t *create_srcentry(uint32_t source, int any)
 {
     srcentry_t *node;
     srcentry_t *prev;
@@ -697,10 +716,14 @@ static srcentry_t *create_srcentry(uint32_t source)
 
     node->address = source;
     /* Free the memory if there is error getting the iif and
-     * the next hop (upstream) router. */
+     * the next hop (upstream) router, unless the caller can do without */
     if (set_incoming(node, PIM_IIF_SOURCE) == FALSE) {
-	free(node);
-	return NULL;
+	if (!any) {
+	    free(node);
+	    return NULL;
+	}
+	node->incoming = NO_VIF;
+	node->upstream = NULL;
     }
 
     node->mrtlink = NULL;

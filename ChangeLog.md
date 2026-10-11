@@ -108,6 +108,11 @@ issue of this repository is written out in full.
   reading it -- `pimctl show mrt` among others -- went past its end.  The
   state is sized for every interface the kernel allows now.  Found by
   AddressSanitizer under `crafted`.
+- A router that lost an Assert for a source it had no unicast route to,
+  on a link it forwarded the group onto off the shared tree, could not
+  keep the loss and went on forwarding the source beside the winner.  The
+  state is kept on an entry of the shared tree now, which needs no route
+  to the source.  RFC 7761 sec. 4.6.1.  Step 7z of `crafted`.
 
 [v3.3.0][] - 2026-10-08
 -----------------------
