@@ -282,20 +282,9 @@ void accept_igmp(int ifi, ssize_t recvlen)
 	    return;
 
 	case IGMP_DVMRP:
-	    /* XXX: TODO: most of the stuff below is not implemented. We are still
-	     * only PIM router.
-	     */
-	    group = ntohl(group);
-
+	    /* pimd is no DVMRP router: only mrinfo's neighbour requests are
+	     * answered, with the PIM neighbours, and the rest is dropped. */
 	    switch (pkt.code) {
-		case DVMRP_PROBE:
-		    dvmrp_accept_probe(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
-		    return;
-
-		case DVMRP_REPORT:
-		    dvmrp_accept_report(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
-		    return;
-
 		case DVMRP_ASK_NEIGHBORS:
 		    accept_neighbor_request(src, dst);
 		    return;
@@ -304,39 +293,10 @@ void accept_igmp(int ifi, ssize_t recvlen)
 		    accept_neighbor_request2(src, dst);
 		    return;
 
-		case DVMRP_NEIGHBORS:
-		    dvmrp_accept_neighbors(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
-		    return;
-
-		case DVMRP_NEIGHBORS2:
-		    dvmrp_accept_neighbors2(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen, group);
-		    return;
-
-		case DVMRP_PRUNE:
-		    dvmrp_accept_prune(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
-		    return;
-
-		case DVMRP_GRAFT:
-		    dvmrp_accept_graft(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
-		    return;
-
-		case DVMRP_GRAFT_ACK:
-		    dvmrp_accept_g_ack(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
-		    return;
-
-		case DVMRP_INFO_REQUEST:
-		    dvmrp_accept_info_request(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
-		    return;
-
-		case DVMRP_INFO_REPLY:
-		    dvmrp_accept_info_reply(src, dst, (uint8_t *)(uintptr_t)body, igmpdatalen);
-		    return;
-
 		default:
-		    /* Behind the flag, as the handlers above are and for the
-		     * same reason: see the query of no version further up. */
+		    /* Behind the flag: see the query of no version further up. */
 		    IF_DEBUG(DEBUG_PKT)
-			logit(LOG_DEBUG, 0, "Ignoring unknown DVMRP message code %u from %s to %s",
+			logit(LOG_DEBUG, 0, "Ignoring DVMRP message code %u from %s to %s",
 			      pkt.code, inet_fmt(src, s1, sizeof(s1)),
 			      inet_fmt(dst, s2, sizeof(s2)));
 		    return;

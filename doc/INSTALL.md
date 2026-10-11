@@ -125,13 +125,9 @@ lists the ones that exist.
    Because there are many debug messages, you can specify only a subset of
    the messages to be printed out:
 
-        usage: pimd [-c configfile] [-d [debug_level][,debug_level]]
+        usage: pimd [-f FILE] [-d SYS[,SYS...]]
 
-   Valid debug levels: `dvmrp_prunes`, `dvmrp_mrt`, `dvmrp_neighbors`,
-   `dvmrp_timers`, `igmp_proto`, `igmp_timers`, `igmp_members`, `trace`,
-   `timeout`, `pkt`, `interfaces`, `kernel`, `cache`,
-   `pim_hello`, `pim_register`, `pim_join_prune`, `pim_bootstrap`,
-   `pim_asserts`, `pim_cand_rp`, `pim_routes`, `pim_timers`, `pim_rpf`
+   `pimd -h` lists the subsystems `-d` takes.
 
    If you want to see all messages, use `pimd -dall` only.
 

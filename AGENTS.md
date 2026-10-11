@@ -688,7 +688,8 @@ Layers, roughly bottom-up:
   asks `ipc_json()` and renders the two separately. `show compat` has no JSON form at all and
   answers `-j` with an "error" member saying so; `show mrt detail`'s per-interface maps and
   timers have none either, and JSON is the table without them.
-- `dvmrp_proto.c` and `trace.c` are legacy DVMRP/mtrace interop stubs.
+- `trace.c` answers mtrace queries and mrinfo's DVMRP neighbour requests; pimd handles no other
+  DVMRP message.
 
 `lib/` holds fallback implementations (`strlcpy`, `strlcat`, `strtonum`, `pidfile`, `tempfile`,
 `utimensat`) pulled in via `AC_REPLACE_FUNCS` only when libc lacks them — do not call them

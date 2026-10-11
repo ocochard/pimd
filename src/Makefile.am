@@ -17,7 +17,7 @@ sbin_PROGRAMS    = pimd pimctl
 noinst_LIBRARIES = libpimd.a
 libpimd_a_SOURCES = autorp.c		autorp.h	autorp_parse.c		    \
 		   config.c		debug.c		debug.h			    \
-		   defs.h		dvmrp_proto.c	dvmrp.h			    \
+		   defs.h		dvmrp.h			    \
 		   igmp_parse.c		igmp_proto.c	igmp.c			    \
 		   igmpv2.h		igmpv3.h				    \
 		   inet.c		ipc.c		kern.c			    \

@@ -141,8 +141,6 @@ The top of that table, and what it settles:
     only thing that reaches the file at all.  Unlike `debug.c` above this
     one is a parser walking a network buffer, which is what makes its 0%
     worth something.
-  - `src/dvmrp_proto.c` (26 lines): 0% from both.  Legacy interop stubs,
-    and the reason half of `debug.c`'s switch arms are unreachable.
   - `src/privsep.c`: 49.3%, and that number is a floor rather than a
     finding, for the reason in the next section.
 
@@ -206,7 +204,7 @@ neighbour or an operator supplies), then the kernel and socket error paths
 `debug.c`'s 343 lines sit and where a wrong line misaligns a column.
 
 A file at 0% is the interesting case, and there are two honest reasons for
-one: the code is legacy that nothing runs (`src/dvmrp_proto.c`), or it is
+one: the code is legacy that nothing runs, or it is
 reachable only from a message no test sends (`src/trace.c`, mtrace).  The
 second is a test worth writing; the first is a line in `doc/TODO.org`.
 

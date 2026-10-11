@@ -447,17 +447,6 @@ extern uint32_t	anycast_rp_local	(uint32_t anycast);
 extern int	anycast_rp_peers	(uint32_t anycast);
 extern void	anycast_rp_copied	(uint32_t anycast, uint32_t member);
 
-/* dvmrp_proto.c */
-extern void	dvmrp_accept_probe	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);
-extern void	dvmrp_accept_report	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);
-extern void	dvmrp_accept_info_request (uint32_t src, uint32_t dst, uint8_t *p, int datalen);
-extern void	dvmrp_accept_info_reply	(uint32_t src, uint32_t dst, uint8_t *p, int datalen);
-extern void	dvmrp_accept_neighbors	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);
-extern void	dvmrp_accept_neighbors2	(uint32_t src, uint32_t dst, uint8_t *p, int datalen, uint32_t level);
-extern void	dvmrp_accept_prune	(uint32_t src, uint32_t dst, uint8_t *p, int datalen);
-extern void	dvmrp_accept_graft	(uint32_t src, uint32_t dst, uint8_t *p, int datalen);
-extern void	dvmrp_accept_g_ack	(uint32_t src, uint32_t dst, uint8_t *p, int datalen);
-
 /* igmp.c */
 extern void	init_igmp		(void);
 /* The dispatcher, and the one entry point of the daemon a fuzz harness can
