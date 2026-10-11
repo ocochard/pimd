@@ -247,6 +247,11 @@ box_link_add() {
 
 box_if_show() { box_run "$1" ifconfig "$2"; }
 
+# The routes setup gave box $1, again: nothing to do here, FreeBSD keeping
+# a route whose next hop an interface's old address reached when the
+# address changes.  The Linux backend has the work; see it there.
+box_routes_reinstall() { :; }
+
 box_route_change() {
 	if [ $# -ge 4 ]; then
 		box_run "$1" route -q change "$2" "$3" -metric "$4"

@@ -4834,6 +4834,7 @@ ar_resumed_since() { [ "$(ar_resumes)" -gt "$1" ]; }
 ar_restore_addr() {
 	box_addr_del r4 "$SL_R4_IF" "$AR_DR_NEW" 2>/dev/null || true
 	box_addr_add r4 "$SL_R4_IF" "$SL_DR_ADDR/24" 2>/dev/null || true
+	box_routes_reinstall r4
 }
 
 # The Assert state router $1 holds for (*,$3) on interface $2, which for a
@@ -5036,6 +5037,13 @@ check_assert_recover() {
 	print "7. The winner is renumbered and still knows it won the election"
 	box_addr_del r4 "$SL_R4_IF" "$SL_DR_ADDR"
 	box_addr_add r4 "$SL_R4_IF" "$AR_DR_NEW/24"
+	# Linux flushed r4's routes through the old address with it, the
+	# route to the source behind r5 (ED2's address) among them, and r4
+	# deleted that source's (S,G) and could not make it again to keep the
+	# Assert it then lost there: r4 and r5 both forwarding, and step 9
+	# finding r5 no Loser, one run in six on Linux and twice in CI.  A
+	# renumbering is the subject here, not the routing table going with it.
+	box_routes_reinstall r4
 	if wait_for 60 iface_is r4 "$SL_R4_IF" "$AR_DR_NEW"; then
 		ok "r4: the VIF on $SL_R4_IF moved to $AR_DR_NEW"
 	else

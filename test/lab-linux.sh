@@ -314,6 +314,35 @@ create_box() {
 	esac
 }
 
+# The routes setup gave box $1, again.  Linux flushes the routes whose next
+# hop an address of a subnet reached when the last address in that subnet
+# goes, so a scenario that renumbers an interface -- deleting the old address
+# before adding the new one -- takes the box's routes through it with it, and
+# a router left with no route to a source cannot hold the (S,G) state an
+# Assert for it needs.  FreeBSD keeps them; this puts Linux back level with
+# it.  replace, so that a route still there is no error.
+box_routes_reinstall() {
+	set -- "$1" $(routes "$1")
+	rr_box=$1
+	shift
+	while [ $# -ge 2 ]; do
+		box_run "$rr_box" ip route replace "$1" via "$2"
+		shift 2
+	done
+
+	set -- $(route_metrics "$rr_box")
+	while [ $# -ge 3 ]; do
+		box_route_change "$rr_box" "$1" "$2" "$3"
+		shift 3
+	done
+
+	set -- $(route_protos "$rr_box")
+	while [ $# -ge 4 ]; do
+		box_route_proto "$rr_box" "$1" "$2" "$3" "$4"
+		shift 4
+	done
+}
+
 # The veths inside go with the namespace, once the last process in it has
 # gone, which stop() has seen to
 destroy_box() {
