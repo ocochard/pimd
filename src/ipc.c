@@ -297,13 +297,6 @@ static void ipc_kv_limit(FILE *fp, const char *key, unsigned used, unsigned limi
 	ipc_kv_num(fp, buf, limit);
 }
 
-/* What a command with no JSON form answers, so that -j is always JSON */
-static void ipc_no_json(FILE *fp, const char *cmd)
-{
-	fprintf(fp, "%s  \"error\": ", ipc_items++ ? ",\n" : "");
-	fprintf(fp, "\"%s has no JSON form, it is a text dump\"", cmd);
-}
-
 /* How long a reply waits for a client that has stopped reading, in ms.  A
  * dump is written in pieces and this bounds each of them, so a client that
  * went away costs the router this much once rather than for ever. */
@@ -330,7 +323,6 @@ enum {
 	IPC_PIM_MFC,
 	IPC_PIM_RP,
 	IPC_PIM_CRP,
-	IPC_PIM_DUMP,
 	IPC_AUTORP
 };
 
@@ -359,7 +351,6 @@ static struct ipcmd {
 	{ IPC_PIM_CRP,    "show crp", NULL, "Show candidate Rendezvous-Point (CRP) set" },
 	{ IPC_AUTORP,     "show autorp", NULL, "Show Auto-RP group-to-RP mappings" },
 	{ IPC_PIM,        "show pim", "[detail]", "Show interfaces, neighbors and routes (default)"},
-	{ IPC_PIM_DUMP,   "show compat", "[detail]", "Show router status, compat mode" },
 
 	/* Aliases for what users type, hidden from help by a NULL description.
 	 * Order matters: ipc_read() takes the first row whose command is a
@@ -1392,24 +1383,6 @@ static int show_autorp(FILE *fp)
 	return dump_autorp(fp, detail);
 }
 
-static int show_dump(FILE *fp)
-{
-	/* A frozen format from before pimctl, prose and tables in equal
-	 * measure: there is nothing to declare, so -j says so rather than
-	 * wrapping a text dump in braces and calling it JSON. */
-	if (json) {
-		ipc_no_json(fp, "show compat");
-		return 0;
-	}
-
-	dump_vifs(fp, detail);
-	dump_ssm(fp, detail);
-	dump_pim_mrt(fp, detail);
-	dump_rp_set(fp, detail);
-
-	return 0;
-}
-
 static int show_version(FILE *fp)
 {
 	char buf[120];
@@ -1600,10 +1573,6 @@ void ipc_handle(int sd)
 
 	case IPC_STATUS:
 		ipc_show(client, show_status, cmd, sizeof(cmd));
-		break;
-
-	case IPC_PIM_DUMP:
-		ipc_show(client, show_dump, cmd, sizeof(cmd));
 		break;
 
 	case IPC_OK:

@@ -673,7 +673,7 @@ Layers, roughly bottom-up:
   timers, and remapping of groups when the RP set changes.
 - **Introspection.** `ipc.c` is a UNIX-socket server: `cmds[]` maps textual `pimctl` commands to
   `show_*()` functions that print to a `FILE *`. `pimctl.c` is the standalone client. `debug.c`
-  holds `logit()`, the debug-subsystem bitmask (`-d`) and the compat `show compat` dumps.
+  holds `logit()` and the debug-subsystem bitmask (`-d`).
   Adding a `pimctl` command means adding an `IPC_*` enum value, a `cmds[]` row and a dispatch case.
   A table is declared once, in the function that fills it in -- an array of `struct ipc_field`
   (`defs.h`), one entry per column, built with `IPC_STR()`, `IPC_NUM()` and `IPC_OPT()` and handed
@@ -685,9 +685,8 @@ Layers, roughly bottom-up:
   and `IPC_KV_COL` keeps a space in front of every colon, so that " : " tells such a line from a
   table row.
   A dump whose text form is prose rather than a table -- `dump_anycast_rp()`, `dump_autorp()` --
-  asks `ipc_json()` and renders the two separately. `show compat` has no JSON form at all and
-  answers `-j` with an "error" member saying so; `show mrt detail`'s per-interface maps and
-  timers have none either, and JSON is the table without them.
+  asks `ipc_json()` and renders the two separately. `show mrt detail`'s per-interface maps and
+  timers have no JSON form, and JSON is the table without them.
 - `trace.c` answers mtrace queries and mrinfo's DVMRP neighbour requests; pimd handles no other
   DVMRP message.
 

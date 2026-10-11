@@ -13,6 +13,9 @@ issue of this repository is written out in full.
   longer compiled; the third sized each routing entry's per-interface
   state by the interfaces present when the entry was made, which a VIF
   added afterwards read and wrote past.
+- `pimctl show compat` is gone.  It printed a text format from before
+  `pimctl`, which `show pim`, `show interface`, `show mrt` and `show rp`
+  replaced, and it had no JSON form.
 - The Solaris cases of `configure` and the code for SunOS, IRIX, BSD/OS,
   AIX and FreeBSD before 11 are gone, none of which had been built for
   many years.  Supported systems are Linux, FreeBSD, NetBSD and

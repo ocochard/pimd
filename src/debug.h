@@ -107,10 +107,6 @@ extern int	debug_kind		(int proto, int type, int code);
 extern int      debug_list              (int mask, char *buf, size_t len);
 extern int      debug_parse             (char *arg);
 extern int	log_level		(int proto, int type, int code);
-extern void	dump_vifs		(FILE *fp, int detail);
-extern void	dump_ssm		(FILE *fp, int detail);
-extern void	dump_pim_mrt		(FILE *fp, int detail);
-extern int	dump_rp_set		(FILE *fp, int detail);
 
 extern void	log_init		(int do_syslog);
 extern int      log_str2lvl             (char *level);

@@ -12520,12 +12520,11 @@ check_gif_tunnel() {
 		return 0
 	fi
 	print "RESULT: FAIL ($FAILED assertion(s))"
-	# show compat prints the vif table with its Subnet column, which is
-	# the format the issue reporters pasted and the place a mishandled
-	# point-to-point netmask would show up
+	# the kernel's view of the tunnel is where a mishandled point-to-point
+	# netmask would show up
 	for r in $(pim_routers); do
-		dprint "--- $r: pimctl show compat detail ---"
-		pimctl "$r" show compat detail 2>&1 | head -30 || true
+		dprint "--- $r: pimctl show interface ---"
+		pimctl "$r" show interface 2>&1 | head -30 || true
 		dprint "--- $r: $GIF_IF ---"
 		box_if_show "$r" "$GIF_IF" 2>&1 | head -4 || true
 	done
@@ -12641,8 +12640,8 @@ check_gif_staticrp() {
 	fi
 	print "RESULT: FAIL ($FAILED assertion(s))"
 	for r in $(pim_routers); do
-		dprint "--- $r: pimctl show compat detail ---"
-		pimctl "$r" show compat detail 2>&1 | head -30 || true
+		dprint "--- $r: pimctl show pim detail ---"
+		pimctl "$r" show pim detail 2>&1 | head -30 || true
 	done
 	dprint "--- r3: pimctl show mrt detail ---"
 	pimctl r3 show mrt detail 2>&1 | head -40 || true
@@ -14238,14 +14237,6 @@ check_solo() {
 		fi
 	else
 		skip "no python3 here, the two renderings are not compared field by field"
-	fi
-
-	# The two dumps that have no JSON form say so, rather than wrapping a
-	# text dump in braces and calling it JSON.
-	if pimctl r1 -j show compat 2>/dev/null | grep -q '"error"'; then
-		ok "r1: 'show compat' answers -j with an error member"
-	else
-		fail "r1: 'show compat' answered -j with something else"
 	fi
 
 	result || {

@@ -132,9 +132,8 @@ The top of that table, and what it settles:
     clearest illustration of why this table is not a ranking.  Those lines
     are the DVMRP and mtrace arms of `packet_kind()` and `log_level()`, two
     switch tables over messages nothing sends, plus the `show compat` dumps
-    of `dump_vifs()` and `dump_mrt()`, which the `ipc_row()` tables
-    superseded and `solo` step 7 asserts the replacement of.  A wrong line
-    there misaligns a column or prints "unknown".  Not a test worth
+    the `ipc_row()` tables superseded, since removed.  A wrong line there
+    prints "unknown".  Not a test worth
     writing.
   - `src/trace.c` (277 lines): 0% from every lab scenario, 23% from the
     fuzz corpus.  mtrace is a message no lab sends, and the harness is the

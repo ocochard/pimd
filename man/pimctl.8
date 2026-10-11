@@ -1,4 +1,4 @@
-.Dd Sep 27, 2026
+.Dd Oct 11, 2026
 .Dt PIMCTL 8 SMM
 .Os
 .Sh NAME
@@ -41,8 +41,6 @@
 .Ar show rp
 .Nm
 .Ar show crp
-.Nm
-.Ar show compat Op detail
 .Nm
 .Ar show pim Op detail
 .Sh DESCRIPTION
@@ -121,18 +119,11 @@ commands and
 and
 .Cm restart
 answer a line of text either way.
-.Cm show compat
-is a text format from before
-.Nm
-existed and has no JSON form at all: with
-.Fl j
-it answers an
-.Dq error
-member saying so.  The
+The
 .Op Ar detail
 half of
 .Cm show mrt
-has none either, its per-interface maps and timers being a block rather
+has no JSON form, its per-interface maps and timers being a block rather
 than a table, so
 .Cm show mrt detail Fl j
 is the table without them.
@@ -324,16 +315,9 @@ from and how long it is still believed.  The positive ones are in
 as well, marked
 .Cm Auto-RP ;
 a denied prefix is only here, having no RP to be a row there.
-.It Nm Ar show compat
-Show PIM status, compat mode.  Previously available as
-.Nm pimd Fl r ,
-as well as sending SIGUSR1 to the daemon to get output in
-.Pa /var/run/pimd/pimd.dump .
-These methods are no longer available, only this compat command remains.
 .It Nm Ar show pim Op detail
-Modern variant of the
-.Cm show compat
-command.
+Show the interfaces, neighbors, routing table, Candidate-RP state and RP
+set in one reply.
 .El
 .Sh FILES
 .Bl -tag -width /var/run/pimd.sock -compact

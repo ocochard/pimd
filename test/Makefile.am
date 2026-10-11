@@ -66,7 +66,6 @@ EXTRA_DIST        += fuzz/corpus/ipc/show-pim-detail.txt	\
 		     fuzz/corpus/ipc/show-igmp-groups.txt	\
 		     fuzz/corpus/ipc/show-neighbor.txt		\
 		     fuzz/corpus/ipc/show-mfc.txt		\
-		     fuzz/corpus/ipc/show-compat-detail.txt	\
 		     fuzz/corpus/ipc/show-alias.txt		\
 		     fuzz/corpus/ipc/help.txt			\
 		     fuzz/corpus/ipc/version.txt		\
