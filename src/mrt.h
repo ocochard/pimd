@@ -57,7 +57,6 @@
 #define MRTF_REG_SUPP		0x0800	/* register suppress	???	    */
 #define MRTF_ASSERTED		0x1000	/* upstream is not that of src ???  */
 #define MRTF_SG			0x2000	/* (S,G) pure, not hanging off of (*,G)*/
-#define MRTF_MFC_CLONE_SG	0x8000	/* clone (S,G) MFC from (*,G) or (*,*,RP) */
 
 /* Macro to duplicate oif info (oif bits, timers) */
 #define VOIF_COPY(from, to)						\

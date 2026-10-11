@@ -693,9 +693,6 @@ int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *
     }
     strlcpy(input, uvifs[iif].uv_name, sizeof(input));
 
-#ifdef PIM_REG_KERNEL_ENCAP
-    mc.mfcc_rp_addr.s_addr = rp_addr;
-#endif
     if ((priv_enabled() ? priv_chg_mfc(&mc) : kern_chg_mfc(socket, &mc)) < 0) {
 	logit(LOG_WARNING, errno, "Failed adding MFC entry src %s grp %s from %s to %s",
 	      inet_fmt(mc.mfcc_origin.s_addr, s1, sizeof(s1)),

@@ -97,29 +97,6 @@ AC_CHECK_MEMBERS([struct rt_metrics.rmx_metric], [], [], [[
 AC_REPLACE_FUNCS([arc4random pidfile strlcpy strlcat strtonum tempfile utimensat])
 AC_CONFIG_LIBOBJ_DIR([lib])
 
-#   Register kernel encapsulation.  Your kernel must support registers
-#   kernel encapsulation to be able to use it.
-AC_ARG_ENABLE(kernel_encap,
-	AS_HELP_STRING([--enable-kernel-encap], [Specialized kernels do PIM Register encapsulation
-			by themselves, speeding up processing considerably.
-			Not available on Linux, but maybe on *BSD, needs pimkern-PATCH_6]),,
-	enable_kernel_encap=no)
-
-#   (*,G) kernel MFC support.  Use it ONLY with (*,G) capable kernel
-AC_ARG_ENABLE(kernel_mfc,
-	AS_HELP_STRING([--enable-kernel-mfc], [Specialized kernels may have (*,G) MFC support.
-			Not on Linux, but maybe on *BSD, needs pimkern-PATCH_7]),,
-	enable_kernel_mfc=no)
-
-#   Saves 4 bytes per unconfigured interface per routing entry.  If set,
-#   configuring such interface will restart the daemon and will flush
-#   the routing table.
-AC_ARG_ENABLE(memory_save,
-	AS_HELP_STRING([--enable-memory-save], [Save 4 bytes/unconfigured interface/routing entry.
-			Must restart pimd and cause routing table to be flushed when configuring
-			new interfaces.]),,
-	enable_memory_save=no)
-
 #   The unicast RPF lookups PIM depends on.  netlink.c is the only way to
 #   ask on Linux, where it is not a choice at all, but FreeBSD 13.2 and
 #   later answer the same RTM_GETROUTE through netlink(4), and map its
@@ -229,15 +206,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	AC_MSG_RESULT([$have_libfuzzer])])
 
 # Create config.h from selected features and fallback defaults
-AS_IF([test "x$enable_kernel_encap" = "xyes"], [
-        AC_DEFINE(PIM_REG_KERNEL_ENCAP, 1, [Use kernel accelerated PIM register encap/decapsulation.])])
-
-AS_IF([test "x$enable_kernel_mfc" = "xyes"], [
-        AC_DEFINE(KERNEL_MFC_WC_G, 1, [Use kernel (*,G) MFC support.])])
-
-AS_IF([test "x$enable_memory_save" = "xyes"], [
-        AC_DEFINE(SAVE_MEMORY, 1, [Save 4 bytes/unconfigured interface/routing entry.])])
-
 AS_IF([test "x$enable_exit_on_error" = "xno"], [
 	AC_DEFINE(CONTINUE_ON_ERROR, 1, [Do not exit on error messages (LOG_ERR).])])
 
@@ -453,10 +421,7 @@ cat <<EOF
 
 Optional features:
   RPF backend...........: $rpf_backend
-  Kernel register encap.: $enable_kernel_encap
-  Kernel (*,G) support..: $enable_kernel_mfc
   Kernel MAX VIFs.......: $max_vifs
-  Memory save...........: $enable_memory_save
   Hardening.............: $enable_hardening
   Coverage (gcov).......: $enable_coverage
   Warnings are errors...: $enable_werror

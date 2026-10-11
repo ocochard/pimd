@@ -6,6 +6,14 @@ issue of this repository is written out in full.
 [UNRELEASED][]
 --------------
 
+### Changes
+- The `--enable-kernel-encap`, `--enable-kernel-mfc` and
+  `--enable-memory-save` options of `configure` are gone.  The first two
+  needed kernel patches that no released kernel carries, and the first no
+  longer compiled; the third sized each routing entry's per-interface
+  state by the interfaces present when the entry was made, which a VIF
+  added afterwards read and wrote past.
+
 ### Fixes
 - A router that had lost the Assert election toward the RP sent its
   periodic Join(*,G) to the winner without the Prune(S,G,rpt) of the

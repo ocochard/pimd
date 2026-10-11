@@ -1637,39 +1637,6 @@ int change_interfaces(mrtentry_t *mrt,
 	mrp = mrt->group->active_rp_grp ? mrt->group->active_rp_grp->rp->rpentry->mrtlink : NULL;
 	mwc = mrt->group->grp_route;
 
-#ifdef KERNEL_MFC_WC_G
-	mrtentry_t *tmp;
-
-	/* Check whether (*,*,RP) or (*,G) have different (iif,oifs) from
-	 * the (S,G). If "yes", then forbid creating (*,G) MFC. */
-	for (tmp = mrp; 1; tmp = mwc) {
-	    while (1) {
-		uint8_t oifs[MAXVIFS];
-
-		if (!tmp)
-		    break;
-
-		if (tmp->flags & MRTF_MFC_CLONE_SG)
-		    break;
-
-		if (tmp->incoming != mrt->incoming) {
-		    delete_single_kernel_cache_addr(tmp, INADDR_ANY_N, mrt->group->group);
-		    tmp->flags |= MRTF_MFC_CLONE_SG;
-		    break;
-		}
-
-		calc_oifs(tmp, oifs);
-		if (!(PIMD_VIFM_SAME(new_real_oifs, oifs)))
-		    tmp->flags |= MRTF_MFC_CLONE_SG;
-
-		break;
-	    }
-
-	    if (tmp == mwc)
-		break;
-	}
-#endif /* KERNEL_MFC_WC_G */
-
 	if (PIMD_VIFM_ISEMPTY(new_real_oifs)) {
 	    delete_mrt_flag = TRUE;
 
@@ -2075,11 +2042,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	    rp_addr = mrt->group->rpaddr;
 
 	    mfc_source = source;
-#ifdef KERNEL_MFC_WC_G
-	    if (mrt->flags & MRTF_WC)
-		if (!(mrt->flags & MRTF_MFC_CLONE_SG))
-		    mfc_source = INADDR_ANY_N;
-#endif /* KERNEL_MFC_WC_G */
 
 	    add_kernel_cache(mrt, mfc_source, group, MFC_MOVE_FORCE);
 
@@ -2118,10 +2080,6 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	if (mrp) {
 	    /* Forward on (*,G) or (*,*,RP) */
 	    if (mrp->incoming == iif) {
-#ifdef KERNEL_MFC_WC_G
-		if (!(mrp->flags & MRTF_MFC_CLONE_SG))
-		    mfc_source = INADDR_ANY_N;
-#endif /* KERNEL_MFC_WC_G */
 
 		add_kernel_cache(mrp, mfc_source, group, 0);
 
@@ -2310,14 +2268,6 @@ mrtentry_t *switch_shortest_path(uint32_t source, uint32_t group)
 static void try_switch_to_spt(mrtentry_t *mrt, kernel_cache_t *kc)
 {
     if (MRT_IS_LASTHOP(mrt) || MRT_IS_RP(mrt)) {
-#ifdef KERNEL_MFC_WC_G
-	if (kc->source == INADDR_ANY_N) {
-	    delete_single_kernel_cache(mrt, kc);
-	    mrt->flags |= MRTF_MFC_CLONE_SG;
-	    return;
-	}
-#endif /* KERNEL_MFC_WC_G */
-
 	switch_shortest_path(kc->source, kc->group);
     }
 }

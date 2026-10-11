@@ -561,7 +561,6 @@ void delete_mrtentry(mrtentry_t *mrt)
 {
     grpentry_t *grp;
     mrtentry_t *mrt_wc;
-    mrtentry_t *mrt_rp;
     vifi_t vifi;
 
     if (!mrt)
@@ -591,17 +590,9 @@ void delete_mrtentry(mrtentry_t *mrt)
 	} else {
 	    mrt->group->mrtlink = mrt->grpnext;
 	    if (!mrt->grpnext) {
-		/* All (S,G) MRT entries are gone. Allow creating (*,G) MFC entries. */
-		mrt_rp = mrt->group->active_rp_grp
-		    ? mrt->group->active_rp_grp->rp->rpentry->mrtlink : NULL;
 		mrt_wc = mrt->group->grp_route;
-		if (mrt_rp)
-		    mrt_rp->flags &= ~MRTF_MFC_CLONE_SG;
-
-		if (mrt_wc)
-		    mrt_wc->flags &= ~MRTF_MFC_CLONE_SG;
-		else
-		    /* Delete the group entry if it has no (*,G) routing entry */
+		/* Delete the group entry if it has no (*,G) routing entry */
+		if (!mrt_wc)
 		    delete_grpentry(mrt->group);
 	    }
 	}
@@ -886,7 +877,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
 {
     mrtentry_t *mrt;
     uint16_t i, *timer;
-    uint8_t  vif_numbers;
 
     mrt = calloc(1, sizeof(mrtentry_t));
     if (!mrt) {
@@ -921,14 +911,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
      * to reserve timer space for all potential vifs in advance and then no
      * need to delete the routing table and disturb the forwarding.
      */
-#ifdef SAVE_MEMORY
-    mrt->vif_timers	    = calloc(1, sizeof(uint16_t) * numvifs);
-    mrt->asserts	    = calloc(numvifs, sizeof(mrt->asserts[0]));
-    mrt->pp_expires	    = calloc(numvifs, sizeof(mrt->pp_expires[0]));
-    mrt->rpt_expires	    = calloc(numvifs, sizeof(mrt->rpt_expires[0]));
-    mrt->rpt_pp_expires	    = calloc(numvifs, sizeof(mrt->rpt_pp_expires[0]));
-    vif_numbers = numvifs;
-#else
     /* Every potential vif is MAXVIFS, the kernel's own bound.  It was
      * total_interfaces, which counts the interfaces getifaddrs() reports at
      * the last scan, while a VIF keeps its slot when its interface goes and a
@@ -942,8 +924,6 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     mrt->pp_expires	    = calloc(MAXVIFS, sizeof(mrt->pp_expires[0]));
     mrt->rpt_expires	    = calloc(MAXVIFS, sizeof(mrt->rpt_expires[0]));
     mrt->rpt_pp_expires	    = calloc(MAXVIFS, sizeof(mrt->rpt_pp_expires[0]));
-    vif_numbers = MAXVIFS;
-#endif /* SAVE_MEMORY */
     if (!mrt->vif_timers || !mrt->asserts || !mrt->pp_expires ||
 	!mrt->rpt_expires || !mrt->rpt_pp_expires) {
 	logit(LOG_WARNING, 0, "alloc_mrtentry(): out of memory");
@@ -952,7 +932,7 @@ static mrtentry_t *alloc_mrtentry(srcentry_t *src, grpentry_t *grp)
     }
 
     /* Reset the timers */
-    for (i = 0, timer = mrt->vif_timers; i < vif_numbers; i++, timer++)
+    for (i = 0, timer = mrt->vif_timers; i < MAXVIFS; i++, timer++)
 	RESET_TIMER(*timer);
 
     /* NotJoined, RFC 7761 sec. 4.5.4 and sec. 4.5.5: a Prune goes upstream
@@ -1053,7 +1033,7 @@ void delete_mrtentry_all_kernel_cache(mrtentry_t *mrt)
     mrt->kernel_cache = NULL;
 
     /* turn off the cache flag(s) */
-    mrt->flags &= ~(MRTF_KERNEL_CACHE | MRTF_MFC_CLONE_SG);
+    mrt->flags &= ~MRTF_KERNEL_CACHE;
 }
 
 
@@ -1065,7 +1045,7 @@ void delete_single_kernel_cache(mrtentry_t *mrt, kernel_cache_t *node)
     if (!node->prev) {
 	mrt->kernel_cache = node->next;
 	if (!mrt->kernel_cache)
-	    mrt->flags &= ~(MRTF_KERNEL_CACHE | MRTF_MFC_CLONE_SG);
+	    mrt->flags &= ~MRTF_KERNEL_CACHE;
     } else {
 	node->prev->next = node->next;
     }
@@ -1119,7 +1099,7 @@ void delete_single_kernel_cache_addr(mrtentry_t *mrt, uint32_t source, uint32_t 
     if (!node->prev) {
 	mrt->kernel_cache = node->next;
 	if (!mrt->kernel_cache)
-	    mrt->flags &= ~(MRTF_KERNEL_CACHE | MRTF_MFC_CLONE_SG);
+	    mrt->flags &= ~MRTF_KERNEL_CACHE;
     } else{
 	node->prev->next = node->next;
     }
@@ -1304,7 +1284,7 @@ static void move_kernel_cache(mrtentry_t *mrt, uint16_t flags)
 
 	if (found == TRUE) {
 	    if (!mrtentry_rp->kernel_cache)
-		mrtentry_rp->flags &= ~(MRTF_KERNEL_CACHE | MRTF_MFC_CLONE_SG);
+		mrtentry_rp->flags &= ~MRTF_KERNEL_CACHE;
 
 	    if (mrt->kernel_cache)
 		free(mrt->kernel_cache);

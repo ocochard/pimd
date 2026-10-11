@@ -54,8 +54,7 @@ Useful configure flags: `--enable-test` (build `test/` subdir),
 `--disable-exit-on-error`, and adds `-fsanitize=fuzzer-no-link` to the probed flags),
 `--with-max-vifs=NUM` (must match kernel `MAXVIFS`), `--disable-exit-on-error`,
 `--enable-netlink` (RPF lookups over `netlink(4)` rather than the routing socket; implied
-on Linux, needs FreeBSD 13.2 or later elsewhere),
-`--enable-kernel-encap` / `--enable-kernel-mfc` (patched BSD kernels only).
+on Linux, needs FreeBSD 13.2 or later elsewhere).
 
 CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
 `./configure --prefix= --enable-test`, then `make check`.

@@ -1637,10 +1637,6 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 		 * decapsulated mcast packet in the kernel will
 		 * result in CACHE_MISS
 		 */
-#ifdef KERNEL_MFC_WC_G
-		if (!(mrtentry->flags & MRTF_MFC_CLONE_SG))
-		    mfc_source = INADDR_ANY_N;
-#endif /* KERNEL_MFC_WC_G */
 		add_kernel_cache(mrtentry, mfc_source, inner_grp, 0);
 		k_chg_mfc(igmp_socket, mfc_source, inner_grp,
 			  mrtentry->incoming, mrtentry->oifs,
