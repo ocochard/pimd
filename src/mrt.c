@@ -307,18 +307,11 @@ mrtentry_t *find_route(uint32_t source, uint32_t group, uint16_t flags, char cre
 	    return NULL;
 	}
 
-	if (IN_PIM_SSM_RANGE(group)) {
-	    if (rp_match(group) == (rpentry_t *) NULL) {
-		/* For SSM, virtual RP entry has to be created. RP is at local link 169.254.0.1
-		   to be sure not to send any register messages outside, although sending them
-		   has been disabled for SSM also in PIM protocol.
-		   The address does not need to be really configured in any interface.
-		   TODO: Avoid need for virtual RP by implementing SSM-specific state structures */
-		add_rp_grp_entry(&cand_rp_list, &grp_mask_list, htonl(0xa9fe0001), 20, 90, group,
-				 0xffffffff, curr_bsr_hash_mask, curr_bsr_fragment_tag);
-	    }
-	}
-
+	/* A group in the SSM range is RP-less like any group no RP covers:
+	 * rp_grp_match() (src/rp.c) answers none for it, so an (S,G) makes it
+	 * RP-less and a (*,G) is refused, RFC 7761 sec. 4.8.1 rule 4.  It used
+	 * to be given a virtual RP at 169.254.0.1 here, for want of groups
+	 * that could live without one. */
 	if (!grp->active_rp_grp) {
 	    rp_grp = rp_grp_match(group);
 	    if (!rp_grp && (flags & (MRTF_WC | MRTF_RP))) {

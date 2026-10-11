@@ -3076,10 +3076,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 	     * join_or_prune() refuses to send for a (*,G) in it -- but the
 	     * receive path had no range test at all, so a Join(*,G) naming
 	     * the right RP built one, and calc_oifs() merges a (*,G)'s
-	     * joined_oifs into every (S,G) of the group.  That RP is the
-	     * invented 169.254.0.1 an SSM range is given, which no router
-	     * that learned its RP set from the BSR would name, and any
-	     * router that maps SSM groups to an RP of its own would.
+	     * joined_oifs into every (S,G) of the group.  That RP was the
+	     * invented 169.254.0.1 an SSM range was given then; an SSM group
+	     * has none now, and the range test stays for any router that
+	     * maps SSM groups to an RP of its own.
 	     *
 	     * The RP bit is what marks the two entry kinds rule 4 is about,
 	     * (*,G) with the WC bit beside it and (S,G,rpt) without; an
@@ -5813,7 +5813,7 @@ int receive_pim_cand_rp_adv(uint32_t src, uint32_t dst __attribute__((unused)), 
 	    continue;
 
 	MASKLEN_TO_MASK(egaddr.masklen, grp_mask);
-	/* Do not advertise internal virtual RP for SSM groups */
+	/* No RP for an SSM range, RFC 7761 sec. 4.8 */
 	if (!IN_PIM_SSM_RANGE(egaddr.mcast_addr)) {
 	    add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
 			     rp_addr, priority, holdtime,

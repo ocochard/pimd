@@ -353,9 +353,9 @@ int k_req_incoming(uint32_t source, struct rpfctl *rpf)
     /*
      * Nothing in 169.254/16 is ever routed, RFC 3927 sec. 2.7 forbids
      * forwarding a link-local packet at all, so whatever the kernel
-     * answers here cannot be a path to it.  config.c gives the SSM range
-     * a static RP of 169.254.0.1, on purpose, precisely because the
-     * address leads nowhere, and every RP lookup asks for it.
+     * answers here cannot be a path to it.  config.c used to give the
+     * SSM range a static RP of 169.254.0.1 for exactly that reason; an
+     * SSM group has no RP now, and the test stays for any other.
      */
     if (IN_LINK_LOCAL_RANGE(source)) {
 	IF_DEBUG(DEBUG_RPF) {

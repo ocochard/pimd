@@ -624,8 +624,8 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
     entry_new->rp = cand_rp_ptr;
     entry_new->grplink = NULL;
 
-    /* If I am BSR candidate and rp_addr is NOT hacked SSM address, then log it */
-    if (cand_bsr_flag && rp_addr != ntohl(0xa9fe0001)) {
+    /* If I am BSR candidate, log it */
+    if (cand_bsr_flag) {
 	uint32_t mask;
 	MASK_TO_MASKLEN(group_mask, mask);
 	logit(LOG_INFO, 0, "New RP candidate %s for group %s/%d, priority %d",
@@ -1147,6 +1147,11 @@ rp_grp_entry_t *rp_grp_match(uint32_t group)
     uint32_t curr_hash_mask_h   = 0;
     uint32_t curr_group_mask    = 0; /* longest match */
 
+    /* RFC 7761 sec. 4.8: a group in the SSM range has no RP, whatever a
+     * Bootstrap, an Auto-RP mapping or an rp-address says of its range */
+    if (IN_PIM_SSM_RANGE(group))
+	return NULL;
+
     if (grp_mask_list == NULL)
 	return NULL;
 
@@ -1282,7 +1287,7 @@ int create_pim_bootstrap_message(char *send_buff, size_t buflen)
      */
     for (mask_ptr = grp_mask_list; mask_ptr; mask_ptr = mask_ptr->next) {
 	if (IN_PIM_SSM_RANGE(mask_ptr->group_addr)) {
-	    continue;  /* Do not advertise internal virtual RP for SSM groups */
+	    continue;  /* No RP for an SSM range, RFC 7761 sec. 4.8 */
 	}
 
 	/* How many RPs this range actually has, counted from the list this

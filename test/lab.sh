@@ -9352,21 +9352,19 @@ craft_step_18() {
 	fi
 
 	# And a well-formed one for the SSM range, which is the way in S1 of
-	# doc/rfc7761-compliance.md describes.  config.c synthesizes a static
-	# RP at $SSM_VIRTUAL_RP for every SSM range in effect, and it lands
-	# on a grp_mask_t of its own: a Bootstrap naming that same prefix
-	# used to stamp the mask with its fragment tag and have the collector
-	# delete the synthesized entry, after which the group ran on the
-	# 90-second RP the second copy in find_route() adds and went down
-	# with it.  Static entries are marked now, so what arrives is kept
-	# beside what was configured.
+	# doc/rfc7761-compliance.md describes.  That was about the static RP
+	# config.c synthesized at $SSM_VIRTUAL_RP for every SSM range, which a
+	# Bootstrap for the same prefix used to delete; an SSM group has no RP
+	# now, RFC 7761 sec. 4.8, whatever a Bootstrap says of its range --
+	# steps 23 and 23b are what read that off the wire -- and pimd invents
+	# none for it.
 	craft "$CRAFT_ADDR" bootstrap -u "$CRAFT_ADDR" -g 232.0.0.0 -m 8 \
 	      -r "$CRAFT_ADDR" -p "$CRAFT_PRIO"
 	sleep 2
 	if has_static_rp r1 "$SSM_VIRTUAL_RP"; then
-		ok "r1 kept the RP it invents for the SSM range"
+		fail "r1 holds a static RP $SSM_VIRTUAL_RP for the SSM range, which has none"
 	else
-		fail "a Bootstrap for the SSM range deleted it, and the group now runs on a 90s RP"
+		ok "r1 invents no RP for the SSM range"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
@@ -10214,6 +10212,12 @@ sg_joined_on()   { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Joined)"; }
 sg_forwards_on() { map_isset "$1" "$2" "$(route_map "$1" "$3" "$4" Outgoing)"; }
 sg_not_joined_on() { ! sg_joined_on "$@"; }
 
+# Does router $1 list $2 among the SSM group ranges of show status?
+ssm_range_listed() {
+	pimctl "$1" show status 2>/dev/null | \
+		awk -v r="$2" -F': *' '/^SSM group ranges/ { n = split($2, a, /[ ,]+/); for (i = 1; i <= n; i++) if (a[i] == r) f = 1 } END { exit !f }'
+}
+
 # Does router $1's ($2,$3) have the register vif in its Joined map?  It is
 # VIF #0, the first slot, and `show interface` does not list it, so
 # vif_index() cannot name it.  False for an entry that does not exist.
@@ -10524,21 +10528,21 @@ check_ssm_range() {
 	done
 	[ "$FAILED" -eq 0 ] || return 1
 
-	# config.c gives every SSM range a static RP at 169.254.0.1, a
-	# link-local address that leads nowhere, so that an SSM group
-	# resolves to an RP entry without any register ever leaving the
-	# router.  Which ranges have one is therefore pimd's own answer to
-	# what it considers source specific, before a single report arrives.
-	print "2. The configured range has the link-local RP, the default one no longer does"
-	if wait_for 30 has_static_rp r3 "$SSMR_RANGE"; then
-		ok "R3 holds the static RP 169.254.0.1 for $SSMR_RANGE"
+	# Which ranges pimd considers source specific, in its own words and
+	# before a single report arrives: the "SSM group ranges" line of
+	# show status.  This used to be read off the static RP at the
+	# link-local 169.254.0.1 config.c gave every SSM range; an SSM group
+	# has no RP now, RFC 7761 sec. 4.8.
+	print "2. The configured range is the SSM range, the default one no longer is"
+	if wait_for 30 ssm_range_listed r3 "$SSMR_RANGE"; then
+		ok "R3 lists $SSMR_RANGE among its SSM group ranges"
 	else
-		fail "R3 has no static RP for $SSMR_RANGE, the range was not configured"
+		fail "R3 does not list $SSMR_RANGE among its SSM group ranges, the range was not configured"
 	fi
-	if has_static_rp r3 "$SSMR_DEFAULT_RANGE"; then
-		fail "R3 still has the static RP for $SSMR_DEFAULT_RANGE, the range was added, not replaced"
+	if ssm_range_listed r3 "$SSMR_DEFAULT_RANGE"; then
+		fail "R3 still lists $SSMR_DEFAULT_RANGE, the range was added, not replaced"
 	else
-		ok "$SSMR_DEFAULT_RANGE has no static RP left, the configured range replaced it"
+		ok "$SSMR_DEFAULT_RANGE is no longer listed, the configured range replaced it"
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 

@@ -3737,16 +3737,11 @@ void config_vifs_from_file(void)
     fclose(fp);
 
   nofile:
-    /* A static RP address is needed for SSM.  We use a link-local
-     * address. It is not required to be configured on any interface.
-     * One per SSM range in effect, the default one included. */
+    /* The default SSM range, where pimd.conf named none.  An SSM group has
+     * no RP, RFC 7761 sec. 4.8: rp_grp_match() answers none for one, where
+     * a static RP at the link-local 169.254.0.1 used to be synthesized here
+     * per range for a group to resolve to. */
     default_ssm_range();
-    for (range = ssm_list; range; range = range->next) {
-	snprintf(linebuf, sizeof(linebuf), "169.254.0.1 %s/%u\n",
-		 inet_fmt(range->group, s1, sizeof(s1)), range->masklen);
-	s = linebuf;
-	parse_rp_address(s);
-    }
 
     if (error_flag)
 	logit(LOG_ERR, 0, "%s:%u - Syntax error", config_file, lineno);

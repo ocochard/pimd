@@ -868,13 +868,13 @@ M49, fixed: D10, M48's other face.  `find_route()` (`src/mrt.c`) refuses to
 make a group no RP covers, for an (S,G) as well as a (\*,G), so a router with
 no RP set -- a booting one, a BSR outage past the RP holdtime -- builds no
 source tree at all, and a Join(S,G) for such a group is dropped.  The SSM
-range works only through the virtual RP 169.254.0.1 `find_route()` installs
-for it, under a TODO asking for the same redesign.  *Test: `crafted` step
+range worked only through the virtual RP 169.254.0.1 `find_route()` installed
+for it, under a TODO asking for the same redesign (S1, since fixed).  *Test: `crafted` step
 15b: with no RP anywhere, r1's holding none the control, a Join(S,G) from the
 same link has to make an (S,G) entry (none was made before the fix).*
 `find_route()` refuses only a (\*,G) or an RPbit entry without an RP now, and
-makes the group of a plain (S,G) RP-less.  The SSM range keeps its virtual RP
-for now: step 5 of the plan, its own decision.  `my_assert_metric()` answers
+makes the group of a plain (S,G) RP-less.  The SSM range dropped its virtual
+RP afterwards, S1.  `my_assert_metric()` answers
 infinite_assert_metric() for an RP-less (S,G) without SPTbit, sec. 4.6.3
 having neither CouldAssert(S,G,I) nor CouldAssert(\*,G,I) to offer it; such an
 entry sets SPTbit on its first packet, so no lab step can reach the case.
@@ -1130,11 +1130,11 @@ source cannot arrive for a group nobody is the RP of.  The whole SSM data
 rate of those sources crossed into user space to be dropped, on the one
 router guaranteed to see all of it.  `ssm` asserts the oif is absent.
 
-What is left is S1, one entry: that an SSM group carries RP state at all.
-Its dangerous half is closed -- see the entry -- and its remaining half is
-worth reading before anyone estimates it.
+S1 was the one entry left here, that an SSM group carried RP state at all.
+Its dangerous half was closed first, and the rest went with the RP-less groups
+of M48 and M49 -- see the entry.
 
-**S1.  Every SSM group is given an RP that does not exist.**  An SSM group
+**S1, fixed.  Every SSM group was given an RP that does not exist.**  An SSM group
 has no RP and the code wants one anyway, so pimd manufactures one, twice
 over and in two different places.  `config_vifs_from_file()` ends by
 synthesizing a static `rp-address 169.254.0.1` for each SSM range in effect,
@@ -1191,6 +1191,19 @@ smaller than it was: the teardown is closed, S2 is fixed, and what remains is
 a fictional address in `pimctl show rp` and a second implementation behind it
 that nothing reaches.  Test: the half that is closed is asserted by
 `crafted`; the rest has nothing to assert until the state exists.*
+
+The structural change this asked for is the RP-less group of M48 and M49,
+which lets a group exist with no RP and keep its source trees; with it in place
+the SSM range needs no RP, step 5 of `aidd_docs/plans/groups-without-rp.md`.
+`rp_grp_match()` (`src/rp.c`) answers none for a group in the SSM range,
+whatever a Bootstrap, an Auto-RP mapping or an `rp-address` says of the range,
+so an SSM group is RP-less and an SSM (\*,G) is refused in `find_route()`, sec.
+4.8.1 rule 4; `config.c` no longer synthesizes the static RP, and the second
+copy in `find_route()` is gone.  `pimctl show rp` no longer lists 169.254.0.1.
+*Test: `ssm-range` step 2 reads which ranges are SSM off `show status` rather
+than off the static RP; `crafted` step 18 asserts that a Bootstrap for the
+range leaves r1 inventing no RP, and steps 23 and 23b the wire rules for an SSM
+group; `ssm` its (S,G) membership and forwarding.*
 
 Timers
 ------

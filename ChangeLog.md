@@ -113,6 +113,10 @@ issue of this repository is written out in full.
   keep the loss and went on forwarding the source beside the winner.  The
   state is kept on an entry of the shared tree now, which needs no route
   to the source.  RFC 7761 sec. 4.6.1.  Step 7z of `crafted`.
+- A group in the SSM range has no RP.  pimd used to give every SSM range a
+  static RP at the link-local 169.254.0.1, which `pimctl show rp` listed;
+  it no longer exists, and no Bootstrap, Auto-RP mapping or `rp-address`
+  gives an SSM group an RP either.  RFC 7761 sec. 4.8.
 
 [v3.3.0][] - 2026-10-08
 -----------------------

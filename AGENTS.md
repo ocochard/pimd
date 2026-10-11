@@ -343,8 +343,8 @@ passes it with the bug in place -- `crafted` the only one whose messages pimd di
 `doc/rfc7761-compliance.md` (version, destination, address family and encoding type, mask
 lengths, the B and Z bits, a 0xffff holdtime, a Null-Register checksum), the two SSM rules
 about what arrives (no shared tree for a group in the range, a Register for one answered
-rather than dropped), a Bootstrap for the SSM range leaving the RP pimd invents for it
-alone, Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
+rather than dropped), a Bootstrap for the SSM range leaving pimd inventing no RP for it (S1),
+Join suppression and its HoldTime bound (RFC 7761 sec. 4.5.4, the second router
 played by pimsend from R2's jail), the override Join to that router's Prune, whatever RP it names
 (step 7p, M39), and the
 triggered Hello to a new neighbor, and R1's Prune-Pending Timer on its LAN (all timed over
