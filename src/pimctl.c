@@ -56,14 +56,6 @@
 #include "text.h"
 #define MAXARGS	32
 
-/*
- * workaround for SunOS/Solaris/Illumos which defines this in
- * addition to the more logical __sun and __svr4__ macros.
- */
-#ifdef sun
-#undef sun
-#endif
-
 #ifndef MIN
 #define MIN(a,b)	(((a) <= (b))? (a) : (b))
 #endif

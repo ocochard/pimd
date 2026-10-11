@@ -21,23 +21,12 @@ AC_CANONICAL_HOST
 
 case $host_os in
     dragonfly*)
-	CPPFLAGS="$CPPFLAGS -I../include/dragonfly"
+	# Absolute, so that it holds from test/fuzz/ and a VPATH build too
+	CPPFLAGS="$CPPFLAGS -I`cd "$srcdir" && pwd`/include/dragonfly"
 	;;
     netbsd*)
         CPPFLAGS="$CPPFLAGS -D_OPENBSD_SOURCE"
         ;;
-    solaris2.5)
-	CPPFLAGS="$CPPFLAGS -DSYSV -DSunOS=55 -I../include/sunos-gcc"
-	LIBS="-lsocket -lnsl"
-	;;
-    solaris2.6)
-	CPPFLAGS="$CPPFLAGS -DSYSV -DSunOS=56 -I../include/sunos-gcc"
-	LIBS="-lsocket -lnsl"
-	;;
-    solaris2.7|solaris2.8|solaris2.9|solaris2.10|solaris2.11|solaris2.12)
-	CPPFLAGS="$CPPFLAGS -DSYSV -DSunOS=57"
-	LIBS="-lsocket -lnsl"
-	;;
     linux*)
 	# -D_GNU_SOURCE Use GNU extensions, where possible (GLIBC)
 	# -D_BSD_SOURCE Use functions derived from 4.3 BSD Unix rather than POSIX.1
@@ -52,8 +41,7 @@ esac
 # Required to check for libsystemd-dev
 PKG_PROG_PKG_CONFIG
 
-AC_HEADER_STDC
-AC_CHECK_HEADERS([fcntl.h ifaddrs.h netinet/pim.h net/if_dl.h sys/time.h sys/ioctl.h linux/netlink.h termios.h])
+AC_CHECK_HEADERS([fcntl.h net/if_dl.h sys/ioctl.h linux/netlink.h termios.h])
 # The sandbox the unprivileged half of the daemon enters: seccomp-bpf on
 # Linux, and nothing on the BSDs -- Capsicum refuses every sendto() that
 # carries a destination, which is every packet pimd sends.  The long version
@@ -63,25 +51,12 @@ AC_CHECK_HEADERS([linux/seccomp.h linux/filter.h linux/audit.h sys/prctl.h])
 # prctl(PR_SET_PDEATHSIG) on Linux, procctl(PROC_PDEATHSIG_CTL) on FreeBSD.
 AC_CHECK_HEADERS([sys/procctl.h])
 AC_CHECK_HEADERS([netlink/netlink.h netlink/netlink_route.h])
-AC_CHECK_HEADERS([net/if.h], [], [], [
-#include <stdio.h>
-#ifdef STDC_HEADERS
-# include <stdlib.h>
-# include <stddef.h>
-#else
-# ifdef HAVE_STDLIB_H
-#  include <stdlib.h>
-# endif
-#endif
-#ifdef HAVE_SYS_SOCKET_H
-# include <sys/socket.h>
-#endif])
 
 # Check if some func is not in libc
 AC_CHECK_LIB([util], [pidfile])
 
 # Check for required functions in libc
-AC_CHECK_FUNCS([atexit getifaddrs if_nametoindex getentropy])
+AC_CHECK_FUNCS([getentropy])
 
 # RFC 7761 sec. 4.6.3 reads the metric an Assert carries off the unicast
 # routing table.  FreeBSD keeps a per-nexthop metric in struct rt_metrics
@@ -94,7 +69,7 @@ AC_CHECK_MEMBERS([struct rt_metrics.rmx_metric], [], [], [[
 ]])
 
 # Check for usually missing API's, which we can replace
-AC_REPLACE_FUNCS([arc4random pidfile strlcpy strlcat strtonum tempfile utimensat])
+AC_REPLACE_FUNCS([arc4random pidfile strlcpy strlcat strtonum tempfile])
 AC_CONFIG_LIBOBJ_DIR([lib])
 
 #   The unicast RPF lookups PIM depends on.  netlink.c is the only way to

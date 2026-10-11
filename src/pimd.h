@@ -910,11 +910,6 @@ uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
  */
 
 #include <sys/types.h>
-#ifdef HOST_OS_WINDOWS
-#define LITTLE_ENDIAN 1234
-#define BYTE_ORDER LITTLE_ENDIAN
-#endif /* HOST_OS_WINDOWS */
-
 #if !defined(BYTE_ORDER)
 #if defined(__BYTE_ORDER)
 #define BYTE_ORDER	__BYTE_ORDER
@@ -1021,24 +1016,5 @@ uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
 
 #define PIM_ASSERT_RATE_TIMER   15
 #endif /* 0 */
-
-#if (defined(__bsdi__) || defined(NetBSD) || defined(OpenBSD) || defined(IRIX))
-/*
- * Struct used to communicate from kernel to multicast router
- * note the convenient similarity to an IP packet
- */ 
-struct igmpmsg {
-    uint32_t        unused1;
-    uint32_t        unused2;
-    uint8_t         im_msgtype;                 /* what type of message     */
-#define IGMPMSG_NOCACHE         1
-#define IGMPMSG_WRONGVIF        2
-#define IGMPMSG_WHOLEPKT        3               /* used for user level encap*/
-    uint8_t         im_mbz;                     /* must be zero             */
-    uint8_t         im_vif;                     /* vif rec'd on             */
-    uint8_t         unused3;
-    struct in_addr  im_src, im_dst;
-};
-#endif
 
 #endif /* PIMD_PIMD_H_ */

@@ -41,10 +41,6 @@
 
 #include "config.h"
 
-#ifdef BSD		/* Neither Linux or SunOS has this BSDism */
-# include <sys/cdefs.h>	/* Defines __BSD_VISIBLE, needed for arc4random() etc. */
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -70,19 +66,13 @@
 #ifdef HAVE_FCNTL_H
 # include <fcntl.h>
 #endif
-#if ((defined(SYSV)) || (defined(__bsdi__)) || ((defined SunOS) && (SunOS < 50)))
-#include <sys/sockio.h>
-#endif /* SYSV || bsdi || SunOS 4.x */
 #include <time.h>
 #include <sys/time.h>
-#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
-#include <osreldate.h>
-#endif /* __FreeBSD__ */
-#if defined(__bsdi__) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+#ifdef __FreeBSD__
 #define rtentry kernel_rtentry
 #include <net/route.h>
 #undef rtentry
-#endif /* bsdi or __FreeBSD_version >= 220000 */
+#endif /* __FreeBSD__ */
 #ifdef __linux__
 #define _LINUX_IN_H             /* For Linux <= 2.6.25 */
 #include <linux/types.h>
@@ -92,35 +82,6 @@
 #endif /* __linux__ */
 
 #include <strings.h>
-
-#ifndef BYTE_ORDER
-#if defined(__linux__) || defined(SYSV)
-#include <endian.h>
-#elif (BSD >= 199103)
-#include <machine/endian.h>
-#else
-#define LITTLE_ENDIAN	1234	/* least-significant byte first (vax, pc) */
-#define BIG_ENDIAN	4321	/* most-significant byte first (IBM, net) */
-#define PDP_ENDIAN	3412	/* LSB first in word, MSW first in long (pdp) */
-
-#if defined(vax) || defined(ns32000) || defined(sun386) || defined(i386) || \
-    defined(__ia64) || \
-    defined(MIPSEL) || defined(_MIPSEL) || defined(BIT_ZERO_ON_RIGHT) || \
-    defined(__alpha__) || defined(__alpha)
-#define BYTE_ORDER	LITTLE_ENDIAN
-#endif
-
-#if defined(sel) || defined(pyr) || defined(mc68000) || defined(sparc) || \
-    defined(is68k) || defined(tahoe) || defined(ibm032) || defined(ibm370) || \
-    defined(MIPSEB) || defined(_MIPSEB) || defined(_IBMR2) || defined(DGUX) ||\
-    defined(apollo) || defined(__convex__) || defined(_CRAY) || \
-    defined(__hppa) || defined(__hp9000) || \
-    defined(__hp9000s300) || defined(__hp9000s700) || \
-    defined(BIT_ZERO_ON_LEFT) || defined(m68k)
-#define BYTE_ORDER	BIG_ENDIAN
-#endif
-#endif /* __linux__ || SYSV or BSD */
-#endif /* BYTE_ORDER */
 
 typedef void (*cfunc_t)  (void *);
 typedef void (*ihfunc_t) (int);
@@ -147,38 +108,17 @@ typedef void (*ihfunc_t) (int);
  * Various definitions to make it working for different platforms
  */
 /* The old style sockaddr definition doesn't have sa_len */
-#if defined(_AIX) || (defined(BSD) && (BSD >= 199006)) /* sa_len was added with 4.3-Reno */
+#if defined(BSD) && (BSD >= 199006) /* sa_len was added with 4.3-Reno */
 #define HAVE_SA_LEN
-#endif
-
-/* Versions of Solaris older than 2.6 don't have routing sockets. */
-/* XXX TODO: check FreeBSD version and add all other platforms */
-#if defined(__linux__)   || (defined(SunOS) && SunOS >=56) || \
-    defined(IRIX)        ||  defined(__bsdi__)             || \
-    defined(__FreeBSD__) ||  defined(__FreeBSD_kernel__)   || \
-    defined(NetBSD)      ||  defined(__DragonFly__)        || \
-    defined(OpenBSD)
-#define HAVE_ROUTING_SOCKETS	1
 #endif
 
 /* Older versions of UNIX don't really give us true raw sockets.
  * Instead, they expect ip_len and ip_off in host byte order, and also
  * provide them to us in that format when receiving raw frames.
- *
- * This list could probably be made longer, e.g., SunOS and __bsdi__
+ * NetBSD still does; FreeBSD stopped in 11.0.
  */
-#if defined(__NetBSD__) ||					\
-    (defined(__FreeBSD__) && (__FreeBSD_version < 1100030)) ||	\
-    (defined(__OpenBSD__) && (OpenBSD < 200311))
+#ifdef __NetBSD__
 #define HAVE_IP_HDRINCL_BSD_ORDER
-#endif
-
-/*
- * workaround for SunOS/Solaris/Illumos which defines this in
- * addition to the more logical __sun and __svr4__ macros.
- */
-#ifdef sun
-#undef sun
 #endif
 
 #define TRUE			1
@@ -253,12 +193,6 @@ typedef void (*ihfunc_t) (int);
 				- sizeof(pim_jp_header_t))
 #define MAX_JP_MESSAGE_POOL_NUMBER 8
 
-
-#if defined(SYSV)
-#define bcopy(a, b, c)		memcpy((b), (a), (c))
-#define bzero(s, n)		memset((s), 0, (n))
-#define setlinebuf(s)		setvbuf((s), (NULL), (_IOLBF), 0)
-#endif
 
 /* Timer jitter, GenIDs and the BSR fragment tag are all values a
  * neighbor must not be able to predict, so this is arc4random()
@@ -398,14 +332,10 @@ extern char		s2[MAX_INET_BUF_LEN];
 extern char		s3[MAX_INET_BUF_LEN];
 extern char		s4[MAX_INET_BUF_LEN];
 
-#if !((defined(BSD) && (BSD >= 199103)) || (defined(__linux__)))
-extern int		errno;
-#endif
-
 
 #ifndef IGMP_MEMBERSHIP_QUERY
 #define IGMP_MEMBERSHIP_QUERY		IGMP_HOST_MEMBERSHIP_QUERY
-#if !(defined(NetBSD) || defined(OpenBSD) || defined(__FreeBSD__))
+#if !(defined(NetBSD) || defined(__FreeBSD__))
 #define IGMP_V1_MEMBERSHIP_REPORT	IGMP_HOST_MEMBERSHIP_REPORT
 #define IGMP_V2_MEMBERSHIP_REPORT	IGMP_HOST_NEW_MEMBERSHIP_REPORT
 #else
@@ -420,7 +350,7 @@ extern int		errno;
 #define IGMP_V3_MEMBERSHIP_REPORT	0x22	/* Ver. 3 membership report */
 #endif
 
-#if defined(NetBSD) || defined(OpenBSD) || defined(__FreeBSD__)
+#if defined(NetBSD) || defined(__FreeBSD__)
 #define IGMP_MTRACE_RESP		IGMP_MTRACE_REPLY
 #define IGMP_MTRACE			IGMP_MTRACE_QUERY
 #endif

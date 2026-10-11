@@ -42,19 +42,12 @@
 #include "defs.h"
 #include <sys/socket.h>
 #include <net/route.h>
-#ifdef HAVE_ROUTING_SOCKETS
 #include <net/if_dl.h>
-#endif
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stdlib.h>
 #include <sys/time.h>
 
-/* All the BSDs have routing sockets (not Netlink), but only Linux seems
- * to have SIOCGETRPF, which is used in the #else below ... the original
- * authors wanted to merge routesock.c and netlink.c, but I don't know
- * anymore. --Joachim */
-#ifdef HAVE_ROUTING_SOCKETS
 static union sockunion {
     struct  sockaddr sa;
     struct  sockaddr_in sin;
@@ -98,13 +91,8 @@ struct ifevent_hdr {
 /*
  * TODO: check again!
  */
-#ifdef IRIX
-#define ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(__uint64_t) - 1))) \
-		    : sizeof(__uint64_t))
-#else
 #define ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) \
 		    : sizeof(long))
-#endif /* IRIX */
 
 #ifdef HAVE_SA_LEN
 #define ADVANCE(x, n) (x += ROUNDUP((n)->sa_len))
@@ -631,49 +619,6 @@ static int getmsg(struct rt_msghdr *rtm, int msglen __attribute__((unused)), str
     return TRUE;
 }
 
-
-#else /* !HAVE_ROUTING_SOCKETS -- if we want to run on Linux without Netlink */
-
-const char *rpf_backend = "SIOCGETRPF";
-
-/* API compat dummy. */
-int init_routesock(void)
-{
-    routing_socket = dup(udp_socket);
-}
-
-/* API compat dummy. */
-void routesock_clean(void)
-{
-    if (routing_socket >= 0)
-	close(routing_socket);
-    routing_socket = -1;
-}
-
-/*
- * Return in rpf the incoming interface and the next hop router
- * toward source.
- */
-/* TODO: check whether next hop router address is in network or host order */
-int k_req_incoming(uint32_t source, struct rpfctl *rpf)
-{
-    rpf->source.s_addr      = source;
-    rpf->iif                = NO_VIF;     /* Initialize, will be changed in kernel */
-    rpf->rpfneighbor.s_addr = INADDR_ANY; /* Initialize */
-
-    if (ioctl(routing_socket, SIOCGETRPF, rpf) < 0) {
-	logit(LOG_WARNING, errno, "Failed ioctl SIOCGETRPF in k_req_incoming()");
-	return FALSE;
-    }
-
-    /* After the call: the kernel side of SIOCGETRPF knows nothing of the
-     * two fields, so whatever it left there is not an answer. */
-    rpf->metric = RPF_METRIC_UNKNOWN;
-    rpf->pref   = RPF_PREF_UNKNOWN;
-
-    return TRUE;
-}
-#endif /* HAVE_ROUTING_SOCKETS */
 
 /**
  * Local Variables:

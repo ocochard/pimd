@@ -277,9 +277,6 @@ static int init_reg_vif(void)
     v->uv_flags = 0;
 
     v->uv_flags = VIFF_REGISTER;
-#ifdef PIM_EXPERIMENTAL
-    v->uv_flags |= VIFF_REGISTER_KERNEL_ENCAP;
-#endif
     v->uv_threshold = MINTTL;
 
 #ifdef __linux__
@@ -1240,20 +1237,6 @@ void age_vifs(void)
 	/* PIM_HELLO periodic */
 	IF_TIMEOUT(v->uv_hello_timer)
 	    send_pim_hello(v, pim_timer_hello_holdtime);
-
-#ifdef TOBE_DELETED
-	/* PIM_JOIN_PRUNE periodic */
-	/* TODO: XXX: TIMER implem. dependency! */
-	if (v->uv_jp_timer <= TIMER_INTERVAL)
-	    /* TODO: need to scan the whole routing table,
-	     * because different entries have different Join/Prune timer.
-	     * Probably don't need the Join/Prune timer per vif.
-	     */
-	    send_pim_join_prune(vifi, NULL, PIM_JOIN_PRUNE_HOLDTIME);
-	else
-	    /* TODO: XXX: TIMER implem. dependency! */
-	    v->uv_jp_timer -= TIMER_INTERVAL;
-#endif /* TOBE_DELETED */
 
 	/* IGMP query periodic */
 	IF_TIMEOUT(v->uv_gq_timer)

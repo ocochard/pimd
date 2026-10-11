@@ -371,9 +371,6 @@ static int getroute(uint32_t dst, unsigned int flags, char *buf, size_t len)
     r->rtm_dst_len = 32;
     r->rtm_flags = flags;
     addattr32(n, len, RTA_DST, dst);
-#ifdef CONFIG_RTNL_OLD_IFINFO
-    r->rtm_optlen = n->nlmsg_len - NLMSG_LENGTH(sizeof(*r));
-#endif
     addr.nl_family = AF_NETLINK;
     addr.nl_groups = 0;
     addr.nl_pid = 0;

@@ -120,11 +120,7 @@ static void do_randomize(void)
        close(fd);
   }
 
-#ifdef SYSV
-   srand48(seed);
-#else
    srandom(seed);
-#endif
 }
 
 static int compose_paths(void)

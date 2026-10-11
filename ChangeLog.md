@@ -13,8 +13,17 @@ issue of this repository is written out in full.
   longer compiled; the third sized each routing entry's per-interface
   state by the interfaces present when the entry was made, which a VIF
   added afterwards read and wrote past.
+- The Solaris cases of `configure` and the code for SunOS, IRIX, BSD/OS,
+  AIX and FreeBSD before 11 are gone, none of which had been built for
+  many years.  Supported systems are Linux, FreeBSD, NetBSD and
+  DragonFly.
 
 ### Fixes
+- On NetBSD, `src/pimd.h` defined `struct igmpmsg` a second time, after
+  `<netinet/ip_mroute.h>` had already defined it.
+- On DragonFly, `configure` added the bundled `ip_mroute.h` to the include
+  path relative to the build directory, which missed it from `test/fuzz/`
+  and from a build outside the source tree.
 - A router that had lost the Assert election toward the RP sent its
   periodic Join(*,G) to the winner without the Prune(S,G,rpt) of the
   sources it had pruned off the shared tree, so the winner put them back
