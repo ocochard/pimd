@@ -74,7 +74,6 @@
 #undef rtentry
 #endif /* __FreeBSD__ */
 #ifdef __linux__
-#define _LINUX_IN_H             /* For Linux <= 2.6.25 */
 #include <linux/types.h>
 #include <linux/mroute.h>
 #else
