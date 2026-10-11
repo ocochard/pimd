@@ -41,7 +41,7 @@ printf_like = ("printf", "vprintf")
 fprintf_like = ("fprintf", "dprintf", "vfprintf", "syslog")
 inet_fmt_like = ("inet_fmt", "inet_fmts", "inet_name")
 vif_lookups = ("find_vif", "find_vif_direct", "find_vif_direct_local",
-	       "find_vif_name", "local_address", "get_iif")
+	       "find_vif_name", "local_address")
 partial_io = ("write", "send", "sendmsg", "recvmsg")
 
 // --------------------------------------------------------------------

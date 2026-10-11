@@ -109,7 +109,6 @@ extern char	*packet_kind		(int proto, int type, int code);
 extern int	debug_kind		(int proto, int type, int code);
 extern int      debug_list              (int mask, char *buf, size_t len);
 extern int      debug_parse             (char *arg);
-extern void	dump_frame		(char *desc, void *dump, size_t len);
 extern int	log_level		(int proto, int type, int code);
 extern void	dump_vifs		(FILE *fp, int detail);
 extern void	dump_ssm		(FILE *fp, int detail);

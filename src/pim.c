@@ -33,8 +33,6 @@
 
 #include "defs.h"
 
-#define SEND_DEBUG_NUMBER 50	/* For throttling log messages */
-
 /*
  * Exported variables.
  */
@@ -48,7 +46,6 @@ int	pim_socket;		/* socket for PIM control msgs */
  * Local variables.
  */
 static uint16_t ip_id = 0;
-//static u_int pim_send_cnt = 0;
 
 
 /*
@@ -504,14 +501,6 @@ void send_pim_unicast(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src
 
     IF_DEBUG(DEBUG_PIM_DETAIL) {
 	IF_DEBUG(DEBUG_PIM) {
-#if 0 /* TODO: use pim_send_cnt? */
-	    if (++pim_send_cnt > SEND_DEBUG_NUMBER) {
-		pim_send_cnt = 0;
-		logit(LOG_DEBUG, 0, "SENT %5d bytes %s from %-15s to %s",
-		      sendlen, packet_kind(IPPROTO_PIM, type, 0),
-		      inet_fmt(src, source, sizeof(source)), inet_fmt(dst, dest, sizeof(dest)));
-	    }
-#endif
 	    logit(LOG_DEBUG, 0, "SENT %5d bytes %s from %-15s to %s",
 		  sendlen, packet_kind(IPPROTO_PIM, type, 0),
 		  inet_fmt(src, source, sizeof(source)), inet_fmt(dst, dest, sizeof(dest)));
@@ -520,7 +509,6 @@ void send_pim_unicast(char *buf, uint8_t tos, uint8_t ttl, int mtu, uint32_t src
 }
 
 
-#if 1
 /*
  * send unicast register frames
  * Version: Michael Fine
@@ -534,12 +522,6 @@ static int send_frame(char *buf, size_t len, size_t frag __attribute__((unused))
 {
     struct ip *ip = (struct ip *)buf;
     char source[20], dest[20];
-
-    IF_DEBUG(DEBUG_PIM_REGISTER) {
-//	logit(LOG_DEBUG, 0, "Sending unicast: len = %zu, frag %zu, mtu %zu, to %s",
-//	      len, frag, mtu, inet_fmt(ip->ip_dst.s_addr, source, sizeof(source)));
-//	dump_frame(NULL, buf, len);
-    }
 
     while (sendto(pim_socket, buf, len, 0, dst, salen) < 0) {
 	switch (errno) {
@@ -588,86 +570,6 @@ static int send_frame(char *buf, size_t len, size_t frag __attribute__((unused))
 
     return 0;
 }
-
-#else
-/*
- * send unicast register frames
- * Version: Joachim Wiberg
- * Staus:   Does not work (yet!)
- * Design:  Fragment IP frames when the frame length exceeds the MTU
- *          reported from the interface.  Optimizes for less fragments
- *          and fewer syscalls, should get better network utilization.
- *          Can be easily modified to use the PMTU instead.
- *
- * Feel free to debug this version and submit your patches -- it should work! --Joachim
- */
-static int send_frame(char *buf, size_t len, size_t frag, size_t mtu, struct sockaddr *dst, size_t salen)
-{
-    struct ip *next, *ip = (struct ip *)buf;
-    size_t xferlen, offset;
-    char source[20], dest[20];
-
-    if (!mtu)
-	mtu = IP_MSS;
-
-    if (len > mtu)
-	xferlen = (mtu - sizeof(struct ip)) & 0xFFF8;
-    else
-	xferlen = len;
-
-    offset     = (ntohs(ip->ip_off) & IP_OFFMASK) + (frag >> 3);
-    ip->ip_off = offset;
-    len	       = len - xferlen;
-    if (len)
-	ip->ip_off |= IP_MF;
-    ip->ip_off = htons(ip->ip_off);
-    ip->ip_len = htons(xferlen);
-
-    IF_DEBUG(DEBUG_PIM_REGISTER) {
-	logit(LOG_DEBUG, 0, "Sending %-4d bytes %sunicast (MTU %-4d, offset %zd) to %s",
-	      xferlen, len ? "fragmented " : "", mtu, offset,
-	      inet_fmt(ip->ip_dst.s_addr, source, sizeof(source)));
-	dump_frame(NULL, buf, xferlen);
-    }
-
-    /* send first fragment */
-    while (sendto(pim_socket, ip, xferlen, 0, dst, salen) < 0) {
-	switch (errno) {
-	    case EINTR:
-		continue; /* Received signal, retry syscall. */
-
-	    case ENETDOWN:
-	    case ENETUNREACH:
-	    case ENODEV:
-		rescan_vifs_request();	/* not check_vif_state(), see vif.c */
-		break;
-
-	    case EMSGSIZE:
-		if (mtu > IP_MSS)
-		    return send_frame((char *)ip, xferlen, frag, IP_MSS, dst, salen);
-		break;
-
-	    default:
-		break;
-	}
-
-	return -1;
-    }
-
-    /* send reminder */
-    if (len) {
-	size_t hdrsz = sizeof(struct ip);
-
-	/* Update data pointers */
-	next = (struct ip *)(buf + xferlen - hdrsz);
-	memcpy(next, ip, hdrsz);
-
-	return send_frame((char *)next, len + hdrsz, xferlen, mtu, dst, salen);
-    }
-
-    return 0;
-}
-#endif
 
 /**
  * Local Variables:

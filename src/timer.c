@@ -229,23 +229,6 @@ int timer_set(int delay, cfunc_t action, void *data)
     return timer_set_ms(delay * 1000, action, data);
 }
 
-/* returns the time until the timer is scheduled, in seconds */
-int timer_get(int timer_id)
-{
-    struct tmr *ptr;
-    int left = 0;
-	
-    if (!timer_id)
-	return -1;
-    
-    for (ptr = Q; ptr; ptr = ptr->next) {
-	left += ptr->time;
-	if (ptr->id == timer_id)
-	    return (left + 999) / 1000;
-    }
-
-    return -1;
-}
 
 /* clears the associated timer */
 void timer_clear(int timer_id)

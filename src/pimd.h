@@ -40,9 +40,6 @@
 #define PIM_PROTOCOL_VERSION	2
 #define PIMD_VERSION		PIM_PROTOCOL_VERSION
 #define PIMD_SUBVERSION         1
-#if 0
-#define PIM_CONSTANT            0x000eff00      /* constant portion of 'group' field */
-#endif
 #define PIM_CONSTANT            0
 #define PIMD_LEVEL (PIM_CONSTANT | PIMD_VERSION | (PIMD_SUBVERSION << 8))
 
@@ -1008,13 +1005,4 @@ uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
 #define IN_LINK_LOCAL_RANGE(x) ((ntohl((unsigned)(x)) & 0xffff0000) == 0xa9fe0000)
  
 /* TODO: Currently not used. Probably not need at all. Delete! */
-#if 0
-/* This is completely IGMP related stuff? */
-#define PIM_LEAF_TIMEOUT               (3.5 * IGMP_QUERY_INTERVAL)
-
-#define PIM_REGISTER_BIT_TIMEOUT 30 	/* TODO: check if need to be 60 */
-
-#define PIM_ASSERT_RATE_TIMER   15
-#endif /* 0 */
-
 #endif /* PIMD_PIMD_H_ */

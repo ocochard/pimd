@@ -402,23 +402,6 @@ void k_set_if(int socket, uint32_t ifa)
 }
 
 
-/*
- * Set Router Alert IP option, RFC2113
- */
-void k_set_router_alert(int socket)
-{
-    char router_alert[4];
-
-    router_alert[0] = (uint8_t)IPOPT_RA;
-    router_alert[1] = 4;
-    router_alert[2] = 0;
-    router_alert[3] = 0;
-
-    if (setsockopt(socket, IPPROTO_IP, IP_OPTIONS, router_alert, sizeof(router_alert) )< 0)
-	logit(LOG_ERR, errno, "setsockopt IP_OPTIONS IPOPT_RA");
-}
-
-
 #ifndef __linux__
 /*
  * Name the interface a multicast membership belongs to, in the terms the
@@ -708,36 +691,6 @@ int k_chg_mfc(int socket, uint32_t source, uint32_t group, vifi_t iif, uint8_t *
 	  input, output);
 
     return TRUE;
-}
-
-
-/*
- * Get packet counters for particular interface
- * XXX: TODO: currently not used, but keep just in case we need it later.
- */
-int k_get_vif_count(vifi_t vifi, struct vif_count *retval)
-{
-    struct sioc_vif_req vreq;
-
-    memset(&vreq, 0, sizeof(vreq));
-    vreq.vifi = vifi;
-    if ((priv_enabled() ? priv_vif_cnt(&vreq) : kern_vif_cnt(udp_socket, &vreq)) < 0) {
-	logit(LOG_WARNING, errno, "Failed reading kernel packet count (SIOCGETVIFCNT) on vif %d", vifi);
-
-	retval->icount =
-	    retval->ocount =
-	    retval->ibytes =
-	    retval->obytes = 0xffffffff;
-
-	return 1;
-    }
-
-    retval->icount = vreq.icount;
-    retval->ocount = vreq.ocount;
-    retval->ibytes = vreq.ibytes;
-    retval->obytes = vreq.obytes;
-
-    return 0;
 }
 
 

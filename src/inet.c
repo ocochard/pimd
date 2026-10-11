@@ -206,35 +206,10 @@ int inet_cksum(uint16_t *addr, u_int len)
         return answer;
 }
 
+
 /*
  * Called by following netname() to create a mask specified network address.
  */
-static void trimdomain(char *cp)
-{
-    static char domain[MAXHOSTNAMELEN + 1];
-    static int first = 1;
-    char *s;
-
-    if (first) {
-        first = 0;
-        if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
-            (s = strchr(domain, '.')))
-           (void) strlcpy(domain, s + 1, sizeof(domain));
-        else
-            domain[0] = 0;
-    }
-
-    if (domain[0]) {
-        while ((cp = strchr(cp, '.'))) {
-            if (!strcasecmp(cp + 1, domain)) {
-                *cp = 0;
-                break;
-            }
-	    cp++;
-        }
-    }
-}
-
 static uint32_t forgemask(uint32_t a)
 {
     uint32_t m = 0;

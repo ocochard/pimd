@@ -117,10 +117,6 @@ int kern_routesock(int ifevent)
 /* Open and initialize the routing socket */
 int init_routesock(void)
 {
-#if 0
-    int on = 0;
-#endif
-
     routing_socket = priv_enabled() ? priv_socket(PRIV_SOCK_ROUTE)
 				    : kern_routesock(0);
     if (routing_socket < 0) {
@@ -132,14 +128,6 @@ int init_routesock(void)
 	logit(LOG_ERR, errno, "Failed setting routing socket as non-blocking");
 	return -1;
     }
-
-#if 0
-    /* XXX: if it is OFF, no queries will succeed (!?) */
-    if (setsockopt(routing_socket, SOL_SOCKET, SO_USELOOPBACK, (char *)&on, sizeof(on)) < 0) {
-	logit(LOG_ERR, errno , "setsockopt(SO_USELOOPBACK, 0)");
-	return -1;
-    }
-#endif
 
     init_ifevent();
 

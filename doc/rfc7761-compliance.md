@@ -1557,10 +1557,6 @@ Checked, no action
   `rp->mrtlink` — in `delete_pim_nbr()` and in `find_route()` — are dead.  This
   is also what makes the V4 sweep over `grplist` complete: every live
   `mrtentry_t` is either a group's `grp_route` or on its `mrtlink`.
-- **`send_periodic_pim_join_prune()` is dead code.**  Its only caller is inside
-  `#ifdef TOBE_DELETED` (`src/vif.c:946-958`).  All Join/Prune generation happens
-  in `age_routes()` and `send_pim_join()`.  Worth knowing before reading it as
-  the periodic sender it is named after.
 - **The group-to-RP mapping algorithm is the one sec. 4.7.1 writes.**
   `rp_grp_match()` (`src/rp.c:862`) takes the longest match first, then the
   highest priority, then the hash, then the higher address, which is steps 1

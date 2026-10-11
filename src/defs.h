@@ -300,7 +300,6 @@ extern uint16_t          my_cand_rp_adv_period;     /* The locally configured
 						    * Cand-RP adv. period.
 						    */
 extern uint16_t          pim_bootstrap_timer;
-extern uint32_t          rp_my_ipv4_hashmask;
 extern uint16_t          pim_cand_rp_adv_timer;
 
 /* route.c */
@@ -413,7 +412,6 @@ extern int	timer_next_delay	(void);
 extern int	timer_set		(int, cfunc_t, void *);
 extern int	timer_set_ms		(int, cfunc_t, void *);
 extern void	timer_clear		(int);
-extern int	timer_get		(int);
 
 /* config.c */
 extern void	config_vifs_from_kernel	(void);
@@ -573,7 +571,6 @@ extern int	curttl;
 #endif
 extern void	k_set_loop		(int socket, int l);
 extern void	k_set_if		(int socket, uint32_t ifa);
-extern void	k_set_router_alert	(int socket);
 extern void	k_join			(int socket, uint32_t grp, struct uvif *v);
 extern void	k_leave			(int socket, uint32_t grp, struct uvif *v);
 /*
@@ -601,7 +598,6 @@ extern int	k_chg_mfc		(int socket, uint32_t source, uint32_t group, vifi_t iif, 
                                          uint32_t rp_addr);
 extern void	k_add_vif		(int socket, vifi_t vifi, struct uvif *v);
 extern void	k_del_vif		(int socket, vifi_t vifi, struct uvif *v);
-extern int	k_get_vif_count		(vifi_t vifi, struct vif_count *retval);
 extern int	k_get_sg_cnt		(int socket, uint32_t source, uint32_t group, struct sg_count *retval);
 
 /* main.c */
@@ -613,7 +609,6 @@ extern int      daemon_kill             (char *buf, size_t len);
 extern void	init_pim_mrt		(void);
 extern mrtentry_t *find_route		(uint32_t source, uint32_t group, uint16_t flags, char create);
 extern grpentry_t *find_group		(uint32_t group);
-extern srcentry_t *find_source		(uint32_t source);
 extern void	delete_mrtentry		(mrtentry_t *mrtentry_ptr);
 extern void	delete_srcentry		(srcentry_t *srcentry_ptr);
 extern void	delete_grpentry		(grpentry_t *grpentry_ptr);
@@ -658,7 +653,6 @@ extern int	lost_assert_rpt		(mrtentry_t *mrtentry_ptr, vifi_t vifi);
 extern int	age_asserts		(mrtentry_t *mrtentry_ptr, int timers_only);
 extern void     send_pim_join           (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
 extern void     send_pim_prune          (pim_nbr_entry_t *pim_nbr, mrtentry_t *mrt, uint16_t flags, uint16_t holdtime);
-extern int	send_periodic_pim_join_prune (vifi_t vifi, pim_nbr_entry_t *pim_nbr, uint16_t holdtime);
 extern int	add_jp_entry		(pim_nbr_entry_t *pim_nbr, uint16_t holdtime, uint32_t group, uint8_t grp_msklen,
                                          uint32_t source, uint8_t src_msklen,  uint16_t addr_flags, uint8_t join_prune);
 extern void	pack_and_send_jp_message (pim_nbr_entry_t *pim_nbr);
@@ -671,7 +665,6 @@ extern void	send_pim_bootstrap	(void);
 extern uint32_t	local_sg_entries;
 extern void	init_route		(void);
 extern int	set_incoming		(srcentry_t *srcentry_ptr, int srctype);
-extern vifi_t	get_iif			(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr	(uint32_t source);
 extern pim_nbr_entry_t *find_pim_nbr_on_vif (vifi_t vifi, uint32_t addr);
 extern pim_nbr_entry_t *find_pim_nbr_nexthop (vifi_t vifi, uint32_t addr);

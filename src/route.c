@@ -79,13 +79,6 @@ static uint16_t unicast_routing_timer;	/* Used to check periodically for any
 static uint16_t pim_spt_threshold_timer;/* Used for periodic check of spt-threshold
 					 * for the RP or the lasthop router. */
 
-/*
- * TODO: XXX: the timers below are not used. Instead, the data rate timer is used.
- */
-static uint16_t kernel_cache_timer;	/* Used to timeout the kernel cache
-					 * entries for idle sources */
-static uint16_t kernel_cache_interval;
-
 /* to request and compare any route changes */
 static srcentry_t srcentry_save;
 static rpentry_t  rpentry_save;
@@ -161,17 +154,6 @@ int scoped_addr(vifi_t vifi, uint32_t addr)
     return 0;
 }
 
-/* Return the iif for given address */
-vifi_t get_iif(uint32_t address)
-{
-    struct rpfctl rpfc;
-
-    k_req_incoming(address, &rpfc);
-    if (rpfc.iif == NO_VIF || rpfc.rpfneighbor.s_addr == INADDR_ANY_N)
-	return NO_VIF;
-
-    return rpfc.iif;
-}
 
 /* Return the PIM neighbor toward a source */
 /* If route not found or if a local source or if a directly connected source,
@@ -1223,7 +1205,6 @@ static void check_sptbit(mrtentry_t *mrt, const struct sg_count *count)
 }
 
 
-
 /*
  * Half of a change of upstream router: RFC 7761 sec. 4.5.4 and 4.5.5 pair the
  * Join to the new RPF' with a Prune to the old one, so that the router we no
@@ -1484,11 +1465,7 @@ int change_interfaces(mrtentry_t *mrt,
 		      uint16_t flags)
 {
     uint8_t new_joined_oifs[MAXVIFS];  /* The oifs for that particular mrtentry */
-    uint8_t old_joined_oifs[MAXVIFS] __attribute__ ((unused));
-    uint8_t old_pruned_oifs[MAXVIFS] __attribute__ ((unused));
-    uint8_t old_leaves[MAXVIFS] __attribute__ ((unused));
     uint8_t new_leaves[MAXVIFS];
-    uint8_t old_asserted_oifs[MAXVIFS] __attribute__ ((unused));
     uint8_t new_real_oifs[MAXVIFS];    /* The result oifs */
     uint8_t old_real_oifs[MAXVIFS];
     vifi_t      old_iif;
@@ -1517,11 +1494,6 @@ int change_interfaces(mrtentry_t *mrt,
     PIMD_VIFM_COPY(new_leaves_, new_leaves);
 
     old_iif = mrt->incoming;
-    PIMD_VIFM_COPY(mrt->joined_oifs, old_joined_oifs);
-    PIMD_VIFM_COPY(mrt->leaves, old_leaves);
-    PIMD_VIFM_COPY(mrt->pruned_oifs, old_pruned_oifs);
-    PIMD_VIFM_COPY(mrt->asserted_oifs, old_asserted_oifs);
-
     PIMD_VIFM_COPY(mrt->oifs, old_real_oifs);
 
     mrt->incoming = new_iif;

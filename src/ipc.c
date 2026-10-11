@@ -45,7 +45,6 @@
 #include <sys/stat.h>		/* umask() */
 #include "defs.h"
 
-#define ENABLED(v) (v ? "Enabled" : "Disabled")
 
 /* A candidacy pimd.conf asked for whose address has not turned up yet is
  * neither: it is configured, it is not speaking, and it starts on its own

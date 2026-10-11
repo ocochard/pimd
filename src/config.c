@@ -42,8 +42,6 @@
 #include "queue.h"
 
 #define WARN(fmt, args...)    logit(LOG_WARNING, 0, "%s:%u - " fmt, config_file, lineno, ##args)
-#define BAILOUT(msg, arg...)  { WARN(msg ", bailing out!", ##arg); return FALSE; }
-#define IGNORING(msg, arg...) { WARN(msg ", ignoring ...", ##arg); continue; }
 
 /* Helper macros */
 #define QUERIER_TIMEOUT(qintv) (IGMP_ROBUSTNESS_VARIABLE * (qintv) + IGMP_QUERY_RESPONSE_INTERVAL / 2)
@@ -3573,8 +3571,6 @@ void config_vifs_from_file(void)
     FILE *fp;
     char linebuf[LINE_BUFSIZ];
     char *w, *s;
-    uint8_t *data_ptr;
-    struct ssm_range *range;
     int error_flag;
 
     error_flag = FALSE;

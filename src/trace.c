@@ -63,10 +63,6 @@ static int trace_vif_cnt(struct sioc_vif_req *v_req)
     return priv_enabled() ? priv_vif_cnt(v_req) : kern_vif_cnt(udp_socket, v_req);
 }
 
-static int trace_sg_cnt(struct sioc_sg_req *sg_req)
-{
-    return priv_enabled() ? priv_sg_cnt(sg_req) : kern_sg_cnt(udp_socket, sg_req);
-}
 
 /*
  * Only the fields set below are read, by the kernel here and by the
@@ -93,10 +89,6 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     int resptype;
     struct timeval tp;
     struct sioc_vif_req v_req;
-#if 0
-    /* TODO */
-    struct sioc_sg_req sg_req;
-#endif /* 0 */
     uint32_t parent_address = INADDR_ANY;
 
     /* Remember qid across invocations */
@@ -296,54 +288,7 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
     else
         resp.tr_vifout  =  0xffffffff;
 
-    /*
-     * fill in scoping & pruning information
-     */
-/* TODO */
-#if 0
-    if (mrt) {
-        for (gt = rt->rt_groups; gt; gt = gt->gt_next) {
-            if (gt->gt_mcastgrp >= group)
-                break;
-        }
-    } else {
-        gt = NULL;
-    }
-
-    if (gt && gt->gt_mcastgrp == group) {
-        struct stable *st;
-
-        for (st = gt->gt_srctbl; st; st = st->st_next) {
-            if (qry.src == st->st_origin)
-                break;
-	}
-
-        memset(&sg_req, 0, sizeof(sg_req));
-        sg_req.src.s_addr = qry.src;
-        sg_req.grp.s_addr = group;
-        if (st && st->st_ctime != 0 && trace_sg_cnt(&sg_req) >= 0)
-            resp.tr_pktcnt = htonl(sg_req.pktcnt + st->st_savpkt);
-        else
-            resp.tr_pktcnt = htonl(st ? st->st_savpkt : 0xffffffff);
-
-        if (PIMD_VIFM_ISSET(vifi, gt->gt_scope)) {
-            resp.tr_rflags = TR_SCOPED;
-	} else if (gt->gt_prsent_timer) {
-            resp.tr_rflags = TR_PRUNED;
-        } else if (!PIMD_VIFM_ISSET(vifi, gt->gt_grpmems)) {
-            if (PIMD_VIFM_ISSET(vifi, rt->rt_children) &&
-                NBRM_ISSETMASK(uvifs[vifi].uv_nbrmap, rt->rt_subordinates)) /*XXX*/
-                resp.tr_rflags = TR_OPRUNED;
-            else
-                resp.tr_rflags = TR_NO_FWD;
-	}
-    } else {
-        if (scoped_addr(vifi, group))
-            resp.tr_rflags = TR_SCOPED;
-        else if (rt && !PIMD_VIFM_ISSET(vifi, rt->rt_children))
-            resp.tr_rflags = TR_NO_FWD;
-    }
-#endif /* 0 */
+    /* TODO: the scoping and pruning flags of the response are not filled in */
 
     /*
      *  if no rte exists, set NO_RTE error
@@ -378,13 +323,6 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
                       inet_fmt(qry.dst, s1, sizeof(s1)), inet_fmt(qry.src, s2, sizeof(s2)));
             resp.tr_rflags = TR_WRONG_IF;
         }
-#if 0
-        if (rt->rt_metric >= UNREACHABLE) {
-            resp.tr_rflags = TR_NO_RTE;
-            /* Hack to send reply directly */
-            rt = NULL;
-        }
-#endif /* 0 */
     }
 
     pim_put_bytes(&w, &resp, RLEN);
@@ -402,22 +340,12 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
         resptype = IGMP_MTRACE_RESP;
         dst = qry.raddr;
     } else {
-#if 0   /* TODO */
-	if (!can_mtrace(rt->rt_parent, rt->rt_gateway)) {
-	    dst = qry.raddr;
-	    resp.tr_rflags = TR_OLD_ROUTER;
-	    resptype = IGMP_MTRACE_RESP;
-	} else {
-#endif  /* 0 */
 	    if (mrt->upstream)
 		parent_address = mrt->upstream->address;
 	    else
 		parent_address = INADDR_ANY;
 	    dst = parent_address;
 	    resptype = IGMP_MTRACE;
-#if 0   /* TODO */
-	}
-#endif
     }
 
     if (IN_MULTICAST(ntohl(dst))) {

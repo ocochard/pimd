@@ -46,7 +46,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#define MAX_MSG_SIZE 64		/* Max for dump_frame() */
 
 
 static struct debugname {
@@ -718,39 +717,6 @@ void logit(int severity, int syserr, const char *format, ...)
     if (severity <= LOG_ERR)
 	exit(-1);		/* Exit status: 255 */
 #endif
-}
-
-
-/*
- * Hex dump a control frame to the log, MAX 64 bytes length
- */
-void dump_frame(char *desc, void *dump, size_t len)
-{
-    unsigned int length, i = 0;
-    unsigned char *data = (unsigned char *)dump;
-    char buf[80] = "";
-    char tmp[10];
-
-    length = len;
-    if (length > MAX_MSG_SIZE)
-	length = MAX_MSG_SIZE;
-
-    if (desc)
-	logit(LOG_DEBUG, 0, "%s", desc);
-
-    while (i < length) {
-	if (!(i % 16))
-	    snprintf(buf, sizeof(buf), "%03X: ", i);
-
-	snprintf(tmp, sizeof(tmp), "%02X ", data[i++]);
-	strlcat(buf, tmp, sizeof(buf));
-
-	if (i > 0 && !(i % 16))
-	    logit(LOG_DEBUG, 0, "%s", buf);
-	else if (i > 0 && !(i % 8))
-	    strlcat(buf, ":: ", sizeof(buf));
-    }
-    logit(LOG_DEBUG, 0, "%s", buf);
 }
 
 

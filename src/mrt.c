@@ -141,20 +141,6 @@ grpentry_t *find_group(uint32_t group)
 }
 
 
-srcentry_t *find_source(uint32_t source)
-{
-    srcentry_t *src;
-
-    if (!inet_valid_host(source))
-	return NULL;
-
-    if (search_srclist(source, &src) == TRUE)
-	return src;	/* Source found! */
-
-    return NULL;
-}
-
-
 /* Take @grp off the chain it is on, an RP mapping's grplink or the RP-less
  * list, leaving active_rp_grp as it is. */
 void grp_chain_unlink(grpentry_t *grp)

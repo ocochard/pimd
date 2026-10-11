@@ -72,7 +72,6 @@ uint16_t                 my_cand_rp_adv_period; /* The locally configured
 uint16_t                 pim_cand_rp_adv_timer;
 uint8_t                  cand_rp_flag  = FALSE;  /* Candidate RP flag */
 uint8_t                  cand_rp_configured = FALSE;
-uint32_t                 rp_my_ipv4_hashmask;
 
 
 /*
@@ -212,7 +211,6 @@ void cand_rp_address_set(uint32_t addr)
 
     my_cand_rp_address = addr;
     cand_rp_flag       = TRUE;
-    MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, rp_my_ipv4_hashmask);
 
     /* At once rather than after an interval, as init_rp_and_bsr() does not:
      * a candidacy that has just become able to speak has waited long enough */
@@ -247,7 +245,6 @@ void init_rp_and_bsr(void)
     }
 
     if (cand_rp_flag != FALSE) {
-	MASKLEN_TO_MASK(RP_DEFAULT_IPV4_HASHMASKLEN, rp_my_ipv4_hashmask);
 	/* Setup the Cand-RP-Adv-Timer */
 	SET_TIMER(pim_cand_rp_adv_timer, RANDOM() % my_cand_rp_adv_period);
     }
