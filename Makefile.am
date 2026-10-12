@@ -1,11 +1,14 @@
-SUBDIRS        = src include man
+SUBDIRS        = src
 if ENABLE_TEST
 SUBDIRS       += test
 endif
 
-# Installed and shipped; the rest of doc/ and rules/ only shipped
+# Installed and shipped; the rest of doc/, rules/ and include/ only shipped
+dist_man_MANS  = man/pimd.conf.5 man/pimd.8 man/pimctl.8
 dist_doc_DATA  = README.md ChangeLog.md LICENSE doc/LICENSE.mrouted pimd.conf
-EXTRA_DIST     = doc/AUTHORS doc/CREDITS doc/FAQ.md doc/INSTALL.md		\
+EXTRA_DIST     = include/README include/netinet/pim.h			\
+		 include/dragonfly/netinet/ip_mroute.h			\
+		 doc/AUTHORS doc/CREDITS doc/FAQ.md doc/INSTALL.md		\
 		 doc/README-config.md doc/README-coverage.md			\
 		 doc/README-debug.md doc/README.config.jp			\
 		 doc/TODO.org doc/rfc7761-compliance.md			\
