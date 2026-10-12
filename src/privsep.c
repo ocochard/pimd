@@ -1236,7 +1236,7 @@ static int parent_ipc_socket(void)
      * creates the node, rather than left to whatever umask pimd was
      * started with. */
     mask = umask(0077);
-    if (bind(sd, (struct sockaddr *)&sun, sizeof(sun)) < 0 || listen(sd, 1)) {
+    if (bind(sd, (struct sockaddr *)&sun, sizeof(sun)) < 0 || listen(sd, IPC_BACKLOG)) {
 	int err = errno;
 
 	umask(mask);

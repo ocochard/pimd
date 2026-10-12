@@ -50,6 +50,11 @@
 #include "text.h"
 #define MAXARGS	32
 
+/* How long a reply may go quiet, in ms, before pimctl gives up on it.  Long
+ * enough for a daemon on a loaded system; a reply that never comes is an
+ * error rather than the empty answer it used to be. */
+#define REPLY_WAIT	10000
+
 #ifndef MIN
 #define MIN(a,b)	(((a) <= (b))? (a) : (b))
 #endif
@@ -374,7 +379,7 @@ static int get(char *cmd, FILE *fp)
 	int indent = 0;
 	char buf[768];
 	ssize_t len;
-	int sd;
+	int sd, rc;
 
 	if (debug)
 		warn("Sending cmd %s", cmd);
@@ -411,7 +416,7 @@ static int get(char *cmd, FILE *fp)
 
 	pfd.fd = sd;
 	pfd.events = POLLIN | POLLHUP;
-	while (poll(&pfd, 1, 2000) > 0) {
+	while ((rc = poll(&pfd, 1, REPLY_WAIT)) > 0) {
 		if (pfd.events & POLLIN) {
 			ssize_t blen = sizeof(buf) - 1;
 
@@ -431,6 +436,14 @@ static int get(char *cmd, FILE *fp)
 			break;
 	}
 	close(sd);
+
+	if (rc == 0) {
+		warnx("no answer from pimd in %d seconds", REPLY_WAIT / 1000);
+		if (lfp)
+			fclose(lfp);
+		errno = ETIMEDOUT;	/* for the err(3) of a caller */
+		return 4;
+	}
 
 	rewind(fp);
 	if (!lfp)

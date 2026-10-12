@@ -487,6 +487,13 @@ extern void	autorp_agent_set	(uint32_t addr, int interval, int holdtime, int ttl
 extern int	autorp_prefix_add	(uint32_t group_addr, uint8_t masklen, int negative);
 
 /* ipc.c */
+/* Connections the pimctl socket queues before pimd accepts them.  pimctl
+ * opens up to three in a row for one command -- a ping it closes at once,
+ * the help it reads the command table from, then the command -- and with a
+ * queue of one, the second was refused whenever the daemon had not yet
+ * accepted the first, which a loaded system makes routine. */
+#define IPC_BACKLOG		16
+
 /*
  * One table of a pimctl reply, declared once and rendered twice.
  *

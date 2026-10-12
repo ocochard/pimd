@@ -1651,7 +1651,7 @@ void ipc_init(char *sockfile)
 	 */
 	mask = umask(0077);
 	len = offsetof(struct sockaddr_un, sun_path) + strlen(sun.sun_path);
-	if (bind(sd, (struct sockaddr *)&sun, len) < 0 || listen(sd, 1)) {
+	if (bind(sd, (struct sockaddr *)&sun, len) < 0 || listen(sd, IPC_BACKLOG)) {
 		umask(mask);
 		logit(LOG_WARNING, errno, "Failed binding IPC socket, client disabled");
 		close(sd);

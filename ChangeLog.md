@@ -26,6 +26,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- `pimctl` could answer a command with nothing at all and exit 0.  pimd
+  queued one pimctl connection, and pimctl opens up to three for one
+  command, so on a loaded system the second was refused while the daemon
+  had not yet accepted the first; and a reply quiet for two seconds was
+  taken as complete.  pimd queues sixteen now, and pimctl waits ten
+  seconds and fails with "no answer from pimd" if nothing comes.
 - An RP that lost an Assert on its interface toward a source, after the
   source's data had reached it in Registers and before it arrived
   natively, kept forwarding that source from the register vif in the
