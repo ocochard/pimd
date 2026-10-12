@@ -5,7 +5,7 @@ AM_INIT_AUTOMAKE([1.11 foreign])
 AM_SILENT_RULES([yes])
 
 AC_CONFIG_SRCDIR([src/main.c])
-AC_CONFIG_HEADER([config.h])
+AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile include/Makefile man/Makefile src/Makefile test/Makefile pimd.service])
 
 # Check for standard programs, headers, and functions
@@ -16,7 +16,7 @@ AC_PROG_INSTALL
 AM_PROG_AR
 AC_PROG_RANLIB
 
-# Check build host, differnt for each operating system
+# Check build host, different for each operating system
 AC_CANONICAL_HOST
 
 case $host_os in
@@ -28,20 +28,15 @@ case $host_os in
         CPPFLAGS="$CPPFLAGS -D_OPENBSD_SOURCE"
         ;;
     linux*)
-	# -D_GNU_SOURCE Use GNU extensions, where possible (GLIBC)
-	# -D_BSD_SOURCE Use functions derived from 4.3 BSD Unix rather than POSIX.1
-	#               In GLIBC >= v2.20 this is replaced with -D_DEFAULT_SOURCE,
-	#               but to build on older GLIBC systems we now need both ...
-	CPPFLAGS="$CPPFLAGS -D_BSD_SOURCE -D_DEFAULT_SOURCE -D_GNU_SOURCE"
+	# Everything the C library has, which takes in the BSD interfaces
+	# (_DEFAULT_SOURCE) glibc and musl otherwise hide
+	CPPFLAGS="$CPPFLAGS -D_GNU_SOURCE"
 	;;
-    *)
-        ;;
 esac
 
 # Required to check for libsystemd-dev
 PKG_PROG_PKG_CONFIG
 
-AC_CHECK_HEADERS([fcntl.h sys/ioctl.h linux/netlink.h termios.h])
 # The sandbox the unprivileged half of the daemon enters: seccomp-bpf on
 # Linux, and nothing on the BSDs -- Capsicum refuses every sendto() that
 # carries a destination, which is every packet pimd sends.  The long version
@@ -50,7 +45,8 @@ AC_CHECK_HEADERS([linux/seccomp.h linux/filter.h linux/audit.h sys/prctl.h])
 # How the unprivileged half asks to be signalled if its parent dies:
 # prctl(PR_SET_PDEATHSIG) on Linux, procctl(PROC_PDEATHSIG_CTL) on FreeBSD.
 AC_CHECK_HEADERS([sys/procctl.h])
-AC_CHECK_HEADERS([netlink/netlink.h netlink/netlink_route.h])
+# The RPF backend, see --enable-netlink below
+AC_CHECK_HEADERS([linux/netlink.h netlink/netlink_route.h])
 
 # Check if some func is not in libc
 AC_CHECK_LIB([util], [pidfile])
@@ -85,7 +81,7 @@ AC_ARG_ENABLE(netlink,
 	enable_netlink=no)
 
 AC_ARG_ENABLE(test,
-        AS_HELP_STRING([--enable-test], [enable tests, requries unshare, tshark, etc.]),
+        AS_HELP_STRING([--enable-test], [Build the test tools in test/]),
         enable_test="$enableval", enable_test="no")
 
 AC_ARG_ENABLE(exit_on_error,
@@ -359,14 +355,11 @@ AS_IF([test "x$enable_werror" = "xyes"], [PIMD_CFLAGS="$PIMD_CFLAGS -Werror"])
 AC_SUBST(PIMD_CFLAGS)
 AC_SUBST(PIMD_LDFLAGS)
 
-# Expand $sbindir early, into $SBINDIR, for systemd unit file
+# Expand $sysconfdir and $sbindir early, for the systemd unit file
 # NOTE: This does *not* take prefix/exec_prefix override at "make
 #       install" into account, unfortunately.
 test "x$prefix" = xNONE && prefix=$ac_default_prefix
 test "x$exec_prefix" = xNONE && exec_prefix='${prefix}'
-DOCDIR=`eval echo $docdir`
-DOCDIR=`eval echo $DOCDIR`
-AC_SUBST(DOCDIR)
 SYSCONFDIR=`eval echo $sysconfdir`
 SYSCONFDIR=`eval echo $SYSCONFDIR`
 AC_SUBST(SYSCONFDIR)

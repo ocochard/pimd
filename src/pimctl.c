@@ -31,23 +31,17 @@
 
 #include <err.h>
 #include <errno.h>
-#ifdef HAVE_FCNTL_H
-# include <fcntl.h>
-#endif
+#include <fcntl.h>
 #include <getopt.h>
 #include <paths.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef HAVE_TERMIOS_H
-# include <termios.h>
-#endif
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef HAVE_SYS_IOCTL_H
-# include <sys/ioctl.h>
-#endif
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -278,7 +272,6 @@ static int ipc_ping(void)
 static int get_width(void)
 {
 	int ret = 79;
-#ifdef HAVE_TERMIOS_H
 	struct pollfd fd = { STDIN_FILENO, POLLIN, 0 };
 	struct termios tc, saved;
 	struct winsize ws;
@@ -314,7 +307,7 @@ static int get_width(void)
 
 	fprintf(stderr, "\e8");
 	tcsetattr(STDERR_FILENO, TCSANOW, &saved);
-#endif
+
 	return ret;
 }
 

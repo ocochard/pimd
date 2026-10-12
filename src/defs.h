@@ -63,9 +63,7 @@
 #include <sys/un.h>
 #include <ifaddrs.h>
 #include <sys/ioctl.h>
-#ifdef HAVE_FCNTL_H
-# include <fcntl.h>
-#endif
+#include <fcntl.h>
 #include <time.h>
 #include <sys/time.h>
 #ifdef __FreeBSD__
