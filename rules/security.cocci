@@ -39,10 +39,12 @@ copy_unbounded = ("strcpy", "strcat", "sprintf", "vsprintf", "gets", "alloca")
 allocators = ("malloc", "calloc", "realloc", "strdup", "strndup")
 printf_like = ("printf", "vprintf")
 fprintf_like = ("fprintf", "dprintf", "vfprintf", "syslog")
-inet_fmt_like = ("inet_fmt", "inet_fmts", "inet_name")
-vif_lookups = ("find_vif", "find_vif_direct", "find_vif_direct_local",
-	       "find_vif_name", "local_address")
+inet_fmt_like = ("inet_fmt",)
+vif_lookups = ("find_vif", "find_vif_direct", "find_vif_direct_local", "local_address")
 partial_io = ("write", "send", "sendmsg", "recvmsg")
+
+def report(p, rule, msg):
+    print("%s:%s: [%s] %s" % (p[0].file, p[0].line, rule, msg))
 
 // --------------------------------------------------------------------
 // Copy and buffer hygiene -- CWE-120/121/787, SEI CERT STR31-C
@@ -60,8 +62,8 @@ strncpy@p(dst, src, sizeof(dst))
 @script:python@
 p << strncpy_unterminated.p;
 @@
-print("%s:%s: [strncpy_unterminated] strncpy() bounded by sizeof(dst) may leave it unterminated, use strlcpy()"
-      % (p[0].file, p[0].line))
+report(p, "strncpy_unterminated",
+       "strncpy() bounded by sizeof(dst) may leave it unterminated, use strlcpy()")
 
 # sizeof(pointer) as a length: the size of the pointer, not of what it
 # points at.  Catches memcpy(p, q, sizeof(p)) and memset(p, 0, sizeof(p)).
@@ -79,8 +81,7 @@ p << sizeof_pointer.p;
 f << sizeof_pointer.f;
 @@
 if f in copy_sized:
-    print("%s:%s: [sizeof_pointer] %s() sized with sizeof(pointer), not sizeof(*pointer)"
-          % (p[0].file, p[0].line, f))
+    report(p, "sizeof_pointer", "%s() sized with sizeof(pointer), not sizeof(*pointer)" % f)
 
 # Unbounded copy primitives.  Use the lib/ wrappers instead.
 @unbounded_copy@
@@ -94,8 +95,8 @@ p << unbounded_copy.p;
 f << unbounded_copy.f;
 @@
 if f in copy_unbounded:
-    print("%s:%s: [unbounded_copy] %s() is unbounded, use the lib/ wrapper (strlcpy/strlcat/snprintf)"
-          % (p[0].file, p[0].line, f))
+    report(p, "unbounded_copy",
+           "%s() is unbounded, use the lib/ wrapper (strlcpy/strlcat/snprintf)" % f)
 
 # memset(p, sizeof(x), 0): the length and the fill swapped.
 @memset_swapped@
@@ -107,7 +108,7 @@ memset@p(p1, sizeof(sz), ...)
 @script:python@
 p << memset_swapped.p;
 @@
-print("%s:%s: [memset_swapped] memset() fill and length look swapped" % (p[0].file, p[0].line))
+report(p, "memset_swapped", "memset() fill and length look swapped")
 
 # --------------------------------------------------------------------
 # Allocation -- CWE-131/761, SEI CERT MEM35-C
@@ -132,8 +133,7 @@ x = realloc@p(..., sizeof(x))
 @script:python@
 p << alloc_sizeof_pointer.p;
 @@
-print("%s:%s: [alloc_sizeof_pointer] allocation sized with sizeof(pointer), not sizeof(*pointer)"
-      % (p[0].file, p[0].line))
+report(p, "alloc_sizeof_pointer", "allocation sized with sizeof(pointer), not sizeof(*pointer)")
 
 # An allocation dereferenced before anything asked whether it succeeded.
 #
@@ -165,8 +165,7 @@ p << unchecked_alloc.p;
 f << unchecked_alloc.f;
 @@
 if f in allocators:
-    print("%s:%s: [unchecked_alloc] allocation dereferenced with no NULL test"
-          % (p[0].file, p[0].line))
+    report(p, "unchecked_alloc", "allocation dereferenced with no NULL test")
 
 # --------------------------------------------------------------------
 # Format strings -- CWE-134
@@ -192,8 +191,7 @@ p << fmt_printf.p;
 f << fmt_printf.f;
 @@
 if f in printf_like:
-    print("%s:%s: [fmt_printf] %s() format string is not a literal"
-          % (p[0].file, p[0].line, f))
+    report(p, "fmt_printf", "%s() format string is not a literal" % f)
 
 @fmt_fprintf@
 identifier f;
@@ -208,8 +206,7 @@ p << fmt_fprintf.p;
 f << fmt_fprintf.f;
 @@
 if f in fprintf_like:
-    print("%s:%s: [fmt_fprintf] %s() format string is not a literal"
-          % (p[0].file, p[0].line, f))
+    report(p, "fmt_fprintf", "%s() format string is not a literal" % f)
 
 @fmt_sized@
 identifier fmt;
@@ -225,8 +222,7 @@ position p;
 @script:python@
 p << fmt_sized.p;
 @@
-print("%s:%s: [fmt_sized] format string is not a literal"
-      % (p[0].file, p[0].line))
+report(p, "fmt_sized", "format string is not a literal")
 
 # --------------------------------------------------------------------
 # Integer and conversion hazards -- CWE-190/197/681
@@ -249,8 +245,7 @@ htons@p(E)
 @script:python@
 p << byteorder_wide.p;
 @@
-print("%s:%s: [byteorder_wide] 16-bit byte-order conversion applied to a 32-bit object"
-      % (p[0].file, p[0].line))
+report(p, "byteorder_wide", "16-bit byte-order conversion applied to a 32-bit object")
 
 @byteorder_narrow@
 typedef uint16_t;
@@ -267,8 +262,7 @@ htonl@p(E)
 @script:python@
 p << byteorder_narrow.p;
 @@
-print("%s:%s: [byteorder_narrow] 32-bit byte-order conversion applied to a narrower object"
-      % (p[0].file, p[0].line))
+report(p, "byteorder_narrow", "32-bit byte-order conversion applied to a narrower object")
 
 # A 32-bit network value stored in a 16- or 8-bit variable.
 @truncating_store@
@@ -287,8 +281,7 @@ v@p = htonl(E)
 @script:python@
 p << truncating_store.p;
 @@
-print("%s:%s: [truncating_store] 32-bit value truncated into a narrower variable"
-      % (p[0].file, p[0].line))
+report(p, "truncating_store", "32-bit value truncated into a narrower variable")
 
 # --------------------------------------------------------------------
 # Expression and control-flow mistakes -- CWE-480/481/570/571
@@ -306,7 +299,7 @@ if@p (x = E) S
 @script:python@
 p << assign_in_cond.p;
 @@
-print("%s:%s: [assign_in_cond] assignment inside an if() condition" % (p[0].file, p[0].line))
+report(p, "assign_in_cond", "assignment inside an if() condition")
 
 # !x & y and !x | y: the negation binds tighter than the bit operator,
 # which is almost never what was written.
@@ -324,8 +317,7 @@ position p;
 @script:python@
 p << bang_precedence.p;
 @@
-print("%s:%s: [bang_precedence] ! binds tighter than the bit operator here, parenthesise"
-      % (p[0].file, p[0].line))
+report(p, "bang_precedence", "! binds tighter than the bit operator here, parenthesise")
 
 # x & FLAG == V: == binds tighter than & and |.
 @cmp_precedence@
@@ -345,8 +337,7 @@ E1 | E2@p != E3
 @script:python@
 p << cmp_precedence.p;
 @@
-print("%s:%s: [cmp_precedence] == binds tighter than & and |, parenthesise the mask test"
-      % (p[0].file, p[0].line))
+report(p, "cmp_precedence", "== binds tighter than & and |, parenthesise the mask test")
 
 # The same sub-expression on both sides of && or ||.
 @dup_operand@
@@ -362,8 +353,7 @@ E@p && ... && E
 @script:python@
 p << dup_operand.p;
 @@
-print("%s:%s: [dup_operand] the same sub-expression appears twice in this condition"
-      % (p[0].file, p[0].line))
+report(p, "dup_operand", "the same sub-expression appears twice in this condition")
 
 # if (E) S else if (E) S2: the second arm is dead.
 @dup_elseif@
@@ -376,8 +366,7 @@ if@p (E) S1 else if (E) S2
 @script:python@
 p << dup_elseif.p;
 @@
-print("%s:%s: [dup_elseif] duplicated condition, the else-if arm is dead"
-      % (p[0].file, p[0].line))
+report(p, "dup_elseif", "duplicated condition, the else-if arm is dead")
 
 # if (E) S else S: both arms identical.
 @same_branches@
@@ -390,7 +379,7 @@ if@p (E) S else S
 @script:python@
 p << same_branches.p;
 @@
-print("%s:%s: [same_branches] both arms of this if() are identical" % (p[0].file, p[0].line))
+report(p, "same_branches", "both arms of this if() are identical")
 
 # E op E: a comparison of something with itself.
 @self_compare@
@@ -410,7 +399,7 @@ E@p > E
 @script:python@
 p << self_compare.p;
 @@
-print("%s:%s: [self_compare] expression compared with itself" % (p[0].file, p[0].line))
+report(p, "self_compare", "expression compared with itself")
 
 # x = x: a self-assignment, usually a typo for a neighbouring field.
 @self_assign@
@@ -422,7 +411,7 @@ x@p = x;
 @script:python@
 p << self_assign.p;
 @@
-print("%s:%s: [self_assign] self-assignment" % (p[0].file, p[0].line))
+report(p, "self_assign", "self-assignment")
 
 # --------------------------------------------------------------------
 # pimd's own idioms
@@ -452,8 +441,8 @@ f << inetfmt_alias.f;
 g << inetfmt_alias.g;
 @@
 if buf == other and f in inet_fmt_like and g in inet_fmt_like:
-    print("%s:%s: [inetfmt_alias] static buffer %s formatted twice in one call, both read back the same"
-          % (p[0].file, p[0].line, buf))
+    report(p, "inetfmt_alias",
+           "static buffer %s formatted twice in one call, both read back the same" % buf)
 
 # inet_fmt(x, s1, sizeof(s2)): the length of a different buffer.
 @inetfmt_mismatch@
@@ -472,8 +461,7 @@ other << inetfmt_mismatch.other;
 f << inetfmt_mismatch.f;
 @@
 if buf != other and f in inet_fmt_like:
-    print("%s:%s: [inetfmt_mismatch] buffer %s sized with sizeof(%s)"
-          % (p[0].file, p[0].line, buf, other))
+    report(p, "inetfmt_mismatch", "buffer %s sized with sizeof(%s)" % (buf, other))
 
 # "Bound before parsing": a PIM message handler that never compares its
 # len argument against anything.  PIM_JOIN_PRUNE_MINLEN,
@@ -495,8 +483,7 @@ T f@p(..., char *msg, size_t len) {
 p << unbounded_handler.p;
 f << unbounded_handler.f;
 @@
-print("%s:%s: [unbounded_handler] %s() never bounds-checks its len argument"
-      % (p[0].file, p[0].line, f))
+report(p, "unbounded_handler", "%s() never bounds-checks its len argument" % f)
 
 # NO_VIF is MAXVIFS, one past the end of uvifs[].  An index that came out
 # of a lookup is checked against it before it subscripts anything.
@@ -516,8 +503,8 @@ p << unchecked_vif.p;
 f << unchecked_vif.f;
 @@
 if f in vif_lookups:
-    print("%s:%s: [unchecked_vif] uvifs[] subscripted with a lookup result that was not tested against NO_VIF"
-          % (p[0].file, p[0].line))
+    report(p, "unchecked_vif",
+           "uvifs[] subscripted with a lookup result that was not tested against NO_VIF")
 
 # A transfer that stopped short of the length is not an error by itself.
 # write() and sendmsg() return early when a signal lands after part of the
@@ -565,8 +552,8 @@ p << partial_io_direct.p;
 f << partial_io_direct.f;
 @@
 if f in partial_io:
-    print("%s:%s: [partial_io_direct] %s() compared against a length; a short transfer is not an error, resume it"
-          % (p[0].file, p[0].line, f))
+    report(p, "partial_io_direct",
+           "%s() compared against a length; a short transfer is not an error, resume it" % f)
 
 # The same thing said in two statements, which is the shape the privsep
 # socketpair had: keep the result, then compare it with the length further
@@ -595,5 +582,5 @@ p << partial_io_var.p;
 f << partial_io_var.f;
 @@
 if f in partial_io:
-    print("%s:%s: [partial_io_var] the result of %s() is compared against a length; a short transfer is not an error, resume it"
-          % (p[0].file, p[0].line, f))
+    report(p, "partial_io_var",
+           "the result of %s() is compared against a length; a short transfer is not an error, resume it" % f)
