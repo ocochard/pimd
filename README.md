@@ -355,16 +355,16 @@ file.
 Large Setups
 ------------
 
-pimd is limited to the number of `MAXVIFS` interfaces listed in the
-kernel headers.  In Linux see `/usr/include/linux/mroute.h`, on FreeBSD
-see `/usr/include/netinet/ip_mroute.h`.
+pimd handles as many interfaces as the kernel's multicast routing table
+has VIFs, `MAXVIFS`, which is 32 on Linux (`/usr/include/linux/mroute.h`)
+and on FreeBSD (`/usr/include/netinet/ip_mroute.h`).  The kernel and pimd
+exchange structures sized by it, so it cannot be raised on one side
+alone.  On Linux, run one pimd per multicast routing table instead, each
+with its own 32 VIFs: `-t ID` picks the table and `-i NAME` keeps the
+instances' configuration, PID and socket files apart, see pimd(8).
 
-To overcome this limitation, adjust the kernel `#define` to, e.g., 1280,
-and configure pimd `--with-max-vifs=1280`.  Please note, this has only
-been tested with Linux and will likely not work with other kernels!
-
-With this many interfaces the kernel may run out of memory to let pimd
-to enable IGMP on all interfaces.  In Linux, use sysctl to tweak the
+With many interfaces the kernel may run out of memory to let pimd
+enable IGMP on all of them.  In Linux, use sysctl to tweak the
 following settings:
 
     sysctl -w net.core.optmem_max=327680

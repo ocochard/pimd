@@ -13,6 +13,10 @@ issue of this repository is written out in full.
   longer compiled; the third sized each routing entry's per-interface
   state by the interfaces present when the entry was made, which a VIF
   added afterwards read and wrote past.
+- The `--with-max-vifs` option of `configure` is gone.  It had no effect:
+  pimd takes `MAXVIFS` from the kernel's own header, whose value the
+  kernel and pimd have to share.  On Linux, one pimd per multicast
+  routing table, `-t`, is the way past 32 interfaces.
 - `pimctl show compat` is gone.  It printed a text format from before
   `pimctl`, which `show pim`, `show interface`, `show mrt` and `show rp`
   replaced, and it had no JSON form.

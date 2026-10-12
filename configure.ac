@@ -99,12 +99,6 @@ AC_ARG_ENABLE(coverage,
 		hardening is asked for by name]),,
 	enable_coverage=no)
 
-AC_ARG_WITH(max_vifs,
-	AS_HELP_STRING([--with-max-vifs=NUM], [Kernel maximum number of allowed VIFs, default: 32.
-		This must match the kernel built-in MAXVIFS value!
-		Usually, multiple routing tables is what you want.]),
-	[max_vifs=$withval], [max_vifs=yes])
-
 AC_ARG_WITH([systemd],
      [AS_HELP_STRING([--with-systemd=DIR], [Directory for systemd service files])],,
      [with_systemd=auto])
@@ -179,10 +173,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 # Create config.h from selected features and fallback defaults
 AS_IF([test "x$enable_exit_on_error" = "xno"], [
 	AC_DEFINE(CONTINUE_ON_ERROR, 1, [Do not exit on error messages (LOG_ERR).])])
-
-AS_IF([test "x$with_max_vifs" != "xno" -a "x$max_vifs" != "xyes"], [
-	AC_DEFINE_UNQUOTED(CUSTOM_MAX_VIFS, $max_vifs, [Custom MAX VIFs in kernel.])], [
-	max_vifs=32])
 
 AS_IF([test "x$with_systemd" = "xyes" -o "x$with_systemd" = "xauto"], [
      def_systemd=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
@@ -388,7 +378,6 @@ cat <<EOF
 
 Optional features:
   RPF backend...........: $rpf_backend
-  Kernel MAX VIFs.......: $max_vifs
   Hardening.............: $enable_hardening
   Coverage (gcov).......: $enable_coverage
   Warnings are errors...: $enable_werror

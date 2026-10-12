@@ -52,7 +52,7 @@ Makefile -- and the build jobs of both CI workflows pass it.
 Useful configure flags: `--enable-test` (build `test/` subdir),
 `--enable-fuzz` (the fuzz harnesses, see Tests below; implies `--enable-test` and
 `--disable-exit-on-error`, and adds `-fsanitize=fuzzer-no-link` to the probed flags),
-`--with-max-vifs=NUM` (must match kernel `MAXVIFS`), `--disable-exit-on-error`,
+`--disable-exit-on-error`,
 `--enable-netlink` (RPF lookups over `netlink(4)` rather than the routing socket; implied
 on Linux, needs FreeBSD 13.2 or later elsewhere).
 
