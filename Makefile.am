@@ -17,41 +17,17 @@ if SYSTEMD
 systemd_DATA   = pimd.service
 endif
 
-## Generate .deb package
-package build-deb:
-	@debuild -uc -us -B --lintian-opts --profile debian -i -I
-
-## Check if tagged in git
-release-hook:
-	@if [ ! `git tag | grep $(PACKAGE_VERSION)` ]; then				\
-		echo;									\
-		printf "\e[1m\e[41mCannot find release tag $(PACKAGE_VERSION)\e[0m\n";	\
-		printf "\e[1m\e[5mDo release anyway?\e[0m "; read yorn;			\
-		if [ "$$yorn" != "y" -a "$$yorn" != "Y" ]; then				\
-			printf "OK, aborting release.\n";				\
-			exit 1;								\
-		fi;									\
-		echo;									\
-	else										\
-		echo;									\
-		printf "\e[1m\e[42mFound GIT release tag $(PACKAGE_VERSION)\e[0m\n";	\
-		printf "\e[1m\e[44m>>Remember to push tags!\e[0m\n";			\
-		echo;									\
-	fi
-
-## Target to run when building a release
-release: release-hook distcheck
-	@for file in $(DIST_ARCHIVES); do		\
-		md5sum    $$file > ../$$file.md5;	\
-		sha256sum $$file > ../$$file.sha256;	\
+## Build a release: refuse a version that has no git tag, then distcheck
+## and write the checksums beside the tarball
+release:
+	@git rev-parse -q --verify "refs/tags/$(PACKAGE_VERSION)" >/dev/null || \
+		{ echo "No git tag $(PACKAGE_VERSION), not releasing" >&2; exit 1; }
+	$(MAKE) $(AM_MAKEFLAGS) distcheck
+	@for f in $(DIST_ARCHIVES); do				\
+		md5sum    $$f > $$f.md5    &&			\
+		sha256sum $$f > $$f.sha256 || exit 1;		\
 	done
-	@mv $(DIST_ARCHIVES) ../
-	@echo
-	@echo "Resulting release files ======================================================================="
-	@for file in $(DIST_ARCHIVES); do						\
-		printf "%-30s Distribution tarball\n" $$file;				\
-		printf "%-30s " $$file.md5;    cat ../$$file.md5    | cut -f1 -d' ';	\
-		printf "%-30s " $$file.sha256; cat ../$$file.sha256 | cut -f1 -d' ';	\
-	done
+
+.PHONY: release
 
 DISTCHECK_CONFIGURE_FLAGS = --with-systemd=$$dc_install_base/$(systemd)

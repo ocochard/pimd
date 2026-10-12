@@ -39,9 +39,9 @@ jobs:
       - name: Build release ...
         run: |
           make release
-          ls -lF ../
           mkdir -p artifacts/
-          mv ../*.tar.* artifacts/
+          mv pimd-*.tar.gz* artifacts/
+          ls -lF artifacts/
       - name: Create release ...
         uses: softprops/action-gh-release@v2
         with:
