@@ -41,7 +41,7 @@ esac
 # Required to check for libsystemd-dev
 PKG_PROG_PKG_CONFIG
 
-AC_CHECK_HEADERS([fcntl.h net/if_dl.h sys/ioctl.h linux/netlink.h termios.h])
+AC_CHECK_HEADERS([fcntl.h sys/ioctl.h linux/netlink.h termios.h])
 # The sandbox the unprivileged half of the daemon enters: seccomp-bpf on
 # Linux, and nothing on the BSDs -- Capsicum refuses every sendto() that
 # carries a destination, which is every packet pimd sends.  The long version
@@ -207,7 +207,6 @@ AS_IF([test "x$enable_netlink" = "xyes" -a "x$ac_cv_header_linux_netlink_h" != "
 
 AS_IF([test "x$enable_netlink" = "xyes"], [rpf_backend="netlink"], [rpf_backend="routing socket"])
 
-AM_CONDITIONAL(BSD,         [test "x$ac_cv_header_net_if_dl_h"     = "xyes"])
 AM_CONDITIONAL(LINUX,       [test "x$ac_cv_header_linux_netlink_h" = "xyes"])
 AM_CONDITIONAL(NETLINK,     [test "x$enable_netlink"               = "xyes"])
 AM_CONDITIONAL(SYSTEMD,     [test "x$with_systemd"                != "xno"])

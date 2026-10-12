@@ -58,7 +58,7 @@ dist-hook:
 if ENABLE_FUZZ
 TESTS              = fuzz-corpus.sh
 
-FUZZ_LDADD         = $(top_builddir)/src/libpimd.a $(LIBS)
+FUZZ_LDADD         = $(top_builddir)/src/libpimd.a
 FUZZ_ROUTER        = fuzz/router.c fuzz/router.h fuzz/mrib.c	\
 		     fuzz/topology.h fuzz/stubs.c
 

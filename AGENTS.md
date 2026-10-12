@@ -646,7 +646,7 @@ Layers, roughly bottom-up:
 - **Kernel/OS glue.** `kern.c` wraps every `setsockopt`/`MRT_*` call (add/del vif, add/change MFC,
   counters). `netlink.c` (Linux) and `routesock.c` (BSD) both implement `init_routesock()` and
   `k_req_incoming()` — the unicast RPF lookup PIM depends on; only one is compiled in, selected by
-  the `LINUX`/`BSD` automake conditionals in `src/Makefile.am`. `include/` holds the PIM header
+  the `NETLINK` automake conditional in `src/Makefile.am`. `include/` holds the PIM header
   every build uses and DragonFly's `ip_mroute.h`, which that system keeps elsewhere.
 - **Interfaces (vifs).** `vif.h`'s `struct uvif` is one virtual interface; the `uvifs[MAXVIFS]`
   array indexed by `vifi_t` is the universal handle passed around the protocol code, and interface
