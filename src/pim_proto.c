@@ -2404,9 +2404,12 @@ static void rpt_prune(mrtentry_t *mrt, vifi_t vifi, uint16_t holdtime, int wc_jo
     struct jp_act act;
 
     act = rpt_ds_decide(rpt_ds_state(mrt, vifi, wc_join), RPT_EV_PRUNE_RPT, delay == 0);
-    rpt_ds_apply(mrt, vifi, act,
-		 holdtime == PIM_HELLO_HOLDTIME_FOREVER ? 0 : now + holdtime * 1000ULL,
-		 now + delay);
+    /* Whether the pruned set changed is not needed: the one caller runs
+     * change_interfaces() after this whatever it was, the entry having
+     * possibly just been made for the Prune. */
+    (void)rpt_ds_apply(mrt, vifi, act,
+		       holdtime == PIM_HELLO_HOLDTIME_FOREVER ? 0 : now + holdtime * 1000ULL,
+		       now + delay);
 }
 
 /*
