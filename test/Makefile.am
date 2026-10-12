@@ -77,8 +77,8 @@ fuzz_ipc_replay_LDADD      = $(FUZZ_LDADD)
 
 if HAVE_LIBFUZZER
 # Per program, so that only these five link libFuzzer's main()
-FUZZER_CFLAGS      = $(AM_CFLAGS) -fsanitize=fuzzer
-FUZZER_LDFLAGS     = $(AM_LDFLAGS) -fsanitize=fuzzer
+LIBFUZZER_CC       = $(AM_CFLAGS) -fsanitize=fuzzer
+LIBFUZZER_LD       = $(AM_LDFLAGS) -fsanitize=fuzzer
 
 noinst_PROGRAMS   += fuzz_config fuzz_pim fuzz_igmp fuzz_autorp fuzz_ipc
 fuzz_config_SOURCES = fuzz/fuzz_config.c fuzz/stubs.c
@@ -86,16 +86,16 @@ fuzz_pim_SOURCES    = fuzz/fuzz_pim.c    $(FUZZ_ROUTER)
 fuzz_igmp_SOURCES   = fuzz/fuzz_igmp.c   $(FUZZ_ROUTER)
 fuzz_autorp_SOURCES = fuzz/fuzz_autorp.c $(FUZZ_ROUTER)
 fuzz_ipc_SOURCES    = fuzz/fuzz_ipc.c    $(FUZZ_ROUTER)
-fuzz_config_CFLAGS  = $(FUZZER_CFLAGS)
-fuzz_pim_CFLAGS     = $(FUZZER_CFLAGS)
-fuzz_igmp_CFLAGS    = $(FUZZER_CFLAGS)
-fuzz_autorp_CFLAGS  = $(FUZZER_CFLAGS)
-fuzz_ipc_CFLAGS     = $(FUZZER_CFLAGS)
-fuzz_config_LDFLAGS = $(FUZZER_LDFLAGS)
-fuzz_pim_LDFLAGS    = $(FUZZER_LDFLAGS)
-fuzz_igmp_LDFLAGS   = $(FUZZER_LDFLAGS)
-fuzz_autorp_LDFLAGS = $(FUZZER_LDFLAGS)
-fuzz_ipc_LDFLAGS    = $(FUZZER_LDFLAGS)
+fuzz_config_CFLAGS  = $(LIBFUZZER_CC)
+fuzz_pim_CFLAGS     = $(LIBFUZZER_CC)
+fuzz_igmp_CFLAGS    = $(LIBFUZZER_CC)
+fuzz_autorp_CFLAGS  = $(LIBFUZZER_CC)
+fuzz_ipc_CFLAGS     = $(LIBFUZZER_CC)
+fuzz_config_LDFLAGS = $(LIBFUZZER_LD)
+fuzz_pim_LDFLAGS    = $(LIBFUZZER_LD)
+fuzz_igmp_LDFLAGS   = $(LIBFUZZER_LD)
+fuzz_autorp_LDFLAGS = $(LIBFUZZER_LD)
+fuzz_ipc_LDFLAGS    = $(LIBFUZZER_LD)
 fuzz_config_LDADD   = $(FUZZ_LDADD)
 fuzz_pim_LDADD      = $(FUZZ_LDADD)
 fuzz_igmp_LDADD     = $(FUZZ_LDADD)
