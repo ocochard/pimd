@@ -1887,6 +1887,11 @@ CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
 # joined (S,G) on r1's RPF interface toward the source
 CRAFT_IIF_CTRL_GROUP=${CRAFT_IIF_CTRL_GROUP:-225.1.4.23}
 CRAFT_IIF_JOIN_GROUP=${CRAFT_IIF_JOIN_GROUP:-225.1.4.24}
+# crafted step 13d: two groups ED1 streams to through r2, the RP, the first
+# the control and the second the one r2 loses an Assert for on its RPF
+# interface before the stream reaches it natively
+CRAFT_STALE_CTL_GROUP=${CRAFT_STALE_CTL_GROUP:-225.1.4.26}
+CRAFT_STALE_GROUP=${CRAFT_STALE_GROUP:-225.1.4.27}
 # crafted step 7z: a group r1 forwards on its LAN, and a source r1 has no
 # route to at all, beside the routable one of 7f as the control
 CRAFT_NOROUTE_GROUP=${CRAFT_NOROUTE_GROUP:-225.1.4.25}
@@ -9062,6 +9067,120 @@ craft_step_13c() {
 	return 0
 }
 
+craft_step_13d() {
+	# RFC 7761 sec. 4.2.2: an (S,G) on the shortest path tree is forwarded
+	# from RPF_interface(S), and the kernel's entry has to say so.  The RP
+	# installs that entry with the register vif as its parent while the
+	# source's data still comes decapsulated out of Registers, and moves
+	# it in process_wrong_iif() (src/route.c) when the first packet
+	# arrives natively on RPF_interface(S) -- but only if SPTbit was not
+	# set yet.  Actions A6 of sec. 4.6.1 sets it without data, on losing
+	# an Assert on RPF_interface(S) (7h), and an RP that lost one between
+	# its last Register and the first native packet never moved the
+	# entry: every packet was a wrong-iif upcall answered with an Assert,
+	# and nothing was forwarded for as long as the source sent.  That is
+	# the privsep scenario's control step failing in CI's FreeBSD VM,
+	# where a decapsulated Register that r2 forwarded back toward the
+	# source drew the Assert.  Here it is put in that order on purpose:
+	# a neighbour on r2's link to r3 joins both groups, r2's route to
+	# ED1's LAN is moved to a third router on the link to r1, so that
+	# r2's own Join(S,G) is not one r1 acts on and the stream reaches r2
+	# only in Registers, the second group's Assert is lost on r2's RPF
+	# interface, and only then does a Join to r1 put the stream on that
+	# interface natively.  The first group goes through the same without
+	# the Assert, and is the control: the move it has to see is the one
+	# pimd has always made.
+	print "13d. The RP moves the kernel entry onto RPF_interface(S) whatever set SPTbit"
+
+	# ED1 has said Hello from $SRC_ADDR since step 1, and its address is
+	# above r1's, so it is the DR of r1's LAN and nobody registers its
+	# stream.  It goes quiet for the step.
+	craft "$SRC_ADDR" hello -H 0
+	box_addr_add r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR/24" 2>/dev/null || true
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	box_addr_add r1 "${EP}112a" "$CRAFT_R2_ALT_NBR/24" 2>/dev/null || true
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 105
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 105
+
+	if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_DOWN_ADDR" ||
+	   ! wait_for 30 has_neighbor r2 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r2 "$CRAFT_R2_ALT_NBR" ||
+	   ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 no_neighbor r1 "$SRC_ADDR"; then
+		fail "the neighbours the step is built on never settled, it cannot be put"
+	else
+		box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R2_ALT_NBR" >/dev/null
+		mark=$(log_lines r2)
+		for g in "$CRAFT_STALE_CTL_GROUP" "$CRAFT_STALE_GROUP"; do
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR" -H 65535
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-s "$SRC_ADDR" -H 65535
+		done
+		box_daemon ed1 "$WORKDIR/msend-stale.pid" "$WORKDIR/msend-stale.log" \
+			"$MSEND" "$SRC_ADDR" "$CRAFT_STALE_CTL_GROUP" 2
+
+		if ! wait_for 30 fz_logged_since r2 "$mark" \
+			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_GROUP from register_vif0" ||
+		   ! fz_logged_since r2 "$mark" \
+			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_CTL_GROUP from register_vif0"; then
+			fail "r2 forwards neither group out of the register vif, the stream never reached it in Registers, the step cannot be put"
+		elif sg_forwards_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_STALE_GROUP"; then
+			fail "r1 already forwards ($SRC_ADDR,$CRAFT_STALE_GROUP) toward r2, the Assert cannot come first, the step cannot be put"
+		else
+			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_STALE_GROUP" -s "$SRC_ADDR" -P 1 -C 1
+			if ! wait_for 10 assert_char_is r2 "${EPU}112b" "$SRC_ADDR" "$CRAFT_STALE_GROUP" L ||
+			   ! route_has_flag r2 "$SRC_ADDR" "$CRAFT_STALE_GROUP" SPT; then
+				fail "r2 did not lose ($SRC_ADDR,$CRAFT_STALE_GROUP) on ${EPU}112b with SPTbit set, the step cannot be put"
+			else
+				ok "r2 loses ($SRC_ADDR,$CRAFT_STALE_GROUP) on its RPF interface and sets SPTbit, its kernel entry still the register vif's"
+
+				# Natively now, both groups, from r1
+				mark=$(log_lines r2)
+				for g in "$CRAFT_STALE_CTL_GROUP" "$CRAFT_STALE_GROUP"; do
+					craft_on r2 "$SUPP_ADDR" join -u "$CRAFT_R1_LINK12" -g "$g" \
+						-s "$SRC_ADDR" -H 65535
+				done
+				if wait_for 15 fz_logged_since r2 "$mark" \
+					"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_CTL_GROUP from ${EPU}112b"; then
+					ok "r2 moves ($SRC_ADDR,$CRAFT_STALE_CTL_GROUP) onto ${EPU}112b when the stream arrives there, the control"
+				else
+					fail "r2 never moved ($SRC_ADDR,$CRAFT_STALE_CTL_GROUP) onto ${EPU}112b, the stream did not arrive natively and the step proves nothing"
+				fi
+				if wait_for 15 fz_logged_since r2 "$mark" \
+					"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_GROUP from ${EPU}112b"; then
+					ok "and moves ($SRC_ADDR,$CRAFT_STALE_GROUP) too, SPTbit having been set by the Assert"
+				else
+					fail "r2 leaves ($SRC_ADDR,$CRAFT_STALE_GROUP) on the register vif with SPTbit set, every native packet a wrong-iif upcall"
+				fi
+			fi
+			craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_STALE_GROUP" -s "$SRC_ADDR" \
+				-R -P 2147483647 -C 4294967295
+		fi
+
+		${SUDO} pkill -F "$WORKDIR/msend-stale.pid" 2>/dev/null || true
+		for g in "$CRAFT_STALE_CTL_GROUP" "$CRAFT_STALE_GROUP"; do
+			craft_on r2 "$SUPP_ADDR" prune -u "$CRAFT_R1_LINK12" -g "$g" -s "$SRC_ADDR"
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-s "$SRC_ADDR"
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR"
+		done
+		box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R1_LINK12" >/dev/null
+	fi
+
+	craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 0
+	craft_on r2 "$SUPP_ADDR" hello -H 0
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
+	box_addr_del r1 "${EP}112a" "$CRAFT_R2_ALT_NBR" 2>/dev/null
+	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
+	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
+	craft "$SRC_ADDR" hello -H 105
+
+	return 0
+}
+
 craft_step_14() {
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
@@ -9799,7 +9918,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

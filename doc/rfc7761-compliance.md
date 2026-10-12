@@ -529,7 +529,8 @@ rule are `assert_rc()` and `assert_wc_may_run()` in `src/pim_assert.c` now,
 (S,G) machine and message, with three mutants -- the old, wider exception
 among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
 SPTbit, which the message needs to be inferior to, while `crafted` sends it:
-`crafted` forwards data in step 13c alone, with no Assert in it.*
+`crafted` forwards data in steps 13c and 13d only, neither built to send that
+Assert.*
 
 M28 was the last action of the (S,G) machine pimd did not take when the
 transition happened.  Actions A6, NoInfo to Loser, end "If (I is
@@ -902,6 +903,28 @@ ED1 joins (\*,G) on the LAN, and its other address wins an (S,G) Assert there
 for a source behind r3, r1 holding the Loser state the control, then for
 10.99.0.1, which r1 has no route to; r1 has to hold the loss for that one too
 (it dropped it before the fix).*
+
+M51, fixed: sec. 4.2.2 forwards an (S,G) on the shortest path tree from
+RPF_interface(S), and the kernel's entry has to agree.  An RP installs that
+entry with the register vif as its parent while the source's data still
+arrives in Registers, and `process_wrong_iif()` (`src/route.c`) moved it onto
+RPF_interface(S) on the first native packet -- only while SPTbit was clear,
+the move being written as the second half of setting it.  Actions A6 of sec.
+4.6.1 set the bit with no data, on losing an Assert on RPF_interface(S)
+(M28), and so does `check_sptbit()`'s data count, neither touching the kernel:
+an RP that lost such an Assert between its last Register and the first native
+packet kept the register vif as the parent, every packet after was a
+wrong-iif upcall answered with an Assert on its own RPF interface, and
+nothing was forwarded for as long as the source sent.  That was the privsep
+scenario's flake in CI's FreeBSD VM, where r2 forwarded one decapsulated
+Register back toward the source and the router there asserted.  The move now
+happens on any packet from S on RPF_interface(S) once SPTbit is set, however
+it was set.  *Test: `crafted` step 13d in `test/lab.sh`: r2, the RP, receives
+ED1's stream for two groups in Registers only, its own Join(S,G) going to a
+third router on the link to r1; it loses an Assert for the second group on
+its RPF interface, and a Join to r1 then puts both streams there natively.
+r2 moving the first group's entry is the control; it has to move the
+second's too (it left it on the register vif before the fix).*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

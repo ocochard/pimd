@@ -2107,13 +2107,22 @@ static void process_wrong_iif(struct igmpmsg *igmpctl)
     /*
      * TODO: check again!
      */
-    if ((mrt->flags & MRTF_SG) && !(mrt->flags & MRTF_SPT) &&
-	mrt->source->incoming == iif) {
-	/* Data from S arriving on RPF_interface(S) while the entry still
-	 * points at the RP: this is the switch to the shortest path, and
-	 * RFC 7761 sec. 4.2.2 decides it like any other, so a router that
-	 * has to wait for an Assert(S,G) waits here too and falls through
-	 * to sending one.
+    if ((mrt->flags & MRTF_SG) && mrt->source->incoming == iif) {
+	/* Data from S arriving on RPF_interface(S) while the kernel's entry
+	 * still points at the RP: this is the switch to the shortest path,
+	 * and RFC 7761 sec. 4.2.2 decides it like any other, so a router
+	 * that has to wait for an Assert(S,G) waits here too and falls
+	 * through to sending one.
+	 *
+	 * The bit may already be set, and the kernel still not moved: the
+	 * Assert machine's Actions A6 set it on losing on RPF_interface(S)
+	 * (receive_pim_assert()), and so does the data count of
+	 * check_sptbit(), neither touching the MFC.  An RP that switched,
+	 * forwarded one more decapsulated Register through the register vif
+	 * and lost the Assert that copy drew was left that way: every
+	 * native packet a wrong-iif upcall, answered with an Assert on its
+	 * own RPF interface, and nothing forwarded for as long as the stream
+	 * ran.  So the move below does not wait for the bit to change.
 	 */
 	update_sptbit(mrt, iif);
 

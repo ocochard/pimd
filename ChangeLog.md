@@ -26,6 +26,13 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An RP that lost an Assert on its interface toward a source, after the
+  source's data had reached it in Registers and before it arrived
+  natively, kept forwarding that source from the register vif in the
+  kernel: every native packet was dropped as arriving on the wrong
+  interface, and the receivers got nothing for as long as the source sent.
+  This was the privsep scenario's intermittent failure in CI.  Step 13d of
+  `crafted` in `test/lab.sh`.
 - On NetBSD, `src/pimd.h` defined `struct igmpmsg` a second time, after
   `<netinet/ip_mroute.h>` had already defined it.
 - On DragonFly, `configure` added the bundled `ip_mroute.h` to the include
