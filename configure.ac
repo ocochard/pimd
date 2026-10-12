@@ -34,7 +34,7 @@ case $host_os in
 	;;
 esac
 
-# Required to check for libsystemd-dev
+# For where the systemd unit file goes, see --with-systemd below
 PKG_PROG_PKG_CONFIG
 
 # The sandbox the unprivileged half of the daemon enters: seccomp-bpf on

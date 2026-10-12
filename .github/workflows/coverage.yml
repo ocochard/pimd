@@ -44,7 +44,7 @@ jobs:
         # gcov comes with gcc, so the report needs nothing of its own.
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
+          sudo apt-get -y install pkg-config ethtool iproute2 tcpdump
 
       # Two builds, because --enable-fuzz implies --disable-exit-on-error:
       # a daemon that carries on past logit(LOG_ERR) is not the daemon the

@@ -25,7 +25,7 @@ jobs:
       - name: Installing dependencies ...
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev
+          sudo apt-get -y install pkg-config
       - name: Extract ChangeLog entry ...
         # Hack to extract latest entry for body_path below
         run: |

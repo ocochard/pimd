@@ -78,7 +78,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev
+          sudo apt-get -y install pkg-config
 
       - name: Configure
         run: |

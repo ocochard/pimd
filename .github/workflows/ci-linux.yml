@@ -27,7 +27,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev tree
+          # systemd-dev for systemd.pc, which is how configure finds where
+          # the unit file goes; this is the one job that installs it
+          sudo apt-get -y install pkg-config systemd-dev tree
       - uses: actions/checkout@v7
       - name: Configure
         # Build in a sub-directory so we can safely set a+w on all
@@ -49,6 +51,7 @@ jobs:
         run: |
           DESTDIR=~/tmp make install-strip
           tree ~/tmp
+          find ~/tmp -name pimd.service | grep -q . || { echo 'pimd.service was not installed' >&2; exit 1; }
           ldd ~/tmp/sbin/pimd
           size ~/tmp/sbin/pimd
           ldd ~/tmp/sbin/pimctl
@@ -134,7 +137,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev
+          sudo apt-get -y install pkg-config
       - name: Build with the analyser
         run: |
           ./autogen.sh
@@ -174,7 +177,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev clang
+          sudo apt-get -y install pkg-config clang
 
       - name: Build
         run: |
@@ -250,7 +253,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev clang
+          sudo apt-get -y install pkg-config clang
 
       - name: Build
         run: |
@@ -314,7 +317,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
+          sudo apt-get -y install pkg-config ethtool iproute2 tcpdump
 
       - name: Build
         run: |
@@ -388,7 +391,7 @@ jobs:
         # the log when a runner image moves.
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 frr
+          sudo apt-get -y install pkg-config ethtool iproute2 frr
           /usr/lib/frr/pimd --version | head -1
 
       - name: Allow FRR's pimd a pathspace under AppArmor

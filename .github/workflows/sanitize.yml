@@ -44,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -y update
-          sudo apt-get -y install pkg-config libsystemd-dev ethtool iproute2 tcpdump
+          sudo apt-get -y install pkg-config ethtool iproute2 tcpdump
 
       - name: Build with the sanitizers
         # clang rather than gcc: both ship the two runtimes, but the LLVM
