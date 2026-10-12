@@ -111,6 +111,10 @@ box_daemon() {
 
 box_hint() { echo "${SUDO} ip netns exec $(nsname "$1")"; }
 
+# box_daemon() here is a shell that execs into the command, with no
+# supervisor left behind it to outlive the command, see lab-freebsd.sh
+box_daemon_gone() { :; }
+
 box_addr_add() { box_run "$1" ip addr add "$3" broadcast + dev "$2"; }
 
 # ip(8) wants the prefix length of the address it deletes, and the callers

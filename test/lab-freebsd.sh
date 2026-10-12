@@ -210,6 +210,17 @@ box_daemon() {
 
 box_hint() { echo "${SUDO} jexec $(jname "$1")"; }
 
+# Has the daemon(8) that box_daemon() put in front of a command, given pid
+# file $1, gone?  It holds an flock(2) on that file until it has reaped its
+# child and removed it, and a second daemon(8) for the same file refuses to
+# start until then -- "process already running" on the lab's stderr, and
+# nothing at all in the log of the command that never ran.  The child dying
+# is not enough: on a loaded system its supervisor exits a while after it.
+# The lock is what daemon(8) asks about, so it is what this asks too; its
+# process title is not its command line, and pgrep(1) cannot find it by
+# that.
+box_daemon_gone() { [ ! -e "$1" ] || ${SUDO} lockf -k -n -s -t 0 "$1" true; }
+
 box_addr_add() { box_run "$1" ifconfig "$2" inet "$3" alias; }
 
 box_addr_del() { box_run "$1" ifconfig "$2" inet "$3" -alias; }

@@ -3953,6 +3953,7 @@ restart_pimd() {
 	[ -f "$WORKDIR/$r.pid" ] && \
 		${SUDO} pkill -9 -F "$WORKDIR/$r.pid" 2>/dev/null || true
 	wait_for 15 pimd_is_down "$r" || true
+	wait_for 15 box_daemon_gone "$WORKDIR/$r.daemon.pid" || true
 	start_pimd "$r"
 }
 
@@ -3966,6 +3967,7 @@ stop_one_pimd() {
 	[ -f "$WORKDIR/$r.pid" ] || return 0
 	${SUDO} pkill -F "$WORKDIR/$r.pid" 2>/dev/null || true
 	wait_for 15 pimd_is_down "$r" || true
+	wait_for 15 box_daemon_gone "$WORKDIR/$r.daemon.pid" || true
 }
 
 start() {
@@ -10391,6 +10393,10 @@ hello_answer() {
 	'
 }
 
+# Interfaces router $1 reads Up, and whether there are any, for wait_for()
+vifs_up() { pimctl "$1" -t show interface 2>/dev/null | grep -c Up; }
+vifs_up_on() { [ "$(vifs_up "$1")" -gt 0 ]; }
+
 no_neighbor() { ! has_neighbor "$@"; }
 
 # Send one crafted PIM message from ED1, sourced at $1
@@ -14105,7 +14111,14 @@ check_privsep() {
 	[ "$FAILED" -eq 0 ] || return 1
 
 	print "7. A SIGHUP to the PID file rebuilds every VIF through the parent"
-	vifs_before=$(pimctl r1 -t show interface 2>/dev/null | grep -c Up)
+	# Read until it answers: a count of 0 here is a pimctl that got no
+	# reply, not a router with no interfaces, and the comparison below
+	# would blame the reload for it.
+	if ! wait_for 30 vifs_up_on r1; then
+		fail "r1: no interface reads Up before the reload, there is nothing for it to rebuild"
+		return 1
+	fi
+	vifs_before=$(vifs_up r1)
 	${SUDO} kill -HUP "$ps_parent" 2>/dev/null || \
 		fail "r1: could not signal $ps_parent"
 	if wait_for 30 pimd_is_up r1; then
@@ -14119,7 +14132,8 @@ check_privsep() {
 	# the parent: sockets, the pimd.conf it re-read, and the pimctl socket
 	# the parent bound again.  The VIF count is the cheapest thing that
 	# says all of that worked.
-	vifs_after=$(pimctl r1 -t show interface 2>/dev/null | grep -c Up)
+	wait_for 30 vifs_up_on r1 || true
+	vifs_after=$(vifs_up r1)
 	if [ "$vifs_after" -gt 0 ] && [ "$vifs_after" = "$vifs_before" ]; then
 		ok "r1 has its $vifs_after interfaces up again, on descriptors the parent handed back"
 	else
