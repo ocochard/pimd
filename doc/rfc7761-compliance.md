@@ -529,8 +529,8 @@ rule are `assert_rc()` and `assert_wc_may_run()` in `src/pim_assert.c` now,
 (S,G) machine and message, with three mutants -- the old, wider exception
 among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
 SPTbit, which the message needs to be inferior to, while `crafted` sends it:
-`crafted` forwards data in steps 13c, 13d and 13e only, none built to send
-that Assert.*
+`crafted` forwards data in steps 13c to 13f only, none built to send that
+Assert.*
 
 M28 was the last action of the (S,G) machine pimd did not take when the
 transition happened.  Actions A6, NoInfo to Loser, end "If (I is
@@ -946,6 +946,28 @@ step 13e in `test/lab.sh`: r2's only receiver for a group joins (\*,G) and
 prunes ED1 off the shared tree, r2 stops r1's Registers, and the receiver
 takes the prune back; r2 has to join toward ED1 within 15 seconds (it did not
 before the fix), a group joined throughout being the control.*
+
+M53, fixed: sec. 4.4.2 has the RP forward a decapsulated Register to
+inherited_olist(S,G,rpt), the (\*,G)'s interfaces less those a
+Prune(S,G,rpt) took the source off.  pimd forwards them through a kernel
+entry hung off the (\*,G) and gave it the (\*,G)'s whole list in all three
+places it is programmed: the cache miss of an (S,G) that has left the shared
+tree (`process_cache_miss()`), every change of the (\*,G)
+(`change_interfaces()`), and not again when a Prune(S,G,rpt) completed.  The
+source went back to a receiver that had pruned it; in the privsep scenario's
+failure in CI, onto the link toward the source, where the copy drew the
+Assert of M51.  `wc_mfc_oifs()` (`src/route.c`) gives such an entry
+`calc_rpt_oifs()` of the source's (S,G) where it has one, and an (S,G)'s
+`change_interfaces()` pushes the (\*,G)'s entry for its source again where
+it owns no kernel entry itself.  *Test: `crafted` step 13f in `test/lab.sh`:
+ED1's stream reaches r2, the RP, in Registers only, with a receiver on each
+of its links; the one toward ED1 prunes it off the shared tree, after the
+stream starts for one group and before it for a second, whose entry r2
+then deletes at its switch to the source tree, up to 100 seconds later.
+Both links before the prune, and the second group's first entry, are the
+controls; the link toward ED1 has to stay out of r2's kernel entries across a
+change of the (\*,G) and the cache miss after the switch (it did not before
+the fix).*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

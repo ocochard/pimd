@@ -1414,6 +1414,30 @@ static void calc_rpt_oifs(mrtentry_t *mrt, uint8_t *oifs)
 }
 
 /*
+ * The outgoing interfaces of a kernel entry the (*,G) @wc forwards @source
+ * through, @wc_oifs being the (*,G)'s own.  An RP forwards a decapsulated
+ * Register to inherited_olist(S,G,rpt), RFC 7761 sec. 4.4.2, which is the
+ * (*,G)'s list less the interfaces a Prune(S,G,rpt) took the source off:
+ * handed the (*,G)'s list, the kernel sent the source back to a receiver
+ * that had pruned it, and onto the link toward the source itself, where the
+ * copy drew an Assert.  A source with no (S,G) entry has no (S,G,rpt) state
+ * and takes the (*,G)'s list.
+ */
+static void wc_mfc_oifs(mrtentry_t *wc, uint32_t source, uint8_t *wc_oifs, uint8_t *oifs)
+{
+    mrtentry_t *srcs;
+
+    for (srcs = wc->group->mrtlink; srcs; srcs = srcs->grpnext) {
+	if (srcs->source && srcs->source->address == source) {
+	    calc_rpt_oifs(srcs, oifs);
+	    return;
+	}
+    }
+
+    PIMD_VIFM_COPY(wc_oifs, oifs);
+}
+
+/*
  * PruneDesired(S,G,rpt) of RFC 7761 sec. 4.5.7:
  *
  *   bool PruneDesired(S,G,rpt) {
@@ -1562,10 +1586,14 @@ int change_interfaces(mrtentry_t *mrt,
 	    if (delete_mrt_flag == TRUE) {
 		delete_mrtentry_all_kernel_cache(mrt);
 	    } else {
-		for (kc = mrt->kernel_cache; kc; kc = kc->next)
+		for (kc = mrt->kernel_cache; kc; kc = kc->next) {
+		    uint8_t kc_oifs[MAXVIFS];
+
+		    wc_mfc_oifs(mrt, kc->source, new_real_oifs, kc_oifs);
 		    k_chg_mfc(igmp_socket, kc->source,
 			      kc->group, new_iif,
-			      new_real_oifs, mrt->group->rpaddr);
+			      kc_oifs, mrt->group->rpaddr);
+		}
 	    }
 	}
 
@@ -1629,6 +1657,23 @@ int change_interfaces(mrtentry_t *mrt,
 		k_chg_mfc(igmp_socket, mrt->source->address,
 			  mrt->group->group, new_iif, new_real_oifs,
 			  mrt->group->rpaddr);
+	} else if (mwc && (mwc->flags & MRTF_KERNEL_CACHE)) {
+	    /* No entry of its own: this source is forwarded through the
+	     * (*,G)'s, the decapsulated Registers of an RP whose (S,G) has
+	     * left the shared tree.  Its (S,G,rpt) state is what that entry
+	     * forwards to, see wc_mfc_oifs(), and a Prune(S,G,rpt) that
+	     * completes or goes away changes nothing about the (*,G), so the
+	     * entry is pushed again here rather than waiting for one. */
+	    for (kc = mwc->kernel_cache; kc; kc = kc->next) {
+		uint8_t kc_oifs[MAXVIFS];
+
+		if (kc->source != mrt->source->address)
+		    continue;
+
+		wc_mfc_oifs(mwc, kc->source, mwc->oifs, kc_oifs);
+		k_chg_mfc(igmp_socket, kc->source, kc->group, mwc->incoming,
+			  kc_oifs, mrt->group->rpaddr);
+	    }
 	}
 
 	if (old_iif != new_iif) {
@@ -2045,12 +2090,14 @@ static void process_cache_miss(struct igmpmsg *igmpctl)
 	mrp = mrt->group->grp_route;
 
 	if (mrp) {
-	    /* Forward on (*,G) or (*,*,RP) */
+	    /* Forward on the (*,G), to inherited_olist(S,G,rpt) */
 	    if (mrp->incoming == iif) {
+		uint8_t oifs[MAXVIFS];
 
 		add_kernel_cache(mrp, mfc_source, group, 0);
 
-		k_chg_mfc(igmp_socket, mfc_source, group, iif, mrp->oifs, mrt->group->rpaddr);
+		wc_mfc_oifs(mrp, mfc_source, mrp->oifs, oifs);
+		k_chg_mfc(igmp_socket, mfc_source, group, iif, oifs, mrt->group->rpaddr);
 	    }
 	}
     }

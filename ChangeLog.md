@@ -26,6 +26,11 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An RP forwarded a source's decapsulated Registers to every interface its
+  (*,G) forwarded on, including those whose downstream had pruned that
+  source off the shared tree, and in the case met in CI onto the link
+  toward the source itself, where the copy drew an Assert.  RFC 7761 sec.
+  4.4.2.  Step 13f of `crafted` in `test/lab.sh`.
 - An RP that stopped a source's Registers because nobody downstream
   wanted it, the source having been pruned off the shared tree, did not
   join toward that source once a receiver appeared: the receiver waited

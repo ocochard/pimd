@@ -351,10 +351,11 @@ several trials off the routers' logs), no PruneEcho where the Expiry Timer rathe
 Prune-Pending Timer ends a Prune-Pending, on a LAN whose two crafted neighbours advertise a 20 s
 Override Interval with `pimsend -O` so the order is certain (step 9b, M37),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1) and the old upstream of
-a group so moved pruned (step 14b, M36), a held Join(S,G) outliving a 225 s pause of its source, one of the three steps
+a group so moved pruned (step 14b, M36), a held Join(S,G) outliving a 225 s pause of its source, one of the four steps
 that forward data (step 13c, M38), the RP moving its kernel entry off the register vif onto RPF_interface(S) when
 the stream arrives there natively, though an Assert lost there set SPTbit first, the second (step 13d, M51), the RP joining toward a source whose Registers it stopped for want of
-a receiver once one appears, sec. 4.4.2's Keepalive Timer, the third (step 13e, M52), an Assert without the RPT
+a receiver once one appears, sec. 4.4.2's Keepalive Timer, the third (step 13e, M52), the RP forwarding
+decapsulated Registers to inherited_olist(S,G,rpt) rather than the (\*,G)'s whole list, the fourth (step 13f, M53), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
 the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
 as infinite, and losing to that metric from a higher address, the control (step 7c, M22), an (S,G)
@@ -809,7 +810,7 @@ the router would assert with now.  `proof_order` is the ordering of the two mach
 `receive_pim_assert()`, sec. 4.6.2's rule and the AssertCancel exception of M14 written as
 `assert_rc()` and `assert_wc_may_run()`; it found M27, the exception granted to any inferior Assert
 from the winner, which no lab reaches -- that needs an (S,G) with SPTbit, and `crafted` forwards
-data in steps 13c, 13d and 13e only, none built to send that Assert.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
+data in steps 13c to 13f only, none built to send that Assert.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
 plan: a body written by an encoder of `src/pim_encode.c` -- Register-Stop, Assert, Null-Register,
 Candidate-RP-Advertisement, Hello, Join/Prune, Bootstrap, every message pimd builds but a data
 Register, which is a copy -- behind a PIM header of any four bytes, into a buffer of exactly

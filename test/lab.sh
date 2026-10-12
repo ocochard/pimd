@@ -1898,6 +1898,13 @@ CRAFT_STALE_GROUP=${CRAFT_STALE_GROUP:-225.1.4.27}
 # Register-Stop
 CRAFT_KAT_CTL_GROUP=${CRAFT_KAT_CTL_GROUP:-225.1.4.28}
 CRAFT_KAT_GROUP=${CRAFT_KAT_GROUP:-225.1.4.29}
+# crafted step 13f: a group ED1 streams to through r2, the RP, with a
+# receiver on each of r2's links, the one toward ED1 having pruned it off the
+# shared tree
+CRAFT_DECAP_GROUP=${CRAFT_DECAP_GROUP:-225.1.4.30}
+# ... and one pruned before the stream starts, for the cache miss after
+# r2's switch to the source tree
+CRAFT_DECAP_MISS_GROUP=${CRAFT_DECAP_MISS_GROUP:-225.1.4.31}
 # crafted step 7z: a group r1 forwards on its LAN, and a source r1 has no
 # route to at all, beside the routable one of 7f as the control
 CRAFT_NOROUTE_GROUP=${CRAFT_NOROUTE_GROUP:-225.1.4.25}
@@ -9268,6 +9275,131 @@ craft_step_13e() {
 	return 0
 }
 
+# Does r2's kernel entry for ($SRC_ADDR,$1) forward onto its interface $2,
+# and does it not, for wait_for()
+decap_forwards_on() {
+	mfc_forwards_on r2 "$SRC_ADDR" "$1" "$(vif_index r2 "$2")"
+}
+decap_not_on() { ! decap_forwards_on "$@"; }
+
+craft_step_13f() {
+	# RFC 7761 sec. 4.4.2: the RP forwards a decapsulated Register to
+	# inherited_olist(S,G,rpt), the (*,G)'s interfaces less those a
+	# Prune(S,G,rpt) took the source off.  pimd forwarded them through a
+	# kernel entry under the (*,G) with the (*,G)'s whole list -- on a
+	# cache miss (process_cache_miss() in src/route.c), on every change of
+	# the (*,G) (change_interfaces()), and not again when the
+	# Prune(S,G,rpt) itself completed: the source went back to a receiver
+	# that had pruned it, in the privsep scenario's failure in CI onto the
+	# link toward the source, where the copy drew the Assert of 13d.  Here
+	# a neighbour on r2's link to r1 and one on its link to r3 join (*,G),
+	# and r2's route to ED1's LAN goes to a third router, so that the
+	# stream reaches r2 in Registers only.  Forwarding onto both links
+	# before anybody prunes is the control; the link to r1 has to leave
+	# the entry when its neighbour's Prune(S,G,rpt) completes, and stay out
+	# of it across a change of the (*,G).  A second group is pruned before
+	# its stream starts, so that r2's first entry for it is the (S,G)'s own
+	# and right, the control; r2's switch to the source tree deletes that
+	# one, at its SPT-threshold poll, up to 100 seconds later, and the
+	# next decapsulated Register is the cache miss that installed the
+	# (*,G)'s list in CI.
+	print "13f. The RP forwards decapsulated Registers to inherited_olist(S,G,rpt)"
+
+	craft "$SRC_ADDR" hello -H 0
+	box_addr_add r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR/24" 2>/dev/null || true
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	box_addr_add r1 "${EP}112a" "$CRAFT_R2_ALT_NBR/24" 2>/dev/null || true
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 105
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 105
+
+	if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_DOWN_ADDR" ||
+	   ! wait_for 30 has_neighbor r2 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r2 "$CRAFT_R2_ALT_NBR" ||
+	   ! wait_for 30 no_neighbor r1 "$SRC_ADDR"; then
+		fail "the neighbours the step is built on never settled, it cannot be put"
+	else
+		box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R2_ALT_NBR" >/dev/null
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_GROUP" \
+			-w -r "$RP_ADDR" -H 65535
+		craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_DECAP_GROUP" \
+			-w -r "$RP_ADDR" -H 65535
+		box_daemon ed1 "$WORKDIR/msend-decap.pid" "$WORKDIR/msend-decap.log" \
+			"$MSEND" "$SRC_ADDR" "$CRAFT_DECAP_GROUP" 1
+
+		if ! wait_for 20 decap_forwards_on "$CRAFT_DECAP_GROUP" "${EP}123a" ||
+		   ! wait_for 10 decap_forwards_on "$CRAFT_DECAP_GROUP" "${EPU}112b"; then
+			fail "r2 is not forwarding the decapsulated stream onto both links, the step proves nothing"
+		else
+			ok "r2 forwards the decapsulated stream onto both links before anybody prunes it, the control"
+
+			craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_DECAP_GROUP" \
+				-s "$SRC_ADDR" -R -H 65535
+			if wait_for 10 decap_not_on "$CRAFT_DECAP_GROUP" "${EPU}112b" && decap_forwards_on "$CRAFT_DECAP_GROUP" "${EP}123a"; then
+				ok "and takes ${EPU}112b out once its neighbour's Prune(S,G,rpt) completes"
+			else
+				fail "r2 still forwards the decapsulated stream onto ${EPU}112b 10s after its neighbour pruned it off the shared tree"
+			fi
+
+			# A change of the (*,G): its other receiver leaves and
+			# comes back, past the override interval each way
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_GROUP" \
+				-w -r "$RP_ADDR"
+			sleep 5
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_GROUP" \
+				-w -r "$RP_ADDR" -H 65535
+			if wait_for 10 decap_forwards_on "$CRAFT_DECAP_GROUP" "${EP}123a" && decap_not_on "$CRAFT_DECAP_GROUP" "${EPU}112b"; then
+				ok "and keeps it out when a change of the (*,G) pushes the entry again"
+			else
+				fail "a change of the (*,G) left r2 forwarding onto ${EPU}112b, or not onto ${EP}123a"
+			fi
+		fi
+		${SUDO} pkill -F "$WORKDIR/msend-decap.pid" 2>/dev/null || true
+
+		craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_DECAP_MISS_GROUP" \
+			-w -r "$RP_ADDR" -X "$SRC_ADDR" -H 65535
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_MISS_GROUP" \
+			-w -r "$RP_ADDR" -H 65535
+		sleep 5
+		box_daemon ed1 "$WORKDIR/msend-decap2.pid" "$WORKDIR/msend-decap2.log" \
+			"$MSEND" "$SRC_ADDR" "$CRAFT_DECAP_MISS_GROUP" 1
+		if ! wait_for 20 decap_forwards_on "$CRAFT_DECAP_MISS_GROUP" "${EP}123a" ||
+		   decap_forwards_on "$CRAFT_DECAP_MISS_GROUP" "${EPU}112b"; then
+			fail "r2's first kernel entry for $CRAFT_DECAP_MISS_GROUP is not onto ${EP}123a alone, the step proves nothing"
+		else
+			ok "r2's first kernel entry for $CRAFT_DECAP_MISS_GROUP, the (S,G)'s own, leaves ${EPU}112b out, the control"
+			if ! wait_for 120 route_lacks_flag r2 "$SRC_ADDR" "$CRAFT_DECAP_MISS_GROUP" RP; then
+				fail "r2 never switched ($SRC_ADDR,$CRAFT_DECAP_MISS_GROUP) to the source tree, the cache miss cannot be put"
+			else
+				sleep 3
+				if decap_forwards_on "$CRAFT_DECAP_MISS_GROUP" "${EP}123a" &&
+				   decap_not_on "$CRAFT_DECAP_MISS_GROUP" "${EPU}112b"; then
+					ok "and the cache miss after its switch to the source tree leaves it out too"
+				else
+					fail "the cache miss after r2's switch to the source tree forwards $CRAFT_DECAP_MISS_GROUP onto ${EPU}112b, or not onto ${EP}123a"
+				fi
+			fi
+		fi
+		${SUDO} pkill -F "$WORKDIR/msend-decap2.pid" 2>/dev/null || true
+		for g in "$CRAFT_DECAP_GROUP" "$CRAFT_DECAP_MISS_GROUP"; do
+			craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$g" -w -r "$RP_ADDR"
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR"
+		done
+		box_route_change r2 "$CRAFT_ED1_NET" "$CRAFT_R1_LINK12" >/dev/null
+	fi
+
+	craft_on r1 "$CRAFT_R2_ALT_NBR" hello -H 0
+	craft_on r2 "$SUPP_ADDR" hello -H 0
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
+	box_addr_del r1 "${EP}112a" "$CRAFT_R2_ALT_NBR" 2>/dev/null
+	box_addr_del r2 "${EPU}112b" "$SUPP_ADDR" 2>/dev/null
+	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
+	craft "$SRC_ADDR" hello -H 105
+
+	return 0
+}
+
 craft_step_14() {
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
@@ -10005,7 +10137,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 13e 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 13e 13f 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 
