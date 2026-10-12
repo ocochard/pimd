@@ -690,8 +690,8 @@ Layers, roughly bottom-up:
 - `trace.c` answers mtrace queries and mrinfo's DVMRP neighbour requests; pimd handles no other
   DVMRP message.
 
-`lib/` holds fallback implementations (`strlcpy`, `strlcat`, `strtonum`, `pidfile`, `tempfile`,
-`utimensat`) pulled in via `AC_REPLACE_FUNCS` only when libc lacks them — do not call them
+`lib/` holds fallback implementations (`strlcpy`, `strlcat`, `strtonum`, `arc4random`) pulled in
+via `AC_REPLACE_FUNCS` only when libc lacks them — do not call them
 conditionally, just use them.
 
 ## Conventions

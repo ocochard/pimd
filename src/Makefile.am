@@ -14,7 +14,7 @@ sbin_PROGRAMS     = pimd pimctl
 pimd_SOURCES      = main.c
 pimd_LDADD        = libpimd.a
 
-pimctl_SOURCES    = pimctl.c queue.h text.c text.h
+pimctl_SOURCES    = pimctl.c queue.h tempfile.c text.c text.h
 pimctl_LDADD      = $(LIBOBJS)
 
 # Everything but main.c, in a convenience library rather than in
@@ -29,8 +29,8 @@ libpimd_a_SOURCES = autorp.c autorp.h autorp_parse.c				\
 		    igmp.c igmp_parse.c igmp_proto.c igmpv2.h igmpv3.h		\
 		    inet.c ipc.c kern.c mrt.c mrt.h pathnames.h		\
 		    pim.c pim_assert.c pim_encode.c pim_jp.c pim_parse.c	\
-		    pim_proto.c pimd.h privsep.c privsep.h queue.h		\
-		    route.c rp.c text.c text.h timer.c trace.c trace.h		\
+		    pidfile.c pim_proto.c pimd.h privsep.c privsep.h queue.h	\
+		    route.c rp.c tempfile.c text.c text.h timer.c trace.c trace.h	\
 		    vif.c vif.h
 
 # The RPF lookups, one file or the other: netlink.c always on Linux, and

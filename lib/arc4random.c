@@ -17,8 +17,6 @@
 
 #include "config.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,41 +44,14 @@
 static uint8_t pool[POOLSZ];
 static size_t  avail;		/* unread bytes, at the front of pool[] */
 
+/* getentropy() is in every C library this file is built against: glibc
+ * since 2.25, musl since 1.1.20.  It is the getrandom() system call, which
+ * needs no file, and so works in the chroot() of the unprivileged half,
+ * where /dev/urandom is not. */
 static int refill(void)
 {
-	size_t cnt = 0;
-	ssize_t num;
-	int fd;
-
-#ifdef HAVE_GETENTROPY
-	if (!getentropy(pool, sizeof(pool))) {
-		avail = sizeof(pool);
-		return 0;
-	}
-#endif
-
-	fd = open("/dev/urandom", O_RDONLY);
-	if (fd == -1)
+	if (getentropy(pool, sizeof(pool)))
 		return -1;
-
-	while (cnt < sizeof(pool)) {
-		num = read(fd, &pool[cnt], sizeof(pool) - cnt);
-		if (num > 0) {
-			cnt += (size_t)num;
-			continue;
-		}
-
-		/* A short read is a retry, anything else is a dead pool.
-		 * Note that num == 0 lands here too: /dev/urandom never
-		 * reports EOF, so treat it as failure rather than looping
-		 * on it forever. */
-		if (num == -1 && (errno == EINTR || errno == EAGAIN))
-			continue;
-
-		close(fd);
-		return -1;
-	}
-	close(fd);
 
 	avail = sizeof(pool);
 	return 0;
@@ -93,7 +64,7 @@ uint32_t arc4random(void)
 	if (avail < sizeof(val) && refill()) {
 		static int seeded = 0;
 
-		/* Neither getentropy() nor /dev/urandom answered, which on
+		/* getentropy() did not answer, which on
 		 * any system that reaches this code means something worse
 		 * has gone wrong than a guessable hello timer.  Stay up on
 		 * a weak value rather than take the router down with it. */

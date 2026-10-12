@@ -48,12 +48,6 @@ AC_CHECK_HEADERS([sys/procctl.h])
 # The RPF backend, see --enable-netlink below
 AC_CHECK_HEADERS([linux/netlink.h netlink/netlink_route.h])
 
-# Check if some func is not in libc
-AC_CHECK_LIB([util], [pidfile])
-
-# Check for required functions in libc
-AC_CHECK_FUNCS([getentropy])
-
 # RFC 7761 sec. 4.6.3 reads the metric an Assert carries off the unicast
 # routing table.  FreeBSD keeps a per-nexthop metric in struct rt_metrics
 # and returns it with every routing socket reply; where the field is
@@ -65,7 +59,7 @@ AC_CHECK_MEMBERS([struct rt_metrics.rmx_metric], [], [], [[
 ]])
 
 # Check for usually missing API's, which we can replace
-AC_REPLACE_FUNCS([arc4random pidfile strlcpy strlcat strtonum tempfile])
+AC_REPLACE_FUNCS([arc4random strlcpy strlcat strtonum])
 AC_CONFIG_LIBOBJ_DIR([lib])
 
 #   The unicast RPF lookups PIM depends on.  netlink.c is the only way to

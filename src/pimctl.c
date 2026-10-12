@@ -62,9 +62,7 @@ extern size_t strlcat(char *, const char *, size_t);
 extern size_t strlcpy(char *, const char *, size_t);
 #endif
 
-#ifndef HAVE_TEMPFILE
 extern FILE *tempfile(void);
-#endif
 
 struct cmd {
 	char *argv[MAXARGS];

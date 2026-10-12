@@ -787,13 +787,9 @@ extern size_t	strlcat			(char *, const char *, size_t);
 extern long long strtonum		(const char *, long long, long long, const char **);
 #endif
 
-#ifndef HAVE_PIDFILE
+/* pidfile.c and tempfile.c, pimd's own rather than replacements */
 extern int	pidfile			(const char *);
-#endif
-
-#ifndef HAVE_TEMPFILE
 extern FILE 	*tempfile		(void);
-#endif
 
 #endif /* PIMD_DEFS_H_ */
 
