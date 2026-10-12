@@ -26,6 +26,11 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An RP that stopped a source's Registers because nobody downstream
+  wanted it, the source having been pruned off the shared tree, did not
+  join toward that source once a receiver appeared: the receiver waited
+  for the source's DR to register again, 30 to 90 seconds later.  RFC 7761
+  sec. 4.4.2.  Step 13e of `crafted` in `test/lab.sh`.
 - `pimctl` could answer a command with nothing at all and exit 0.  pimd
   queued one pimctl connection, and pimctl opens up to three for one
   command, so on a loaded system the second was refused while the daemon

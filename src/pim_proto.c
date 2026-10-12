@@ -1562,6 +1562,21 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 			logit(LOG_DEBUG, 0, "No output intefaces found for group %s source %s",
 			      inet_fmt(inner_grp, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)));
 
+		    /* Sec. 4.4.2 starts KeepaliveTimer(S,G) with this
+		     * Register-Stop, where SwitchToSptDesired(S,G) holds, so
+		     * that a receiver who turns up later makes
+		     * JoinDesired(S,G) true and this router joins toward the
+		     * source, rather than the receiver waiting out the DR's
+		     * Register_Suppression_Time.  An entry a Prune(S,G,rpt)
+		     * made is on the shared tree, with no upstream toward the
+		     * source to join, so the timer alone did nothing there:
+		     * switch_shortest_path() is CheckSwitchToSpt(S,G), which
+		     * moves it onto the source tree and starts the timer, the
+		     * Join waiting on JoinDesired(S,G).  See the no-(*,G)
+		     * case above for the entry that does not exist yet.
+		     */
+		    if (spt_switch_on_first_packet())
+			switch_shortest_path(inner_src, inner_grp);
 		    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
 
 		    return TRUE;

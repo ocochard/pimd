@@ -1892,6 +1892,12 @@ CRAFT_IIF_JOIN_GROUP=${CRAFT_IIF_JOIN_GROUP:-225.1.4.24}
 # interface before the stream reaches it natively
 CRAFT_STALE_CTL_GROUP=${CRAFT_STALE_CTL_GROUP:-225.1.4.26}
 CRAFT_STALE_GROUP=${CRAFT_STALE_GROUP:-225.1.4.27}
+# crafted step 13e: two groups ED1 streams to through r2, the RP, the first
+# joined from the start and the control, the second pruned off the shared
+# tree by its only receiver until r2 has answered the Registers with a
+# Register-Stop
+CRAFT_KAT_CTL_GROUP=${CRAFT_KAT_CTL_GROUP:-225.1.4.28}
+CRAFT_KAT_GROUP=${CRAFT_KAT_GROUP:-225.1.4.29}
 # crafted step 7z: a group r1 forwards on its LAN, and a source r1 has no
 # route to at all, beside the routable one of 7f as the control
 CRAFT_NOROUTE_GROUP=${CRAFT_NOROUTE_GROUP:-225.1.4.25}
@@ -9183,6 +9189,85 @@ craft_step_13d() {
 	return 0
 }
 
+craft_step_13e() {
+	# RFC 7761 sec. 4.4.2: an RP that answers a Register with a
+	# Register-Stop because inherited_olist(S,G) is empty, the switch
+	# policy wanting the shortest path tree, starts KeepaliveTimer(S,G)
+	# with it.  That timer is what makes JoinDesired(S,G) true the moment
+	# a receiver turns up, so that the RP joins toward the source itself
+	# rather than waiting for the DR's Register_Suppression_Time, a random
+	# 30 to 90 seconds, to run out.  pimd started it only where it held no
+	# (*,G) for the group at all.  The privsep scenario met the other
+	# case in CI: r1, the receiver's side, went away for a reload, r2
+	# stopped r3's Registers for a source r3 had pruned off the shared
+	# tree, and the stream did not come back within the step after r1
+	# did.  Here r2's only receiver, a neighbour on its link to r3, joins
+	# (*,G) and prunes ED1 off the shared tree in the same message, r2
+	# stops r1's Registers, and the receiver then takes the prune back.
+	# The first group is joined throughout, and is the control: r2 has
+	# to join toward ED1 for both.
+	print "13e. The RP joins toward a source it stopped the Registers of, once a receiver appears"
+
+	# r1 has to be the DR of ED1's LAN to register anything, see 13d
+	craft "$SRC_ADDR" hello -H 0
+	box_addr_add r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 105
+
+	if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_DOWN_ADDR" ||
+	   ! wait_for 30 no_neighbor r1 "$SRC_ADDR"; then
+		fail "the neighbours the step is built on never settled, it cannot be put"
+	else
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KAT_CTL_GROUP" \
+			-w -r "$RP_ADDR" -H 65535
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KAT_GROUP" \
+			-w -r "$RP_ADDR" -X "$SRC_ADDR" -H 65535
+		mark=$(log_lines r1)
+		box_daemon ed1 "$WORKDIR/msend-kat.pid" "$WORKDIR/msend-kat.log" \
+			"$MSEND" "$SRC_ADDR" "$CRAFT_KAT_CTL_GROUP" 2
+
+		# The RP takes the switch for a source with receivers at its
+		# SPT-threshold poll, every 100 seconds here (see 13f), not on
+		# the first Register
+		if wait_for 120 sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_CTL_GROUP"; then
+			ok "r2 joins toward ED1 for $CRAFT_KAT_CTL_GROUP, which it has a receiver for, the control"
+		else
+			fail "r2 never joined toward ED1 for $CRAFT_KAT_CTL_GROUP, which has a receiver, the step proves nothing"
+		fi
+
+		# Read off r1's log rather than its table: r1 registers for the
+		# override interval only, three seconds that a loaded run can
+		# spend on the control above
+		if ! wait_for 20 fz_logged_since r1 "$mark" \
+			"Received PIM_REGISTER_STOP from RP $RP_ADDR to $R1_LAN_ADDR for src = $SRC_ADDR and group = $CRAFT_KAT_GROUP" ||
+		   ! wait_for 20 register_oif_gone r1 "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
+			fail "r1 never registered ($SRC_ADDR,$CRAFT_KAT_GROUP) and was stopped, the step cannot be put"
+		elif sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
+			fail "r2 joined toward ED1 for $CRAFT_KAT_GROUP with no receiver for it, the step cannot be put"
+		else
+			ok "r2 stops r1's Registers for $CRAFT_KAT_GROUP, which has no receiver"
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KAT_GROUP" \
+				-w -r "$RP_ADDR" -H 65535
+			if wait_for 15 sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
+				ok "and joins toward ED1 for it once the receiver takes its prune back, its Keepalive Timer running"
+			else
+				fail "r2 has not joined toward ED1 for $CRAFT_KAT_GROUP 15s after it got a receiver, waiting out r1's Register_Suppression_Time"
+			fi
+		fi
+
+		${SUDO} pkill -F "$WORKDIR/msend-kat.pid" 2>/dev/null || true
+		for g in "$CRAFT_KAT_CTL_GROUP" "$CRAFT_KAT_GROUP"; do
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR"
+		done
+	fi
+
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
+	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
+	craft "$SRC_ADDR" hello -H 105
+
+	return 0
+}
+
 craft_step_14() {
 	# RFC 7761 sec. 4.7.1, R2 of doc/rfc7761-compliance.md: a group range
 	# learned after a group already has state takes that group over when
@@ -9920,7 +10005,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 13e 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

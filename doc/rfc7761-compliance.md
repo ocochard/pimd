@@ -529,8 +529,8 @@ rule are `assert_rc()` and `assert_wc_may_run()` in `src/pim_assert.c` now,
 (S,G) machine and message, with three mutants -- the old, wider exception
 among them.  *Test: `proof_order` only.  No lab here holds an (S,G) with
 SPTbit, which the message needs to be inferior to, while `crafted` sends it:
-`crafted` forwards data in steps 13c and 13d only, neither built to send that
-Assert.*
+`crafted` forwards data in steps 13c, 13d and 13e only, none built to send
+that Assert.*
 
 M28 was the last action of the (S,G) machine pimd did not take when the
 transition happened.  Actions A6, NoInfo to Loser, end "If (I is
@@ -925,6 +925,27 @@ third router on the link to r1; it loses an Assert for the second group on
 its RPF interface, and a Join to r1 then puts both streams there natively.
 r2 moving the first group's entry is the control; it has to move the
 second's too (it left it on the register vif before the fix).*
+
+M52, fixed: sec. 4.4.2 has an RP that answers a Register with a Register-Stop
+because inherited_olist(S,G) is empty, SwitchToSptDesired(S,G) holding, start
+KeepaliveTimer(S,G) with it, so that JoinDesired(S,G) turns true the moment a
+receiver appears and the RP joins toward the source itself.  pimd did that
+only for a group it held no (\*,G) for.  An (S,G) a downstream Prune(S,G,rpt)
+had made got the Register-Stop and nothing else, and being on the shared
+tree, with no upstream toward the source, could not have joined it anyway:
+a receiver who appeared afterwards waited out the DR's
+Register_Suppression_Time, 30 to 90 seconds.  The privsep scenario's stream
+not coming back after r1's reload, twice in forty-eight runs under load, left
+r2 and r3 in exactly that state; r2's log of it was not kept.
+`receive_pim_register()` calls `switch_shortest_path()` there now, which is
+CheckSwitchToSpt(S,G): it moves the entry onto the source tree and starts the
+timer, the Join waiting on JoinDesired(S,G).  The (\*,G) branch beside it,
+an RP with a (\*,G) and no receiver, still sends the Register-Stop alone; no
+test here reaches it with a receiver arriving afterwards.  *Test: `crafted`
+step 13e in `test/lab.sh`: r2's only receiver for a group joins (\*,G) and
+prunes ED1 off the shared tree, r2 stops r1's Registers, and the receiver
+takes the prune back; r2 has to join toward ED1 within 15 seconds (it did not
+before the fix), a group joined throughout being the control.*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
