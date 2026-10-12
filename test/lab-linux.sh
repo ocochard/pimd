@@ -27,6 +27,10 @@ LOOPBACK_IF=lo
 # pim_rcv() (net/ipv4/ipmr.c) decapsulates, so pimd copies data Registers
 REGISTER_UPCALL=whole
 
+# The name pimd gives the register vif, VIF 0, and logs it by: the kernel's
+# own device for it (init_reg_vif() in src/vif.c)
+REGISTER_VIF_NAME=pimreg
+
 # What the unprivileged half of pimd is kept in here, as "pimctl show
 # status" spells it: seccomp-bpf, an allowlist of the syscalls the event
 # loop makes.  See priv_sandbox_enter() in src/privsep.c.

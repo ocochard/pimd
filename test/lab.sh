@@ -9124,9 +9124,9 @@ craft_step_13d() {
 			"$MSEND" "$SRC_ADDR" "$CRAFT_STALE_CTL_GROUP" 2
 
 		if ! wait_for 30 fz_logged_since r2 "$mark" \
-			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_GROUP from register_vif0" ||
+			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_GROUP from $REGISTER_VIF_NAME" ||
 		   ! fz_logged_since r2 "$mark" \
-			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_CTL_GROUP from register_vif0"; then
+			"Added kernel MFC entry src $SRC_ADDR grp $CRAFT_STALE_CTL_GROUP from $REGISTER_VIF_NAME"; then
 			fail "r2 forwards neither group out of the register vif, the stream never reached it in Registers, the step cannot be put"
 		elif sg_forwards_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_STALE_GROUP"; then
 			fail "r1 already forwards ($SRC_ADDR,$CRAFT_STALE_GROUP) toward r2, the Assert cannot come first, the step cannot be put"

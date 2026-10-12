@@ -65,6 +65,10 @@ LOOPBACK_IF=lo0
 # Null-Register
 REGISTER_UPCALL=headers
 
+# The name pimd gives the register vif, VIF 0, and logs it by (init_reg_vif() in
+# src/vif.c); the kernel has no interface of that name here
+REGISTER_VIF_NAME=register_vif0
+
 # No sandbox for the unprivileged half here.  Capsicum is the one this
 # system has and pimd cannot use it: kern_sendit() (sys/kern/uipc_syscalls.c)
 # refuses every sendto() that carries a destination address, which is every
