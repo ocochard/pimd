@@ -9650,7 +9650,8 @@ craft_step_13f() {
 	# stream reaches r2 in Registers only.  Forwarding onto both links
 	# before anybody prunes is the control; the link to r1 has to leave
 	# the entry when its neighbour's Prune(S,G,rpt) completes, and stay out
-	# of it across a change of the (*,G).  A second group is pruned before
+	# of it across a change of the (*,G), that neighbour's leaving and
+	# rejoining the shared tree with the source still pruned.  A second group is pruned before
 	# its stream starts, so that r2's first entry for it is the (S,G)'s own
 	# and right, the control; r2's switch to the source tree deletes that
 	# one, at its SPT-threshold poll, up to 100 seconds later, and the
@@ -9694,13 +9695,20 @@ craft_step_13f() {
 				fail "r2 still forwards the decapsulated stream onto ${EPU}112b 10s after its neighbour pruned it off the shared tree"
 			fi
 
-			# A change of the (*,G): its other receiver leaves and
-			# comes back, past the override interval each way
-			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_GROUP" \
+			# A change of the (*,G): the pruning neighbour leaves the
+			# shared tree and comes back, past the override interval
+			# each way, its Join(*,G) carrying the Prune(S,G,rpt) again.
+			# Not the other receiver: with ${EP}123a gone, even for the
+			# two seconds before it rejoins, inherited_olist(S,G) is
+			# empty, sec. 4.4.2 has r2 answer the next Register with a
+			# Register-Stop, and the stream waits out r1's
+			# Register_Suppression_Time, the join toward ED1 going to a
+			# router that is not there -- right, and a flake on Linux.
+			craft_on r2 "$SUPP_ADDR" prune -u "$RP_ADDR" -g "$CRAFT_DECAP_GROUP" \
 				-w -r "$RP_ADDR"
 			sleep 5
-			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_DECAP_GROUP" \
-				-w -r "$RP_ADDR" -H 65535
+			craft_on r2 "$SUPP_ADDR" join -u "$RP_ADDR" -g "$CRAFT_DECAP_GROUP" \
+				-w -r "$RP_ADDR" -X "$SRC_ADDR" -H 65535
 			if wait_for 10 decap_forwards_on "$CRAFT_DECAP_GROUP" "${EP}123a" && decap_not_on "$CRAFT_DECAP_GROUP" "${EPU}112b"; then
 				ok "and keeps it out when a change of the (*,G) pushes the entry again"
 			else
