@@ -6497,6 +6497,26 @@ check_autorp() {
 		dprint "$(pimctl r1 show autorp)"
 	fi
 
+	# sec. 4: a holdtime of 0 means the RP is never timed out.  The
+	# mapping kept it that way, but the RP set entry behind it was handed
+	# the 0 as is and age_misc() deleted it on its next pass, so the RP
+	# came and went once per mapping interval.
+	print "7b. A holdtime of 0 is forever, in the RP set too"
+	autorp_send -r "$AUTORP_RP" -h 0 238.8.0.0/16
+	if wait_for 30 autorp_knows r1 "238.8.0.0"; then
+		ok "r1 took the mapping for 238.8.0.0/16 at holdtime 0"
+	else
+		fail "r1 never took the holdtime 0 mapping"
+		return 1
+	fi
+	sleep $((AUTORP_SHORT + 15))
+	if pimctl r1 show rp | grep "238.8.0.0/16" | grep "$AUTORP_RP" | grep -q Auto-RP; then
+		ok "and still has $AUTORP_RP for it in its RP set $((AUTORP_SHORT + 15))s later"
+	else
+		fail "the RP set lost the RP of a mapping that never times out"
+		dprint "$(pimctl r1 show rp)"
+	fi
+
 	# Nothing authenticates a mapping message, and one datagram can name
 	# 255 RPs with 255 prefixes each.  autorp-limit is the answer, and
 	# this is it working rather than the daemon growing.

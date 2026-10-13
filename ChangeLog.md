@@ -26,6 +26,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An Auto-RP mapping with a holdtime of 0, which the draft defines as
+  never timing out, put its RP in the RP set only until the next five
+  second pass deleted it, so the RP came and went once per mapping
+  interval.  A holdtime of 60000 seconds or more had the opposite fault,
+  an RP set entry that never aged after the mapping had.  Step 7b of
+  `autorp` in `test/lab.sh`.
 - An Auto-RP mapping that named the RP of an `rp-address` line for the
   same group range took that entry over: it was shown as `Auto-RP` in
   `pimctl show rp` and aged out on the mapping's holdtime once the agent

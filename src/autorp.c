@@ -315,11 +315,23 @@ int autorp_denied(uint32_t group)
  * configured range finds pimd.conf's entry, both mechanisms using priority
  * 1, and relabelling it would leave it to age out once the agent went
  * quiet.  A static entry stays static.
+ *
+ * The two holdtimes do not mean the same thing at the edges.  Auto-RP's 0
+ * is forever (sec. 4), where age_misc() times a 0 out on its next pass;
+ * and age_misc() never ages an entry at 60000 or above, where a mapping
+ * that long still runs out.  So 0 becomes the RP set's forever, and a
+ * holdtime the RP set would not age is shortened to one it does, which
+ * only an agent that stopped refreshing for over sixteen hours can tell.
  */
 static void autorp_apply(uint32_t rp_addr, uint16_t holdtime,
 			 uint32_t group_addr, uint32_t group_mask)
 {
     rp_grp_entry_t *entry;
+
+    if (holdtime == AUTORP_HOLDTIME_FOREVER)
+	holdtime = PIM_HELLO_HOLDTIME_FOREVER;
+    else if (holdtime >= 60000)
+	holdtime = 60000 - 1;
 
     entry = add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
 			     rp_addr, 1, holdtime,
