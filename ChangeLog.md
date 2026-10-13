@@ -26,6 +26,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An Auto-RP mapping that named the RP of an `rp-address` line for the
+  same group range took that entry over: it was shown as `Auto-RP` in
+  `pimctl show rp` and aged out on the mapping's holdtime once the agent
+  stopped sending, leaving the range with no RP until a reload.  A
+  configured RP now stays configured.  Step 6b of `autorp` in
+  `test/lab.sh`.
 - An RP forwarded a source's decapsulated Registers to every interface its
   (*,G) forwarded on, including those whose downstream had pruned that
   source off the shared tree, and in the case met in CI onto the link

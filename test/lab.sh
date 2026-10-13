@@ -6459,6 +6459,29 @@ check_autorp() {
 		dprint "$(pimctl r1 show mrt)"
 	fi
 
+	# Step 6 names another RP, which is a second row beside the static
+	# one.  A mapping naming the configured RP itself, for the same range,
+	# lands on the static row: add_rp_grp_entry() keys on RP, range and
+	# priority, and both mechanisms use priority 1.  autorp_apply() used
+	# to relabel that row Auto-RP and give it the mapping's holdtime, so
+	# the configured RP aged out once the agent went quiet.
+	print "6b. A mapping naming the configured RP does not make it mortal"
+	autorp_send -r "$AUTORP_RP2" -h "$AUTORP_SHORT" "$AUTORP_STATIC_RANGE"
+	sleep 5
+	if pimctl r1 show rp | grep "$AUTORP_RP2" | grep -q Static; then
+		ok "r1 still calls $AUTORP_RP2 for $AUTORP_STATIC_RANGE Static after the mapping"
+	else
+		fail "the mapping relabelled the configured RP"
+		dprint "$(pimctl r1 show rp)"
+	fi
+	sleep $((AUTORP_SHORT + 15))
+	if pimctl r1 show rp | grep "$AUTORP_RP2" | grep -q Static; then
+		ok "and holds it past the mapping's ${AUTORP_SHORT}s holdtime"
+	else
+		fail "r1 lost its configured RP when the mapping for it expired"
+		dprint "$(pimctl r1 show rp)"
+	fi
+
 	print "7. A mapping is believed for its holdtime and no longer"
 	autorp_send -r "$AUTORP_RP" -h "$AUTORP_SHORT" 238.7.0.0/16
 	if wait_for 30 autorp_knows r1 "238.7.0.0"; then

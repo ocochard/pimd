@@ -310,6 +310,11 @@ int autorp_denied(uint32_t group)
  * stored entry it did not create keeps its own holdtime is what stops a
  * Bootstrap from making pimd.conf's RP mortal.  An Auto-RP message
  * refreshing its own entry is a different thing, and this is it.
+ *
+ * The same rule holds here: a mapping naming the configured RP for the
+ * configured range finds pimd.conf's entry, both mechanisms using priority
+ * 1, and relabelling it would leave it to age out once the agent went
+ * quiet.  A static entry stays static.
  */
 static void autorp_apply(uint32_t rp_addr, uint16_t holdtime,
 			 uint32_t group_addr, uint32_t group_mask)
@@ -320,7 +325,7 @@ static void autorp_apply(uint32_t rp_addr, uint16_t holdtime,
 			     rp_addr, 1, holdtime,
 			     group_addr, group_mask,
 			     curr_bsr_hash_mask, curr_bsr_fragment_tag);
-    if (!entry)
+    if (!entry || entry->origin == RP_ORIGIN_STATIC)
 	return;
 
     entry->origin   = RP_ORIGIN_AUTORP;
