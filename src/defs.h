@@ -729,6 +729,17 @@ extern rp_grp_entry_t *add_rp_grp_entry (cand_rp_t  **used_cand_rp_list,
                                          uint32_t group_mask,
                                          uint32_t bsr_hash_mask,
                                          uint16_t fragment_tag);
+extern rp_grp_entry_t *add_rp_grp_entry_from (cand_rp_t  **used_cand_rp_list,
+                                         grp_mask_t **used_grp_mask_list,
+                                         uint32_t rp_addr,
+                                         uint8_t  rp_priority,
+                                         uint16_t rp_holdtime,
+                                         uint32_t group_addr,
+                                         uint32_t group_mask,
+                                         uint32_t bsr_hash_mask,
+                                         uint16_t fragment_tag,
+                                         uint8_t  origin);
+extern uint16_t	rp_grp_holdtime		(const rp_grp_entry_t *entry);
 extern void	delete_rp_grp_entry	(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_list,
                                          rp_grp_entry_t *rp_grp_entry_delete);
 extern void	delete_grp_mask		(cand_rp_t  **used_cand_rp_list, grp_mask_t **used_grp_mask_list,

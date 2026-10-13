@@ -837,7 +837,7 @@ static int show_rp(FILE *fp)
 		struct rp_grp_entry *rp_grp = grp->grp_rp_next;
 
 		while (rp_grp) {
-			uint16_t ht = rp_grp->holdtime;
+			uint16_t ht = rp_grp_holdtime(rp_grp);
 			const char *type;
 			char htstr[10];
 
@@ -846,19 +846,15 @@ static int show_rp(FILE *fp)
 			 * no holdtime, so "static" and "forever" were the
 			 * same answer.  With Auto-RP beside the BSR they are
 			 * not, and only the entry itself knows. */
-			switch (rp_grp->origin) {
-			case RP_ORIGIN_STATIC:
+			if (rp_grp->origin & RP_ORIGIN_STATIC)
 				type = "Static";
-				break;
-
-			case RP_ORIGIN_AUTORP:
+			else if ((rp_grp->origin & RP_ORIGIN_AUTORP) &&
+				 (rp_grp->origin & RP_ORIGIN_BSR))
+				type = "Dynamic+Auto-RP";
+			else if (rp_grp->origin & RP_ORIGIN_AUTORP)
 				type = "Auto-RP";
-				break;
-
-			default:
+			else
 				type = "Dynamic";
-				break;
-			}
 
 			if (ht == PIM_HELLO_HOLDTIME_FOREVER)
 				snprintf(htstr, sizeof(htstr), "Forever");
@@ -908,9 +904,9 @@ static int show_crp(FILE *fp)
 			IPC_STR("RP Address",	 -15, inet_fmt(entry->address, s1, sizeof(s1))),
 			IPC_NUM("Prio",		   4, rp_grp->priority),
 			IPC_STR("Holdtime",	   8, buf),
-			IPC_STR("Expires",	  -8, PIM_HELLO_HOLDTIME_FOREVER == rp_grp->holdtime
+			IPC_STR("Expires",	  -8, PIM_HELLO_HOLDTIME_FOREVER == rp_grp_holdtime(rp_grp)
 					       ? "Never"
-					       : timetostr(rp_grp->holdtime, NULL, 0)),
+					       : timetostr(rp_grp_holdtime(rp_grp), NULL, 0)),
 			IPC_END
 		};
 

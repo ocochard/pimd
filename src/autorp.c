@@ -305,43 +305,30 @@ int autorp_denied(uint32_t group)
 
 /*
  * One mapping into the RP set, which is where every consumer reads it
- * from.  The holdtime and the origin are written here rather than passed
- * into add_rp_grp_entry(): that function is the BSR's, and its rule that a
- * stored entry it did not create keeps its own holdtime is what stops a
- * Bootstrap from making pimd.conf's RP mortal.  An Auto-RP message
- * refreshing its own entry is a different thing, and this is it.
+ * from.  It joins the pool beside the BSR's and pimd.conf's (RFC 5059 sec.
+ * 3): where a Bootstrap names the same RP for the same range the entry is
+ * kept by both and ages out with the last, and pimd.conf's entry takes
+ * nothing from Auto-RP at all, so that a mapping naming the configured RP
+ * cannot leave it to age out once the agent went quiet.
  *
- * The same rule holds here: a mapping naming the configured RP for the
- * configured range finds pimd.conf's entry, both mechanisms using priority
- * 1, and relabelling it would leave it to age out once the agent went
- * quiet.  A static entry stays static.
- *
- * The two holdtimes do not mean the same thing at the edges.  Auto-RP's 0
- * is forever (sec. 4), where age_misc() times a 0 out on its next pass;
- * and age_misc() never ages an entry at 60000 or above, where a mapping
- * that long still runs out.  So 0 becomes the RP set's forever, and a
- * holdtime the RP set would not age is shortened to one it does, which
- * only an agent that stopped refreshing for over sixteen hours can tell.
+ * Auto-RP's holdtime of 0 is forever (sec. 4), where the RP set ages a 0
+ * out on its next pass, so it becomes the RP set's forever; and the RP
+ * set's forever is a holdtime Auto-RP can say, 65535 seconds, which is one
+ * second shorter here so that it still runs out.
  */
 static void autorp_apply(uint32_t rp_addr, uint16_t holdtime,
 			 uint32_t group_addr, uint32_t group_mask)
 {
-    rp_grp_entry_t *entry;
-
-    if (holdtime == AUTORP_HOLDTIME_FOREVER)
+    if (holdtime == PIM_HELLO_HOLDTIME_FOREVER)
+	holdtime = PIM_HELLO_HOLDTIME_FOREVER - 1;
+    else if (holdtime == AUTORP_HOLDTIME_FOREVER)
 	holdtime = PIM_HELLO_HOLDTIME_FOREVER;
-    else if (holdtime >= 60000)
-	holdtime = 60000 - 1;
 
-    entry = add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
-			     rp_addr, 1, holdtime,
-			     group_addr, group_mask,
-			     curr_bsr_hash_mask, curr_bsr_fragment_tag);
-    if (!entry || entry->origin == RP_ORIGIN_STATIC)
-	return;
-
-    entry->origin   = RP_ORIGIN_AUTORP;
-    entry->holdtime = holdtime;
+    add_rp_grp_entry_from(&cand_rp_list, &grp_mask_list,
+			  rp_addr, 1, holdtime,
+			  group_addr, group_mask,
+			  curr_bsr_hash_mask, curr_bsr_fragment_tag,
+			  RP_ORIGIN_AUTORP);
 }
 
 /*

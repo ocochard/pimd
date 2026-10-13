@@ -186,14 +186,17 @@ typedef struct grp_mask {
 } grp_mask_t;
 
 /*
- * Where a group-to-RP mapping came from.  A Bootstrap may only overwrite
- * and collect its own: pimd.conf's rp-address outlives every BSR, and an
- * Auto-RP mapping is another domain-wide mechanism's to withdraw, not this
- * one's.  See add_rp_grp_entry() and age_rp_grp_entries() in src/rp.c.
+ * Where a group-to-RP mapping came from, as a set: RFC 5059 sec. 3 has
+ * every source add its mappings to one pool, and a BSR and an Auto-RP agent
+ * naming the same RP for the same range are two mappings that pimd keeps
+ * as one entry.  Each source refreshes, ages and withdraws only its own
+ * bit, and the entry goes when no bit is left.  pimd.conf's rp-address is
+ * the exception: a static entry takes no other source's bit and outlives
+ * them all.  See add_rp_grp_entry_from() and age_misc() in src/rp.c.
  */
-#define RP_ORIGIN_BSR		0	/* The default, a Bootstrap said so */
-#define RP_ORIGIN_STATIC	1	/* pimd.conf, rp-address	    */
-#define RP_ORIGIN_AUTORP	2	/* An Auto-RP mapping message	    */
+#define RP_ORIGIN_BSR		0x01	/* A Bootstrap said so		    */
+#define RP_ORIGIN_STATIC	0x02	/* pimd.conf, rp-address	    */
+#define RP_ORIGIN_AUTORP	0x04	/* An Auto-RP mapping message	    */
 
 typedef struct rp_grp_entry {
     struct rp_grp_entry *rp_grp_next; /* Next entry for same RP		 */
@@ -201,14 +204,15 @@ typedef struct rp_grp_entry {
     struct rp_grp_entry *grp_rp_next; /* Next entry for same grp prefix	 */
     struct rp_grp_entry *grp_rp_prev; /* Prev entry for same grp prefix	 */
     struct grpentry	*grplink;     /* Link to all grps via this entry */
-    uint16_t		 holdtime;    /* The RP holdtime		 */
+    uint16_t		 holdtime;    /* The BSR's holdtime, or forever
+				       * for a static entry		 */
+    uint16_t		 autorp_holdtime; /* Auto-RP's, aged apart	 */
     uint16_t		 fragment_tag; /* The fragment tag from the
 					* received BSR message		 */
     uint8_t		 priority;    /* The RP priority		 */
-    uint8_t		 origin;      /* RP_ORIGIN_*: who told us.  Only
-				       * the BSR's own are the BSR's to
-				       * withdraw or to collect, RFC 7761
-				       * sec. 4.7			 */
+    uint8_t		 origin;      /* RP_ORIGIN_* bits: who told us.
+				       * Each source withdraws or collects
+				       * only its own, RFC 7761 sec. 4.7 */
     grp_mask_t		*group;	      /* Pointer to (group,mask) entry	 */
     cand_rp_t		*rp;	      /* Pointer to the RP		 */
 } rp_grp_entry_t;

@@ -484,6 +484,58 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 				 uint32_t bsr_hash_mask,
 				 uint16_t fragment_tag)
 {
+    return add_rp_grp_entry_from(used_cand_rp_list, used_grp_mask_list,
+				 rp_addr, rp_priority, rp_holdtime,
+				 group_addr, group_mask, bsr_hash_mask,
+				 fragment_tag, RP_ORIGIN_BSR);
+}
+
+/*
+ * The holdtime a source gives its own mapping.  A BSR's and Auto-RP's are
+ * kept apart because each ages out on its own, and a static entry's is the
+ * forever that makes it one.
+ */
+static void rp_grp_hold(rp_grp_entry_t *entry, uint8_t origin, uint16_t holdtime)
+{
+    if (origin == RP_ORIGIN_AUTORP)
+	entry->autorp_holdtime = holdtime;
+    else
+	entry->holdtime = holdtime;
+}
+
+/*
+ * What is left of a mapping's life, whichever source keeps it longest.
+ */
+uint16_t rp_grp_holdtime(const rp_grp_entry_t *entry)
+{
+    uint16_t holdtime = 0;
+
+    if (entry->origin & RP_ORIGIN_STATIC)
+	return PIM_HELLO_HOLDTIME_FOREVER;
+    if (entry->origin & RP_ORIGIN_BSR)
+	holdtime = entry->holdtime;
+    if ((entry->origin & RP_ORIGIN_AUTORP) && entry->autorp_holdtime > holdtime)
+	holdtime = entry->autorp_holdtime;
+
+    return holdtime;
+}
+
+/*
+ * One mapping from one source, `origin', into the pool of RFC 5059 sec. 3.
+ * Where another source already holds the same RP for the same range at the
+ * same priority, the mapping joins that entry rather than taking it over.
+ */
+rp_grp_entry_t *add_rp_grp_entry_from(cand_rp_t  **used_cand_rp_list,
+				      grp_mask_t **used_grp_mask_list,
+				      uint32_t rp_addr,
+				      uint8_t  rp_priority,
+				      uint16_t rp_holdtime,
+				      uint32_t group_addr,
+				      uint32_t group_mask,
+				      uint32_t bsr_hash_mask,
+				      uint16_t fragment_tag,
+				      uint8_t  origin)
+{
     cand_rp_t *cand_rp_ptr;
     grp_mask_t *mask_ptr;
     rp_grp_entry_t *entry_next;
@@ -505,7 +557,11 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	return NULL;
 
     rp_addr_h = ntohl(rp_addr);
-    mask_ptr->fragment_tag = fragment_tag;   /* For garbage collection */
+    /* For the Bootstrap's garbage collection, and only the Bootstrap's to
+     * stamp: another source's refresh must not make a prefix the BSR has
+     * stopped advertising look current. */
+    if (origin == RP_ORIGIN_BSR)
+	mask_ptr->fragment_tag = fragment_tag;
 
     entry_prev = NULL;
     entry_next = mask_ptr->grp_rp_next;
@@ -549,15 +605,23 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
 	 * of it, the new priority is linked in as a new entry and the old
 	 * one is collected with its stale tag.
 	 */
-	/* A static entry keeps the holdtime that makes it one.  Letting the
-	 * advertisement overwrite it would leave the configured RP mortal:
-	 * age_rp_grp_entries() below spares an entry only while its holdtime
-	 * is 0xffff, so the next BSR to name the same RP for the same prefix
-	 * would arrange for pimd.conf's RP to age out when that BSR died.
+	/* A static entry keeps the holdtime that makes it one, and takes no
+	 * other source's bit: letting a BSR or an Auto-RP agent that names
+	 * the same RP for the same prefix in would leave pimd.conf's RP to
+	 * age out when that source went quiet.  The other way round, the
+	 * configured mapping replaces whatever was learned.  Between the two
+	 * learned sources, each adds its bit and its own holdtime, so the
+	 * entry lives while either of them still says so.
 	 */
-	if (entry_next->origin == RP_ORIGIN_BSR)
+	if (origin == RP_ORIGIN_STATIC) {
+	    entry_next->origin = RP_ORIGIN_STATIC;
 	    entry_next->holdtime = rp_holdtime;
-	entry_next->fragment_tag = fragment_tag;
+	} else if (!(entry_next->origin & RP_ORIGIN_STATIC)) {
+	    entry_next->origin |= origin;
+	    rp_grp_hold(entry_next, origin, rp_holdtime);
+	}
+	if (origin == RP_ORIGIN_BSR)
+	    entry_next->fragment_tag = fragment_tag;
 
 	return entry_next;
     }
@@ -614,7 +678,8 @@ rp_grp_entry_t *add_rp_grp_entry(cand_rp_t  **used_cand_rp_list,
     entry_new->rp_grp_prev = NULL;
     cand_rp_ptr->rp_grp_next = entry_new;
 
-    entry_new->holdtime = rp_holdtime;
+    entry_new->origin = origin;
+    rp_grp_hold(entry_new, origin, rp_holdtime);
     entry_new->fragment_tag = fragment_tag;
     entry_new->priority = rp_priority;
     entry_new->group = mask_ptr;
@@ -826,7 +891,7 @@ void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
 	entry_next = entry->grp_rp_next;
 
-	if (entry->origin != RP_ORIGIN_BSR)
+	if (entry->origin & ~RP_ORIGIN_BSR)
 	    keep = TRUE;
     }
 
@@ -838,7 +903,11 @@ void delete_grp_mask(cand_rp_t **used_cand_rp_list, grp_mask_t **used_grp_mask_l
     for (entry = ptr->grp_rp_next; entry; entry = entry_next) {
 	entry_next = entry->grp_rp_next;
 
-	if (entry->origin == RP_ORIGIN_BSR)
+	if (!(entry->origin & RP_ORIGIN_BSR))
+	    continue;
+
+	entry->origin &= ~RP_ORIGIN_BSR;
+	if (!entry->origin)
 	    delete_rp_grp_entry(used_cand_rp_list, used_grp_mask_list, entry);
     }
 }
@@ -1194,7 +1263,7 @@ rp_grp_entry_t *rp_grp_match(uint32_t group)
      * mapping outlives every domain-wide mechanism, which is also what
      * sec. 8 needs for the two Auto-RP groups themselves.
      */
-    if (best_entry && best_entry->origin != RP_ORIGIN_STATIC && autorp_denied(group))
+    if (best_entry && !(best_entry->origin & RP_ORIGIN_STATIC) && autorp_denied(group))
 	return NULL;
 
     return best_entry;
@@ -1370,14 +1439,25 @@ void age_misc(void)
 	for (rp = grp->grp_rp_next; rp; rp = rp_next) {
 	    rp_next = rp->grp_rp_next;
 
-	    if (rp->holdtime < 60000) {
-		IF_TIMEOUT(rp->holdtime) {
-		    if (rp->group!=NULL) {
-			logit(LOG_INFO, 0, "Delete RP group entry for group %s (holdtime timeout)",
-			      inet_fmt(rp->group->group_addr, s2, sizeof(s2)));
-		    }
-		    delete_rp_grp_entry(&cand_rp_list, &grp_mask_list, rp);
+	    /* Each source's mapping runs out on its own holdtime, and the
+	     * entry goes with the last of them.  A static entry has no bit
+	     * that ages. */
+	    if ((rp->origin & RP_ORIGIN_BSR) && rp->holdtime < 60000) {
+		IF_TIMEOUT(rp->holdtime)
+		    rp->origin &= ~RP_ORIGIN_BSR;
+	    }
+	    if ((rp->origin & RP_ORIGIN_AUTORP) &&
+		rp->autorp_holdtime != PIM_HELLO_HOLDTIME_FOREVER) {
+		IF_TIMEOUT(rp->autorp_holdtime)
+		    rp->origin &= ~RP_ORIGIN_AUTORP;
+	    }
+
+	    if (!rp->origin) {
+		if (rp->group!=NULL) {
+		    logit(LOG_INFO, 0, "Delete RP group entry for group %s (holdtime timeout)",
+			  inet_fmt(rp->group->group_addr, s2, sizeof(s2)));
 		}
+		delete_rp_grp_entry(&cand_rp_list, &grp_mask_list, rp);
 	    }
 	}
     }

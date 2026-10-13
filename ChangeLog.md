@@ -26,6 +26,14 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- A Bootstrap and an Auto-RP mapping naming the same RP for the same
+  group range shared one RP set entry, and the mapping took it over: the
+  Bootstrap stopped renewing it, and it aged out on the mapping's holdtime
+  while the BSR still named the RP.  Each source now holds its own share
+  of the entry, which goes when the last of them stops, as RFC 5059
+  sec. 3 has every source add to one pool; `pimctl show rp` reads
+  `Dynamic+Auto-RP` for such a row.  Step 6c of `autorp` in
+  `test/lab.sh`.
 - A router whose own address became an RP address while it ran -- a
   failover address taken over, an interface renumbered or brought up with
   it -- went on treating that RP as remote: its (*,G) entries came in on

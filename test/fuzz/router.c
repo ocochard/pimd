@@ -511,16 +511,12 @@ void fuzz_router_build(void)
 	/* add_static_rp(), src/main.c: marked, or the first Bootstrap for
 	 * 224.0.0.0/4 collects it through the fragment tag
 	 */
-	for (rph = g_rp_hold; rph; rph = rph->next) {
-		rp_grp_entry_t *entry;
-
-		entry = add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
-					 rph->address, 1, (uint16_t)0xffffff,
-					 rph->group, rph->mask,
-					 curr_bsr_hash_mask, curr_bsr_fragment_tag);
-		if (entry)
-			entry->origin = RP_ORIGIN_STATIC;
-	}
+	for (rph = g_rp_hold; rph; rph = rph->next)
+		add_rp_grp_entry_from(&cand_rp_list, &grp_mask_list,
+				      rph->address, 1, PIM_HELLO_HOLDTIME_FOREVER,
+				      rph->group, rph->mask,
+				      curr_bsr_hash_mask, curr_bsr_fragment_tag,
+				      RP_ORIGIN_STATIC);
 
 	/* The prologue: a neighbor on every link, and a shared tree and a
 	 * shortest path tree for the one group, joined from the second link.

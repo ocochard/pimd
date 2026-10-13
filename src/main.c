@@ -749,24 +749,19 @@ static void add_static_rp(void)
     struct rp_hold *rph = g_rp_hold;
 
     while (rph) {
-	rp_grp_entry_t *entry;
-
-	entry = add_rp_grp_entry(&cand_rp_list, &grp_mask_list,
-				 rph->address, 1, PIM_HELLO_HOLDTIME_FOREVER,
-				 rph->group, rph->mask,
-				 curr_bsr_hash_mask, curr_bsr_fragment_tag);
-
-	/* Marked so that a Bootstrap for the same group prefix cannot take
-	 * it away.  Both lists are the same list, and the fragment tag this
-	 * went in with is whatever was current at startup, so without the
-	 * flag the first Bootstrap stamps the prefix with its own tag and
-	 * the garbage collector at the end of receive_pim_bootstrap()
-	 * deletes every RP on it whose tag differs -- which is this one.
-	 * Only restart() ever reads g_rp_hold again, so what a router lost
-	 * that way it did not get back until somebody sent it a SIGHUP.
+	/* Marked static so that a Bootstrap for the same group prefix cannot
+	 * take it away.  Both lists are the same list, so without the mark
+	 * the first Bootstrap stamps the prefix with its own tag and the
+	 * garbage collector at the end of receive_pim_bootstrap() deletes
+	 * every RP on it whose tag differs -- which is this one.  Only
+	 * restart() ever reads g_rp_hold again, so what a router lost that
+	 * way it did not get back until somebody sent it a SIGHUP.
 	 */
-	if (entry)
-	    entry->origin = RP_ORIGIN_STATIC;
+	add_rp_grp_entry_from(&cand_rp_list, &grp_mask_list,
+			      rph->address, 1, PIM_HELLO_HOLDTIME_FOREVER,
+			      rph->group, rph->mask,
+			      curr_bsr_hash_mask, curr_bsr_fragment_tag,
+			      RP_ORIGIN_STATIC);
 
 	rph = rph->next;
     }

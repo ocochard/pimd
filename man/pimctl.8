@@ -305,7 +305,22 @@ netstat -g          # BSD
 netstat -M          # SVR4, e.g. Illumos
 .Ed
 .It Nm Ar show rp
-Show PIM Rendezvous-Point (RP) set
+Show PIM Rendezvous-Point (RP) set.
+The
+.Cm Type
+column says where a mapping came from:
+.Cm Static
+for
+.Cm rp-address
+in
+.Xr pimd.conf 5 ,
+.Cm Dynamic
+for the bootstrap mechanism,
+.Cm Auto-RP
+for Auto-RP, and
+.Cm Dynamic+Auto-RP
+where both name the same RP for the same range, in which case the row
+stays as long as either of them does.
 .It Nm Ar show crp
 Show PIM Candidate Rendezvous-Point (CRP) set.
 .It Nm Ar show autorp
@@ -313,7 +328,9 @@ Show the group-to-RP mappings learned over Auto-RP, which agent each came
 from and how long it is still believed.  The positive ones are in
 .Ar show rp
 as well, marked
-.Cm Auto-RP ;
+.Cm Auto-RP
+or
+.Cm Dynamic+Auto-RP ;
 a denied prefix is only here, having no RP to be a row there.
 .It Nm Ar show pim Op detail
 Show the interfaces, neighbors, routing table, Candidate-RP state and RP

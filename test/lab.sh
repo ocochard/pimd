@@ -1712,6 +1712,8 @@ AUTORP_DENY_GROUP=${AUTORP_DENY_GROUP:-239.9.9.9}	# inside the deny
 AUTORP_WIDE=${AUTORP_WIDE:-239.0.0.0/8}		# covers both, positively
 AUTORP_STATIC_RANGE=${AUTORP_STATIC_RANGE:-239.5.0.0/16}
 AUTORP_STATIC_GROUP=${AUTORP_STATIC_GROUP:-239.5.5.5}
+# A range a Bootstrap and a mapping both give $AUTORP_RP, step 6c
+AUTORP_SHARED_RANGE=${AUTORP_SHARED_RANGE:-238.9.0.0/16}
 # Short enough to watch age out, long enough to survive a slow box
 AUTORP_SHORT=${AUTORP_SHORT:-15}
 AUTORP_AGE_WAIT=${AUTORP_AGE_WAIT:-60}
@@ -6495,6 +6497,44 @@ check_autorp() {
 		dprint "$(pimctl r1 show rp)"
 	fi
 
+	# RFC 5059 sec. 3 has a Bootstrap add its mappings to the pool the
+	# other sources fill, so a BSR and an Auto-RP agent naming the same RP
+	# for the same range are two mappings, each the withdrawal of its own
+	# source only.  pimd keeps them as one RP set entry, which Auto-RP used
+	# to relabel as its own: the Bootstrap then stopped renewing it, and it
+	# aged out on the mapping's holdtime with the BSR still naming it.  ED1
+	# plays the BSR too, which needs a Hello first for its Bootstrap to
+	# pass R1's RPF check.
+	print "6c. A BSR and Auto-RP naming the same RP both keep it"
+	box_run ed1 "$PIMSEND" -i "$AUTORP_AGENT" hello -H 300 >/dev/null 2>&1
+	box_run ed1 "$PIMSEND" -i "$AUTORP_AGENT" bootstrap -u "$AUTORP_AGENT" \
+		-g "${AUTORP_SHARED_RANGE%/*}" -m "${AUTORP_SHARED_RANGE#*/}" \
+		-r "$AUTORP_RP" -p 1 -H 150 >/dev/null 2>&1
+	if wait_for 15 rp_type_is r1 "$AUTORP_SHARED_RANGE" "$AUTORP_RP" Dynamic; then
+		ok "r1 took $AUTORP_RP for $AUTORP_SHARED_RANGE from the Bootstrap"
+	else
+		fail "r1 never installed the Bootstrap's $AUTORP_RP for $AUTORP_SHARED_RANGE," \
+		     "the rest of this step cannot be read"
+		dprint "$(pimctl r1 show rp)"
+		return 1
+	fi
+	autorp_send -r "$AUTORP_RP" -h "$AUTORP_SHORT" "$AUTORP_SHARED_RANGE"
+	if wait_for 15 rp_type_is r1 "$AUTORP_SHARED_RANGE" "$AUTORP_RP" Dynamic+Auto-RP; then
+		ok "and the mapping for the same RP joined it, Dynamic+Auto-RP"
+	else
+		fail "the mapping took the entry over, its Type reads" \
+		     "'$(rp_type r1 "$AUTORP_SHARED_RANGE" "$AUTORP_RP")'"
+		dprint "$(pimctl r1 show rp)"
+	fi
+	sleep $((AUTORP_SHORT + 15))
+	if rp_type_is r1 "$AUTORP_SHARED_RANGE" "$AUTORP_RP" Dynamic; then
+		ok "and the BSR's mapping outlives the Auto-RP one's ${AUTORP_SHORT}s holdtime"
+	else
+		fail "r1 lost the BSR's $AUTORP_RP for $AUTORP_SHARED_RANGE with the Auto-RP mapping," \
+		     "Type '$(rp_type r1 "$AUTORP_SHARED_RANGE" "$AUTORP_RP")'"
+		dprint "$(pimctl r1 show rp)"
+	fi
+
 	print "7. A mapping is believed for its holdtime and no longer"
 	autorp_send -r "$AUTORP_RP" -h "$AUTORP_SHORT" 238.7.0.0/16
 	if wait_for 30 autorp_knows r1 "238.7.0.0"; then
@@ -7008,6 +7048,15 @@ has_autorp_rp() {
 }
 
 no_autorp_rp() { ! has_autorp_rp "$1" "$2"; }
+
+# The Type column of router $1's RP set row for range $2 and RP $3, which
+# says which sources hold that mapping, and that as a condition ($4).
+rp_type() {
+	pimctl "$1" show rp 2>/dev/null | \
+		awk -v g="$2" -v r="$3" '$1 == g && $2 == r { print $NF; exit }'
+}
+
+rp_type_is() { [ "$(rp_type "$1" "$2" "$3")" = "$4" ]; }
 
 # ... and what `show autorp' says, which is the only view of a deny: the RP
 # set holds no row at all for a range that has no RP.
