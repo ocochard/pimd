@@ -7,6 +7,14 @@ issue of this repository is written out in full.
 --------------
 
 ### Changes
+- `autorp accept-from ADDRESS[/LEN]` in `pimd.conf` names the routers whose
+  Auto-RP messages are believed: the mapping agents, and on an agent the
+  candidate RPs.  Nothing in Auto-RP authenticates a sender, so anyone able
+  to reach 224.0.1.39 or 224.0.1.40 could name RPs to every router
+  listening; a datagram from a sender off the list is now dropped, and not
+  relayed by `autorp listener` either.  An empty list accepts everyone, as
+  before.  `pimctl show status` lists the prefixes.  Step 3b of `autorp` in
+  `test/lab.sh`.
 - The `--enable-kernel-encap`, `--enable-kernel-mfc` and
   `--enable-memory-save` options of `configure` are gone.  The first two
   needed kernel patches that no released kernel carries, and the first no

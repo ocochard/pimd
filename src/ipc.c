@@ -1265,6 +1265,7 @@ static int show_status(FILE *fp)
 	dump_ssm_ranges(fp);
 	dump_reg_acl(fp);
 	dump_crp_acl(fp);
+	dump_autorp_acl(fp);
 	dump_anycast_rp(fp);
 	ipc_kv_str(fp, "SPT Threshold", spt_threshold.mode == SPT_INF ? "Disabled" : "Enabled");
 	if (spt_threshold.mode != SPT_INF) {

@@ -410,8 +410,9 @@ holds afterwards is deliberately not asserted, a mutant Bootstrap that stays val
 takeover and RFC 7761 sec. 4.7 working rather than a bug,
 `static-rp` the only one where a router has an RP of its own configuration beside the BSR's,
 `autorp` the only one where an RP is learned from neither -- ED1 plays the mapping agent with
-`test/autorp`, so that the parser meets messages pimd did not write, and R1 has to learn a mapping, refuse an
-announcement, leave the groups under a negative prefix without an RP, keep its configured RP
+`test/autorp`, so that the parser meets messages pimd did not write, and R1 has to learn a mapping, refuse one
+from a sender `autorp accept-from` does not name -- which R1 runs the whole scenario with, so every other step is
+the accepted half (step 3b) --, refuse an announcement, leave the groups under a negative prefix without an RP, keep its configured RP
 against a mapping for the same range, whether the mapping names another RP or that one (step 6b), share an RP
 with a Bootstrap that names it too, ED1 playing the BSR as well (step 6c), hold an RP whose mapping's holdtime
 is 0, which means forever (step 7b), age a mapping out, stop at `autorp-limit` and forget the lot

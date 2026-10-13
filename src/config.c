@@ -1137,7 +1137,14 @@ int cand_rp_group_accepted(uint32_t src, uint32_t group, uint32_t masklen)
     return FALSE;
 }
 
-static int parse_crp_accept(char *s, struct crp_acl **list, const char *what, int group)
+/*
+ * The prefix of an accept list line, "ADDR[/LEN] [masklen LEN]": a host
+ * address and a mask of 32 where nothing is said, or with @group a group
+ * and the default group prefix length.  Shared by crp-accept-from,
+ * crp-accept-group and autorp accept-from.
+ */
+static int parse_acl_prefix(char *s, const char *what, int group, uint32_t *addr_out,
+			    uint32_t *masklen_out)
 {
     uint32_t masklen = sizeof(uint32_t) * 8;
     const char *errstr;
@@ -1177,6 +1184,19 @@ static int parse_crp_accept(char *s, struct crp_acl **list, const char *what, in
 
 	masklen = (uint32_t)num;
     }
+
+    *addr_out    = addr;
+    *masklen_out = masklen;
+
+    return TRUE;
+}
+
+static int parse_crp_accept(char *s, struct crp_acl **list, const char *what, int group)
+{
+    uint32_t addr, masklen;
+
+    if (!parse_acl_prefix(s, what, group, &addr, &masklen))
+	return FALSE;
 
     return add_crp_acl(list, what, addr, masklen);
 }
@@ -3252,6 +3272,16 @@ static int parse_autorp(char *s)
 	      autorp_enabled ? "enabled" : "disabled");
 
 	return TRUE;
+    }
+
+    /* Who Auto-RP messages are taken from, autorp_accepted_from() */
+    if (EQUAL(w, "accept-from")) {
+	uint32_t addr, masklen;
+
+	if (!parse_acl_prefix(s, "autorp accept-from", FALSE, &addr, &masklen))
+	    return FALSE;
+
+	return autorp_accept_add(addr, masklen);
     }
 
     /*

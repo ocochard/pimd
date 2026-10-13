@@ -185,6 +185,58 @@ static int      autorp_relay_said    = FALSE;
 static int      autorp_listener_said = FALSE;
 static uint16_t autorp_relay_id      = 0;
 
+/*
+ * `autorp accept-from' in pimd.conf: who this router takes Auto-RP messages
+ * from at all, mapping agents and candidate RPs alike.  Nothing in the
+ * protocol authenticates a sender -- anybody who can reach the two groups
+ * can name RPs to every router listening -- and autorp-limit bounds how
+ * much such a sender can make this router hold, not whether it is
+ * believed.  An empty list accepts everything, as before the keyword
+ * existed.  A datagram from a sender off the list is neither believed nor
+ * relayed by the listener: passing on what this router refuses would
+ * carry a stranger's flood into the domain for it.
+ */
+struct autorp_acl {
+    struct autorp_acl *next;
+
+    uint32_t  addr;		/* Network byte order, masked */
+    uint32_t  mask;		/* Network byte order */
+    uint32_t  masklen;
+};
+
+/* Walked once per datagram */
+#define AUTORP_ACL_MAX_ENTRIES 255
+
+static struct autorp_acl *autorp_acl_list = NULL;
+static int      autorp_acl_said     = FALSE;
+
+/*
+ * May this router act on an Auto-RP datagram from @from?  The refusal is
+ * logged once per configuration: a refused sender usually keeps sending, and
+ * a reload re-arms the warning with the list.
+ */
+static int autorp_accepted_from(uint32_t from)
+{
+    struct autorp_acl *acl;
+
+    if (!autorp_acl_list)
+	return TRUE;
+
+    for (acl = autorp_acl_list; acl; acl = acl->next) {
+	if ((from & acl->mask) == acl->addr)
+	    return TRUE;
+    }
+
+    if (!autorp_acl_said) {
+	logit(LOG_WARNING, 0, "Auto-RP: refusing messages from %s"
+	      " (autorp accept-from in %s says who may send them)",
+	      inet_fmt(from, s1, sizeof(s1)), config_file);
+	autorp_acl_said = TRUE;
+    }
+
+    return FALSE;
+}
+
 /* The largest datagram this will relay, which is comfortably more than
  * either message can be without being fragmented on any link pimd runs
  * on -- and the bound on the buffers below. */
@@ -444,6 +496,9 @@ void accept_autorp(uint32_t from, char *buf, size_t len)
     int rc;
 
     if (!autorp_enabled)
+	return;
+
+    if (!autorp_accepted_from(from))
 	return;
 
     if (autorp_parse_hdr(&cur, &hdr, buf, len)) {
@@ -1129,7 +1184,8 @@ static void autorp_read(int sd)
 		      inet_fmt(from.sin_addr.s_addr, s1, sizeof(s1)));
 		autorp_listener_said = TRUE;
 	    }
-	} else if (autorp_relay_group((uint8_t *)autorp_buf, (size_t)len, &group)) {
+	} else if (autorp_accepted_from(from.sin_addr.s_addr) &&
+		   autorp_relay_group((uint8_t *)autorp_buf, (size_t)len, &group)) {
 	    autorp_relay(from.sin_addr.s_addr, group, ttl, iif,
 			 (uint8_t *)autorp_buf, (size_t)len);
 	}
@@ -1296,15 +1352,99 @@ void autorp_listener_set(int on)
     logit(LOG_INFO, 0, "Auto-RP listener is %s", on ? "enabled" : "disabled");
 }
 
+/* `autorp accept-from' in pimd.conf, one prefix per line */
+int autorp_accept_add(uint32_t addr, uint32_t masklen)
+{
+    struct autorp_acl *acl;
+    size_t num = 0;
+
+    /* VAL_TO_MASK() shifts by 32 - masklen */
+    if (masklen < 1 || masklen > sizeof(uint32_t) * 8) {
+	logit(LOG_WARNING, 0, "Invalid autorp accept-from masklen %u, ignoring", masklen);
+	return FALSE;
+    }
+
+    for (acl = autorp_acl_list; acl; acl = acl->next)
+	num++;
+
+    if (num >= AUTORP_ACL_MAX_ENTRIES) {
+	logit(LOG_WARNING, 0, "Too many autorp accept-from prefixes, at most %d",
+	      AUTORP_ACL_MAX_ENTRIES);
+	return FALSE;
+    }
+
+    acl = calloc(1, sizeof(*acl));
+    if (!acl) {
+	logit(LOG_WARNING, 0, "Out of memory when adding autorp accept-from %s/%u",
+	      inet_fmt(addr, s1, sizeof(s1)), masklen);
+	return FALSE;
+    }
+
+    VAL_TO_MASK(acl->mask, masklen);
+    acl->addr    = addr & acl->mask;
+    acl->masklen = masklen;
+
+    acl->next = autorp_acl_list;
+    autorp_acl_list = acl;
+
+    logit(LOG_INFO, 0, "Auto-RP: accepting messages from %s/%u",
+	  inet_fmt(acl->addr, s1, sizeof(s1)), masklen);
+
+    return TRUE;
+}
+
+/* Who Auto-RP messages are taken from, for "pimctl show status".  Silent
+ * where nothing is configured, an empty list accepting everything. */
+void dump_autorp_acl(FILE *fp)
+{
+    struct autorp_acl *acl;
+
+    if (!autorp_acl_list)
+	return;
+
+    if (ipc_json()) {
+	ipc_table(fp, "Auto-RP accept list", "autorp_accept_from");
+	for (acl = autorp_acl_list; acl; acl = acl->next) {
+	    char buf[32];
+
+	    snprintf(buf, sizeof(buf), "%s/%u",
+		     inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+
+	    struct ipc_field row[] = {
+		IPC_STR("Prefix", -18, buf),
+		IPC_END
+	    };
+
+	    ipc_row(fp, row);
+	}
+	ipc_table_end(fp);
+
+	return;
+    }
+
+    fprintf(fp, "Auto-RP accept list  :");
+    for (acl = autorp_acl_list; acl; acl = acl->next)
+	fprintf(fp, " %s/%u", inet_fmt(acl->addr, s1, sizeof(s1)), acl->masklen);
+    fprintf(fp, "\n");
+}
+
 void autorp_config_reset(void)
 {
     struct autorp_prefix *pfx, *next;
+    struct autorp_acl *acl, *acl_next;
 
     for (pfx = autorp_prefixes; pfx; pfx = next) {
 	next = pfx->next;
 	free(pfx);
     }
     autorp_prefixes = NULL;
+
+    for (acl = autorp_acl_list; acl; acl = acl_next) {
+	acl_next = acl->next;
+	free(acl);
+    }
+    autorp_acl_list = NULL;
+    autorp_acl_said = FALSE;
 
     autorp_announce_flag	= FALSE;
     autorp_announce_addr	= INADDR_ANY_N;

@@ -1713,6 +1713,10 @@ AUTORP_WIDE=${AUTORP_WIDE:-239.0.0.0/8}		# covers both, positively
 AUTORP_STATIC_RANGE=${AUTORP_STATIC_RANGE:-239.5.0.0/16}
 AUTORP_STATIC_GROUP=${AUTORP_STATIC_GROUP:-239.5.5.5}
 # A range a Bootstrap and a mapping both give $AUTORP_RP, step 6c
+# A second address on ED1, which autorp accept-from does not name, and the
+# range it maps, step 3b
+AUTORP_STRANGER=${AUTORP_STRANGER:-10.0.1.11}
+AUTORP_STRANGER_RANGE=${AUTORP_STRANGER_RANGE:-238.11.0.0/16}
 AUTORP_SHARED_RANGE=${AUTORP_SHARED_RANGE:-238.9.0.0/16}
 # Short enough to watch age out, long enough to survive a slow box
 AUTORP_SHORT=${AUTORP_SHORT:-15}
@@ -3254,6 +3258,7 @@ write_configs() {
 		# LAN ED1 plays the mapping agent on
 		hello-interval 10
 		autorp-limit $AUTORP_LIMIT
+		autorp accept-from $AUTORP_AGENT
 		rp-address $AUTORP_RP2 $AUTORP_STATIC_RANGE
 		EOF
 
@@ -6424,6 +6429,42 @@ check_autorp() {
 		fail "show autorp does not say where the mapping came from"
 		dprint "$(pimctl r1 show autorp)"
 	fi
+
+	# Nothing authenticates an Auto-RP message: whoever can reach
+	# 224.0.1.40 names RPs to every router listening.  R1 runs the whole
+	# scenario with autorp accept-from naming ED1's agent address, so every
+	# other step is the accepted half; this one is a second address of ED1
+	# sending the same kind of mapping, and the agent's own for the same
+	# range afterwards as its control.
+	print "3b. A mapping from a sender off autorp accept-from is refused"
+	box_addr_add ed1 "$AUTORP_IF" "$AUTORP_STRANGER/24" 2>/dev/null || true
+	mark=$(log_lines r1)
+	box_run ed1 "$AUTORP" -i "$AUTORP_STRANGER" -r "$AUTORP_RP" -h 180 \
+		"$AUTORP_STRANGER_RANGE" >/dev/null 2>&1
+	sleep 5
+	if autorp_knows r1 "${AUTORP_STRANGER_RANGE%/*}" || has_autorp_rp r1 "$AUTORP_STRANGER_RANGE"; then
+		fail "r1 took a mapping for $AUTORP_STRANGER_RANGE from $AUTORP_STRANGER, which accept-from does not name"
+		dprint "$(pimctl r1 show autorp)"
+	else
+		ok "r1 refused the mapping from $AUTORP_STRANGER"
+	fi
+	if fz_logged_since r1 "$mark" "Auto-RP: refusing messages from $AUTORP_STRANGER"; then
+		ok "and said so in its log"
+	else
+		fail "r1 refused $AUTORP_STRANGER without saying why"
+	fi
+	if pimctl r1 show status | grep -qE "^Auto-RP accept list +: .*$AUTORP_AGENT/32"; then
+		ok "show status lists $AUTORP_AGENT/32 as the one sender taken"
+	else
+		fail "show status does not show the accept list: $(pimctl r1 show status | grep 'Auto-RP accept')"
+	fi
+	autorp_send -r "$AUTORP_RP" -h 180 "$AUTORP_STRANGER_RANGE"
+	if wait_for 30 autorp_knows r1 "${AUTORP_STRANGER_RANGE%/*}"; then
+		ok "the same mapping from $AUTORP_AGENT, which it names, is taken, the control"
+	else
+		fail "r1 refused $AUTORP_AGENT's mapping for $AUTORP_STRANGER_RANGE too, the step proves nothing"
+	fi
+	box_addr_del ed1 "$AUTORP_IF" "$AUTORP_STRANGER" 2>/dev/null
 
 	# sec. 3.2: an announcement is addressed to the mapping agents and is
 	# one RP's claim, not the resolved answer.  A router that believed it

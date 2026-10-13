@@ -485,6 +485,8 @@ extern void	autorp_listener_set	(int on);
 extern void	autorp_announce_set	(uint32_t addr, int interval, int holdtime, int ttl);
 extern void	autorp_agent_set	(uint32_t addr, int interval, int holdtime, int ttl);
 extern int	autorp_prefix_add	(uint32_t group_addr, uint8_t masklen, int negative);
+extern int	autorp_accept_add	(uint32_t addr, uint32_t masklen);
+extern void	dump_autorp_acl		(FILE *fp);
 
 /* ipc.c */
 /* Connections the pimctl socket queues before pimd accepts them.  pimctl

@@ -243,6 +243,32 @@ the dense-mode flooding the specification assumes (sec. 3.3), which it does
 not have.  So a domain where the agent is adjacent to the candidate RPs and
 to the routers works as it is; a wider one needs the two well-known groups
 carried some other way.
+.It Cm autorp Cm accept-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len
+The routers this router takes Auto-RP messages from: the mapping agents
+it believes, and where it is a mapping agent itself, the candidate RPs it
+resolves.  Nothing in Auto-RP authenticates a sender, so without this
+setting anyone able to reach 224.0.1.39 or 224.0.1.40 names RPs to every
+router listening;
+.Cm autorp-limit
+bounds how much such a sender can make this router hold, and this decides
+whether it is believed at all.  An empty list accepts every sender, which
+is what earlier versions always did.
+.Pp
+Multiple lines may be given; a sender matching any of them is accepted.
+A prefix length may be left out, in which case it is 32, a single router.
+A datagram from any other sender is dropped before it is parsed, and with
+.Cm autorp listener
+it is not passed on either.  The refusal is logged once, naming the sender
+and this keyword, and
+.Ic pimctl show status
+lists the prefixes.
+.Pp
+.Sy Note:
+this matches the IP source of the datagram, which for a mapping message
+is the agent and for an announcement the candidate RP's sending address,
+not the RP address inside it.  As with
+.Cm crp-accept-from ,
+an attacker able to spoof that source is not stopped by it.
 .It Cm autorp-limit Ar <0-1000000>
 How many group-to-RP mappings Auto-RP may make this router hold.  Nothing
 authenticates a mapping message and one datagram can name 255 RPs with 255
