@@ -1292,7 +1292,12 @@ void calc_oifs(mrtentry_t *mrt, uint8_t *oifs_ptr)
      * (((copied_outgoing + my_join) - my_prune) + my_leaves)
      *              - my_asserted_oifs - incoming_interface,
      * i.e. `leaves` have higher priority than `prunes`, but lower priority
-     * than `asserted`. The incoming interface is always deleted from the oifs
+     * than `asserted`.  The incoming interface is not taken out here, a
+     * Join(S,G) arriving on it being kept in joins(S,G), sec. 4.5.2:
+     * k_chg_mfc() (src/kern.c) clears it from the list it is handed on the
+     * way to the kernel, which for most callers is `oifs` itself, so an
+     * entry with no MFC programmed can still hold it.  A reader of `oifs`
+     * that means the forwarding olist subtracts it.
      *
      * The two halves are the two RFC 7761 sec. 4.1.5 builds, and they do not
      * lose the same interfaces to an assert:
@@ -2544,13 +2549,15 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	src_action       = src_action_rp;
 	dont_calc_action = TRUE;
 
-	if (src_action_rp == PIM_ACTION_JOIN) {
-	    if (grp_action == PIM_ACTION_PRUNE)
-		jp_timer_fire(mrt_srcs);
-	} else if (src_action_rp == PIM_ACTION_PRUNE) {
-	    if (grp_action == PIM_ACTION_JOIN)
-		jp_timer_fire(mrt_srcs);
-	}
+	/* A Prune(S,G,rpt) rides with the Join(*,G), sec. 4.5.6, so the
+	 * entry's timer is brought forward to this pass.  The other way
+	 * round -- a Join(S,G) desired where the (*,G) wants a Prune -- it
+	 * is not: sec. 4.5.5 runs the (S,G) Join Timer apart from the
+	 * (*,G)'s, and firing it there sent a Join(S,G) a neighbour's
+	 * was suppressing on every pass of a (*,G) that had lost its
+	 * downstream. */
+	if (src_action_rp == PIM_ACTION_PRUNE && grp_action == PIM_ACTION_JOIN)
+	    jp_timer_fire(mrt_srcs);
 
 	/* The second clause of sec. 4.5.6 for an entry on the source tree
 	 * that has not seen its first packet: SPTbit clear and

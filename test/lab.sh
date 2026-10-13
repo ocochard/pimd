@@ -1885,6 +1885,15 @@ CRAFT_W_ED1_ADDR=${CRAFT_W_ED1_ADDR:-10.0.18.10}
 # crafted step 7x: a group whose source r1 prunes off the shared tree while
 # a neighbour's Join(*,G) suppresses r1's own
 CRAFT_BARE_GROUP=${CRAFT_BARE_GROUP:-225.1.4.22}
+# crafted step 7za: a group r1 has a (*,G) for that wants no Join and an
+# (S,G) joined toward the same upstream, whose Join a neighbour suppresses
+CRAFT_SG_SUPP_GROUP=${CRAFT_SG_SUPP_GROUP:-225.1.4.32}
+# crafted step 7zb: a group ED1 joins and prunes (*,G) as r1's only
+# neighbour on its LAN
+CRAFT_WC_NOINFO_GROUP=${CRAFT_WC_NOINFO_GROUP:-225.1.4.33}
+# crafted step 7zd: a group whose (*,G) and (S,G) Asserts on r1's link to r2
+# are won by two different routers
+CRAFT_TWO_WINNERS_GROUP=${CRAFT_TWO_WINNERS_GROUP:-225.1.4.38}
 # crafted step 7y: a group joined (S,G) on r1's LAN, the control, and one
 # joined (S,G) on r1's RPF interface toward the source
 CRAFT_IIF_CTRL_GROUP=${CRAFT_IIF_CTRL_GROUP:-225.1.4.23}
@@ -1900,6 +1909,10 @@ CRAFT_STALE_GROUP=${CRAFT_STALE_GROUP:-225.1.4.27}
 # Register-Stop
 CRAFT_KAT_CTL_GROUP=${CRAFT_KAT_CTL_GROUP:-225.1.4.28}
 CRAFT_KAT_GROUP=${CRAFT_KAT_GROUP:-225.1.4.29}
+# crafted step 13g: the same pair for an RP holding a (*,G) with no receiver
+# left, consecutive since one msend feeds both
+CRAFT_KATWC_CTL_GROUP=${CRAFT_KATWC_CTL_GROUP:-225.1.4.36}
+CRAFT_KATWC_GROUP=${CRAFT_KATWC_GROUP:-225.1.4.37}
 # crafted step 13f: a group ED1 streams to through r2, the RP, with a
 # receiver on each of r2's links, the one toward ED1 having pruned it off the
 # shared tree
@@ -8145,6 +8158,169 @@ craft_step_7y() {
 	return 0
 }
 
+craft_step_7za() {
+	print "7za. A suppressed Join(S,G) stays suppressed when the (*,G) Join Timer fires"
+	# Sec. 4.5.5 raises the (S,G) Join Timer to t_joinsuppress on "See
+	# Join(S,G) to RPF'(S,G)", and nothing about the (*,G) touches it.
+	# jp_timer_expire_sg() (src/route.c) fired the (S,G) timer at once
+	# whenever the (*,G)'s timer pass wanted the opposite of it -- a
+	# Prune(*,G) desired against a Join(S,G) -- and a (*,G) that has lost
+	# its downstream wants that on every pass, so the suppressed Join(S,G)
+	# went out every 60s regardless.  The second half of map finding U3,
+	# whose first half is 7x.  ED1 joins (*,G) and (S,G) for 7f's source,
+	# r1's Join(S,G) to r2 the control, then prunes the (*,G); step 5's
+	# neighbour then keeps r1's Join(S,G) suppressed for 140s, in which r2's
+	# log has to show no Join(S,G) from r1.
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$SUPP_ADDR" hello -H 210
+	craft "$SRC_ADDR" hello -H 210
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+		return 0
+	fi
+	m_jp=$(log_lines r2)
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SG_SUPP_GROUP" -w -r "$RP_ADDR" -H 65535
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_SG_SUPP_GROUP" \
+		-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535
+	if ! wait_for 10 r1_sent_r2 "$m_jp" JOIN "$CRAFT_SG_SUPP_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+		fail "r1 sent r2 no Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_SUPP_GROUP), the step proves nothing"
+	else
+		ok "r1 joins ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_SUPP_GROUP) at r2, the control"
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_SUPP_GROUP" -w -r "$RP_ADDR"
+		# r1's Prune(*,G) after its Prune-Pending Timer, r2's PruneEcho
+		# after its own, and the override Join(S,G) sec. 4.5.5 has r1 send
+		# on seeing a Prune(*,G) to RPF'(S,G) inside t_override: all
+		# correct, and all before the window below opens
+		sleep 12
+		if ! has_wc_route r1 "$CRAFT_SG_SUPP_GROUP"; then
+			fail "r1 holds no (*,$CRAFT_SG_SUPP_GROUP) after the Prune(*,G), the step proves nothing"
+			dprint "$(pimctl r1 show mrt)"
+		else
+			m_jp=$(log_lines r2)
+			i=0
+			while [ "$i" -lt 7 ]; do
+				craft_on r2 "$SUPP_ADDR" join -u "$CRAFT_R2_LINK12_ADDR" \
+					-g "$CRAFT_SG_SUPP_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+				sleep 20
+				i=$((i + 1))
+			done
+			if r1_sent_r2 "$m_jp" JOIN "$CRAFT_SG_SUPP_GROUP" "$CRAFT_RPT_FOLLOW_SRC" ""; then
+				fail "r1 sent r2 a Join($CRAFT_RPT_FOLLOW_SRC,$CRAFT_SG_SUPP_GROUP) in 140s of a neighbour's suppressing it, sec. 4.5.5"
+			else
+				ok "and sends none in 140s of a neighbour's Join(S,G) suppressing its own"
+			fi
+		fi
+	fi
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_SG_SUPP_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+	craft_on r2 "$SUPP_ADDR" prune -u "$CRAFT_R2_LINK12_ADDR" -g "$CRAFT_SG_SUPP_GROUP" \
+		-s "$CRAFT_RPT_FOLLOW_SRC"
+
+	return 0
+}
+
+# The "Pruned oifs" map of ($2,$3) on router $1, off "show mrt detail"
+route_pruned() {
+	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" '
+		$1 == s && $2 == g { want = 1; next }
+		want && $1 == "Pruned" { print $3; want = 0 }
+	'
+}
+
+craft_step_7zb() {
+	print "7zb. A Prune(*,G) from the only neighbour leaves the interface NoInfo, not Pruned"
+	# Sec. 4.5.1 has a (*,G) Prune take the interface to NoInfo, at once
+	# where nobody is left to override it: the (*,G) downstream machine has
+	# no Pruned state.  receive_pim_join_prune() (src/pim_proto.c) set the
+	# interface in the (*,G)'s pruned_oifs on that path, which the
+	# Prune-Pending path beside it never did, and the bit stayed until the
+	# next Join(*,G).  Map finding D7c: forwarding follows joined_oifs, so
+	# only "show mrt detail" tells.  ED1 has to be r1's only neighbour on
+	# the LAN for the immediate path; the Join(*,G) setting the interface
+	# in joined_oifs is the control.
+	craft "$SRC_ADDR" hello -H 105
+	n=$(pimctl r1 show neighbor 2>/dev/null | awk -v i="${EP}101b" '$1 == i' | wc -l)
+	if [ "$n" -ne 1 ]; then
+		fail "r1 has $n neighbours on ${EP}101b, not ED1 alone, the step cannot be put"
+		return 0
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_WC_NOINFO_GROUP" -w -r "$RP_ADDR" -H 210
+	if ! wait_for 10 route_oif_has r1 "${EP}101b" ANY "$CRAFT_WC_NOINFO_GROUP"; then
+		fail "r1's (*,$CRAFT_WC_NOINFO_GROUP) does not forward onto ${EP}101b after ED1's Join, the step proves nothing"
+	else
+		ok "r1 forwards (*,$CRAFT_WC_NOINFO_GROUP) onto ${EP}101b for ED1's Join(*,G), the control"
+		craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_WC_NOINFO_GROUP" -w -r "$RP_ADDR"
+		sleep 2
+		pruned=$(route_pruned r1 ANY "$CRAFT_WC_NOINFO_GROUP")
+		if [ -z "$pruned" ]; then
+			fail "r1 holds no (*,$CRAFT_WC_NOINFO_GROUP) after the Prune, nothing to read"
+		elif map_isset r1 "${EP}101b" "$pruned"; then
+			fail "r1's (*,$CRAFT_WC_NOINFO_GROUP) holds ${EP}101b Pruned ($pruned), sec. 4.5.1 has it NoInfo"
+		else
+			ok "and holds ${EP}101b neither joined nor pruned once ED1 prunes it"
+		fi
+	fi
+
+	return 0
+}
+
+craft_step_7zd() {
+	print "7zd. An Assert that sets SPTbit prunes off the shared tree at once, with RPF'(*,G) elsewhere"
+	# 7u's rule where the (S,G) Assert does not move RPF'(S,G): the
+	# (*,G) machine has lost to one router on r1's RPF interface, so
+	# RPF'(*,G) is that winner, and the (S,G) machine then loses to
+	# another, which the routing table already names.  Actions A6 set
+	# SPTbit, and PruneDesired(S,G,rpt) -- SPTbit with RPF'(*,G) !=
+	# RPF'(S,G) -- goes true, which sec. 4.5.7, Figure 7, answers with a
+	# Prune(S,G,rpt) there and then.  ASSERT_ACT_FOLLOW in assert_machine()
+	# (src/pim_proto.c) returned before any Join Timer fire when the
+	# winner was already the upstream, so the Prune waited for the next
+	# Join(*,G), up to t_periodic.  Map finding U13, of which 7u was the
+	# tripwire.  Step 5's neighbour wins the (*,G) Assert, r1's (*,G)
+	# following it the control; r2 then wins the (S,G) one.
+	box_addr_add r2 "${EPU}112b" "$SUPP_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$SUPP_ADDR" hello -H 105
+	craft "$SRC_ADDR" hello -H 105
+	if ! wait_for 30 has_neighbor r1 "$SUPP_ADDR" ||
+	   ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 has no neighbour at $SUPP_ADDR or $SRC_ADDR, the step cannot be put"
+		return 0
+	fi
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_TWO_WINNERS_GROUP" -w -r "$RP_ADDR" -H 65535
+	craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$CRAFT_TWO_WINNERS_GROUP" \
+		-s "$CRAFT_RPT_FOLLOW_SRC" -H 65535
+	if ! wait_for 30 sg_joined_on r1 "${EP}101b" "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_TWO_WINNERS_GROUP"; then
+		fail "r1 built no ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_TWO_WINNERS_GROUP) joined on ${EP}101b, the step cannot be put"
+	else
+		craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_TWO_WINNERS_GROUP" \
+			-s "$CRAFT_RPT_FOLLOW_SRC" -R -P 0 -C 0
+		if ! wait_for 10 route_upstream_is r1 ANY "$CRAFT_TWO_WINNERS_GROUP" "$SUPP_ADDR"; then
+			fail "r1's (*,$CRAFT_TWO_WINNERS_GROUP) does not follow the Assert winner $SUPP_ADDR, the step proves nothing"
+		elif ! route_upstream_is r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_TWO_WINNERS_GROUP" "$CRAFT_R2_LINK12_ADDR"; then
+			fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_TWO_WINNERS_GROUP) is not upstream of r2 before its Assert, the step cannot be put"
+		else
+			ok "r1's (*,$CRAFT_TWO_WINNERS_GROUP) follows the (*,G) Assert winner, its (S,G) still r2's, the control"
+			sleep 2
+			m_jp=$(log_lines r2)
+			craft_on r2 "$CRAFT_R2_LINK12_ADDR" assert -g "$CRAFT_TWO_WINNERS_GROUP" \
+				-s "$CRAFT_RPT_FOLLOW_SRC" -P 1 -C 1
+			if ! wait_for 5 route_has_flag r1 "$CRAFT_RPT_FOLLOW_SRC" "$CRAFT_TWO_WINNERS_GROUP" SPT; then
+				fail "r1's ($CRAFT_RPT_FOLLOW_SRC,$CRAFT_TWO_WINNERS_GROUP) has no SPTbit after losing to r2, the step proves nothing"
+			elif wait_for 5 r1_sent_r2 "$m_jp" PRUNE "$CRAFT_TWO_WINNERS_GROUP" "$CRAFT_RPT_FOLLOW_SRC" "(S,G,rpt)"; then
+				ok "and r1 prunes the source off the shared tree within 5s of the (S,G) Assert setting SPTbit"
+			else
+				fail "r1 sent no Prune($CRAFT_RPT_FOLLOW_SRC,$CRAFT_TWO_WINNERS_GROUP,rpt) within 5s of the Assert that set SPTbit, RPF'(S,G) unmoved"
+			fi
+		fi
+	fi
+	craft_on r2 "$SUPP_ADDR" assert -g "$CRAFT_TWO_WINNERS_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC" -R \
+		-P 2147483647 -C 4294967295
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_TWO_WINNERS_GROUP" -s "$CRAFT_RPT_FOLLOW_SRC"
+	craft "$SRC_ADDR" prune -u "$R1_LAN_ADDR" -g "$CRAFT_TWO_WINNERS_GROUP" -w -r "$RP_ADDR"
+
+	return 0
+}
+
 craft_step_7z() {
 	print "7z. An (S,G) Assert lost for a source with no route is kept all the same"
 	# Sec. 4.6.1 keeps (S,G) Assert state per (S,G,I) and reads no route
@@ -9380,6 +9556,78 @@ craft_step_13e() {
 	return 0
 }
 
+craft_step_13g() {
+	# 13e's rule from the other branch of receive_pim_register()
+	# (src/pim_proto.c): the RP holding a (*,G) whose receivers have all
+	# gone.  It answered the Register with a Register-Stop and kept nothing,
+	# where sec. 4.4.2 starts KeepaliveTimer(S,G) with the Register-Stop
+	# -- the no-(*,G) branch beside it does, since M52 -- so a receiver
+	# joining afterwards waited for r1's Register_Suppression_Time, 30 to
+	# 90 seconds, to see the source.  Here the receiver joins (*,G) for two
+	# groups and prunes the second before ED1 starts; the first, joined
+	# throughout, is the control.
+	print "13g. The RP joins toward a source it stopped for an empty (*,G), once a receiver appears"
+
+	craft "$SRC_ADDR" hello -H 0
+	box_addr_add r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR/24" 2>/dev/null || true
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 105
+
+	if ! wait_for 30 has_neighbor r2 "$CRAFT_R2_DOWN_ADDR" ||
+	   ! wait_for 30 no_neighbor r1 "$SRC_ADDR"; then
+		fail "the neighbours the step is built on never settled, it cannot be put"
+	else
+		for g in "$CRAFT_KATWC_CTL_GROUP" "$CRAFT_KATWC_GROUP"; do
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR" -H 65535
+		done
+		craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KATWC_GROUP" \
+			-w -r "$RP_ADDR"
+		sleep 5
+		if ! has_wc_route r2 "$CRAFT_KATWC_GROUP"; then
+			fail "r2 holds no (*,$CRAFT_KATWC_GROUP) once its receiver pruned it, the step cannot be put"
+		else
+			mark=$(log_lines r1)
+			box_daemon ed1 "$WORKDIR/msend-katwc.pid" "$WORKDIR/msend-katwc.log" \
+				"$MSEND" "$SRC_ADDR" "$CRAFT_KATWC_CTL_GROUP" 2
+
+			if wait_for 120 sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KATWC_CTL_GROUP"; then
+				ok "r2 joins toward ED1 for $CRAFT_KATWC_CTL_GROUP, which it has a receiver for, the control"
+			else
+				fail "r2 never joined toward ED1 for $CRAFT_KATWC_CTL_GROUP, which has a receiver, the step proves nothing"
+			fi
+
+			if ! wait_for 20 fz_logged_since r1 "$mark" \
+				"Received PIM_REGISTER_STOP from RP $RP_ADDR to $R1_LAN_ADDR for src = $SRC_ADDR and group = $CRAFT_KATWC_GROUP" ||
+			   ! wait_for 20 register_oif_gone r1 "$SRC_ADDR" "$CRAFT_KATWC_GROUP"; then
+				fail "r1 never registered ($SRC_ADDR,$CRAFT_KATWC_GROUP) and was stopped, the step cannot be put"
+			elif sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KATWC_GROUP"; then
+				fail "r2 joined toward ED1 for $CRAFT_KATWC_GROUP with no receiver for it, the step cannot be put"
+			else
+				ok "r2 stops r1's Registers for $CRAFT_KATWC_GROUP, whose (*,G) has no receiver"
+				craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KATWC_GROUP" \
+					-w -r "$RP_ADDR" -H 65535
+				if wait_for 15 sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KATWC_GROUP"; then
+					ok "and joins toward ED1 for it once a receiver joins again, its Keepalive Timer running"
+				else
+					fail "r2 has not joined toward ED1 for $CRAFT_KATWC_GROUP 15s after it got a receiver, waiting out r1's Register_Suppression_Time"
+				fi
+			fi
+
+			${SUDO} pkill -F "$WORKDIR/msend-katwc.pid" 2>/dev/null || true
+		fi
+		for g in "$CRAFT_KATWC_CTL_GROUP" "$CRAFT_KATWC_GROUP"; do
+			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
+				-w -r "$RP_ADDR"
+		done
+	fi
+
+	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0
+	box_addr_del r2 "${EP}123a" "$CRAFT_R2_DOWN_ADDR" 2>/dev/null
+	craft "$SRC_ADDR" hello -H 105
+
+	return 0
+}
+
 # Does r2's kernel entry for ($SRC_ADDR,$1) forward onto its interface $2,
 # and does it not, for wait_for()
 decap_forwards_on() {
@@ -10242,7 +10490,7 @@ craft_step_31() {
 # up what they use, but some lean on state an earlier step left -- a
 # neighbour, the BSR, an entry -- and fail or pass for that reason.  The full
 # run is still the one that counts.
-CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 13e 13f 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
+CRAFT_STEP_ORDER="1 2 2b 2c 3 4 4b 4c 5 6 7 7p 8 7b 7f 7r 7t 7u 7v 7w 7x 7y 7z 7za 7zb 7zd 7i 7l 7m 7n 7o 7c 7d 7g 9 9b 10 11 12 13 13b 13c 13d 13e 13f 13g 14 14b 14c 15 15b 15c 16 17 18 19 20 21 22 23 23b 24 25 26 27 28 29 30 31"
 
 has_dynamic_rp() { ! no_dynamic_rp "$1"; }
 

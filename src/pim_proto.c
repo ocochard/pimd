@@ -1612,20 +1612,27 @@ int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *
 		logit(LOG_DEBUG, 0, "No output intefaces found for group %s source %s (*,G)",
 		      inet_fmt(inner_grp, s1, sizeof(s1)), inet_fmt(inner_src, s2, sizeof(s2)));
 
-	    /* RFC 4610 sec. 3: every member of an Anycast-RP set that is sent
-	     * a Register creates (S,G) state, receivers or not, so that one
-	     * joining later has a source tree to join at once.  Without a set
-	     * this stays as it was: the Register-Stop and nothing more.
+	    /* An empty inherited_olist(S,G), as in the no-(*,G) case above
+	     * and for the same reason: sec. 4.4.2 sends the Register-Stop
+	     * where SwitchToSptDesired(S,G) holds and starts
+	     * KeepaliveTimer(S,G) with it, so that a receiver joining later
+	     * makes JoinDesired(S,G) true and the RP joins toward the source
+	     * itself.  This branch sent the Register-Stop alone, and that
+	     * receiver waited out the DR's Register_Suppression_Time.  It is
+	     * also RFC 4610 sec. 3's rule, every member of an Anycast-RP set
+	     * creating (S,G) state for a Register, which was all this branch
+	     * kept state for before.  Refused by register-sg-limit or not, the
+	     * sender is answered.
 	     */
-	    if (anycast_rp_configured(rpaddr))
-		register_sg_state(inner_src, inner_grp);
+	    register_sg_state(inner_src, inner_grp);
 
 	    /* Name the source rather than sending the RFC 2362 "stop
 	     * encapsulating every source of this group": RFC 7761 sec. 4.4.1
 	     * says an RP should not send a Register-Stop(*,G), and sec. 4.4.2
 	     * has only Register-Stop(S,G) to send here.
 	     */
-	    send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
+	    if (spt_switch_on_first_packet())
+		send_pim_register_stop(reg_dst, reg_src, inner_grp, inner_src);
 
 	    return FALSE;
 	} else { /* XXX: TODO: check with the spec again */
@@ -2260,8 +2267,8 @@ static void log_pim_join_prune(uint32_t src, const pim_jp_t *jp, char* ifname)
 }
 
 /*
- * PruneEcho(*,G), PruneEcho(S,G) and PruneEcho(S,G,rpt), RFC 7761 sec. 4.5.1
- * and sec. 4.5.2: when the Prune-Pending Timer expires and the router really
+ * PruneEcho(*,G) and PruneEcho(S,G), RFC 7761 sec. 4.5.1 and sec. 4.5.2:
+ * when the Prune-Pending Timer expires and the router really
  * does stop forwarding on the interface, it sends the Prune once more with
  * its own address in the Upstream Neighbor Address field.  "Its purpose is to
  * add additional reliability so that if a Prune that should have been
@@ -2294,9 +2301,10 @@ void send_prune_echo(mrtentry_t *mrt, vifi_t vifi)
 	if (!mrt->source)
 	    return;
 
+	/* "Simply a Prune(S,G)", sec. 4.5.2, whatever else the entry
+	 * holds: an (S,G)RPbit entry's own Prune is the (S,G,rpt) machine's,
+	 * which has no echo */
 	source = mrt->source->address;
-	if (mrt->flags & MRTF_RP)
-	    flags |= USADDR_RP_BIT;
     } else {
 	source = mrt->group->rpaddr;
 	flags |= USADDR_RP_BIT | USADDR_WC_BIT;
@@ -3032,51 +3040,32 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	    if ((s_flags & USADDR_RP_BIT) && (s_flags & USADDR_WC_BIT)) {
 		/* (*,G) Prune */
+		/* The (*,G) or nothing: find_route() makes no (*,*,RP) entry
+		 * any more, and the branch that built a (*,G) out of one went
+		 * with it */
 		mrt = find_route(INADDR_ANY_N, group, MRTF_WC, DONT_CREATE);
-		if (mrt) {
-		    if (mrt->flags & MRTF_WC) {
-			/* No RP check here, deliberately: RFC 7761 sec. 4.5.1 has
-			 * received Prune(*,G) messages "processed even if the RP
-			 * in the message does not match RP(G)".  That is the case
-			 * the sentence exists for -- a router tearing down the old
-			 * shared tree still names the old RP -- and ignoring it
-			 * left us forwarding to that router for the whole expiry
-			 * time.
-			 */
-			if (jp_prune(mrt, vifi)) {
-			    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
-			    change_interfaces(mrt,
-					      mrt->incoming,
-					      mrt->joined_oifs,
-					      mrt->pruned_oifs,
-					      mrt->leaves,
-					      mrt->asserted_oifs, 0);
-			}
-			continue;
-		    }
+		if (!mrt)
+		    continue;
 
-		    /* No (*,G) entry, but found (*,*,RP). Create (*,G) */
-		    if (mrt->source->address != source)
-			continue; /* The RP address doesn't match. */
-
-		    mrt = find_route(INADDR_ANY_N, group, MRTF_WC, CREATE);
-		    if (!mrt)
-			continue;
-
-		    mrt->flags &= ~MRTF_NEW;
-		    RESET_TIMER(mrt->vif_timers[vifi]);
-		    /* TODO: XXX: should only lower the oif timer, so it can
-		     * be overwritten on multiaccess LAN. Spec bug.
-		     */
-		    PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-		    PIMD_VIFM_SET(vifi, mrt->pruned_oifs);
+		/* No RP check here, deliberately: RFC 7761 sec. 4.5.1 has
+		 * received Prune(*,G) messages "processed even if the RP in
+		 * the message does not match RP(G)".  That is the case the
+		 * sentence exists for -- a router tearing down the old shared
+		 * tree still names the old RP -- and ignoring it left us
+		 * forwarding to that router for the whole expiry time.
+		 *
+		 * To NoInfo, not to a Pruned state: the (*,G) machine of sec.
+		 * 4.5.1 has none, and jp_ds_apply() has already taken the
+		 * interface off the (S,G) entries as well (wc_join_gone()).
+		 */
+		if (jp_prune(mrt, vifi)) {
 		    change_interfaces(mrt,
 				      mrt->incoming,
 				      mrt->joined_oifs,
 				      mrt->pruned_oifs,
 				      mrt->leaves,
 				      mrt->asserted_oifs, 0);
-		} /* (*,G) or (*,*,RP) found */
+		}
 	    } /* (*,G) prune */
 	} /* the Prunes */
 	/* End of (S,G) and (*,G) Prune handling */
@@ -3219,9 +3208,9 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 
 	    if (!(s_flags & (USADDR_WC_BIT | USADDR_RP_BIT))) {
 		/* (S,G) Join toward S.  One arriving on RPF_interface(S) is
-		 * kept like any other, RFC 7761 sec. 4.5.2: calc_oifs() takes
-		 * the incoming interface out of forwarding, sec. 4.1.6, and
-		 * JoinDesired(S,G) reads joins(S,G) as it is.  A neighbour on
+		 * kept like any other, RFC 7761 sec. 4.5.2: k_chg_mfc() takes
+		 * the incoming interface out of forwarding, and JoinDesired(S,G)
+		 * reads joins(S,G) as it is.  A neighbour on
 		 * that link can have us as RPF'(S) while we take S from a
 		 * third router there, and only our Join brings S onto it; pimd
 		 * dropped the message. */
@@ -4378,8 +4367,8 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
      * AssertTrackingDesired(S,G,I), which is join and membership state and
      * says nothing about the outgoing interfaces.
      */
-    if (PIMD_VIFM_ISSET(vifi, mrt->oifs) ||
-	(vifi != mrt->incoming && assert_lost_on(own ? own : mrt, vifi)))
+    if (vifi != mrt->incoming &&
+	(PIMD_VIFM_ISSET(vifi, mrt->oifs) || assert_lost_on(own ? own : mrt, vifi)))
 	view.where = ASSERT_DOWNSTREAM;
     else if (own && own->incoming == vifi)
 	view.where = ASSERT_UPSTREAM;
@@ -4525,8 +4514,18 @@ static int assert_machine(mrtentry_t *mrt, mrtentry_t *own, vifi_t vifi, int wc,
 	     * its last alternative being the Loser state just stored; pimd
 	     * used to ask it only when data from S reached it, so without
 	     * data the entry stayed an RPT forwarder. */
-	    if (!wc && view.winner == 0)
+	    if (!wc && view.winner == 0) {
+		int spt = own->flags & MRTF_SPT;
+
+		/* PruneDesired(S,G,rpt) can go true with the bit, wherever
+		 * RPF'(*,G) is not RPF'(S,G), and sec. 4.5.7, Figure 7, sends
+		 * the Prune(S,G,rpt) there and then.  Where the winner is
+		 * already the upstream nothing below fires the Join Timer, and
+		 * the Prune waited for the next Join(*,G). */
 		update_sptbit(own, vifi);
+		if (!spt && (own->flags & MRTF_SPT))
+		    jp_timer_fire(own);
+	    }
 
 	    if (own->upstream == find_pim_nbr_on_vif(vifi, src))
 		return rc;

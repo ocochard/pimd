@@ -333,7 +333,8 @@ wanted -- read as `Pending` in `show status` while it does not exist and enabled
 once it does, which is what a candidacy on an interface that is negotiated rather than configured
 needs and what `max_local_address()` used to be substituted for, silently -- and keep its slot when
 it goes and comes back; one it has a VIF on is destroyed in the
-second and given a new address in the third --, `rp-nbr-gone` the only one about what an RP entry
+second and given a new address in the third, which is every router's static RP address in that scenario, so
+that R2 has to become the RP and its (\*,G) come in on the register vif (step 10, M54) --, `rp-nbr-gone` the only one about what an RP entry
 holds after the link it was reaching the RP by has gone, where `set_incoming()` used to leave the
 freed neighbour behind on its no-route return and every new (\*,G) of that RP inherited it; it is
 also the one scenario whose verdict is a sanitizer build and not the wire, since a plain build
@@ -351,11 +352,13 @@ several trials off the routers' logs), no PruneEcho where the Expiry Timer rathe
 Prune-Pending Timer ends a Prune-Pending, on a LAN whose two crafted neighbours advertise a 20 s
 Override Interval with `pimsend -O` so the order is certain (step 9b, M37),
 a longer group range taking over the groups inside it (RFC 7761 sec. 4.7.1) and the old upstream of
-a group so moved pruned (step 14b, M36), a held Join(S,G) outliving a 225 s pause of its source, one of the four steps
+a group so moved pruned (step 14b, M36), a held Join(S,G) outliving a 225 s pause of its source, one of the five steps
 that forward data (step 13c, M38), the RP moving its kernel entry off the register vif onto RPF_interface(S) when
 the stream arrives there natively, though an Assert lost there set SPTbit first, the second (step 13d, M51), the RP joining toward a source whose Registers it stopped for want of
 a receiver once one appears, sec. 4.4.2's Keepalive Timer, the third (step 13e, M52), the RP forwarding
-decapsulated Registers to inherited_olist(S,G,rpt) rather than the (\*,G)'s whole list, the fourth (step 13f, M53), an Assert without the RPT
+decapsulated Registers to inherited_olist(S,G,rpt) rather than the (\*,G)'s whole list, the fourth (step 13f, M53), the RP
+joining toward a source it stopped for a (\*,G) with no receiver left, once one appears, the fifth (step 13g,
+M52), an Assert without the RPT
 bit refused by the (\*,G) machine on the RPF interface and one with it taken, the control (step 7b, M19),
 the RP winning an Assert from its shared tree on the metric of its own address, which it used to send
 as infinite, and losing to that metric from a higher address, the control (step 7c, M22), an (S,G)
@@ -380,10 +383,12 @@ M35), no Prune(S,G) from an (S,G) entry an Assert made, never joined (step 7v, M
 an emptied inherited_olist(S,G,rpt) calls for from a source tree entry without SPTbit, on a link of its own
 (step 7w, M44), a Prune(S,G,rpt) never sent bare while a neighbour's Join(\*,G) holds r1's back (step
 7x, M45), a Join(S,G) on r1's RPF interface toward the source acted on (step 7y, M46), an (S,G) Assert lost for a source r1 has
-no route to kept all the same (step 7z, M50), a Join(S,G) where the (\*,G) already
+no route to kept all the same (step 7z, M50), a Join(S,G) a neighbour's suppresses kept back when the
+(\*,G) Join Timer fires (step 7za, M55), a Prune(\*,G) from the only neighbour leaving the interface NoInfo
+rather than Pruned (step 7zb, M56), a Join(S,G) where the (\*,G) already
 forwards going upstream at once (step 7t, M47, which passes run alone by luck and failed in a full run),
-and a tripwire of the same map that did not reproduce, the Prune(S,G,rpt) an Assert that sets SPTbit
-calls for (step 7u, U13), a (\*,G) Winner
+the Prune(S,G,rpt) an Assert that sets SPTbit calls for, at once (step 7u), and where that winner is the
+routing table's upstream and RPF'(\*,G) another router (step 7zd, M57), a (\*,G) Winner
 that an (S,G) Assert for one source no longer takes off the LAN (step 7i, M29),
 the (S,G,rpt) machines of sec. 4.5.3 and 4.5.7 (a Prune(S,G,rpt) leaving another router's
 Join(S,G) alone, waiting out the override interval, lifted by a Join(S,G,rpt) or a Join(*,G)
@@ -407,7 +412,9 @@ takeover and RFC 7761 sec. 4.7 working rather than a bug,
 `autorp` the only one where an RP is learned from neither -- ED1 plays the mapping agent with
 `test/autorp`, so that the parser meets messages pimd did not write, and R1 has to learn a mapping, refuse an
 announcement, leave the groups under a negative prefix without an RP, keep its configured RP
-against a mapping for the same range, age a mapping out, stop at `autorp-limit` and forget the lot
+against a mapping for the same range, whether the mapping names another RP or that one (step 6b), share an RP
+with a Bootstrap that names it too, ED1 playing the BSR as well (step 6c), hold an RP whose mapping's holdtime
+is 0, which means forever (step 7b), age a mapping out, stop at `autorp-limit` and forget the lot
 across a reload; the messages reach R1 alone, nothing flooding the two well-known groups --
 `autorp-listener` is the third of them and the only one where the agent is not
 adjacent to the RP: R1 announces, R3 two hops away is the agent, and R2 between
@@ -810,7 +817,7 @@ the router would assert with now.  `proof_order` is the ordering of the two mach
 `receive_pim_assert()`, sec. 4.6.2's rule and the AssertCancel exception of M14 written as
 `assert_rc()` and `assert_wc_may_run()`; it found M27, the exception granted to any inferior Assert
 from the winner, which no lab reaches -- that needs an (S,G) with SPTbit, and `crafted` forwards
-data in steps 13c to 13f only, none built to send that Assert.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
+data in steps 13c to 13g only, none built to send that Assert.  `test/cbmc/roundtrip.c` is the other direction of the decoder proofs, step 3 of the same
 plan: a body written by an encoder of `src/pim_encode.c` -- Register-Stop, Assert, Null-Register,
 Candidate-RP-Advertisement, Hello, Join/Prune, Bootstrap, every message pimd builds but a data
 Register, which is a copy -- behind a PIM header of any four bytes, into a buffer of exactly

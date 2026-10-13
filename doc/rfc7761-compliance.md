@@ -940,8 +940,9 @@ r2 and r3 in exactly that state; r2's log of it was not kept.
 `receive_pim_register()` calls `switch_shortest_path()` there now, which is
 CheckSwitchToSpt(S,G): it moves the entry onto the source tree and starts the
 timer, the Join waiting on JoinDesired(S,G).  The (\*,G) branch beside it,
-an RP with a (\*,G) and no receiver, still sends the Register-Stop alone; no
-test here reaches it with a receiver arriving afterwards.  *Test: `crafted`
+an RP with a (\*,G) and no receiver, sent the Register-Stop alone as well and
+does the same as the no-(\*,G) branch now, `crafted` step 13g asserting it
+(r2 had not joined 15 s after the receiver came back before that fix).  *Test: `crafted`
 step 13e in `test/lab.sh`: r2's only receiver for a group joins (\*,G) and
 prunes ED1 off the shared tree, r2 stops r1's Registers, and the receiver
 takes the prune back; r2 has to join toward ED1 within 15 seconds (it did not
@@ -984,6 +985,63 @@ zero metric, and the (\*,G) entries follow it as for any other route change.
 an address on the R2-R3 link that nobody holds, and a member behind R3; once
 R2 is renumbered onto it, R2's (\*,G) has to come in on the register vif (it
 came in on the R3 link before the fix).*
+
+M55 is the other half of U3 (M45).  Sec. 4.5.5 raises the (S,G) Join Timer
+to t_joinsuppress on "See Join(S,G) to RPF'(S,G)", and nothing about the
+(\*,G) touches it.  `jp_timer_expire_sg()` (`src/route.c`) fired the (S,G)
+timer at once whenever the (\*,G)'s timer pass wanted the opposite of it, and
+a (\*,G) whose downstream had all pruned wants a Prune on every pass, so a
+Join(S,G) a neighbour's was suppressing went out every 60 s.  The fire stays
+only for the other mismatch, the Prune(S,G,rpt) that rides with a Join(\*,G),
+sec. 4.5.6.  That one still sends the Join(S,G) of a source tree entry whose
+upstream is not RPF'(\*,G) along with it, suppressed or not; no step reaches
+it, since it needs a source behind another upstream.  *Test: `crafted` step
+7za in `test/lab.sh`: ED1 joins (\*,G) and (S,G) for a source behind r3, r1's
+Join(S,G) reaching r2 the control, then prunes the (\*,G); step 5's neighbour
+keeps r1's Join(S,G) suppressed for 140 s, in which r2's log has to show none
+from r1 (one came before the fix).*
+
+M56 is D7c of the same map.  Sec. 4.5.1 takes an interface to NoInfo on a
+Prune(\*,G), at once where nobody is left to override it; the (\*,G)
+downstream machine has no Pruned state.  `receive_pim_join_prune()`
+(`src/pim_proto.c`) set the interface in the (\*,G)'s `pruned_oifs` on that
+path, which the Prune-Pending path beside it never did, and the bit stayed
+until the next Join(\*,G).  Forwarding follows `joined_oifs`, so only `show
+mrt detail` showed it.  *Test: `crafted` step 7zb in `test/lab.sh`: ED1, r1's
+only neighbour on the LAN, joins (\*,G), the interface forwarding the control,
+then prunes it; the (\*,G) has to hold the interface neither joined nor
+pruned (it read Pruned before the fix).*
+
+M57 is U13 of the same map, of which `crafted` step 7u was the tripwire.
+Losing an (S,G) Assert on RPF_interface(S) while joined sets SPTbit, Actions
+A6 of sec. 4.6.1, and where RPF'(\*,G) is another router PruneDesired(S,G,rpt)
+goes true with it, which sec. 4.5.7, Figure 7, answers with a Prune(S,G,rpt)
+there and then.  `assert_machine()` (`src/pim_proto.c`) fired the Join Timer
+only when the winner moved RPF'(S,G), so where the routing table's upstream
+won, the Prune waited for the next Join(\*,G), up to t_periodic.  The timer
+is fired when the Assert sets the bit now.  *Test: `crafted` step 7zd in
+`test/lab.sh`: step 5's neighbour wins r1's (\*,G) Assert on its link to r2,
+r1's (\*,G) following it the control, then r2 wins the (S,G) one; r1's
+Prune(S,G,rpt) has to reach the link within 5 s (none came before the fix).*
+
+M58 is D4 of the same map, fixed defensively.  Sec. 4.5.2 makes a
+PruneEcho(S,G) "simply a Prune(S,G)", and `send_prune_echo()`
+(`src/pim_proto.c`) set the RPT bit on it for an (S,G) entry flagged
+MRTF_RP, which would have made it an (S,G,rpt) Prune, a message of another
+machine with no echo in the RFC.  *Test: none: no path gives an (S,G)RPbit
+entry Join(S,G) state that then times out to an echo, and a `crafted` attempt
+on 2026-10-10 did not reach it.*
+
+M59 is finding 9c of the Assert map, fixed defensively.  Sec. 4.6.1 leaves
+RPF_interface(S) out of CouldAssert(S,G,I), and `assert_machine()`
+(`src/pim_proto.c`) classed any interface in the entry's `oifs` as the
+downstream half before it asked whether it was the incoming one.
+`calc_oifs()` (`src/route.c`) never takes the incoming interface out --
+`k_chg_mfc()` (`src/kern.c`) clears it from the array it is handed, which is
+`oifs` itself for most callers -- and since M46 a Join(S,G) on the RPF
+interface is kept in joins(S,G), so an entry with no MFC programmed can hold
+it there.  *Test: none: `crafted` builds that Join and finds the kernel
+entry programmed within two seconds, the iif cleared with it.*
 
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received

@@ -26,6 +26,22 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An RP holding a (*,G) whose receivers had all left answered a source's
+  Register with a Register-Stop and kept nothing, so a receiver that joined
+  afterwards waited 30 to 90 seconds for the DR to register again.  It
+  keeps the (S,G) and its Keepalive Timer now, and joins toward the source
+  once the receiver appears, as it already did where it held no (*,G).
+  RFC 7761 sec. 4.4.2.  Step 13g of `crafted` in `test/lab.sh`.
+- A Prune(S,G,rpt) owed when an Assert sets SPTbit waited up to a minute
+  for the next Join(*,G) where the Assert winner was already the upstream
+  router.  RFC 7761 sec. 4.5.7.  Step 7zd of `crafted`.
+- A Join(S,G) suppressed by a neighbour's was sent anyway every minute
+  while the group's (*,G) had no downstream left.  RFC 7761 sec. 4.5.5.
+  Step 7za of `crafted`.
+- A Prune(*,G) from the only neighbour on an interface left it marked
+  pruned in `pimctl show mrt detail` until the next Join(*,G); the (*,G)
+  machine has no such state.  RFC 7761 sec. 4.5.1.  Step 7zb of
+  `crafted`.
 - A Bootstrap and an Auto-RP mapping naming the same RP for the same
   group range shared one RP set entry, and the mapping took it over: the
   Bootstrap stopped renewing it, and it aged out on the mapping's holdtime
