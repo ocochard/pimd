@@ -26,6 +26,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- A router whose own address became an RP address while it ran -- a
+  failover address taken over, an interface renumbered or brought up with
+  it -- went on treating that RP as remote: its (*,G) entries came in on
+  the interface the address used to be reached by, and its Asserts from
+  the shared tree carried a remote metric where RFC 7761 sec. 4.6.3 has
+  0.  Step 10 of `renumber` in `test/lab.sh`.
 - An Auto-RP mapping with a holdtime of 0, which the draft defines as
   never timing out, put its RP in the RP set only until the next five
   second pass deleted it, so the RP came and went once per mapping

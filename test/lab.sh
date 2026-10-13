@@ -2250,6 +2250,12 @@ RENUM_NEW=${RENUM_NEW:-10.0.23.22}
 RENUM_PEER=${RENUM_PEER:-r3}
 RENUM_KEPT=${RENUM_KEPT:-10.0.12.1}
 RENUM_KEPT_IF=${RENUM_KEPT_IF:-${EPU}112b}
+# The other thing a moved address can be: the RP's.  Every router is
+# configured with $RENUM_NEW as the RP for this range, an address nobody
+# holds until R2 is renumbered onto it, which is a failover RP address
+# taken over by the router that is to be the RP from now on.
+RENUM_RP_RANGE=${RENUM_RP_RANGE:-239.22.0.0/16}
+RENUM_RP_GROUP=${RENUM_RP_GROUP:-239.22.1.1}
 
 # The groups pimd joins on every link it runs PIM on: ALL-PIM-ROUTERS on
 # the PIM socket, ALL-ROUTERS and the IGMPv3 report group on the IGMP one.
@@ -3767,6 +3773,13 @@ write_configs() {
 	cat <<-EOF > "$WORKDIR/r3.conf"
 	# R3: last hop router for the receiver LAN
 	EOF
+
+	if [ "$SCENARIO" = renumber ]; then
+		for r in r1 r2 r3; do
+			printf 'rp-address %s %s\n' "$RENUM_NEW" "$RENUM_RP_RANGE" \
+				>> "$WORKDIR/$r.conf"
+		done
+	fi
 }
 
 # A sender that never joins anything: sends $KEEP_NUM UDP streams to
@@ -12277,6 +12290,8 @@ check_renumber() {
 		fail "r2: VIF on $RENUM_IF reads $(iface_addr r2 "$RENUM_IF"), expected $RENUM_OLD"
 		return 1
 	fi
+	# A member for step 10, joined while its RP is still nobody's
+	box_run ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$RENUM_RP_GROUP" -v 2 >/dev/null 2>&1
 
 	print "3. The address is changed under pimd"
 	box_addr_del r2 "$RENUM_IF" "$RENUM_OLD" || \
@@ -12366,6 +12381,32 @@ check_renumber() {
 		fail "r2: a group re-join was refused, the old membership was never dropped"
 	else
 		ok "r2: every group was re-joined, none was still held"
+	fi
+
+	# $RENUM_NEW was an address on R2's link to R3 when pimd started, so
+	# R2's RP entry for it pointed out of that link.  Now it is R2's own,
+	# R2 is the RP, and pimd's (*,G) at the RP comes in on the register
+	# vif -- vif 0, PIMREG_VIF.  age_routes() skipped
+	# the RP entry of any address that was local, so one that became
+	# local kept the iif, upstream and metric of when it was not: a (*,G)
+	# coming in on the interface it forwards out of, and Asserts sent
+	# from the shared tree with a remote metric where sec. 4.6.3 has 0.
+	print "10. R2 takes the RP's role once the RP address is its own"
+	box_run ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$RENUM_RP_GROUP" -v 2 >/dev/null 2>&1
+	if wait_for 60 has_wc_route r3 "$RENUM_RP_GROUP"; then
+		ok "r3: a (*,G) for $RENUM_RP_GROUP, whose RP is $RENUM_NEW"
+	else
+		fail "r3: no (*,G) for $RENUM_RP_GROUP, the step below cannot be read"
+		dprint "$(pimctl r3 show mrt)"
+		result
+		return
+	fi
+	if wait_for 90 route_iif_is r2 ANY "$RENUM_RP_GROUP" 0; then
+		ok "r2: the (*,G) for $RENUM_RP_GROUP comes in on the register vif"
+	else
+		fail "r2: the (*,G) for $RENUM_RP_GROUP comes in on vif" \
+		     "'$(route_iif r2 ANY "$RENUM_RP_GROUP")', not the register vif"
+		dprint "$(pimctl r2 show mrt detail)"
 	fi
 
 	result

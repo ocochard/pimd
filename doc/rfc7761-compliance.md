@@ -969,6 +969,22 @@ controls; the link toward ED1 has to stay out of r2's kernel entries across a
 change of the (\*,G) and the cache miss after the switch (it did not before
 the fix).*
 
+M54, fixed, the other half of M22: an RP address that becomes one of the
+router's own after start-up.  `age_routes()` (`src/route.c`) looked the route
+to every RP up again on each unicast routing check except the RPs whose
+address was local, on the reading that such an RP was already on the register
+vif.  One that became local -- a failover address taken over, a renumbering,
+an interface that came up with it -- was never looked at again, and kept the
+incoming interface, upstream and metric of when it was remote: the RP's
+(\*,G) came in on the interface it forwarded out of, and its Asserts from the
+shared tree carried a remote metric where sec. 4.6.3 has 0.  The check runs
+for every RP now, `set_incoming()` giving a local one the register vif and a
+zero metric, and the (\*,G) entries follow it as for any other route change.
+*Test: `renumber` step 10 in `test/lab.sh`: every router has a static RP at
+an address on the R2-R3 link that nobody holds, and a member behind R3; once
+R2 is renumbered onto it, R2's (\*,G) has to come in on the register vif (it
+came in on the R3 link before the fix).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

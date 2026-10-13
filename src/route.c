@@ -3096,9 +3096,13 @@ static void age_routes_pass(void)
 	rpentry_save.upstream = rp->upstream;
 
 	update_rp_iif = FALSE;
-	if ((ucast_flag == TRUE) && !i_am_rp(rp->address)) {
-	    /* I am not the RP. If I was the RP, then the iif is
-	     * register_vif and no need to reset it. */
+	if (ucast_flag == TRUE) {
+	    /* Whether or not I am the RP: an RP address that became one
+	     * of mine since the last pass has to move onto the register
+	     * vif, with the zero metric of RFC 7761 sec. 4.6.3, and
+	     * set_incoming() is what does that.  Skipping it for a local
+	     * address left such an RP pointing out of the interface it
+	     * used to be reached by. */
 	    if (set_incoming(rp, PIM_IIF_RP) != TRUE) {
 		/* TODO: XXX: no route to that RP. Panic? There is a high
 		 * probability the network is partitioning so immediately
