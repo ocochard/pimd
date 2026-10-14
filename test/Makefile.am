@@ -21,7 +21,7 @@ AM_LDFLAGS         = @PIMD_LDFLAGS@
 AM_CPPFLAGS        = -I$(top_srcdir)/src -I$(top_srcdir)/include
 
 # One source each, named after the program, which is automake's default
-noinst_PROGRAMS    = mping igmpv3 pimsend autorp
+noinst_PROGRAMS    = mping igmpv3 pimsend autorp mtquery
 
 # The corpus goes in whether or not this build has the harnesses, so the
 # replay test has something to replay wherever a tarball is unpacked, and by

@@ -225,7 +225,7 @@ scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `altnet`, `ifnew`, `ifgone`,
 `renumber`, `rp-nbr-gone`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`,
 `autorp-listener`, `anycast`, `anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`, `scale`,
-`jp-pack`); see the script
+`jp-pack`, `mtrace`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -476,6 +476,13 @@ numbers and the date.
 with 90 sources pruned off the shared tree in one message -- which is why `pimsend` takes 128 `-X` -- and R1's
 periodic Join(\*,G) has to carry the numerically smallest that fit, 63, with nothing of the group set after it
 in a message of its own, RFC 7761 sec. 4.9.5.2 (M9).
+`mtrace` is the only one that asks `src/trace.c` anything, through `test/mtquery.c`, the client neither base
+system ships any more: an mrinfo request from ED1 to R2, whose reply has to list R1 and R3 as its PIM
+neighbours and no address that is not R2's own, and an mtrace query from ED2 for ED1's stream, passed hop by
+hop through R3, R2 and R1, whose answer has to come back with three blocks that chain.  On FreeBSD the answer
+is read off a capture of ED2's link rather than off the socket: `igmp_input()` drops IGMP other than DVMRP
+that arrives with a TTL above one, mtrace's two types included, which is also why pimd passes a query to
+its upstream router at TTL 1 (a kernel patch to exempt them is the fix).
 `register-filter` is the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the

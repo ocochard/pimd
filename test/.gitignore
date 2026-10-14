@@ -6,6 +6,7 @@
 igmpv3
 mping
 pimsend
+mtquery
 fuzz_autorp
 fuzz_autorp_replay
 fuzz_config

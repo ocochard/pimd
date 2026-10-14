@@ -34,6 +34,21 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- mtrace never got past the last hop router.  A hop passed the query
+  on only where its route to the source had a metric other than 1, a
+  DVMRP test for "directly connected" that pimd's routing table metric
+  turned into "one hop away"; the first hop router, the one with no
+  upstream router, is the one that answers now.  Step 4 of the new
+  `mtrace` scenario of `test/lab.sh`.
+- Every mtrace query and response and every mrinfo (DVMRP neighbors2)
+  reply pimd sent had the second byte of its first address overwritten
+  with the IGMP query interval, 10.0.1.10 going out as 10.125.1.10: the
+  IGMPv3 query encoding was applied to any IGMP message with four bytes
+  of payload or more.
+- A query pimd passes to its upstream router goes with a TTL of 1, the
+  upstream router being a neighbour: FreeBSD's `igmp_input()` drops any
+  IGMP message but DVMRP that arrives with more, so a trace stopped at
+  the first FreeBSD router it was handed to.
 - An `rp-address` line whose address did not parse was taken without a
   warning and then dropped, since the parser compared against 0xffffff,
   three bytes, where an unparseable address is 0xffffffff.  The same test

@@ -484,14 +484,19 @@ void send_igmp(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32
 
     igmp              = (struct igmpv3_query *)(buf + IP_IGMP_HEADER_LEN);
     igmp->type        = type;
-    if (datalen >= 4)
-        igmp->code    = igmp_floating_point(code);
-    else
-        igmp->code    = code;
+    igmp->code        = code;
     igmp->group       = group;
     igmp->csum        = 0;
 
-    if (datalen >= 4) {
+    /* An IGMPv3 query, RFC 3376 sec. 4.1: the code is the Max Resp Code
+     * in its floating point form, and QRV and QQIC are the two bytes after
+     * the group.  Only a query: those two bytes are the start of the
+     * payload of anything else this sends with four or more of it, and
+     * were written over the first address of every mtrace and every DVMRP
+     * neighbours2 reply -- 10.0.1.10 went out as 10.125.1.10, the query
+     * interval landing on its second byte. */
+    if (type == IGMP_MEMBERSHIP_QUERY && datalen >= 4) {
+        igmp->code = igmp_floating_point(code);
         igmp->qrv = 2;
         igmp->qqic = igmp_floating_point(igmp_query_interval);
     }
@@ -500,6 +505,23 @@ void send_igmp(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32
     igmp->csum = inet_cksum((uint16_t *)igmp, len);
 
     send_ip_frame(src, dst, type, code, buf, len);
+}
+
+/*
+ * send_igmp() at a unicast TTL of @ttl rather than the MAXTTL the IP header
+ * of @buf carries, init_igmp() having written it there once: the socket
+ * includes its own header, so that byte is the TTL the packet leaves with.
+ * Put back afterwards for the next sender of the same buffer.
+ */
+void send_igmp_ttl(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32_t group,
+		   int datalen, uint8_t ttl)
+{
+    struct ip *ip = (struct ip *)buf;
+    uint8_t was = ip->ip_ttl;
+
+    ip->ip_ttl = ttl;
+    send_igmp(buf, src, dst, type, code, group, datalen);
+    ip->ip_ttl = was;
 }
 
 /**

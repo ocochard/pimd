@@ -447,6 +447,8 @@ extern void	init_igmp		(void);
  */
 extern void	accept_igmp		(int ifi, ssize_t recvlen);
 extern void	send_igmp		(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32_t group, int datalen);
+extern void	send_igmp_ttl		(char *buf, uint32_t src, uint32_t dst, int type, int code, uint32_t group,
+					 int datalen, uint8_t ttl);
 
 /* igmp_proto.c */
 extern void	query_groups		(struct uvif *v);

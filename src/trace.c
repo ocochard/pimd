@@ -329,14 +329,20 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 
   sendit:
     /*
-     * if metric is 1 or no. of reports is 1, send response to requestor
-     * else send to upstream router.  If the upstream router can't handle
-     * mtrace, set an error code and send to requestor anyway.
+     * The first hop router answers the requestor, as does a hop that has
+     * filled the last block the query asked for or has no route; every
+     * other hop passes the query to its upstream router.  The first hop
+     * is the one with no upstream router at all -- the source on one of
+     * its links, or the register vif the RP takes a source in on.  This
+     * asked for a route metric of 1 instead, which is mrouted's way of
+     * saying "directly connected"; pimd's metric is the routing table's,
+     * where 1 is one hop away, so every router a hop from the source's
+     * route answered at once and the trace never got past the last hop.
      */
     IF_DEBUG(DEBUG_TRACE)
         logit(LOG_DEBUG, 0, "rcount:%d, no:%d", rcount, no);
 
-    if ((rcount + 1 == no) || (mrt == NULL) || (mrt->metric == 1)) {
+    if ((rcount + 1 == no) || (mrt == NULL) || (mrt->upstream == NULL)) {
         resptype = IGMP_MTRACE_RESP;
         dst = qry.raddr;
     } else {
@@ -371,7 +377,15 @@ void accept_mtrace(uint32_t src, uint32_t dst, uint32_t group, char *data, u_int
 		  resptype == IGMP_MTRACE_RESP ?  "reply" : "request on",
 		  inet_fmt(dst, s1, sizeof(s1)), inet_fmt(src, s2, sizeof(s2)));
 	}
-	send_igmp(igmp_send_buf, src, dst, resptype, no, group, datalen);
+	/* A query passed on goes to the upstream router, a neighbour on
+	 * the link it came in on, so TTL 1 reaches it -- and is what gets
+	 * it there on FreeBSD, whose igmp_input() drops any IGMP but DVMRP
+	 * that arrives with a TTL of more than one.  The response goes to
+	 * whoever asked, wherever that is. */
+	if (resptype == IGMP_MTRACE)
+	    send_igmp_ttl(igmp_send_buf, src, dst, resptype, no, group, datalen, 1);
+	else
+	    send_igmp(igmp_send_buf, src, dst, resptype, no, group, datalen);
     }
 }
 

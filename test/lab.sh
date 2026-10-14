@@ -721,6 +721,18 @@
 #               the entry in doc/rfc7761-compliance.md stays open.
 #               Takes about 2 minutes.
 #
+#   mtrace      The rpt topology with ED1's stream forwarded to ED2, and the
+#               only scenario that asks src/trace.c anything: an mrinfo
+#               request (DVMRP ask-neighbors2) from ED1 to R2, whose reply
+#               has to list R1 and R3 as its PIM neighbours on the right
+#               interfaces, and an mtrace query from ED2 for ED1's stream,
+#               sent to R3 and passed hop by hop through R2 to R1, whose
+#               answer has to come back to ED2 with three response blocks
+#               that chain -- each hop's upstream router the next hop's
+#               outgoing address -- and the query id ED2 asked with.
+#               Neither base system ships an mtrace or an mrinfo any more;
+#               test/mtquery.c is the client.  Takes about 2 minutes.
+#
 #   jp-pack     The rpt topology with nothing forwarded, and the only
 #               scenario that makes pimd build a Join/Prune larger than one
 #               message holds.  ED1 joins (*,G) at R1 and prunes 90 sources
@@ -1092,11 +1104,11 @@ SCENARIO=${SCENARIO:-rpt}
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber rp-nbr-gone register-filter crafted fuzz static-rp autorp autorp-agent
-	   autorp-listener anycast anycast-dr altnet scale jp-pack"
+	   autorp-listener anycast anycast-dr altnet scale jp-pack mtrace"
 SCENARIOS_BY_LENGTH="keepalive anycast rpt shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range autorp-listener altnet jp-pack solo rp-nbr-gone privsep scale"
+		     renumber ssm-range autorp-listener altnet jp-pack mtrace solo rp-nbr-gone privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -1244,6 +1256,7 @@ PIMCTL="$PIMD_SRC/src/pimctl"
 MPING="$WORKDIR/mping"
 IGMPV3="$WORKDIR/igmpv3"
 PIMSEND="$WORKDIR/pimsend"
+MTQUERY="$WORKDIR/mtquery"
 AUTORP="$WORKDIR/autorp"
 # mping joins the group it sends to, which would give the (S,G) entries a
 # leaf and hide the bug the keepalive scenario is after.  That scenario
@@ -2409,7 +2422,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale|jp-pack)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale|jp-pack|mtrace)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2470,6 +2483,10 @@ set_scenario() {
 	# IF_DEBUG(DEBUG_IGMP), and they are half of what that scenario reads.
 	if [ "$SCENARIO" = crafted ] || [ "$SCENARIO" = fuzz ]; then
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
+	elif [ "$SCENARIO" = mtrace ]; then
+		# What trace.c decides is behind IF_DEBUG(DEBUG_TRACE), and
+		# is what to read when a hop does not answer
+		DEBUG="$DEBUG_DEFAULT,trace"
 	elif [ "$SCENARIO" = jp-pack ]; then
 		# The entries of every Join/Prune R2 receives, which are what
 		# the scenario reads, are behind IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
@@ -4062,6 +4079,10 @@ start() {
 	cc -O2 -o "$IGMPV3" "$PIMD_SRC/test/igmpv3.c" || \
 		die "failed building $PIMD_SRC/test/igmpv3.c"
 
+	print "Building mtquery (mtrace and mrinfo queries) ..."
+	cc -O2 -o "$MTQUERY" "$PIMD_SRC/test/mtquery.c" || \
+		die "failed building $PIMD_SRC/test/mtquery.c"
+
 	print "Building pimsend (crafted PIM message generator) ..."
 	cc -O2 -o "$PIMSEND" "$PIMD_SRC/test/pimsend.c" || \
 		die "failed building $PIMD_SRC/test/pimsend.c"
@@ -5281,6 +5302,7 @@ check() {
 	fuzz)       check_fuzz; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
 	jp-pack)    check_jp_pack; return $? ;;
+	mtrace)     check_mtrace; return $? ;;
 	autorp)     check_autorp; return $? ;;
 	autorp-agent) check_autorp_agent; return $? ;;
 	autorp-listener) check_autorp_listener; return $? ;;
@@ -6859,6 +6881,151 @@ scale_group() {
 		printf "%d.%d.%d.%d\n", int(n / 16777216) % 256, int(n / 65536) % 256,
 			int(n / 256) % 256, n % 256
 	}'
+}
+
+# mtrace: the group the stream uses, R3's address on ED2's LAN, and the
+# query id ED2 asks with
+MT_GROUP=${MT_GROUP:-225.1.2.3}
+MT_LHR=${MT_LHR:-10.0.3.1}
+MT_QID=${MT_QID:-0x5a17ce}
+
+check_mtrace() {
+	print "1. pimd is alive on every router, and R1 has an RP"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+	if ! wait_for 120 has_dynamic_rp r1; then
+		fail "r1 learned no RP from r2's Bootstrap"
+		return 1
+	fi
+	if ! wait_for 60 has_neighbor r2 10.0.12.1 || ! wait_for 60 has_neighbor r2 10.0.23.3; then
+		fail "r2 has not got both R1 and R3 as neighbours, the step cannot be put"
+		return 1
+	fi
+
+	# mrinfo's question: every interface of the router and the PIM
+	# neighbours on it (accept_neighbor_request2(), src/trace.c)
+	print "2. mrinfo: R2 lists its interfaces and its PIM neighbours"
+	# R2 is two hops from ED1, and DVMRP is the one IGMP type FreeBSD takes
+	# with a TTL above one, so this request is the one that may carry it
+	mt_nb=$(box_run ed1 "$MTQUERY" -i "$SRC_ADDR" -T 64 -w 5 neighbors "$RP_ADDR" 2>&1)
+	dprint "$mt_nb"
+	if ! printf '%s\n' "$mt_nb" | grep -q '^level '; then
+		fail "r2 sent no DVMRP neighbors2 reply to ED1's request"
+	else
+		ok "r2 answered ED1's ask-neighbors2"
+		# The first interface of the reply is the register vif, whose
+		# address is that of the first interface it was given: every
+		# address in the reply has to be one of r2's own.  The IGMPv3
+		# query encoding used to write the query interval over the second
+		# byte of the first one, 10.0.12.2 reading 10.125.12.2.
+		mt_bad=$(printf '%s\n' "$mt_nb" | awk '/^iface / && $2 != "10.0.12.2" && $2 != "10.0.23.2" { print $2 }')
+		if [ -z "$mt_bad" ]; then
+			ok "and every interface it lists is one of r2's addresses"
+		else
+			fail "r2's reply lists $mt_bad, which is no address of r2's"
+		fi
+		for pair in "10.0.12.2 10.0.12.1" "10.0.23.2 10.0.23.3"; do
+			set -- $pair
+			if printf '%s\n' "$mt_nb" | grep -E "^iface $1 .*nbrs 1: $2\$" >/dev/null; then
+				ok "and lists $2 as its one neighbour on $1"
+			else
+				fail "r2's reply does not list $2 alone on $1"
+			fi
+		done
+	fi
+
+	# The stream the trace is about, received at ED2 and settled on the
+	# shortest path tree at R3 before the query goes out
+	print "3. ED1's stream reaches ED2"
+	box_bg ed2 "$MPING" -r -i "$ED2_IF" -t 5 -W 300 "$MT_GROUP" >"$WORKDIR/receiver.log" 2>&1
+	mt_rcv=$!
+	box_bg ed1 "$MPING" -s -i ${EP}101a -t 5 -c 90 -w 120 "$MT_GROUP" >"$WORKDIR/sender.log" 2>&1
+	mt_snd=$!
+	# r3 forwards it on the shared tree until its SPT-threshold poll,
+	# which a trace answers through the (*,G) just as well
+	if wait_for 60 has_wc_route r3 "$MT_GROUP"; then
+		sleep 5
+		ok "r3 holds (*,$MT_GROUP) for ED2"
+	else
+		fail "r3 never built (*,$MT_GROUP), there is nothing to trace"
+		kill "$mt_snd" "$mt_rcv" 2>/dev/null || true
+		return 1
+	fi
+
+	# mtrace's question, the traceroute of draft-ietf-idmr-traceroute-ipm
+	# pimd answers (accept_mtrace(), src/trace.c): ED2 asks R3, its last
+	# hop router, for the path from ED1; each hop appends a block and
+	# passes the query to its upstream router, and the first hop router
+	# answers ED2.  The answer comes from three hops away, so it reaches
+	# ED2 with a TTL above one, which FreeBSD's igmp_input() drops before
+	# mtquery's socket sees it: the link is captured as well, and where the
+	# socket got nothing the answer is read off the capture.
+	print "4. mtrace: ED2's query for ED1 comes back through R3, R2 and R1"
+	mt_pcap="$WORKDIR/mtrace.pcap"
+	box_bg ed2 timeout 20 tcpdump -n -i "$ED2_IF" -w "$mt_pcap" igmp >/dev/null 2>&1
+	mt_cap=$!
+	sleep 2
+	mt_tr=$(box_run ed2 "$MTQUERY" -i "$RCV_ADDR" -s "$SRC_ADDR" -g "$MT_GROUP" \
+		-d "$RCV_ADDR" -q "$MT_QID" -w 10 trace "$MT_LHR" 2>&1)
+	kill "$mt_snd" "$mt_rcv" 2>/dev/null || true
+	wait "$mt_snd" "$mt_rcv" "$mt_cap" 2>/dev/null || true
+	if printf '%s\n' "$mt_tr" | grep -q '^qid '; then
+		ok "an mtrace response reached ED2's socket"
+	else
+		mt_tr=$("$MTQUERY" -q "$MT_QID" -p "$mt_pcap" trace "$MT_LHR" 2>&1)
+		if ! printf '%s\n' "$mt_tr" | grep -q '^qid '; then
+			fail "no mtrace response reached ED2's link: $(printf '%s' "$mt_tr" | head -1)"
+			result
+			return
+		fi
+		if [ "$(uname -s)" = FreeBSD ]; then
+			ok "an mtrace response reached ED2's link, read off a capture: FreeBSD's igmp_input() drops one with a TTL above one"
+		else
+			fail "an mtrace response reached ED2's link but not its socket"
+		fi
+	fi
+	dprint "$mt_tr"
+	mt_qid=$(printf '%s\n' "$mt_tr" | awk '/^qid / { print $2 }')
+	if [ "$((0x$mt_qid))" -eq "$((MT_QID))" ]; then
+		ok "carrying the query id ED2 asked with, $mt_qid"
+	else
+		fail "the response carries query id $mt_qid, ED2 asked with $MT_QID"
+	fi
+	mt_hops=$(printf '%s\n' "$mt_tr" | grep -c '^hop ')
+	if [ "$mt_hops" -eq 3 ]; then
+		ok "with a response block from each of the three routers"
+	else
+		fail "with $mt_hops response blocks, three routers are on the path"
+	fi
+	# hop N: in IN out OUT rmt RMT proto P fttl T flags F
+	mt_chain=$(printf '%s\n' "$mt_tr" | awk '/^hop / {
+			out[$2] = $6; rmt[$2] = $8; in_[$2] = $4; flags[$2] = $14; proto[$2] = $10; n = $2 }
+		END {
+			bad = ""
+			if (out[1] != "'"$MT_LHR"'") bad = bad " hop1-out=" out[1]
+			for (i = 1; i < n; i++)
+				if (rmt[i] != out[i + 1]) bad = bad " hop" i "-rmt=" rmt[i] "!=hop" i + 1 "-out=" out[i + 1]
+			if (rmt[n] != "0.0.0.0") bad = bad " hop" n "-rmt=" rmt[n]
+			if (in_[n] != "10.0.1.1") bad = bad " hop" n "-in=" in_[n]
+			for (i = 1; i <= n; i++) {
+				if (flags[i] != 0) bad = bad " hop" i "-flags=" flags[i]
+				if (proto[i] != 3) bad = bad " hop" i "-proto=" proto[i]
+			}
+			print bad
+		}')
+	if [ -z "$mt_chain" ]; then
+		ok "and the blocks chain: each upstream is the next hop's outgoing address, PIM, no error, ending at ED1's LAN"
+	else
+		fail "the response blocks do not chain:$mt_chain"
+	fi
+
+	result
 }
 
 check_scale() {
