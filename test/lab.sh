@@ -2485,8 +2485,9 @@ set_scenario() {
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
 	elif [ "$SCENARIO" = mtrace ]; then
 		# What trace.c decides is behind IF_DEBUG(DEBUG_TRACE), and
-		# is what to read when a hop does not answer
-		DEBUG="$DEBUG_DEFAULT,trace"
+		# whether a request reached pimd at all behind DEBUG_IGMP: the
+		# two are what to read when a hop does not answer
+		DEBUG="$DEBUG_DEFAULT,trace,igmp"
 	elif [ "$SCENARIO" = jp-pack ]; then
 		# The entries of every Join/Prune R2 receives, which are what
 		# the scenario reads, are behind IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
@@ -6889,6 +6890,13 @@ MT_GROUP=${MT_GROUP:-225.1.2.3}
 MT_LHR=${MT_LHR:-10.0.3.1}
 MT_QID=${MT_QID:-0x5a17ce}
 
+# The last lines of router $1's log matching $2, for a step that got no
+# answer: whether the request reached pimd, and what it did with it
+mt_logs() {
+	dprint "--- $1:"
+	dprint "$(${SUDO} grep -E "$2" "$WORKDIR/$1.log" 2>/dev/null | tail -12)"
+}
+
 check_mtrace() {
 	print "1. pimd is alive on every router, and R1 has an RP"
 	for r in $ROUTERS; do
@@ -6917,6 +6925,7 @@ check_mtrace() {
 	dprint "$mt_nb"
 	if ! printf '%s\n' "$mt_nb" | grep -q '^level '; then
 		fail "r2 sent no DVMRP neighbors2 reply to ED1's request"
+		mt_logs r2 'DVMRP|10\.0\.1\.10'
 	else
 		ok "r2 answered ED1's ask-neighbors2"
 		# The first interface of the reply is the register vif, whose
@@ -6981,6 +6990,9 @@ check_mtrace() {
 		mt_tr=$("$MTQUERY" -q "$MT_QID" -p "$mt_pcap" trace "$MT_LHR" 2>&1)
 		if ! printf '%s\n' "$mt_tr" | grep -q '^qid '; then
 			fail "no mtrace response reached ED2's link: $(printf '%s' "$mt_tr" | head -1)"
+			for r in r3 r2 r1; do
+				mt_logs "$r" 'traceroute|Traceroute|mrt parent|Sending (reply|request)|10\.0\.3\.10'
+			done
 			result
 			return
 		fi
