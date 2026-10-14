@@ -138,15 +138,15 @@ every parser bug this tree has had. Its input is the UDP payload, byte for byte 
 The router all of them run the parsers inside is `test/fuzz/router.c`, over the addresses of
 `test/fuzz/topology.h`, built per input and torn down again (once, for `fuzz_ipc`): two interfaces,
 three neighbours, a DR election this router wins on one link and loses on the other, an RP set with
-one range of its own and one a neighbour is the RP for, a BSR candidacy, a (\*,G) and an (S,G), all from a `pimd.conf`
+one range of its own and one a neighbour is the RP for and a group outside both, RP-less, a BSR candidacy, a (\*,G) and an (S,G), all from a `pimd.conf`
 `config.c` itself parses and a prologue of Hellos and Joins the daemon's own receive path handles.
 `test/fuzz/mrib.c` answers the RPF lookups from a fixed table of its own -- it defines
 `k_req_incoming()`, so neither `netlink.c` nor `routesock.c` is linked and an input answers the same
 on every machine -- and `rpf_backend`, the third symbol either of them exports outside `main.c`,
 which `show_status()` prints and `fuzz_ipc` therefore reaches. Every part of that state is there
 because something is unreachable without it, and the way to tell is the `INITED` line of a hunt, the
-edges the committed seeds reach before any mutation: 2651 for `fuzz_pim` and 2828 for
-`fuzz_igmp`. It was measured, not assumed -- at the
+edges the committed seeds reach before any mutation: 3368 for `fuzz_pim` and 3261 for
+`fuzz_igmp` (the RP-less group alone added 159 and 40). It was measured, not assumed -- at the
 default DR priority this router lost both elections, and `send_pim_register()` and the register half
 of `process_cache_miss()` were dead code with nothing reporting it. `FUZZ_DEBUG=1` turns the daemon's
 logging back on, which is the other way to tell a harness whose state is right from one that refuses

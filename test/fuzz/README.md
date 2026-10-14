@@ -81,12 +81,12 @@ that outside the repository unless something in it is worth asserting.
 `fuzz_pim` runs at some ten thousand executions a second under
 `-fsanitize=address,undefined` and `fuzz_igmp` at seven and a half, the
 difference being what a membership report sets in motion (measured over
-60k runs each, poisoning included -- it costs nothing worth naming). Their committed seeds reach 2651
-and 2828 edges on their own -- libFuzzer prints that as the `INITED` line,
+60k runs each, poisoning included -- it costs nothing worth naming). Their committed seeds reach 3368
+and 3261 edges on their own (clang 19, 2026-10-14) -- libFuzzer prints that as the `INITED` line,
 and it is the positive control for a corpus and for the router behind it: a
 harness whose state is wrong, or a seed refused before it is parsed, shows up
-as a number well below that and as nothing else. A minute of mutation from
-them reaches about 3650 and 3700, a quarter of an hour on four workers 3865.
+as a number well below that and as nothing else. Three minutes of mutation
+from them on one worker reach about 4850 and 4100.
 Most of that is the protocol code; the rest is the `config.c` the per-input
 reset parses again and the routing table underneath.
 
@@ -121,10 +121,17 @@ test/pimsend -i 10.0.1.2 hello -b crash-<sha1>
 ```
 
 The addresses to build a seed with are `topology.h`'s: this router and the RP
-of 224.0.0.0/4 are 10.0.1.1, the senders 10.0.1.2, 10.0.1.3 and 10.0.2.2, the
-source 10.0.1.9, and there are two groups -- 239.1.1.1, whose RP is this
-router, and 239.2.3.4, whose RP is the neighbour 10.0.1.2, so that both
-answers to "am I the RP for this" have a group to be asked about. A message
+of 239.0.0.0/8 are 10.0.1.1, the senders 10.0.1.2, 10.0.1.3 and 10.0.2.2, the
+source 10.0.1.9, and there are three groups -- 239.1.1.1, whose RP is this
+router, 239.2.3.4, whose RP is the neighbour 10.0.1.2, so that both
+answers to "am I the RP for this" have a group to be asked about, and
+238.1.1.1, which no RP covers, so that the RP-less group of M48 and M49 is
+too: the prologue gives it a source tree, and the `*-norp` seeds are a
+Join(S,G), a Join(\*,G), a Prune(S,G,rpt), an Assert and a Register for it
+(and `report-v2-norp.bin` a membership).  Before the RP range was narrowed
+to 239.0.0.0/8 for it, every non-SSM group had an RP and that code met no
+generated message: the change and the five seeds took `fuzz_pim` from 3209
+edges to 3368. A message
 about anything else is still a useful input -- it is just one the fuzzer has
 to work harder from.
 

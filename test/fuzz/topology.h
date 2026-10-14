@@ -28,7 +28,11 @@
  *
  * Two groups for the same reason there are two links: this router is the RP
  * for one of them and a neighbor is the RP for the other, so both sides of
- * every test of "am I the RP for this" have a group to be asked about.
+ * every test of "am I the RP for this" have a group to be asked about.  And
+ * a third that no RP covers at all, outside the SSM range, which is the
+ * RP-less group of M48 and M49 in doc/rfc7761-compliance.md: source trees
+ * kept on grp_norp_list and no shared tree, and every reader of a group's RP
+ * asked what it does when there is none.
  */
 
 #ifndef PIMD_FUZZ_TOPOLOGY_H_
@@ -61,6 +65,7 @@
 
 #define FUZZ_GROUP		0xef010101	/* 239.1.1.1, this router is the RP */
 #define FUZZ_GROUP2		0xef020304	/* 239.2.3.4, the neighbor is */
+#define FUZZ_GROUP_NORP		0xee010101	/* 238.1.1.1, nobody is */
 #define FUZZ_SOURCE		0x0a000109	/* 10.0.1.9, on the first link */
 
 /* What fuzz/mrib.c answers with, the two numbers an assert compares */

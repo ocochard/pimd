@@ -58,7 +58,7 @@
  *     parser.  Measure it, do not assume it -- see test/fuzz/README.md.
  *
  * And a prologue, which is not scaffolding but messages: three Hellos and
- * two Joins, through the daemon's own receive path, so that the state an
+ * three Joins, through the daemon's own receive path, so that the state an
  * input lands on was built by the code that builds it in the field rather
  * than written into the structures from here.
  */
@@ -152,11 +152,16 @@ const uint32_t fuzz_senders[4] = {
  * stranger's is, and a packet from a source in it is one this router would
  * register to somebody else -- which is the whole of send_pim_register(),
  * reached from the IGMPMSG_WHOLEPKT upcall and from nowhere else.
+ *
+ * The first is 239.0.0.0/8 and not the whole of 224.0.0.0/4 so that a group
+ * outside both, FUZZ_GROUP_NORP, has no RP at all: with every group covered,
+ * the RP-less group of M48 and M49 -- grp_norp_list and the guards on every
+ * reader of active_rp_grp -- met no generated message outside the SSM range.
  */
 static const char fuzz_conf[] =
 	"bsr-candidate 10.0.1.1 priority 5 interval 30\n"
 	"rp-candidate 10.0.1.1 priority 20 interval 30\n"
-	"rp-address 10.0.1.1 224.0.0.0/4\n"
+	"rp-address 10.0.1.1 239.0.0.0/8\n"
 	"rp-address 10.0.1.2 239.2.0.0/16\n"
 	"spt-threshold packets 0 interval 100\n"
 	/* A mapping agent, so that an Auto-RP announcement reaches the half
@@ -349,7 +354,8 @@ static void fuzz_send_hello(uint32_t src, unsigned genid, unsigned dr_prio)
  * otherwise (sec. 4.9.5.1).  Sent to the group, upstream neighbor this
  * router, so the receiver acts on it.
  */
-static void fuzz_send_join(uint32_t src, uint32_t upstream, uint32_t source, unsigned flags)
+static void fuzz_send_join(uint32_t src, uint32_t upstream, uint32_t group, uint32_t source,
+			   unsigned flags)
 {
 	uint8_t msg[64];
 	uint8_t *p = msg;
@@ -363,7 +369,7 @@ static void fuzz_send_join(uint32_t src, uint32_t upstream, uint32_t source, uns
 	p = put_byte(p, 1);			/* One group set */
 	p = put_short(p, (unsigned)PIM_JOIN_PRUNE_HOLDTIME);
 
-	p = put_egaddr(p, htonl(FUZZ_GROUP));
+	p = put_egaddr(p, group);
 	p = put_short(p, 1);			/* One joined source */
 	p = put_short(p, 0);			/* No pruned sources */
 	p = put_esaddr(p, source, flags);
@@ -529,9 +535,13 @@ void fuzz_router_build(void)
 	fuzz_send_hello(htonl(FUZZ_NBR1_ADDR), 0x2000, 0);
 	fuzz_send_hello(htonl(FUZZ_NBR2_ADDR), 0x3000, PIM_HELLO_DR_PRIO_DEFAULT);
 
-	fuzz_send_join(htonl(FUZZ_NBR2_ADDR), htonl(FUZZ_IF1_ADDR),
+	fuzz_send_join(htonl(FUZZ_NBR2_ADDR), htonl(FUZZ_IF1_ADDR), htonl(FUZZ_GROUP),
 		       htonl(FUZZ_IF0_ADDR), USADDR_S_BIT | USADDR_WC_BIT | USADDR_RP_BIT);
-	fuzz_send_join(htonl(FUZZ_NBR2_ADDR), htonl(FUZZ_IF1_ADDR),
+	fuzz_send_join(htonl(FUZZ_NBR2_ADDR), htonl(FUZZ_IF1_ADDR), htonl(FUZZ_GROUP),
+		       htonl(FUZZ_SOURCE), USADDR_S_BIT);
+	/* And a source tree for the group no RP covers, the state an RP-less
+	 * group lives on */
+	fuzz_send_join(htonl(FUZZ_NBR2_ADDR), htonl(FUZZ_IF1_ADDR), htonl(FUZZ_GROUP_NORP),
 		       htonl(FUZZ_SOURCE), USADDR_S_BIT);
 }
 
