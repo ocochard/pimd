@@ -1055,6 +1055,14 @@ void update_sptbit(mrtentry_t *mrt, vifi_t iif)
  * reads it and Update_SPTbit(S,G,iif) reads JoinDesired(S,G).  The call is
  * shared and the baselines are not -- each keeps its own previous count, for
  * the reason written at check_sptbit() below.
+ *
+ * Under privilege separation that call is a round trip to the parent,
+ * PRIV_SG_CNT, one per entry per pass.  Measured with the scale scenario of
+ * test/lab.sh and SCALE_MEMBERS=1000 (2026-10-14, FreeBSD): a pass over
+ * 10000 (S,G), 1000 of them with an MFC entry, took 6186us separated and
+ * 1599us not, about 4.6us a round trip -- under 1% of the 5s tick even with
+ * every entry of the ten thousand read, which is why the reads are not
+ * batched into one request.
  */
 static void check_data_from_source(mrtentry_t *mrt)
 {

@@ -461,7 +461,11 @@ behaviour: a DR is made to hold ten thousand (S,G), one packet per group from
 it reads back is what that costs -- the ageing pass the daemon now times for
 itself (`Route ageing usec` and `Route ageing peak` in `show status`), the wall
 time of the build and of `show mrt`, and the kernel MFC, which is empty because
-no group has a member and pimd installs no entry for an empty oif list.  It
+no group has a member and pimd installs no entry for an empty oif list --
+unless `SCALE_MEMBERS=N` has ED2 join the first N groups first, which gives
+those N an MFC entry each and makes every ageing pass read their counters,
+one privsep round trip apiece; run beside `SAN_NO_PRIVSEP=yes` it is how the
+cost of a round trip was measured (see `check_data_from_source()`).  It
 bounds those numbers loosely and prints them, the way the coverage job reports
 rather than gates; the two entries of `doc/TODO.org` it answers carry the
 numbers and the date.

@@ -1112,6 +1112,12 @@ SCALE_PPS=${SCALE_PPS:-2000}
 SCALE_BUILD_WAIT=${SCALE_BUILD_WAIT:-180}
 SCALE_AGEING_MAX_USEC=${SCALE_AGEING_MAX_USEC:-2000000}
 SCALE_SHOW_MAX_SEC=${SCALE_SHOW_MAX_SEC:-30}
+# How many of those groups ED2 joins before the flood, 0 by default.  With
+# members a group's entry gets an MFC entry of its own, and every ageing
+# pass then reads its kernel counters, check_data_from_source() in
+# src/route.c -- one privsep round trip each, which is what this measures
+# against a run with SAN_NO_PRIVSEP=yes.
+SCALE_MEMBERS=${SCALE_MEMBERS:-0}
 
 KEEP_GROUP=${KEEP_GROUP:-239.1.1.5}
 KEEP_NUM=${KEEP_NUM:-3}
@@ -6845,6 +6851,16 @@ check_jp_pack() {
 	result
 }
 
+# The $1th group of the flood, counting from $SCALE_GROUP, the way mflood
+# steps through them
+scale_group() {
+	echo "$SCALE_GROUP" | awk -F. -v i="$1" '{
+		n = (($1 * 256 + $2) * 256 + $3) * 256 + $4 + i
+		printf "%d.%d.%d.%d\n", int(n / 16777216) % 256, int(n / 65536) % 256,
+			int(n / 256) % 256, n % 256
+	}'
+}
+
 check_scale() {
 	print "1. pimd is alive and the domain has converged"
 	for r in $ROUTERS; do
@@ -6864,6 +6880,23 @@ check_scale() {
 		return 1
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
+
+	if [ "$SCALE_MEMBERS" -gt 0 ]; then
+		print "1b. ED2 joins the first $SCALE_MEMBERS of the groups"
+		i=0
+		while [ "$i" -lt "$SCALE_MEMBERS" ]; do
+			box_run ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$(scale_group "$i")" -v 2 \
+				>/dev/null 2>&1
+			i=$((i + 1))
+		done
+		sc_last=$(scale_group $((SCALE_MEMBERS - 1)))
+		if wait_for 120 has_wc_route r1 "$sc_last"; then
+			ok "r1 holds a (*,G) for every group joined, the last $sc_last"
+		else
+			fail "r1 has no (*,G) for $sc_last, the members never reached it"
+			return 1
+		fi
+	fi
 
 	print "2. $SCALE_NUM (S,G) entries, one packet per group"
 	# One cache miss per group, each one a find_route() insert into the
@@ -6926,7 +6959,13 @@ check_scale() {
 	# cache entry.  It is also why the flood is one packet per group: a
 	# stream would measure that upcall path instead of this table.
 	sc_mfc=$(pimctl r1 -t show mfc 2>/dev/null | grep -c "^$SRC_ADDR " || true)
-	if [ "$sc_mfc" -eq 0 ]; then
+	if [ "$SCALE_MEMBERS" -gt 0 ]; then
+		if [ "$sc_mfc" -ge "$SCALE_MEMBERS" ]; then
+			ok "and the kernel MFC holds $sc_mfc of them, one per group with a member"
+		else
+			fail "the kernel MFC holds $sc_mfc entries, want the $SCALE_MEMBERS groups joined"
+		fi
+	elif [ "$sc_mfc" -eq 0 ]; then
 		ok "and the kernel MFC holds none of them, no group having a member"
 	else
 		fail "the kernel MFC holds $sc_mfc entries for groups nobody joined"
