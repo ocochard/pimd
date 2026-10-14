@@ -301,6 +301,13 @@ static int msg_recv(int sd, void *buf, size_t len, int *fd)
     return 0;
 }
 
+/* msg_recv() for test/privsep_fds.c, which asserts what it does with the
+ * descriptors a message carries and has no other way to reach it */
+int priv_msg_recv(int sd, void *buf, size_t len, int *fd)
+{
+    return msg_recv(sd, buf, len, fd);
+}
+
 
 /*
  * One request, one reply.  Anything that goes wrong on the socket means

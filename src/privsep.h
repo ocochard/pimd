@@ -91,6 +91,7 @@ struct priv_ifrec {
  * does the plain thing in-process when separation is off.
  */
 int	priv_init	(const char *user, const char *conf, const char *pid, const char *sock);
+int	priv_msg_recv	(int sd, void *buf, size_t len, int *fd);
 int	priv_enabled	(void);
 const char *priv_user	(void);
 const char *priv_sandbox(void);

@@ -1,5 +1,5 @@
-# Only the corpus replay below runs under `make check`, and only in a fuzz
-# build.  The rest wants what automake cannot give it and runs by hand or as
+# Only the corpus replay and privsep_fds below run under `make check`, and
+# only in a fuzz build.  The rest wants what automake cannot give it and runs by hand or as
 # a CI job of its own: lab.sh real root and FreeBSD vnet jails or Linux named
 # netns, frr-interop.sh FRR installed beside pimd, freebsd-interop.sh bhyve
 # and a licensed Arista vEOS image, cbmc/run.sh cbmc(1) and minutes per
@@ -56,7 +56,11 @@ dist-hook:
 # defines k_req_incoming(), so neither netlink.c nor routesock.c is pulled
 # out of libpimd.a and an RPF lookup answers the same on every machine.
 if ENABLE_FUZZ
-TESTS              = fuzz-corpus.sh
+# privsep_fds is not a harness but rides here for the same reason: it links
+# the daemon's privsep.c out of libpimd.a, with fuzz/stubs.c for what main.c
+# would define, and asserts what msg_recv() does with descriptors a message
+# carries -- needing no root, no kernel multicast and no network.
+TESTS              = fuzz-corpus.sh privsep_fds
 
 FUZZ_LDADD         = $(top_builddir)/src/libpimd.a
 FUZZ_ROUTER        = fuzz/router.c fuzz/router.h fuzz/mrib.c	\
@@ -64,6 +68,9 @@ FUZZ_ROUTER        = fuzz/router.c fuzz/router.h fuzz/mrib.c	\
 
 noinst_PROGRAMS   += fuzz_config_replay fuzz_pim_replay fuzz_igmp_replay \
 		     fuzz_autorp_replay fuzz_ipc_replay
+noinst_PROGRAMS   += privsep_fds
+privsep_fds_SOURCES        = privsep_fds.c fuzz/stubs.c
+privsep_fds_LDADD          = $(FUZZ_LDADD)
 fuzz_config_replay_SOURCES = fuzz/fuzz_config.c fuzz/stubs.c fuzz/replay.c
 fuzz_pim_replay_SOURCES    = fuzz/fuzz_pim.c    $(FUZZ_ROUTER) fuzz/replay.c
 fuzz_igmp_replay_SOURCES   = fuzz/fuzz_igmp.c   $(FUZZ_ROUTER) fuzz/replay.c

@@ -61,8 +61,11 @@ CI (`.github/workflows/ci-linux.yml`) builds with both gcc and clang using
 
 ## Tests
 
-`TESTS` is empty unless the tree was configured `--enable-fuzz`, when it holds one entry, the fuzz
-corpus replay of `test/fuzz-corpus.sh`; in an ordinary build `make check` still runs nothing. Every
+`TESTS` is empty unless the tree was configured `--enable-fuzz`, when it holds two entries, the fuzz
+corpus replay of `test/fuzz-corpus.sh` and `test/privsep_fds`, which sends messages carrying 0 to 10
+descriptors over the privsep socketpair and asserts `msg_recv()` (through `priv_msg_recv()`) leaves
+none open it was not asked for -- the descriptor-table exhaustion a child could otherwise inflict on
+the root parent; in an ordinary build `make check` still runs nothing. Every
 Linux-only script that was here is a scenario of
 `test/lab.sh` now, which asserts the same and more and runs on both systems; the last three went once
 `solo` and two steps of `rpt` covered their shape. The labs want real root and named namespaces,
