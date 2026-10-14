@@ -3985,7 +3985,7 @@ static srcentry_t *assert_mrib_src(mrtentry_t *mrt)
 }
 
 /*
- * RPF' of RFC 7761 sec. 4.1.6 for an entry whose routing table neighbor is
+ * RPF' of RFC 7761 sec. 4.1.5 for an entry whose routing table neighbor is
  * @mrib: the Assert winner on its incoming interface while this router is
  * the Loser there, @mrib otherwise.  age_routes() (src/route.c) recomputes
  * upstreams from the routing table and asks this, rather than overwrite
@@ -4008,7 +4008,7 @@ pim_nbr_entry_t *assert_rpf_prime(mrtentry_t *mrt, pim_nbr_entry_t *mrib)
 }
 
 /*
- * RPF'(S,G,rpt) is RPF'(*,G), RFC 7761 sec. 4.1.6: an (S,G) entry on the
+ * RPF'(S,G,rpt) is RPF'(*,G), RFC 7761 sec. 4.1.5: an (S,G) entry on the
  * shared tree, MRTF_RP, sends its Prune(S,G,rpt) where the (*,G) sends its
  * Joins.  A new RP carries the (*,G)'s upstream over to those entries, and
  * so must an Assert that moves it, since the Assert with the RPT bit is the
@@ -4029,7 +4029,7 @@ static void assert_rpt_follow(mrtentry_t *wc)
 }
 
 /*
- * RPF'(S,G) and RPF'(*,G) of RFC 7761 sec. 4.1.6 are the Assert winner on
+ * RPF'(S,G) and RPF'(*,G) of RFC 7761 sec. 4.1.5 are the Assert winner on
  * RPF_interface while there is one, and the MRIB's neighbor otherwise.  So
  * when the Loser state there ends the Joins go back to the MRIB's neighbor,
  * which "RPF'(*,G) changes due to an Assert" in sec. 4.5.4, and its (S,G)

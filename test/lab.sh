@@ -5067,7 +5067,7 @@ check_assert_recover() {
 		fail "assert state is wrong: r4 '${st4:-none}' (want W), r3 '${st3:-none}' (want L)"
 	fi
 	# And the router downstream of the election follows it.  R5's RPF
-	# neighbour for the RP is R3, and RFC 7761 sec. 4.1.6 makes RPF'(*,G)
+	# neighbour for the RP is R3, and RFC 7761 sec. 4.1.5 makes RPF'(*,G)
 	# the Assert winner instead, which sec. 4.6.2 records as Loser state on
 	# R5's RPF interface.  pimd measured each Assert there against R5's own
 	# route to the RP, found R4's inferior, and went on sending its Joins
@@ -7896,7 +7896,7 @@ craft_step_7f() {
 	print "7f. An Assert with the RPT bit moves RPF'(*,G), and RPF'(S,G,rpt) with it"
 	# On RPF_interface(RP(G)) an Assert with the RPT bit is the (*,G)
 	# machine's, sec. 4.6.1 having no transition there for one, and
-	# RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.6.  assert_decide()
+	# RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.5.  assert_decide()
 	# (src/pim_assert.c) let an (S,G) entry on the shared tree -- MRTF_RP,
 	# the state a Prune(S,G,rpt) makes -- take the message for its source,
 	# follow the winner itself, and so keep the (*,G) machine out of it:
@@ -7992,7 +7992,7 @@ craft_step_7f() {
 
 craft_step_7r() {
 	print "7r. An (S,G) Assert lost toward the RP holds RPF'(S,G,rpt), and prunes nobody"
-	# Sec. 4.1.6: RPF'(S,G,rpt) is the (S,G) Assert winner on
+	# Sec. 4.1.5: RPF'(S,G,rpt) is the (S,G) Assert winner on
 	# RPF_interface(RP(G)) while this router is the Loser there, and
 	# RPF'(*,G) otherwise.  The check of the unicast routes in
 	# age_routes() (src/route.c) set an (S,G) on the shared tree back to
@@ -8297,7 +8297,7 @@ craft_step_7x() {
 craft_step_7y() {
 	print "7y. A Join(S,G) on the RPF interface toward the source is acted on"
 	# Sec. 4.5.2 keeps joins(S,G) on whatever interface a Join(S,G)
-	# arrives on, and sec. 4.1.6 takes the incoming interface out of
+	# arrives on, and sec. 4.2 takes the incoming interface out of
 	# forwarding afterwards; JoinDesired(S,G) reads immediate_olist(S,G),
 	# which it does not subtract.  A neighbour on the link r1 takes S from
 	# can have r1 as its RPF'(S) -- a static route, or metrics that
@@ -8664,7 +8664,7 @@ craft_step_7l() {
 craft_step_7m() {
 	print "7m. A Prune(*,G) takes the interface off the sources with an (S,G) too"
 	# inherited_olist(S,G) is built from joins(*,G) as it is now, sec.
-	# 4.1.6, so a Prune(*,G) that takes an interface off the (*,G) takes
+	# 4.1.5, so a Prune(*,G) that takes an interface off the (*,G) takes
 	# it off every source of the group not held there by a Join(S,G).  A
 	# new (S,G) entry is seeded with a copy of the (*,G)'s joined set,
 	# VOIF_COPY in src/mrt.h, and calc_oifs() (src/route.c) adds that copy
@@ -11012,7 +11012,7 @@ r1_bare_rpt_prunes_since() {
 }
 
 # The neighbor ($2,$3) on router $1 sends its Joins to, RPF' of RFC 7761
-# sec. 4.1.6, off the "Upstream" line of "show mrt detail"
+# sec. 4.1.5, off the "Upstream" line of "show mrt detail"
 route_upstream() {
 	pimctl "$1" show mrt detail 2>/dev/null | awk -v s="$2" -v g="$3" '
 		$1 == s && $2 == g { want = 1; next }

@@ -479,7 +479,7 @@ void add_leaf(vifi_t vifi, uint32_t source, uint32_t group)
     }
 
     /* A membership in the SSM range named one source, and the entry it named
-     * is the one handled above.  RFC 7761 sec. 4.1.6 builds pim_include(S,G)
+     * is the one handled above.  RFC 7761 sec. 4.1.5 builds pim_include(S,G)
      * from local_receiver_include(S,G,I), "local members on interface I
      * desire to receive traffic sent specifically by S", so no other source's
      * (S,G) may take this interface: the inheritance below is (*,G) state and
@@ -592,7 +592,7 @@ void delete_leaf(vifi_t vifi, uint32_t source, uint32_t group)
 
 /*
  * joins(*,G) has lost @vifi, so it leaves inherited_olist(S,G), RFC 7761
- * sec. 4.1.6, for every source of the group not held there by a Join(S,G).
+ * sec. 4.1.5, for every source of the group not held there by a Join(S,G).
  * A new (S,G) is seeded with a copy of the (*,G)'s joined set, VOIF_COPY,
  * which calc_oifs() adds to the (*,G)'s live one; this is the counterpart
  * of that seeding, as the loop at the end of delete_leaf() is for an IGMP
@@ -2895,7 +2895,7 @@ static void age_route_sg(mrtentry_t *mrt_srcs, grpentry_t *grp, rpentry_t *rp, i
 	    }
 	} else if (rp) {
 	    /* (S,G)RPBit with iif toward RP.  Its upstream is
-	     * RPF'(S,G,rpt), which sec. 4.1.6 makes the (S,G)
+	     * RPF'(S,G,rpt), which sec. 4.1.5 makes the (S,G)
 	     * Assert winner on RPF_interface(RP(G)) while we are
 	     * the Loser there and RPF'(*,G) otherwise, the (*,G)
 	     * above being brought up to date first: held to the

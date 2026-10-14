@@ -164,7 +164,7 @@ int assert_decide(const struct assert_view *v)
 	 * never wins: sec. 4.6.1 and sec. 4.6.2 have it lose to any
 	 * acceptable Assert, replace the winner only with a preferred one,
 	 * and go back to NoInfo on an inferior Assert from the winner.
-	 * RPF' follows the winner, sec. 4.1.6.
+	 * RPF' follows the winner, sec. 4.1.5.
 	 *
 	 * The winner's AssertCancel first, for either machine: it carries
 	 * the RPT bit whatever the machine, sec. 4.6.4, and the test of the
@@ -183,7 +183,7 @@ int assert_decide(const struct assert_view *v)
 	     * (S,G,rpt) state -- used to take it as well, follow the winner
 	     * itself and so keep the (*,G) machine out of the message,
 	     * leaving RPF'(*,G) and the whole group's Joins on the router
-	     * that had lost.  RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.6, and
+	     * that had lost.  RPF'(S,G,rpt) is RPF'(*,G), sec. 4.1.5, and
 	     * src/pim_proto.c carries the (*,G)'s over to it. */
 	    if (!v->wc)
 		return ASSERT_ACT_NONE;

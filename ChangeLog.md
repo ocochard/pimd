@@ -34,6 +34,11 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An `rp-address` line whose address did not parse was taken without a
+  warning and then dropped, since the parser compared against 0xffffff,
+  three bytes, where an unparseable address is 0xffffffff.  The same test
+  in `register-accept-from`, `crp-accept-from`, `autorp accept-from` and
+  `anycast-rp` had a second check behind it that caught the error.
 - An RP holding a (*,G) whose receivers had all left answered a source's
   Register with a Register-Stop and kept nothing, so a receiver that joined
   afterwards waited 30 to 90 seconds for the DR to register again.  It
@@ -129,7 +134,7 @@ issue of this repository is written out in full.
 - A Prune(*,G) took the interface off the shared tree but not off the
   sources of the group that had an (S,G) entry, which went on flowing onto
   the pruned link until a copied timer ran out -- for good under a
-  holdtime of 0xffff.  RFC 7761 sec. 4.1.6.  Step 7m of `crafted`.
+  holdtime of 0xffff.  RFC 7761 sec. 4.1.5.  Step 7m of `crafted`.
 - A Join(*,G) and a Prune(S,G,rpt) arriving in the same message for a
   group the router held nothing for -- what a downstream neighbour sends a
   new upstream after an RPF change -- created the group and dropped the
@@ -168,7 +173,7 @@ issue of this repository is written out in full.
   router holding that source off the shared tree went back to its routing
   table's neighbour at the next check of the unicast routes, every 20
   seconds, and sent the Assert winner a Prune for the source on the way.
-  RFC 7761 sec. 4.1.6 and 4.5.7.  Step 7r of `crafted`.
+  RFC 7761 sec. 4.1.5 and 4.5.7.  Step 7r of `crafted`.
 - A Join/Prune with an upstream neighbour address of 0.0.0.0 on a
   point-to-point link is taken as addressed to this router, as RFC 7761
   sec. 4.5.1 recommends for backwards compatibility; it was dropped whole.
@@ -236,7 +241,7 @@ issue of this repository is written out in full.
   fixes below, M23 to M27 of `doc/rfc7761-compliance.md`.
 - `pimctl show mrt detail` prints each entry's upstream neighbor, the one
   its Joins go to: the routing table's, or the winner of an Assert on the
-  incoming interface (RFC 7761 sec. 4.1.6).
+  incoming interface (RFC 7761 sec. 4.1.5).
 
 ### Fixes
 - A Bootstrap group set whose RP count is zero while its fragment RP count
@@ -294,7 +299,7 @@ issue of this repository is written out in full.
   also held a source pruned off that shared tree: the Assert went to that
   source's entry instead.  Both now follow the winner, and stay with it
   across the periodic check of the unicast routes, which put them back on
-  the routing table's neighbour.  RFC 7761 sec. 4.1.6 and 4.6.2, step 7f of
+  the routing table's neighbour.  RFC 7761 sec. 4.1.5 and 4.6.2, step 7f of
   `crafted`.
 - A router that had lost the Assert election for a source it forwards off
   the shared tree renewed that loss on every Assert its winner sent for the
@@ -1143,7 +1148,7 @@ issue of this repository is written out in full.
   walking every (S,G) of the group and setting or clearing the receiving
   interface in all of them.  That is right for an any-source membership, which
   is (\*,G) state every source of the group inherits, and wrong inside the SSM
-  range, where the membership names one source: RFC 7761 sec. 4.1.6 builds
+  range, where the membership names one source: RFC 7761 sec. 4.1.5 builds
   `pim_include(S,G)` from `local_receiver_include(S,G,I)`, "local members on
   interface I desire to receive traffic sent specifically by S".  So a join for
   one source put every other source of the group onto that link, with a kernel

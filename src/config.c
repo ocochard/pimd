@@ -1169,7 +1169,7 @@ static int parse_acl_prefix(char *s, const char *what, int group, uint32_t *addr
 	    WARN("Invalid %s group '%s', not a multicast address", what, w);
 	    return FALSE;
 	}
-    } else if (addr == 0xffffff || !inet_valid_host(addr)) {
+    } else if (addr == 0xffffffff || !inet_valid_host(addr)) {
 	WARN("Invalid %s address '%s'", what, w);
 	return FALSE;
     }
@@ -2671,7 +2671,7 @@ static int parse_register_accept_from(char *s)
     parse_prefix_len(w, &masklen);
 
     addr = inet_parse(w, 4);
-    if (addr == 0xffffff || !inet_valid_host(addr)) {
+    if (addr == 0xffffffff || !inet_valid_host(addr)) {
 	WARN("Invalid register-accept-from address '%s'", w);
 	return FALSE;
     }
@@ -2719,7 +2719,7 @@ static int parse_anycast_rp(char *s)
     }
 
     anycast = inet_parse(w, 4);
-    if (anycast == 0xffffff || !inet_valid_host(anycast)) {
+    if (anycast == 0xffffffff || !inet_valid_host(anycast)) {
 	WARN("Invalid anycast-rp address '%s'", w);
 	return FALSE;
     }
@@ -2731,7 +2731,7 @@ static int parse_anycast_rp(char *s)
     }
 
     member = inet_parse(w, 4);
-    if (member == 0xffffff || !inet_valid_host(member)) {
+    if (member == 0xffffffff || !inet_valid_host(member)) {
 	WARN("Invalid anycast-rp member address '%s'", w);
 	return FALSE;
     }
@@ -2856,7 +2856,7 @@ static int parse_bsr_candidate(char *s)
 static int parse_rp_address(char *s)
 {
     char *w;
-    uint32_t local = 0xffffff;
+    uint32_t local = 0xffffffff;
     uint32_t group_addr = htonl(INADDR_UNSPEC_GROUP);
     uint32_t masklen = PIM_GROUP_PREFIX_DEFAULT_MASKLEN;
     struct rp_hold *rph;
@@ -2869,7 +2869,7 @@ static int parse_rp_address(char *s)
     }
 
     local = inet_parse(w, 4);
-    if (local == 0xffffff) {
+    if (local == 0xffffffff) {
 	WARN("Invalid rp-address %s", w);
 	return FALSE;
     }
