@@ -26,6 +26,9 @@
  *   proof_et      rpt_et_after() against the prose of sec. 4.5.3: "set to
  *                 the HoldTime" and "the maximum of its current value and
  *                 the HoldTime", a held HoldTime being the longest
+ *   proof_ds_et   jp_et_after(), the same prose for the (*,G) and (S,G)
+ *                 machines of sec. 4.5.1 and 4.5.2, over the countdown in
+ *                 seconds those keep, 0xffff held
  *
  * The tables below are the RFC's, cell by cell, with one reading made
  * explicit: a Prune-Pending Timer of zero "expire[s] immediately", so a
@@ -42,12 +45,14 @@
 
 #include SOURCE
 
+uint16_t nondet_uint16_t(void);
 uint32_t nondet_uint32_t(void);
 uint64_t nondet_uint64_t(void);
 
 void proof_ds(void);
 void proof_rpt(void);
 void proof_et(void);
+void proof_ds_et(void);
 
 static int same(struct jp_act a, int state, int et, int ppt, int echo)
 {
@@ -175,6 +180,25 @@ void proof_et(void)
 	__CPROVER_assert(got == (cur > want ? cur : want), "MAX: the later deadline");
     if (et == JP_ET_KEEP || et == JP_ET_CANCEL)
 	__CPROVER_assert(got == cur, "KEEP and CANCEL leave it");
+}
+
+void proof_ds_et(void)
+{
+    int et = (int)(nondet_uint32_t() % 4);
+    uint16_t cur      = nondet_uint16_t();
+    uint16_t holdtime = nondet_uint16_t();
+    uint16_t got = jp_et_after(et, cur, holdtime);
+
+    if (et == JP_ET_SET)
+	__CPROVER_assert(got == holdtime, "SET: the HoldTime");
+    if (et == JP_ET_MAX)
+	__CPROVER_assert(got == (cur > holdtime ? cur : holdtime), "MAX: the maximum of the two");
+    if (et == JP_ET_MAX && cur == 0xffff)
+	__CPROVER_assert(got == 0xffff, "MAX: a held one stays held");
+    if (et == JP_ET_CANCEL)
+	__CPROVER_assert(got == 0, "CANCEL: stopped");
+    if (et == JP_ET_KEEP)
+	__CPROVER_assert(got == cur, "KEEP leaves it");
 }
 
 /**

@@ -844,7 +844,8 @@ it was stopped, where the two that replace it take under a second.  `test/cbmc/j
 Join/Prune counterpart of `proof_decide`, step 2 of `aidd_docs/plans/jp-machines.md`:
 `src/pim_jp.c` holds the downstream machines of RFC 7761 sec. 4.5.1 to 4.5.3 as a state and an
 event in and an action out -- `jp_ds_decide()` for the (\*,G) and (S,G) table, `rpt_ds_decide()`
-for the (S,G,rpt) one with its two transient states, `rpt_et_after()` for its Expiry Timer, where
+for the (S,G,rpt) one with its two transient states, `jp_et_after()` and `rpt_et_after()` for the two
+machines' Expiry Timers, the second where
 D3 (M35) lived -- proven against Figures 2 to 4 written out cell by cell; every site of the three
 machines in `src/pim_proto.c` and `src/route.c` goes through it, the state read off the entry and
 the action written back by `jp_ds_state()`/`jp_ds_apply()` and `rpt_ds_state()`/`rpt_ds_apply()`.

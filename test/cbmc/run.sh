@@ -315,6 +315,7 @@ s="$top/src/pim_jp.c"
 proof  ds-spec                     "$h" "$s" proof_ds           0 1
 proof  ds-rpt-spec                 "$h" "$s" proof_rpt          0 1
 proof  ds-rpt-et                   "$h" "$s" proof_et           0 1
+proof  ds-et                       "$h" "$s" proof_ds_et        0 1
 mutant ds-pp-prune-restarts     "$h" "$s" proof_ds           0 1 's/	    if (state != JP_DS_J)$/	    if (state == JP_DS_NI)/'
 mutant ds-zero-ppt-waits        "$h" "$s" proof_ds           0 1 's/	    if (ppt_zero)$/	    if (0)/'
 mutant ds-no-prune-echo         "$h" "$s" proof_ds           0 1 's/JP_ET_CANCEL, JP_PPT_KEEP, 1);/JP_ET_CANCEL, JP_PPT_KEEP, 0);/'
@@ -328,6 +329,9 @@ mutant ds-rpt-ppt-forgotten       "$h" "$s" proof_rpt          0 1 '/case RPT_EV
 mutant ds-rpt-pp-prune-restarts    "$h" "$s" proof_rpt          0 1 's/if (state == RPT_DS_P || state == RPT_DS_PT)$/if (state == RPT_DS_P || state == RPT_DS_PT || state == RPT_DS_PP)/'
 mutant ds-et-max-is-set            "$h" "$s" proof_et           0 1 's/if (et == JP_ET_MAX \&\& cur \&\& (!want || want > cur))/if (et == JP_ET_MAX)/'
 mutant ds-et-held-cut              "$h" "$s" proof_et           0 1 's/if (et == JP_ET_MAX \&\& cur \&\& (!want || want > cur))/if (et == JP_ET_MAX \&\& (!want || want > cur))/'
+mutant ds-wc-et-max-is-set         "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_MAX \&\& cur < holdtime)/if (et == JP_ET_MAX)/'
+mutant ds-wc-et-max-is-min         "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_MAX \&\& cur < holdtime)/if (et == JP_ET_MAX \&\& cur > holdtime)/'
+mutant ds-wc-et-cancel-kept        "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_CANCEL)$/if (0)/'
 
 # Round trips, step 3 of aidd_docs/plans/assert-proofs.md: the bodies
 # src/pim_encode.c writes, read back by src/pim_parse.c, for every value

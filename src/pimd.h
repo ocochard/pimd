@@ -861,6 +861,7 @@ struct jp_act {
 struct jp_act jp_ds_decide (int state, int event, int ppt_zero);
 struct jp_act rpt_ds_decide(int state, int event, int ppt_zero);
 uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
+uint16_t      jp_et_after  (int et, uint16_t cur, uint16_t holdtime);
 
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000

@@ -156,6 +156,29 @@ uint64_t rpt_et_after(int et, uint64_t cur, uint64_t want)
     return cur;
 }
 
+/*
+ * The Expiry Timer a (*,G) or (S,G) action leaves, `vif_timers` in seconds
+ * where 0xffff is held: sec. 4.5.1 and 4.5.2's "set to the HoldTime" for
+ * JP_ET_SET and "restarted and is then set to the maximum of its current
+ * value and the HoldTime" for JP_ET_MAX, held being the largest there is;
+ * JP_ET_CANCEL stops it.  Anything else leaves @cur.  The (S,G,rpt) twin
+ * above works on deadlines rather than a countdown, which is why the two
+ * are apart.
+ */
+uint16_t jp_et_after(int et, uint16_t cur, uint16_t holdtime)
+{
+    if (et == JP_ET_SET)
+	return holdtime;
+
+    if (et == JP_ET_MAX && cur < holdtime)
+	return holdtime;
+
+    if (et == JP_ET_CANCEL)
+	return 0;
+
+    return cur;
+}
+
 /**
  * Local Variables:
  *  indent-tabs-mode: t

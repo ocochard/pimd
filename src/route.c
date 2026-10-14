@@ -660,21 +660,7 @@ int jp_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint16_t holdti
     int jd = (!wc && mrt->source && !(mrt->flags & MRTF_NEW)) ? join_desired(mrt) : -1;
     int now;
 
-    switch (act.et) {
-	case JP_ET_SET:
-	    SET_TIMER(mrt->vif_timers[vifi], holdtime);
-	    break;
-
-	case JP_ET_MAX:
-	    /* 0xffff, held, is also the largest there is */
-	    if (mrt->vif_timers[vifi] < holdtime)
-		SET_TIMER(mrt->vif_timers[vifi], holdtime);
-	    break;
-
-	case JP_ET_CANCEL:
-	    RESET_TIMER(mrt->vif_timers[vifi]);
-	    break;
-    }
+    mrt->vif_timers[vifi] = jp_et_after(act.et, mrt->vif_timers[vifi], holdtime);
 
     if (act.state == JP_DS_NI) {
 	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
