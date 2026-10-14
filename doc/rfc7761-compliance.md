@@ -253,7 +253,13 @@ landed in different packets and a conformant upstream moved every (S,G,rpt)
 it held to NoInfo.  The sets already packed are sent first now, so a split
 falls between sets, and where one message is not enough for the set the
 section's own rule applies -- the numerically smallest N addresses in network
-byte order, the rest left out.  M12 was the third term of
+byte order, the rest left out.  *Test: `jp-pack` in `test/lab.sh`: ED1 joins
+(\*,G) at r1 with 90 sources pruned off the shared tree in one message, and
+r1's periodic Join(\*,G) has to reach r2 with the 63 smallest in the same
+message and nothing of the set after it (a mutant flushing on size alone sent
+the 27 left over bare).  The smallest-N half is read but cannot fail alone:
+r1 adds the prunes in ascending order, so the ones that fit are the smallest
+anyway and `jp_prune_keep_smallest()` never replaces one.*  M12 was the third term of
 `lost_assert(S,G,I)` reaching the wrong olist: pimd computed one per entry and
 used it for forwarding and for Join/Prune both, so a router that lost an
 assert while forwarding on the shared tree pruned the source whose traffic it

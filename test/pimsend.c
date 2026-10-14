@@ -197,7 +197,11 @@
 /* The first byte a -x flip may land on: version and type are the byte
  * before it and the checksum the two after, and each has its own option */
 #define MUTATE_FIRST			4
-#define MAX_SOURCES			64
+/* Enough for a Join(*,G) whose Prune(S,G,rpt) do not fit the 576 bytes
+ * pimd packs to, which the jp-pack scenario of test/lab.sh needs in one
+ * message: a second Join(*,G) would lift every prune the first carried,
+ * RFC 7761 sec. 4.5.3.  128 of each list is 2K, inside BUFSZ. */
+#define MAX_SOURCES			128
 
 /* How long a -c burst waits for a full send queue, per packet: 1ms at a
  * time, up to a second, which is far longer than a queue takes to drain

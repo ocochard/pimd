@@ -721,6 +721,19 @@
 #               the entry in doc/rfc7761-compliance.md stays open.
 #               Takes about 2 minutes.
 #
+#   jp-pack     The rpt topology with nothing forwarded, and the only
+#               scenario that makes pimd build a Join/Prune larger than one
+#               message holds.  ED1 joins (*,G) at R1 and prunes 90 sources
+#               off the shared tree; R1's periodic Join(*,G) to R2 carries
+#               its Prune(S,G,rpt) for them, sec. 4.5.6, and 90 of those do
+#               not fit the 576 bytes pimd packs to.  RFC 7761 sec.
+#               4.9.5.2 forbids splitting a group set carrying a (*,G)
+#               Join across messages -- an upstream reading the Join
+#               without its tail moves every (S,G,rpt) it holds to NoInfo
+#               -- and has the numerically smallest N sent and the rest
+#               ignored.  Read off R2's log of R1's messages.  Takes about
+#               2 minutes.
+#
 #   static-rp   The rpt topology with nothing forwarded, and the only
 #               scenario where a router has an RP of its own configuration
 #               beside the one the BSR advertises.  RFC 7761 sec. 4.7
@@ -1079,11 +1092,11 @@ SCENARIO=${SCENARIO:-rpt}
 SCENARIOS="rpt solo privsep keepalive rp-lasthop rp-offpath gif-tunnel gif-tunnel-staticrp
 	   shared-lan shared-lan-spt assert-recover igmp-compat bsr-elect passive ssm ssm-range alias
 	   ifnew ifgone renumber rp-nbr-gone register-filter crafted fuzz static-rp autorp autorp-agent
-	   autorp-listener anycast anycast-dr altnet scale"
+	   autorp-listener anycast anycast-dr altnet scale jp-pack"
 SCENARIOS_BY_LENGTH="keepalive anycast rpt shared-lan assert-recover anycast-dr shared-lan-spt
 		     gif-tunnel-staticrp rp-lasthop rp-offpath gif-tunnel igmp-compat bsr-elect passive
 		     register-filter alias crafted static-rp autorp autorp-agent ssm fuzz ifnew ifgone
-		     renumber ssm-range autorp-listener altnet solo rp-nbr-gone privsep scale"
+		     renumber ssm-range autorp-listener altnet jp-pack solo rp-nbr-gone privsep scale"
 
 # keepalive: groups the source blasts at, and how long the entries must
 # survive.  KEEP_SECONDS has to exceed PIM_DATA_TIMEOUT in src/pimd.h.
@@ -2390,7 +2403,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale|jp-pack)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2451,6 +2464,10 @@ set_scenario() {
 	# IF_DEBUG(DEBUG_IGMP), and they are half of what that scenario reads.
 	if [ "$SCENARIO" = crafted ] || [ "$SCENARIO" = fuzz ]; then
 		DEBUG="$DEBUG_DEFAULT,pim_jp,pim_hello"
+	elif [ "$SCENARIO" = jp-pack ]; then
+		# The entries of every Join/Prune R2 receives, which are what
+		# the scenario reads, are behind IF_DEBUG(DEBUG_PIM_JOIN_PRUNE)
+		DEBUG="$DEBUG_DEFAULT,pim_jp"
 	elif [ "$SCENARIO" = igmp-compat ]; then
 		DEBUG="$DEBUG_DEFAULT,igmp"
 	elif [ "$SCENARIO" = passive ]; then
@@ -5257,6 +5274,7 @@ check() {
 	crafted)    check_crafted; return $? ;;
 	fuzz)       check_fuzz; return $? ;;
 	static-rp)  check_static_rp; return $? ;;
+	jp-pack)    check_jp_pack; return $? ;;
 	autorp)     check_autorp; return $? ;;
 	autorp-agent) check_autorp_agent; return $? ;;
 	autorp-listener) check_autorp_listener; return $? ;;
@@ -6707,6 +6725,126 @@ ageing_peak_usec() { pimctl "$1" -t show status 2>/dev/null | awk '/^Route agein
 # the tick that schedules it -- and prints the numbers for the record
 # rather than gating on them: the machine this runs on is shared, and a
 # benchmark that fails on a busy afternoon is a test nobody keeps.
+# jp-pack: the group ED1 joins at R1, and the sources it prunes off its
+# shared tree, behind R3 so that R1 has a route to every one of them
+JPP_GROUP=${JPP_GROUP:-239.77.1.1}
+JPP_NET=${JPP_NET:-10.0.3}
+JPP_FIRST=${JPP_FIRST:-100}
+JPP_COUNT=${JPP_COUNT:-90}
+
+# R1's Join/Prune messages in R2's log since line $1, one line each for
+# those naming $JPP_GROUP: the time, 1 or 0 for a Join(*,G) in it, the
+# number of Prune(S,G,rpt) for the group, and their sources' last octets.
+jpp_messages() {
+	${SUDO} tail -n +$(($1 + 1)) "$WORKDIR/r2.log" 2>/dev/null | \
+		awk -v r1="10.0.12.1" -v g="$JPP_GROUP" -v net="$JPP_NET." '
+		function done() {
+			if (mine && (wc || n))
+				print ts, wc, n, list
+		}
+		/Received PIM JOIN\/PRUNE from / {
+			done()
+			mine = ($0 ~ ("from " r1 " ")); ts = $2; wc = n = 0; list = ""
+			next
+		}
+		!mine { next }
+		$0 ~ ("Received PIM JOIN from " r1 " to group " g " for source .* \\(\\*,G\\)$") { wc = 1 }
+		index($0, "Received PIM PRUNE from " r1 " to group " g " for source " net) && / \(S,G,rpt\)$/ {
+			src = $0; sub(/.* for source /, "", src); sub(/ on .*/, "", src)
+			sub("^" net, "", src); n++; list = list " " src
+		}
+		END { done() }
+		'
+}
+
+# The latest of them carrying the Join(*,G) and some of the prunes, once
+# one has come after the first: r1's periodic Join(*,G), built from every
+# (S,G,rpt) it holds rather than from the message that made them
+jpp_full() {
+	jpp_messages "$1" | awk '$2 == 1 && $3 > 0 { n++; m = $0 } END { if (n > 1) print m; else exit 1 }'
+}
+
+check_jp_pack() {
+	print "1. pimd is alive on every router, and R1 has an RP"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	[ "$FAILED" -eq 0 ] || return 1
+	if ! wait_for 120 has_dynamic_rp r1; then
+		fail "r1 learned no RP from r2's Bootstrap, there is no shared tree to join"
+		return 1
+	fi
+
+	# ED1 is the downstream router: a Hello, then Join(*,G) with
+	# Prune(S,G,rpt) for every source, all in one message -- a second
+	# Join(*,G) lifts every prune the first one carried and it does not,
+	# sec. 4.5.3, which is the reason sec. 4.9.5.2 will not have a group
+	# set split.  HoldTime 65535 keeps it for the whole run.
+	print "2. A Join(*,G) whose Prune(S,G,rpt) do not fit one message"
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" hello -H 300 >/dev/null 2>&1
+	if ! wait_for 30 has_neighbor r1 "$SRC_ADDR"; then
+		fail "r1 never took ED1 as a neighbour, the step cannot be put"
+		return 1
+	fi
+	mark=$(log_lines r2)
+	xs=""
+	i=0
+	while [ "$i" -lt "$JPP_COUNT" ]; do
+		xs="$xs -X $JPP_NET.$((JPP_FIRST + i))"
+		i=$((i + 1))
+	done
+	box_run ed1 "$PIMSEND" -i "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$JPP_GROUP" \
+		-w -r "$RP_ADDR" -H 65535 $xs >/dev/null 2>&1
+	last="$JPP_NET.$((JPP_FIRST + JPP_COUNT - 1))"
+	if ! wait_for 30 has_sg r1 "$last" "$JPP_GROUP"; then
+		fail "r1 holds no ($last,$JPP_GROUP) after ED1's Prune(S,G,rpt), the step cannot be put"
+		dprint "$(pimctl r1 show mrt)"
+		return 1
+	fi
+	ok "r1 holds (S,G,rpt) state for all $JPP_COUNT sources ED1 pruned"
+
+	# The (*,G)'s periodic Join is the one that carries all of them, at
+	# most t_periodic after the second message
+	if ! wait_for 90 jpp_full "$mark" >/dev/null; then
+		fail "r1 sent r2 no periodic Join(*,$JPP_GROUP) with its Prune(S,G,rpt) in 90s"
+		dprint "$(jpp_messages "$mark")"
+		return 1
+	fi
+	full=$(jpp_full "$mark")
+	set -- $full
+	ts=$1 n=$3
+	shift 3
+	dprint "r1's periodic Join(*,$JPP_GROUP) at $ts carries $n Prune(S,G,rpt)"
+
+	print "3. The group set goes whole, with the numerically smallest sources"
+	if [ "$n" -lt "$JPP_COUNT" ]; then
+		ok "r1's Join(*,G) carries $n of the $JPP_COUNT Prune(S,G,rpt), as many as fit, the control"
+	else
+		fail "r1's Join(*,G) carries all $JPP_COUNT Prune(S,G,rpt): one message held them, the step proves nothing"
+		return 1
+	fi
+	want=$(i=0; while [ "$i" -lt "$n" ]; do echo $((JPP_FIRST + i)); i=$((i + 1)); done | sort -n | tr '\n' ' ')
+	got=$(for o in "$@"; do echo "$o"; done | sort -n | tr '\n' ' ')
+	if [ "$got" = "$want" ]; then
+		ok "they are the $n numerically smallest, sec. 4.9.5.2"
+	else
+		fail "r1 kept other sources than the $n smallest: $got"
+	fi
+	sec=${ts%.*}
+	bare=$(jpp_messages "$mark" | awk -v s="$sec" '$2 == 0 && $3 > 0 && substr($1, 1, length(s)) == s')
+	if [ -z "$bare" ]; then
+		ok "and nothing of the set followed in a message of its own"
+	else
+		fail "r1 split the group set: a message with Prune(S,G,rpt) and no Join(*,G) went at $sec: $bare"
+	fi
+
+	result
+}
+
 check_scale() {
 	print "1. pimd is alive and the domain has converged"
 	for r in $ROUTERS; do

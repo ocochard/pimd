@@ -220,8 +220,9 @@ tree `--disable-hardening` and puts `-fno-strict-aliasing` back by hand, since
 hardening. `run all` walks its
 scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`, `gif-tunnel-staticrp`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `altnet`, `ifnew`, `ifgone`,
-`renumber`, `rp-nbr-gone`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`, `anycast`,
-`anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`); see the script
+`renumber`, `rp-nbr-gone`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`,
+`autorp-listener`, `anycast`, `anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`, `scale`,
+`jp-pack`); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -464,6 +465,10 @@ no group has a member and pimd installs no entry for an empty oif list.  It
 bounds those numbers loosely and prints them, the way the coverage job reports
 rather than gates; the two entries of `doc/TODO.org` it answers carry the
 numbers and the date.
+`jp-pack` is the only one where pimd builds a Join/Prune larger than one message holds: ED1 joins (\*,G) at R1
+with 90 sources pruned off the shared tree in one message -- which is why `pimsend` takes 128 `-X` -- and R1's
+periodic Join(\*,G) has to carry the numerically smallest that fit, 63, with nothing of the group set after it
+in a message of its own, RFC 7761 sec. 4.9.5.2 (M9).
 `register-filter` is the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the
