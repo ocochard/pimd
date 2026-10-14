@@ -34,6 +34,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An mtrace answer or an mrinfo reply crossing another router running
+  pimd on Linux never arrived: pimd sent every IGMP message with the
+  Router Alert option, and Linux hands a forwarded packet carrying it to
+  the multicast routing socket instead of forwarding it.  Unicast IGMP,
+  which only mtrace and mrinfo send, goes without the option now; the
+  membership messages keep it.
 - mtrace never got past the last hop router.  A hop passed the query
   on only where its route to the source had a metric other than 1, a
   DVMRP test for "directly connected" that pimd's routing table metric

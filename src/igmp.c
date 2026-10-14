@@ -324,10 +324,12 @@ void accept_igmp(int ifi, ssize_t recvlen)
 
 static void send_ip_frame(uint32_t src, uint32_t dst, int type, int code, char *buf, size_t len)
 {
-    int setloop = 0;
+    char saved[IP_IGMP_HEADER_LEN];
+    int setloop = 0, unicast;
     struct ip *ip;
     struct sockaddr_in sin;
     char source[20], dest[20];
+    char *out;
 
     /* Prepare the IP header */
     len		     += IP_IGMP_HEADER_LEN;
@@ -355,6 +357,35 @@ static void send_ip_frame(uint32_t src, uint32_t dst, int type, int code, char *
 #endif
     }
 
+    /*
+     * Router Alert, RFC 2113, is for the membership messages, which are
+     * link-local multicast.  A unicast IGMP message -- an mtrace request
+     * or answer, a DVMRP neighbors reply to mrinfo -- is routed, and on
+     * Linux every router it crosses offers a packet carrying the option
+     * to the sockets registered for it first, the multicast routing
+     * socket among them: the pimd there swallowed the answer to somebody
+     * else's mtrace or mrinfo, and it never arrived.  So a unicast one
+     * goes with a plain 20-byte header, written over the option so that
+     * it ends where the IGMP message starts, and the template in @buf is
+     * put back for the next sender afterwards.
+     */
+    out = buf;
+    unicast = !IN_MULTICAST(ntohl(dst));
+    if (unicast) {
+	memcpy(saved, buf, sizeof(saved));
+	out = buf + IP_IGMP_HEADER_LEN - sizeof(struct ip);
+	memmove(out, buf, sizeof(struct ip));
+	len -= IP_IGMP_HEADER_LEN - sizeof(struct ip);
+
+	ip = (struct ip *)out;
+	ip->ip_hl = sizeof(struct ip) >> 2;
+#ifdef HAVE_IP_HDRINCL_BSD_ORDER
+	ip->ip_len = len;
+#else
+	ip->ip_len = htons(len);
+#endif
+    }
+
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = dst;
@@ -368,7 +399,7 @@ static void send_ip_frame(uint32_t src, uint32_t dst, int type, int code, char *
 	      src == INADDR_ANY_N ? "INADDR_ANY" :
 	      inet_fmt(src, s1, sizeof(s1)), inet_fmt(dst, s2, sizeof(s2)));
 
-    while (sendto(igmp_socket, buf, len, 0, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+    while (sendto(igmp_socket, out, len, 0, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
 	if (errno == EINTR)
 	    continue;		/* Received signal, retry syscall. */
 	if (errno == ENETDOWN || errno == ENODEV)
@@ -387,12 +418,16 @@ static void send_ip_frame(uint32_t src, uint32_t dst, int type, int code, char *
 
 	if (setloop)
 	    k_set_loop(igmp_socket, FALSE);
+	if (unicast)
+	    memcpy(buf, saved, sizeof(saved));
 
 	return;
     }
 
     if (setloop)
 	k_set_loop(igmp_socket, FALSE);
+    if (unicast)
+	memcpy(buf, saved, sizeof(saved));
 
     IF_DEBUG(DEBUG_PKT | debug_kind(IPPROTO_IGMP, type, code)) {
 	logit(LOG_DEBUG, 0, "SENT %5zu bytes %s from %-15s to %s", len,
