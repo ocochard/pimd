@@ -489,7 +489,9 @@ neighbours and no address that is not R2's own, and an mtrace query from ED2 for
 hop through R3, R2 and R1, whose answer has to come back with three blocks that chain.  On FreeBSD the answer
 is read off a capture of ED2's link rather than off the socket: `igmp_input()` drops IGMP other than DVMRP
 that arrives with a TTL above one, mtrace's two types included, which is also why pimd passes a query to
-its upstream router at TTL 1 (a kernel patch to exempt them is the fix).
+its upstream router at TTL 1.  A kernel patch exempting them was written and deliberately not
+submitted: this mtrace is a draft that never became an RFC, and RFC 8487's Mtrace2, over UDP, is
+where a multi-hop trace on FreeBSD would come from.
 `register-filter` is the only one about who an RP will accept a Register
 from, `register-accept-from` and RFC 7761 sec. 6.2, which it drives from both sides: a prefix that
 does not cover the address the DR registers from and then one that does, told apart by the
