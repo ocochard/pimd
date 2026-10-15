@@ -1618,15 +1618,14 @@ Checked, no action
 
 - **The Border bit is already compliant.**  Sec. 4.9.3 deprecates it: set 0 on
   transmission, ignore on reception, which is what the code does.  The
-  outstanding TODO above `receive_pim_register()` (`src/pim_proto.c`)
-  describes RFC 2362 PMBR behaviour and has no code behind it; with
-  (\*,\*,RP) and PMBR removed from this tree the right change is deleting
-  the comment.  *Check: sec. 4.9.3, `doc/rfc7761.txt:6233`.*
+  TODO that sat above `receive_pim_register()` (`src/pim_proto.c`),
+  describing RFC 2362 PMBR behaviour with no code behind it, is deleted,
+  (\*,\*,RP) and PMBR being gone from this tree.  *Check: sec. 4.9.3, `doc/rfc7761.txt:6233`.*
 - **Register-Stop rate limiting is not an RFC requirement.**  Sec. 4.4.2
   prescribes one Register-Stop per qualifying Register and no rate limit; the
-  DR's suppression timer is the pacing mechanism.  The TODO above
-  `send_pim_register_stop()` (`src/pim_proto.c`) can go.  Its security
-  dimension is real but belongs to V3.  *Check: sec. 4.4.2,
+  DR's suppression timer is the pacing mechanism, and the TODO that asked
+  for one above `send_pim_register_stop()` (`src/pim_proto.c`) is deleted.
+  Its security dimension is real but belongs to V3.  *Check: sec. 4.4.2,
   `doc/rfc7761.txt:2364` for the pseudocode and `:2402` for its Note (\*).*
 - **(\*,\*,RP) group sets are skipped, which is what RFC 7761 wants.**  Both
   halves of `receive_pim_join_prune()` step over a group set of 224.0.0.0/4,

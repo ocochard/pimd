@@ -1293,11 +1293,6 @@ static void copy_register_to_set(uint32_t anycast, uint32_t reg_src, uint8_t ttl
     }
 }
 
-/* TODO: XXX: IF THE BORDER BIT IS SET, THEN
- * FORWARD THE WHOLE PACKET FROM USER SPACE
- * AND AT THE SAME TIME IGNORE ANY CACHE_MISS
- * SIGNALS FROM THE KERNEL.
- */
 int receive_pim_register(uint32_t reg_src, uint32_t reg_dst, uint8_t ttl, char *msg, size_t len)
 {
     uint32_t inner_src, inner_grp, rpaddr;
@@ -2046,7 +2041,6 @@ int receive_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, char *msg, siz
 }
 
 
-/* TODO: optional rate limiting is not implemented yet */
 /* Unicasts a REGISTER_STOP message to the DR */
 static int
 send_pim_register_stop(uint32_t reg_src, uint32_t reg_dst, uint32_t inner_grp, uint32_t inner_src)
