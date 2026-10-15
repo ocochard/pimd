@@ -514,10 +514,20 @@ static int ipc_write(int sd, char *msg, size_t sz)
 	return 0;
 }
 
+/*
+ * The descriptor goes whatever shutdown() says: a client that has read its
+ * reply and hung up first leaves shutdown() failing with ENOTCONN, and the
+ * close() behind a || then never ran, one descriptor a request for as long
+ * as the daemon lived.  The soak scenario of test/lab.sh found it.
+ */
 static int ipc_close(int sd)
 {
-	return shutdown(sd, SHUT_RDWR) ||
-		close(sd);
+	int rc = shutdown(sd, SHUT_RDWR);
+
+	if (close(sd))
+		rc = -1;
+
+	return rc;
 }
 
 /* The caller owns sd, ipc_handle() closes it once the reply is out. */

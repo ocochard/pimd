@@ -39,6 +39,13 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- Every `pimctl` request left a descriptor open in pimd for good.  The
+  reply path closed the client's socket only when `shutdown()` succeeded,
+  and it fails with `ENOTCONN` once `pimctl` has read the reply and hung
+  up, which on FreeBSD is every time: a monitoring script polling pimd
+  ran its unprivileged half towards the descriptor limit, 50 requests
+  making 50 descriptors.  Found by the new `soak` scenario of
+  `test/lab.sh`.
 - A router that wanted a Prune itself no longer holds its Join Timer back
   on overhearing a neighbour's Prune(\*,G) or Prune(S,G) to the same
   upstream.  That was RFC 2362's Prune suppression, which RFC 7761 sec.
