@@ -999,13 +999,20 @@ timer at once whenever the (\*,G)'s timer pass wanted the opposite of it, and
 a (\*,G) whose downstream had all pruned wants a Prune on every pass, so a
 Join(S,G) a neighbour's was suppressing went out every 60 s.  The fire stays
 only for the other mismatch, the Prune(S,G,rpt) that rides with a Join(\*,G),
-sec. 4.5.6.  That one still sends the Join(S,G) of a source tree entry whose
-upstream is not RPF'(\*,G) along with it, suppressed or not; no step reaches
-it, since it needs a source behind another upstream.  *Test: `crafted` step
-7za in `test/lab.sh`: ED1 joins (\*,G) and (S,G) for a source behind r3, r1's
+sec. 4.5.6, and only where the entry sends nothing else off its timer: an
+(S,G)RPbit entry, or one whose upstream is RPF'(\*,G).  A source tree entry
+whose upstream is another router sent its Join(S,G) along with the Prune,
+suppressed or not; its Prune(S,G,rpt) is added to the Join(\*,G)'s message
+directly now, and the bare one the timer used to repeat every period on the
+other branch goes once, on the transition.  *Test: `crafted` step 7za in
+`test/lab.sh`: ED1 joins (\*,G) and (S,G) for a source behind r3, r1's
 Join(S,G) reaching r2 the control, then prunes the (\*,G); step 5's neighbour
 keeps r1's Join(S,G) suppressed for 140 s, in which r2's log has to show none
-from r1 (one came before the fix).*
+from r1 (one came before the fix).  Step 7ze is the other branch: step 5's
+neighbour wins the (S,G) Assert on r1's link to r2, so RPF'(S,G) is that
+neighbour and RPF'(\*,G) still r2, and a second crafted router joins (S,G)
+to it every 20 s; r2's log has to show r1's Prune(S,G,rpt), the control, and
+no Join(S,G) from r1 in 140 s (one came before the fix).*
 
 M56 is D7c of the same map.  Sec. 4.5.1 takes an interface to NoInfo on a
 Prune(\*,G), at once where nobody is left to override it; the (\*,G)

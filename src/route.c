@@ -2543,15 +2543,30 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	src_action       = src_action_rp;
 	dont_calc_action = TRUE;
 
-	/* A Prune(S,G,rpt) rides with the Join(*,G), sec. 4.5.6, so the
-	 * entry's timer is brought forward to this pass.  The other way
-	 * round -- a Join(S,G) desired where the (*,G) wants a Prune -- it
-	 * is not: sec. 4.5.5 runs the (S,G) Join Timer apart from the
-	 * (*,G)'s, and firing it there sent a Join(S,G) a neighbour's
-	 * was suppressing on every pass of a (*,G) that had lost its
-	 * downstream. */
-	if (src_action_rp == PIM_ACTION_PRUNE && grp_action == PIM_ACTION_JOIN)
-	    jp_timer_fire(mrt_srcs);
+	/* A Prune(S,G,rpt) rides with the Join(*,G), sec. 4.5.6.  An
+	 * (S,G)RPbit entry sends nothing else off its Join Timer, so the
+	 * timer is brought forward to this pass; an entry on the source tree
+	 * through another upstream sends its Join(S,G) off it too, and sec.
+	 * 4.5.5 runs that timer apart from the (*,G)'s -- firing it sent the
+	 * Join every period, however a neighbour's Join to the same upstream
+	 * was suppressing it -- so its Prune(S,G,rpt) is added here instead.
+	 * The other way round, a Join(S,G) desired where the (*,G) wants a
+	 * Prune, nothing is owed at all. */
+	if (src_action_rp == PIM_ACTION_PRUNE && grp_action == PIM_ACTION_JOIN) {
+	    if ((mrt_srcs->flags & MRTF_RP) || rpt_upstream == mrt_srcs->upstream) {
+		jp_timer_fire(mrt_srcs);
+	    } else if (rpt_upstream) {
+		add_jp_entry(rpt_upstream,
+			     PIM_JOIN_PRUNE_HOLDTIME,
+			     mrt_srcs->group->group,
+			     SINGLE_GRP_MSKLEN,
+			     mrt_srcs->source->address,
+			     SINGLE_SRC_MSKLEN,
+			     MRTF_RP,
+			     PIM_ACTION_PRUNE);
+		mrt_srcs->flags |= MRTF_RPT_PRUNED;
+	    }
+	}
 
 	/* The second clause of sec. 4.5.6 for an entry on the source tree
 	 * that has not seen its first packet: SPTbit clear and
@@ -2613,10 +2628,11 @@ static void jp_timer_expire_sg(mrtentry_t *mrt_srcs, rpentry_t *rp, int grp_acti
 	    if (dont_calc_action != TRUE)
 		src_action_rp = join_or_prune(mrt_srcs, mrt_wide->upstream);
 
-	    /* XXX: TODO: do error check if
-	     * src_action == PIM_ACTION_JOIN, which
-	     * should be an error. */
-	    if (src_action_rp == PIM_ACTION_PRUNE) {
+	    /* The bare one, on the transition to Pruned, sec. 4.5.7 --
+	     * which the Assert or route change that started it fired the
+	     * timer for; the repeats go with the Join(*,G), above. */
+	    if (src_action_rp == PIM_ACTION_PRUNE &&
+		!(mrt_srcs->flags & MRTF_RPT_PRUNED)) {
 		add_jp_entry(mrt_wide->upstream,
 			     PIM_JOIN_PRUNE_HOLDTIME,
 			     mrt_srcs->group->group,

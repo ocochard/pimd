@@ -34,6 +34,12 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- A router on the source tree through an upstream other than its RP's
+  sent its Join(S,G) every 60 s, however a neighbour's Join to that
+  upstream was suppressing it: the Prune(S,G,rpt) that has to go with the
+  Join(\*,G), RFC 7761 sec. 4.5.6, was got there by firing the (S,G) entry's
+  whole Join Timer.  It is added to the message directly now.  `crafted`
+  step 7ze in `test/lab.sh`.
 - An mtrace answer or an mrinfo reply crossing another router running
   pimd on Linux never arrived: pimd sent every IGMP message with the
   Router Alert option, and Linux hands a forwarded packet carrying it to

@@ -388,7 +388,7 @@ an emptied inherited_olist(S,G,rpt) calls for from a source tree entry without S
 (step 7w, M44), a Prune(S,G,rpt) never sent bare while a neighbour's Join(\*,G) holds r1's back (step
 7x, M45), a Join(S,G) on r1's RPF interface toward the source acted on (step 7y, M46), an (S,G) Assert lost for a source r1 has
 no route to kept all the same (step 7z, M50), a Join(S,G) a neighbour's suppresses kept back when the
-(\*,G) Join Timer fires (step 7za, M55), a Prune(\*,G) from the only neighbour leaving the interface NoInfo
+(\*,G) Join Timer fires (step 7za, M55) and when the Join(\*,G) carries its Prune(S,G,rpt) to another upstream (step 7ze), a Prune(\*,G) from the only neighbour leaving the interface NoInfo
 rather than Pruned (step 7zb, M56), a Join(S,G) where the (\*,G) already
 forwards going upstream at once (step 7t, M47, which passes run alone by luck and failed in a full run),
 the Prune(S,G,rpt) an Assert that sets SPTbit calls for, at once (step 7u), and where that winner is the
