@@ -7273,6 +7273,43 @@ check_autorp_listener() {
 	esac
 	[ "$FAILED" -eq 0 ] || return 1
 
+	print "7. A relay passes on only what its accept-from list takes"
+	# The `autorp' scenario asserts what accept-from does to the messages
+	# a router acts on; this is the other use of the same list, in
+	# autorp_read(), which relays nothing it refuses.  R2 takes R1 and
+	# not R3, so the Discovery stops at R2 and R1's mapping ages out --
+	# while R3 goes on hearing R1's announcement past its holdtime, which
+	# only a relay can keep fresh, the control that the listener is still
+	# on and still relaying what the list takes.
+	cat <<-EOF > "$WORKDIR/r2.conf"
+	# R2: still the listener, now relaying R1 alone
+	hello-interval 10
+	autorp listener
+	autorp accept-from $AL_R1_LINK/32
+	EOF
+	pimctl r2 restart >/dev/null 2>&1 || fail "r2 did not reload"
+	wait_for 30 pimd_is_up r2 || fail "r2 did not come back"
+	if wait_for 60 logged r2 "refusing messages from $AL_AGENT"; then
+		ok "r2 refuses $AL_AGENT, the agent its list does not name"
+	else
+		fail "r2 never refused $AL_AGENT, so the list is not in force"
+		return 1
+	fi
+	if wait_for $((AA_HOLDTIME * 3)) no_autorp_rp r1 "$AL_RP"; then
+		ok "r1's mapping for $AL_RP aged out, r2 relaying no Discovery from $AL_AGENT"
+	else
+		fail "r1 still holds $AL_RP from $AL_AGENT, so r2 relayed a datagram its list refuses"
+		dprint "$(pimctl r1 show autorp)"
+	fi
+	sleep $((AA_HOLDTIME + AA_INTERVAL))
+	if autorp_heard r3 "$AL_RP"; then
+		ok "and r3 still hears $AL_RP past its holdtime, r2 relaying what the list takes"
+	else
+		fail "r3 lost $AL_RP too, so r2 relays nothing and the step proves nothing"
+		dprint "$(pimctl r3 show autorp)"
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
 	result
 }
 

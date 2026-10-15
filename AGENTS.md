@@ -435,7 +435,9 @@ through R2 in the other direction, the agent R1 names is R3's address and not
 the relay's (sec. 3.2 reads the IP source, which is why this takes a raw socket
 and why the parent opens it under privilege separation), and a tcpdump of the
 R1-R2 link carries R1's datagrams alone, since a relay never goes back out of
-the interface it arrived on.
+the interface it arrived on.  Step 7 gives R2 an `autorp accept-from` naming R1
+alone, and a relay passes on nothing its list refuses: R1's mapping ages out
+while R3 goes on hearing R1's announcement past its holdtime, the control.
 `autorp-agent` beside it is the same protocol with pimd in every role, R1 announcing itself, R2
 resolving and telling the domain, R3 two hops away learning the RP, and the sec. 3.2 rules read
 off the *listener* rather than off the agent's own bookkeeping: a prefix a shorter one of the same
