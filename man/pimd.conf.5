@@ -2,7 +2,7 @@
 .\" First parameter, NAME, should be all caps
 .\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
 .\" other parameters are allowed: see man(7), man(1)
-.Dd Sep 27, 2026
+.Dd Oct 16, 2026
 .Dt PIMD.CONF 5
 .Os
 .Sh NAME
@@ -45,6 +45,18 @@ setting and the
 setting can be used to control this behavior.  More on the
 .Cm phyint
 interface configuration setting below.
+.Pp
+.Cm disable-vifs
+on a line of its own, before any
+.Cm phyint
+line, turns that default around:
+.Nm pimd
+creates no multicast interface it is not told to, and each one it should
+run on is named with
+.Cm phyint Ar ifname Cm enable .
+It is the configuration file's spelling of
+.Xr pimd 8 Ns 's
+.Fl -disable-vifs .
 .Pp
 .Bl -tag -offset indent -width 1n
 .It Cm default-route-distance Ar <1-255>
@@ -155,6 +167,9 @@ to serve is said in the
 lines below, and an announcement with no prefix is not sent at all.
 Defaults: interval 60 seconds, holdtime three times the interval, scope 15.
 .Pp
+Also accepted as
+.Cm autorp candidate-rp .
+.Pp
 This is the Auto-RP counterpart of
 .Cm rp-candidate ,
 and the two are independent: a router may be a candidate for the bootstrap
@@ -223,6 +238,9 @@ every interval, from
 which may be an interface name and is resolved again on every interface
 scan, as above.
 Defaults as above.
+Also accepted as
+.Cm autorp send-rp-discovery ,
+which is what IOS calls the role.
 .Pp
 Conflicts are resolved the way the specification asks: prefixes of
 different lengths from different RPs coexist, the same prefix from two RPs
@@ -761,7 +779,8 @@ lists the ranges this router advertises and the priority of each.
 This setting is for static rendezvous point (RP) configurations.  It
 defines the RP for a given group, or range of groups.  The argument can
 be either a unicast address or a multicast group, with an optional group
-address and netmask.  Default group and netmask is 224.0.0.0/16.
+address and netmask.  With no group the RP is for all of 224.0.0.0/4; a
+group given without a length is a /16.
 .Sy Note:
 all static RP's are announced with priority 1 (second highest, see above).
 .It Cm crp-accept-from Ar address Ns / Ns Ar len | Ar address Cm masklen Ar len

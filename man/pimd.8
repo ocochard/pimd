@@ -2,7 +2,7 @@
 .\" First parameter, NAME, should be all caps
 .\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
 .\" other parameters are allowed: see man(7), man(1)
-.Dd Dec 23, 2020
+.Dd Oct 16, 2026
 .\" Please adjust this date whenever revising the manpage.
 .Dt PIMD 8 SMM
 .Os
@@ -116,6 +116,11 @@ All PIM messages
 PIM register tunnel messages
 .It Cm rpf
 PIM reverse-path forwarding messages
+.It Cm timeout
+Timeouts of the callout queue, the noisiest of all and the one
+.Cm all
+leaves out; also spelled
+.Cm callout
 .It Cm timers
 PIM timer events
 .It Cm traceroute

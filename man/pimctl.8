@@ -1,4 +1,4 @@
-.Dd Oct 11, 2026
+.Dd Oct 16, 2026
 .Dt PIMCTL 8 SMM
 .Os
 .Sh NAME
@@ -12,7 +12,7 @@
 .Op Fl u Ar FILE
 .Op COMMAND
 .Nm
-.Ar help | kill | restart | status | version
+.Ar help | kill | restart | version
 .Pp
 .Nm
 .Ar debug Op ? | none | SYSTEM Op ,SYSTEM
@@ -143,6 +143,12 @@ option instead, it handles ANSI escape sequences.
 .It Fl t, -no-heading
 Skip table headings altogether.  Useful for scripting
 .Nm .
+.It Fl v, -version
+Show the version of
+.Nm
+itself and exit; the
+.Cm version
+command asks the daemon for its own.
 .It Fl u, -ipc Ar FILE
 Override UNIX domain socket filename, the default is based on the
 identity,
@@ -168,8 +174,12 @@ Kill running daemon, like sending SIGTERM to the PIM daemon.
 Restart daemon and reload
 .Pa /etc/pimd.conf ,
 like sending SIGHUP to the PIM daemon.
-.It Nm Ar status
-Show PIM daemon status.
+.It Nm Ar version
+Show the version of the running daemon, which
+.Fl v
+does not: that one is
+.Nm Ns 's
+own.
 .It Nm Ar debug Op ? | none | SYSTEM Op ,SYSTEM
 Control subystem debugging at runtime.  Multiple subsystems can be
 enabled, separate with comma.  E.g.
@@ -220,12 +230,17 @@ Debug hello messages to/from neighbors
 Debug inbound/outbout packets
 .It Cm pim
 All PIM messages
-.It Cm prunes
-Pruning operations, or pruned routes
 .It Cm registers
 PIM register tunnel debug messages
 .It Cm rpf
 PIM revers-path forwarding debug messages
+.It Cm timeout
+Timeouts of the callout queue, the noisiest of all, which
+.Cm all
+and
+.Cm debug \&?
+both leave out; also spelled
+.Cm callout
 .It Cm timers
 Debug timers
 .It Cm traceroute
@@ -248,6 +263,10 @@ Informational
 .It Cm debug
 Debug-level messages
 .El
+.It Nm Ar show status
+Show the daemon's own state: the elected BSR, this router's candidacies,
+the RP set, the state limits and how far each is used, privilege
+separation and sandbox, and the configured filters.
 .It Nm Ar show summary
 Show one line per interface with the PIM and the IGMP view side by side:
 state, address, PIM neighbor count, elected DR, IGMP version, elected
