@@ -11,6 +11,10 @@ Requires=network-online.target
 Type=simple
 EnvironmentFile=-@SYSCONFDIR@/default/pimd
 ExecStart=@SBINDIR@/pimd -ns $PIMD_OPTS
+# pimd exits 1 when its unprivileged half died rather than stopped, see
+# pimd(8); the routing state was in that half, so a restart is all there is
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

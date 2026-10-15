@@ -251,6 +251,25 @@ to move it, or
 .Cm --without-privsep-chroot
 to skip it.  Note that a core dump of the unprivileged half is lost with
 it, the kernel writing one relative to the process's root.
+.Pp
+The routing state lives in the unprivileged half, and the privileged
+parent does not restart it: when it dies the parent logs how, by its exit
+status or the signal that killed it, and exits too, with status 0 if the
+child stopped cleanly and 1 otherwise.  Restarting is left to whatever runs
+.Nm ,
+which is where a crash loop can be bounded: the shipped
+.Pa pimd.service
+says
+.Cm Restart=on-failure ,
+and on
+.Fx
+.Xr daemon 8
+with
+.Fl r
+does the same for a
+.Nm
+run in the foreground with
+.Fl n .
 .It Fl -no-privsep
 Do not separate privileges: run as a single
 .Em root

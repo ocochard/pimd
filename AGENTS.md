@@ -461,7 +461,9 @@ every `sendto()` carrying a destination, so pimd cannot use it) and which `chroo
 against what the kernel resolves the child's `/` to, `proc_root()` in the two OS files -- that a
 SIGHUP to the PID file,
 which names the privileged parent, rebuilds every VIF out of descriptors the parent hands back,
-and, as its control, that `--no-privsep` is one root process that forwards just as well.  It is
+and, as its control, that `--no-privsep` is one root process that forwards just as well, and that a
+child killed with SIGSYS -- what a seccomp allowlist miss delivers -- takes the parent with it, which
+logs how and exits 1 so that a service manager restarts pimd, a clean stop being its control.  It is
 on the three router chain and not on `solo` deliberately: a sandbox that forbids sending leaves a
 lone router electing itself BSR and RP, answering `pimctl` and sending nothing, which is exactly
 how the Capsicum attempt passed `solo` and failed everything with a neighbour in it.

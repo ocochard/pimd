@@ -39,6 +39,15 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- When the unprivileged half of pimd died, the privileged parent exited
+  with status 0 and logged nothing about it, so a crash -- or a `SIGSYS`
+  from a system call the seccomp filter does not allow -- looked like a
+  clean stop and nothing restarted pimd.  The parent now logs the child's
+  exit status or signal and exits 1, and the shipped `pimd.service` has
+  `Restart=on-failure`.  pimd does not restart the child itself: the
+  routing state was the child's, so that is a restart of the daemon, and
+  every restart by the service manager is a fresh `exec()`.  `pimd(8)`
+  says how to get the same on FreeBSD with `daemon(8) -r`.
 - Every `pimctl` request left a descriptor open in pimd for good.  The
   reply path closed the client's socket only when `shutdown()` succeeded,
   and it fails with `ENOTCONN` once `pimctl` has read the reply and hung

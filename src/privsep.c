@@ -139,7 +139,7 @@ static char *parent_sock;
 static int   parent_fd[PRIV_SOCK_AUTORP_RELAY + 1];
 static pid_t parent_child = -1;
 
-static void parent_cleanup(void);
+static int parent_cleanup(void);
 static int parent_loop(int sd) __attribute__((noreturn));
 
 /*
@@ -1420,28 +1420,63 @@ static int parent_loop(int sd)
     }
 
   gone:
-    parent_cleanup();
-
     /* exit() rather than _exit(): the PID file is removed by the atexit()
      * handler pidfile() installed on this side. */
-    exit(0);
+    exit(parent_cleanup());
 }
 
 /*
  * Tear down what only the parent can.  It owns the pimctl socket, and a
  * child that died inside its sandbox could not have unlinked it; the PID
  * file goes with the exit() above.
+ *
+ * Returns the status the parent exits with, which is the child's verdict:
+ * 0 for a child that stopped cleanly and 1 for anything else, so that a
+ * service manager told to restart pimd on failure does so -- the routing
+ * state lived in the child, so a restart of the whole daemon is what the
+ * network would see either way.  It used to be 0 every time, with nothing
+ * logged, and a crash read exactly like "pimctl kill".
  */
-static void parent_cleanup(void)
+static int parent_cleanup(void)
 {
-    int status;
+    int status, tries;
+    pid_t pid = 0;
 
     if (parent_sock)
 	unlink(parent_sock);
 
-    if (parent_child > 0)
-	while (waitpid(parent_child, &status, WNOHANG) < 0 && errno == EINTR)
-	    ;
+    if (parent_child <= 0)
+	return 0;
+
+    /* The socketpair closing is how a child's end reaches this loop, so it
+     * is normally gone or going.  This side can also leave the loop on an
+     * error of its own with the child still running, which it does not
+     * outlive: a second's grace, then SIGKILL. */
+    for (tries = 0; tries < 10; tries++) {
+	pid = waitpid(parent_child, &status, WNOHANG);
+	if (pid != 0 && !(pid < 0 && errno == EINTR))
+	    break;
+	usleep(100000);
+    }
+    if (pid == 0) {
+	kill(parent_child, SIGKILL);
+	pid = waitpid(parent_child, &status, 0);
+    }
+    if (pid != parent_child)
+	return 1;
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+	return 0;
+
+    if (WIFSIGNALED(status))
+	logit(LOG_WARNING, 0, "The unprivileged half of pimd was killed by signal %d%s,"
+	      " exiting with status 1", WTERMSIG(status),
+	      WTERMSIG(status) == SIGSYS ? " (SIGSYS: a system call its sandbox does not allow)" : "");
+    else
+	logit(LOG_WARNING, 0, "The unprivileged half of pimd exited with status %d,"
+	      " exiting with status 1", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+
+    return 1;
 }
 
 static void parent_signal(int signo)

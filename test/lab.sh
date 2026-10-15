@@ -11321,6 +11321,10 @@ check_crafted() {
 	result
 }
 
+# Is process $1 gone?  Asked of the pid rather than of daemon(8)'s lock, which
+# box_daemon_gone() reads and which on Linux has nothing behind it
+pid_gone() { ! ${SUDO} kill -0 "$1" 2>/dev/null; }
+
 # The pid of the pimd running in $1, out of the file it wrote
 fz_pimd_pid() {
 	${SUDO} cat "$WORKDIR/$1.pid" 2>/dev/null | tr -d ' \t\n'
@@ -15586,6 +15590,39 @@ check_privsep() {
 	fi
 	privsep_stream "the unseparated chain"
 	PIMD_ARGS=
+
+	# The parent does not restart a child that died: the routing state
+	# was the child's, so that is a restart of the daemon and belongs to
+	# whatever runs it (pimd.service has Restart=on-failure).  What the
+	# parent owes it is to say how the child went and to exit non-zero,
+	# where it used to exit 0 with nothing logged.  SIGSYS is what a
+	# seccomp allowlist miss delivers on Linux, so it is sent by hand on
+	# both systems.  r2, stopped with a SIGTERM to its parent, is the
+	# control: a clean stop logs no such line and exits 0.
+	print "9. A child that dies takes the parent with it, saying how, non-zero"
+	ps_parent=$(${SUDO} cat "$WORKDIR/r3.pid" 2>/dev/null)
+	ps_child=$(proc_children "$ps_parent" | head -1)
+	if [ -z "$ps_child" ]; then
+		fail "r3 has no unprivileged child to kill"
+		return 1
+	fi
+	${SUDO} kill -SYS "$ps_child" 2>/dev/null || fail "r3: could not signal its child $ps_child"
+	if wait_for 15 pid_gone "$ps_parent"; then
+		ok "r3's parent $ps_parent exited after its child $ps_child was killed"
+	else
+		fail "r3's parent $ps_parent outlived its child, holding root for nothing"
+	fi
+	if logged r3 "unprivileged half of pimd was killed by signal $(kill -l SYS 2>/dev/null || echo 12) (SIGSYS: a system call its sandbox does not allow), exiting with status 1"; then
+		ok "and said the child was killed by SIGSYS, exiting with status 1"
+	else
+		fail "r3 did not log how its child died, see $WORKDIR/r3.log"
+	fi
+	stop_one_pimd r2
+	if ! logged r2 "unprivileged half of pimd"; then
+		ok "r2, stopped cleanly, logged no such line: the control"
+	else
+		fail "r2 reported its child as dead on a clean stop"
+	fi
 
 	result || {
 		dprint "--- r1: pimctl show status ---"
