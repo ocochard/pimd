@@ -5094,6 +5094,14 @@ ar_dump() {
 # links, which no topology in this file builds.
 #
 # Takes about four minutes, longer if the elections are slow.
+# Step 4's two conditions, for wait_for: the election recorded as Winner on
+# r4 and Loser on r3, and r5 holding the Loser state that follows it
+ar_election_recorded() {
+	[ "$(assert_state_on r4 "$SL_R4_IF" "$GROUP" || true)" = W ] &&
+	[ "$(assert_state_on r3 "$SL_R3_IF" "$GROUP" || true)" = L ]
+}
+ar_r5_follows_winner() { [ "$(ar_iif_assert_state r5 "$SL_R5_IF" "$GROUP" || true)" = L ]; }
+
 check_assert_recover() {
 	print "1. pimd is alive on every router"
 	for r in $ROUTERS; do
@@ -5140,6 +5148,13 @@ check_assert_recover() {
 	fi
 
 	print "4. pimctl names the winner and the loser of that election"
+	# Waited for rather than read once: step 3 is about who forwards on
+	# the LAN, which can hold a moment before the Assert that settles it
+	# has been recorded on both routers -- a single read there failed on
+	# the Linux runner with both reading none, and the very next read of
+	# the same election would have said W and L.  Still exact: only a
+	# Winner on r4 and a Loser on r3 end the wait.
+	wait_for 30 ar_election_recorded || true
 	st4=$(assert_state_on r4 "$SL_R4_IF" "$GROUP" || true)
 	st3=$(assert_state_on r3 "$SL_R3_IF" "$GROUP" || true)
 	if [ "$st4" = W ] && [ "$st3" = L ]; then
@@ -5156,6 +5171,7 @@ check_assert_recover() {
 	# "Receive Join(*,G)" in the same section, so the LAN flapped once a
 	# Join/Prune period and step 5 failed whenever the flap and R4's
 	# restart coincided.
+	wait_for 30 ar_r5_follows_winner || true
 	st5=$(ar_iif_assert_state r5 "$SL_R5_IF" "$GROUP" || true)
 	if [ "$st5" = L ]; then
 		ok "r5 reads L on $SL_R5_IF, its RPF interface, so its Joins go to r4"
