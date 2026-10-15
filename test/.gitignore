@@ -18,3 +18,4 @@ fuzz_pim_replay
 fuzz_ipc
 fuzz_ipc_replay
 privsep_fds
+jp_pack

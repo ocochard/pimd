@@ -1,4 +1,4 @@
-# Only the corpus replay and privsep_fds below run under `make check`, and
+# Only the corpus replay, privsep_fds and jp_pack below run under `make check`, and
 # only in a fuzz build.  The rest wants what automake cannot give it and runs by hand or as
 # a CI job of its own: lab.sh real root and FreeBSD vnet jails or Linux named
 # netns, frr-interop.sh FRR installed beside pimd, freebsd-interop.sh bhyve
@@ -59,8 +59,10 @@ if ENABLE_FUZZ
 # privsep_fds is not a harness but rides here for the same reason: it links
 # the daemon's privsep.c out of libpimd.a, with fuzz/stubs.c for what main.c
 # would define, and asserts what msg_recv() does with descriptors a message
-# carries -- needing no root, no kernel multicast and no network.
-TESTS              = fuzz-corpus.sh privsep_fds
+# carries -- needing no root, no kernel multicast and no network.  jp_pack
+# is the same for the Join/Prune packer, inside the router the harnesses
+# run in, catching what it sends at send_pim() with the linker's --wrap.
+TESTS              = fuzz-corpus.sh privsep_fds jp_pack
 
 FUZZ_LDADD         = $(top_builddir)/src/libpimd.a
 FUZZ_ROUTER        = fuzz/router.c fuzz/router.h fuzz/mrib.c	\
@@ -71,6 +73,10 @@ noinst_PROGRAMS   += fuzz_config_replay fuzz_pim_replay fuzz_igmp_replay \
 noinst_PROGRAMS   += privsep_fds
 privsep_fds_SOURCES        = privsep_fds.c fuzz/stubs.c
 privsep_fds_LDADD          = $(FUZZ_LDADD)
+noinst_PROGRAMS   += jp_pack
+jp_pack_SOURCES            = jp_pack.c $(FUZZ_ROUTER)
+jp_pack_LDFLAGS            = $(AM_LDFLAGS) -Wl,--wrap=send_pim
+jp_pack_LDADD              = $(FUZZ_LDADD)
 fuzz_config_replay_SOURCES = fuzz/fuzz_config.c fuzz/stubs.c fuzz/replay.c
 fuzz_pim_replay_SOURCES    = fuzz/fuzz_pim.c    $(FUZZ_ROUTER) fuzz/replay.c
 fuzz_igmp_replay_SOURCES   = fuzz/fuzz_igmp.c   $(FUZZ_ROUTER) fuzz/replay.c
