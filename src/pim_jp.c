@@ -23,7 +23,7 @@
  * src/pim_proto.c and src/route.c, which read the state off an entry and
  * write the action back.  It includes libc and pimd.h and nothing else of
  * the daemon's, so that test/cbmc/jp.c can prove it alone against the
- * tables of the RFC.
+ * tables of the RFC, and the bits an entry keeps each state in with it.
  */
 
 #include <stdint.h>
@@ -177,6 +177,63 @@ uint16_t jp_et_after(int et, uint16_t cur, uint16_t holdtime)
 	return 0;
 
     return cur;
+}
+
+/*
+ * The state of the (*,G) or (S,G) machine in an entry's bits.  Join is
+ * `joined_oifs` on a (*,G) entry and `sg_joined_oifs` on an (S,G) one,
+ * whose `joined_oifs` also holds the copy of joins(*,G) VOIF_COPY()
+ * seeded it with; Prune-Pending is `prune_pending_oifs` on top of either.
+ */
+int jp_ds_read(struct jp_ds_bits b, int wc)
+{
+    if (!(wc ? b.joined : b.sg_joined))
+	return JP_DS_NI;
+
+    return b.pp ? JP_DS_PP : JP_DS_J;
+}
+
+/*
+ * And @state written into them.  NoInfo also takes out of an (S,G) entry
+ * the copy of the (*,G)'s joins, which is how an Expiry Timer the copy
+ * shares ages it out; a (*,G) has no bit of its own to keep apart.
+ */
+struct jp_ds_bits jp_ds_write(struct jp_ds_bits b, int wc, int state)
+{
+    b.joined = state != JP_DS_NI;
+    if (!wc)
+	b.sg_joined = b.joined;
+    b.pp = state == JP_DS_PP;
+
+    return b;
+}
+
+/*
+ * The state of the (S,G,rpt) machine in an entry's bits: Prune in
+ * `rpt_pruned_oifs`, Prune-Pending in `rpt_pp_oifs`, NoInfo in neither.
+ * @tmp is a Join(*,G) read earlier in the group set being processed, which
+ * makes the two the transient PruneTmp and Prune-Pending-Tmp; they forward
+ * as Prune and Prune-Pending do, so the bits need not tell them apart.
+ */
+int rpt_ds_read(struct rpt_ds_bits b, int tmp)
+{
+    if (b.pruned)
+	return tmp ? RPT_DS_PT : RPT_DS_P;
+
+    if (b.pp)
+	return tmp ? RPT_DS_PPT : RPT_DS_PP;
+
+    return RPT_DS_NI;
+}
+
+struct rpt_ds_bits rpt_ds_write(int state)
+{
+    struct rpt_ds_bits b;
+
+    b.pruned = state == RPT_DS_P || state == RPT_DS_PT;
+    b.pp     = state == RPT_DS_PP || state == RPT_DS_PPT;
+
+    return b;
 }
 
 /**

@@ -332,6 +332,18 @@ mutant ds-et-held-cut              "$h" "$s" proof_et           0 1 's/if (et ==
 mutant ds-wc-et-max-is-set         "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_MAX \&\& cur < holdtime)/if (et == JP_ET_MAX)/'
 mutant ds-wc-et-max-is-min         "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_MAX \&\& cur < holdtime)/if (et == JP_ET_MAX \&\& cur > holdtime)/'
 mutant ds-wc-et-cancel-kept        "$h" "$s" proof_ds_et        0 1 's/if (et == JP_ET_CANCEL)$/if (0)/'
+# The bits an entry keeps the states in.  The controls: an (S,G) read off
+# the (*,G)'s copy, NoInfo that leaves the copy, a (*,G) write that touches
+# sg_joined_oifs, Prune-Pending forgotten, the transient states read back
+# as the others, and a PruneTmp kept as Prune-Pending.
+proof  ds-bits                     "$h" "$s" proof_ds_bits      0 1
+proof  ds-rpt-bits                 "$h" "$s" proof_rpt_bits     0 1
+mutant ds-bits-sg-reads-copy       "$h" "$s" proof_ds_bits      0 1 's/if (!(wc ? b.joined : b.sg_joined))/if (!b.joined)/'
+mutant ds-bits-ni-keeps-copy       "$h" "$s" proof_ds_bits      0 1 's/b.joined = state != JP_DS_NI;/b.joined = b.joined || state != JP_DS_NI;/'
+mutant ds-bits-wc-writes-sg        "$h" "$s" proof_ds_bits      0 1 's/^    if (!wc)$/    if (1)/'
+mutant ds-bits-pp-dropped          "$h" "$s" proof_ds_bits      0 1 's/b.pp = state == JP_DS_PP;/b.pp = 0;/'
+mutant ds-rpt-bits-tmp-ignored     "$h" "$s" proof_rpt_bits     0 1 's/return tmp ? RPT_DS_PT : RPT_DS_P;/return RPT_DS_P;/'
+mutant ds-rpt-bits-pt-as-pp        "$h" "$s" proof_rpt_bits     0 1 's/b.pruned = state == RPT_DS_P || state == RPT_DS_PT;/b.pruned = state == RPT_DS_P;/;s/b.pp     = state == RPT_DS_PP || state == RPT_DS_PPT;/b.pp = state == RPT_DS_PP || state == RPT_DS_PPT || state == RPT_DS_PT;/'
 
 # Round trips, step 3 of aidd_docs/plans/assert-proofs.md: the bodies
 # src/pim_encode.c writes, read back by src/pim_parse.c, for every value

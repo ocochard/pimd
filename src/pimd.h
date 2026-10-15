@@ -866,6 +866,28 @@ struct jp_act rpt_ds_decide(int state, int event, int ppt_zero);
 uint64_t      rpt_et_after (int et, uint64_t cur, uint64_t want);
 uint16_t      jp_et_after  (int et, uint16_t cur, uint16_t holdtime);
 
+/*
+ * One interface's bits of the bitmaps an entry keeps the downstream state
+ * in, each 0 or 1: what jp_ds_state() and rpt_ds_state() (src/route.c)
+ * read off the entry and what their _apply() write back, decided here so
+ * that test/cbmc/jp.c proves the round trip without an mrtentry_t.
+ */
+struct jp_ds_bits {
+    uint8_t  joined;		/* joined_oifs			*/
+    uint8_t  sg_joined;		/* sg_joined_oifs, an (S,G)'s own	*/
+    uint8_t  pp;		/* prune_pending_oifs		*/
+};
+
+struct rpt_ds_bits {
+    uint8_t  pruned;		/* rpt_pruned_oifs		*/
+    uint8_t  pp;		/* rpt_pp_oifs			*/
+};
+
+int                jp_ds_read  (struct jp_ds_bits b, int wc);
+struct jp_ds_bits  jp_ds_write (struct jp_ds_bits b, int wc, int state);
+int                rpt_ds_read (struct rpt_ds_bits b, int tmp);
+struct rpt_ds_bits rpt_ds_write(int state);
+
 /* PIM_REGISTER definitions */
 #define PIM_REGISTER_NULL_REGISTER_BIT  0x40000000
 

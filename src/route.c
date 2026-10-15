@@ -618,32 +618,43 @@ void wc_join_gone(mrtentry_t *wc, vifi_t vifi)
     }
 }
 
+/* One interface's bits of an entry's (*,G) or (S,G) downstream state, and
+ * back, for jp_ds_read() and jp_ds_write() (src/pim_jp.c) */
+static struct jp_ds_bits jp_ds_get(const mrtentry_t *mrt, vifi_t vifi)
+{
+    struct jp_ds_bits b;
+
+    b.joined    = PIMD_VIFM_ISSET(vifi, mrt->joined_oifs);
+    b.sg_joined = PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs);
+    b.pp        = PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs);
+
+    return b;
+}
+
+#define VIFM_PUT(bit, vifi, m)	((bit) ? PIMD_VIFM_SET(vifi, m) : PIMD_VIFM_CLR(vifi, m))
+
+static void jp_ds_put(mrtentry_t *mrt, vifi_t vifi, struct jp_ds_bits b)
+{
+    VIFM_PUT(b.joined, vifi, mrt->joined_oifs);
+    VIFM_PUT(b.sg_joined, vifi, mrt->sg_joined_oifs);
+    VIFM_PUT(b.pp, vifi, mrt->prune_pending_oifs);
+}
+
 /*
  * The state of the downstream (*,G) or (S,G) machine of RFC 7761 sec. 4.5.1
- * and sec. 4.5.2 on @vifi.  Join state is `joined_oifs` on a (*,G) entry and
- * `sg_joined_oifs` on an (S,G) one, whose `joined_oifs` also holds the copy
- * of joins(*,G) VOIF_COPY() seeded it with, and Prune-Pending is
- * `prune_pending_oifs` on top of either.
+ * and sec. 4.5.2 on @vifi, jp_ds_read().
  */
 int jp_ds_state(const mrtentry_t *mrt, vifi_t vifi)
 {
-    int joined = (mrt->flags & MRTF_WC) ? PIMD_VIFM_ISSET(vifi, mrt->joined_oifs)
-					 : PIMD_VIFM_ISSET(vifi, mrt->sg_joined_oifs);
-
-    if (!joined)
-	return JP_DS_NI;
-
-    return PIMD_VIFM_ISSET(vifi, mrt->prune_pending_oifs) ? JP_DS_PP : JP_DS_J;
+    return jp_ds_read(jp_ds_get(mrt, vifi), (mrt->flags & MRTF_WC) != 0);
 }
 
 /*
  * An action of jp_ds_decide() (src/pim_jp.c) written back to the entry:
  * @holdtime is what a Join asks the Expiry Timer for, `vif_timers` in
  * seconds, 0xffff held; @ppt_at is the Prune-Pending Timer's deadline.
- * NoInfo also takes out of an (S,G) entry the copy of the (*,G)'s joins on
- * the interface, which is how an Expiry Timer the copy shares ages it out,
- * and a (*,G) leaving Join takes the interface off its sources' copies,
- * wc_join_gone().  Returns TRUE where `joined_oifs` changed, which the
+ * The bits are jp_ds_write()'s, and a (*,G) leaving Join takes the
+ * interface off its sources' copies, wc_join_gone().  Returns TRUE where `joined_oifs` changed, which the
  * caller owes a change_interfaces() for.
  *
  * On an (S,G) entry the action can flip JoinDesired(S,G) with the
@@ -662,22 +673,9 @@ int jp_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint16_t holdti
 
     mrt->vif_timers[vifi] = jp_et_after(act.et, mrt->vif_timers[vifi], holdtime);
 
-    if (act.state == JP_DS_NI) {
-	PIMD_VIFM_CLR(vifi, mrt->joined_oifs);
-	if (wc)
-	    wc_join_gone(mrt, vifi);
-	else
-	    PIMD_VIFM_CLR(vifi, mrt->sg_joined_oifs);
-    } else {
-	PIMD_VIFM_SET(vifi, mrt->joined_oifs);
-	if (!wc)
-	    PIMD_VIFM_SET(vifi, mrt->sg_joined_oifs);
-    }
-
-    if (act.state == JP_DS_PP)
-	PIMD_VIFM_SET(vifi, mrt->prune_pending_oifs);
-    else
-	PIMD_VIFM_CLR(vifi, mrt->prune_pending_oifs);
+    jp_ds_put(mrt, vifi, jp_ds_write(jp_ds_get(mrt, vifi), wc, act.state));
+    if (wc && act.state == JP_DS_NI)
+	wc_join_gone(mrt, vifi);
 
     if (act.ppt == JP_PPT_START) {
 	mrt->pp_expires[vifi] = ppt_at;
@@ -736,21 +734,17 @@ static int expire_prune_pending_timers(mrtentry_t *mrt, uint64_t now, uint64_t *
 
 /*
  * The state of the downstream (S,G,rpt) machine of RFC 7761 sec. 4.5.3 on
- * @vifi, as the entry's two bitmaps hold it: Prune in `rpt_pruned_oifs`,
- * Prune-Pending in `rpt_pp_oifs`, NoInfo in neither.  @tmp is a Join(*,G)
- * read earlier in the group set being processed, which makes the two the
- * transient PruneTmp and Prune-Pending-Tmp; they forward as Prune and
- * Prune-Pending do, so the bitmaps need not tell them apart.
+ * @vifi, rpt_ds_read(): @tmp is a Join(*,G) read earlier in the group set
+ * being processed.
  */
 int rpt_ds_state(const mrtentry_t *mrt, vifi_t vifi, int tmp)
 {
-    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs))
-	return tmp ? RPT_DS_PT : RPT_DS_P;
+    struct rpt_ds_bits b;
 
-    if (PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs))
-	return tmp ? RPT_DS_PPT : RPT_DS_PP;
+    b.pruned = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs);
+    b.pp     = PIMD_VIFM_ISSET(vifi, mrt->rpt_pp_oifs);
 
-    return RPT_DS_NI;
+    return rpt_ds_read(b, tmp);
 }
 
 /*
@@ -763,24 +757,15 @@ int rpt_ds_state(const mrtentry_t *mrt, vifi_t vifi, int tmp)
  */
 int rpt_ds_apply(mrtentry_t *mrt, vifi_t vifi, struct jp_act act, uint64_t et_want, uint64_t ppt_at)
 {
+    struct rpt_ds_bits b;
     int was = PIMD_VIFM_ISSET(vifi, mrt->rpt_pruned_oifs) ? 1 : 0;
     int now;
 
     mrt->rpt_expires[vifi] = rpt_et_after(act.et, mrt->rpt_expires[vifi], et_want);
 
-    PIMD_VIFM_CLR(vifi, mrt->rpt_pruned_oifs);
-    PIMD_VIFM_CLR(vifi, mrt->rpt_pp_oifs);
-    switch (act.state) {
-	case RPT_DS_P:
-	case RPT_DS_PT:
-	    PIMD_VIFM_SET(vifi, mrt->rpt_pruned_oifs);
-	    break;
-
-	case RPT_DS_PP:
-	case RPT_DS_PPT:
-	    PIMD_VIFM_SET(vifi, mrt->rpt_pp_oifs);
-	    break;
-    }
+    b = rpt_ds_write(act.state);
+    VIFM_PUT(b.pruned, vifi, mrt->rpt_pruned_oifs);
+    VIFM_PUT(b.pp, vifi, mrt->rpt_pp_oifs);
 
     if (act.ppt == JP_PPT_START) {
 	mrt->rpt_pp_expires[vifi] = ppt_at;

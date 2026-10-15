@@ -29,6 +29,14 @@
  *   proof_ds_et   jp_et_after(), the same prose for the (*,G) and (S,G)
  *                 machines of sec. 4.5.1 and 4.5.2, over the countdown in
  *                 seconds those keep, 0xffff held
+ *   proof_ds_bits jp_ds_read() and jp_ds_write(), the bits of an entry
+ *                 the (*,G) and (S,G) states are kept in: every state
+ *                 written is read back, from any bits, and each bit
+ *                 holds what its comment in pimd.h says
+ *   proof_rpt_bits rpt_ds_read() and rpt_ds_write(), the same for the
+ *                 (S,G,rpt) machine, the transient states read back with
+ *                 the Join(*,G) that makes them so and as Prune and
+ *                 Prune-Pending without it
  *
  * The tables below are the RFC's, cell by cell, with one reading made
  * explicit: a Prune-Pending Timer of zero "expire[s] immediately", so a
@@ -48,11 +56,14 @@
 uint16_t nondet_uint16_t(void);
 uint32_t nondet_uint32_t(void);
 uint64_t nondet_uint64_t(void);
+uint8_t nondet_uint8_t(void);
 
 void proof_ds(void);
 void proof_rpt(void);
 void proof_et(void);
 void proof_ds_et(void);
+void proof_ds_bits(void);
+void proof_rpt_bits(void);
 
 static int same(struct jp_act a, int state, int et, int ppt, int echo)
 {
@@ -199,6 +210,49 @@ void proof_ds_et(void)
 	__CPROVER_assert(got == 0, "CANCEL: stopped");
     if (et == JP_ET_KEEP)
 	__CPROVER_assert(got == cur, "KEEP leaves it");
+}
+
+void proof_ds_bits(void)
+{
+    int state = (int)(nondet_uint32_t() % 3);
+    int wc    = (int)(nondet_uint32_t() & 1);
+    struct jp_ds_bits in, out;
+
+    /* Any bits an entry may hold, as PIMD_VIFM_ISSET() reads them */
+    in.joined    = nondet_uint8_t() & 1;
+    in.sg_joined = nondet_uint8_t() & 1;
+    in.pp        = nondet_uint8_t() & 1;
+    out = jp_ds_write(in, wc, state);
+
+    __CPROVER_assert(jp_ds_read(out, wc) == state, "the state written is the state read");
+    __CPROVER_assert(out.joined == (state != JP_DS_NI), "joined_oifs is Join or Prune-Pending");
+    __CPROVER_assert(out.pp == (state == JP_DS_PP), "prune_pending_oifs is Prune-Pending");
+    if (wc)
+	__CPROVER_assert(out.sg_joined == in.sg_joined, "a (*,G) leaves sg_joined_oifs alone");
+    else
+	__CPROVER_assert(out.sg_joined == out.joined, "an (S,G)'s own joins and the copy go together");
+
+    /* The state read is the bit of the entry's own kind */
+    if (wc)
+	__CPROVER_assert((jp_ds_read(in, wc) != JP_DS_NI) == in.joined, "a (*,G) is joined by joined_oifs");
+    else
+	__CPROVER_assert((jp_ds_read(in, wc) != JP_DS_NI) == in.sg_joined, "an (S,G) by sg_joined_oifs alone");
+}
+
+void proof_rpt_bits(void)
+{
+    int state = (int)(nondet_uint32_t() % 5);
+    int tmp   = state == RPT_DS_PT || state == RPT_DS_PPT;
+    struct rpt_ds_bits b = rpt_ds_write(state);
+
+    __CPROVER_assert(rpt_ds_read(b, tmp) == state, "the state written is the state read");
+    __CPROVER_assert(!(b.pruned && b.pp), "never Prune and Prune-Pending at once");
+    __CPROVER_assert(b.pruned == (state == RPT_DS_P || state == RPT_DS_PT), "rpt_pruned_oifs forwards as Prune");
+    __CPROVER_assert(b.pp == (state == RPT_DS_PP || state == RPT_DS_PPT), "rpt_pp_oifs as Prune-Pending");
+    if (state == RPT_DS_PT)
+	__CPROVER_assert(rpt_ds_read(b, 0) == RPT_DS_P, "PruneTmp is Prune once the message is over");
+    if (state == RPT_DS_PPT)
+	__CPROVER_assert(rpt_ds_read(b, 0) == RPT_DS_PP, "Prune-Pending-Tmp is Prune-Pending");
 }
 
 /**
