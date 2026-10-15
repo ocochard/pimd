@@ -15612,7 +15612,9 @@ check_privsep() {
 	else
 		fail "r3's parent $ps_parent outlived its child, holding root for nothing"
 	fi
-	if logged r3 "unprivileged half of pimd was killed by signal $(kill -l SYS 2>/dev/null || echo 12) (SIGSYS: a system call its sandbox does not allow), exiting with status 1"; then
+	# The number is the system's, 12 on FreeBSD and 31 on Linux, and
+	# "kill -l SYS" does not give it in every sh; the name after it does
+	if logged r3 "unprivileged half of pimd was killed by signal [0-9]* (SIGSYS: a system call its sandbox does not allow), exiting with status 1"; then
 		ok "and said the child was killed by SIGSYS, exiting with status 1"
 	else
 		fail "r3 did not log how its child died, see $WORKDIR/r3.log"
