@@ -4642,7 +4642,7 @@ queriers_settled() {
 }
 
 # Run the ED1 -> ED2 stream and watch the RP while it is in flight.
-# Sets: replies, regs, sg_seen, sg_native, selfreg.
+# Sets: replies, regs, sg_seen, sg_native, selfreg, mfc_seen.
 #
 # The sampling has to happen during the stream.  Killing the receiver
 # expires ED2's membership within seconds, the (*,G) loses its leaf and
@@ -4662,6 +4662,7 @@ run_stream_and_sample() {
 	sg_seen=
 	sg_native=
 	selfreg=
+	mfc_seen=
 	deadline=$(($(date +%s) + STREAM_PKTS + 30))
 	while [ "$(date +%s)" -lt "$deadline" ]; do
 		# Does the RP encapsulate its own directly connected source
@@ -4671,14 +4672,17 @@ run_stream_and_sample() {
 		o*) selfreg=yes ;;
 		esac
 
+		# rp-lasthop's step 7, here for the reason rp-offpath samples
+		# it in its own loop: read after the receiver has gone, it
+		# raced the membership expiring and lost in a -j 14 run.
+		has_mfc r3 "$SRC_ADDR" && mfc_seen=yes
+
 		sg_iif=$(route_iif r3 "$SRC_ADDR" "$GROUP")
 		if [ -n "$sg_iif" ]; then
 			sg_seen=$sg_iif
-			if [ "$sg_iif" -ne 0 ]; then
-				sg_native=$sg_iif
-				break
-			fi
+			[ "$sg_iif" -ne 0 ] && sg_native=$sg_iif
 		fi
+		[ -n "$sg_native" ] && [ -n "$mfc_seen" ] && break
 		sleep 1
 	done
 
@@ -13409,10 +13413,10 @@ check_rp_lasthop() {
 	fi
 
 	print "7. The kernel MFC on the RP agrees with pimd"
-	if has_mfc r3 "$SRC_ADDR"; then
-		ok "r3 kernel has an MFC entry for $SRC_ADDR"
+	if [ -n "$mfc_seen" ]; then
+		ok "r3 kernel had an MFC entry for $SRC_ADDR while the stream ran"
 	else
-		fail "r3 kernel MFC has nothing for $SRC_ADDR, pimd never pushed the route down"
+		fail "r3 kernel MFC had nothing for $SRC_ADDR while the stream ran, pimd never pushed the route down"
 	fi
 
 	echo
