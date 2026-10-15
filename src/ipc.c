@@ -235,7 +235,7 @@ static void ipc_kv_end(FILE *fp)
 }
 
 /* A NULL value is one this router has not got, as IPC_NA is in a table */
-static void ipc_kv_str(FILE *fp, const char *key, const char *val)
+void ipc_kv_str(FILE *fp, const char *key, const char *val)
 {
 	ipc_kv(fp, key);
 	if (!val)
@@ -271,7 +271,7 @@ static void ipc_kv_secs(FILE *fp, const char *key, long long val)
 }
 
 /* A number this router may not have, an unelected BSR's priority say */
-static void ipc_kv_opt(FILE *fp, const char *key, int have, long long val)
+void ipc_kv_opt(FILE *fp, const char *key, int have, long long val)
 {
 	ipc_kv(fp, key);
 	if (!have)

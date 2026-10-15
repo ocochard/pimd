@@ -332,6 +332,24 @@ as well, marked
 or
 .Cm Dynamic+Auto-RP ;
 a denied prefix is only here, having no RP to be a row there.
+With
+.Fl j
+the mappings come first, as
+.Cm autorp ,
+followed by what the text form says above its table: whether discovery is
+on, what this router announces
+.Pq Cm announce_address , announce_interval , announce_holdtime , announce_scope
+and the prefixes in
+.Cm announce ,
+whether it is a listener, and whether it is a mapping agent
+.Pq Cm agent_address , agent_interval , agent_holdtime , agent_scope ,
+the higher-addressed agent it went quiet for in
+.Cm agent_quiet_for ,
+and the announcements it heard in
+.Cm heard .
+A role this router does not play is
+.Cm null ,
+and a list it has nothing for is empty.
 .It Nm Ar show pim Op detail
 Show the interfaces, neighbors, routing table, Candidate-RP state and RP
 set in one reply.

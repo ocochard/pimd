@@ -7430,7 +7430,43 @@ check_autorp_agent() {
 		dprint "$(pimctl r2 show autorp)"
 	fi
 
+	# What the text form says between its title and its table, read out
+	# of "pimctl -j show autorp" instead, which used to carry the
+	# mappings alone.  R1 now plays both roles and has given way, so
+	# every field has something in it; R3 plays neither, the control
+	# that a role nobody configured reads as null rather than as a
+	# leftover of another router's.
+	print "8. JSON says what a router announces and whether it is the agent"
+	if ! command -v python3 >/dev/null 2>&1; then
+		skip "no python3 here, the JSON is not read field by field"
+	else
+		aj=$(autorp_json r1 "announce_address,announce_holdtime,len(announce),agent_address,agent_quiet_for,len(heard),autorp[0]['rp_address'] if autorp else None")
+		if [ "$aj" = "$AA_RP $AA_HOLDTIME 3 $AA_AGENT2 $AA_AGENT_SEEN 3 $AA_RP" ]; then
+			ok "r1: announcing $AA_RP with 3 prefixes, agent $AA_AGENT2 quiet for $AA_AGENT_SEEN, 3 heard, mappings first"
+		else
+			fail "r1's JSON says '$aj', want '$AA_RP $AA_HOLDTIME 3 $AA_AGENT2 $AA_AGENT_SEEN 3 $AA_RP'"
+			dprint "$(pimctl r1 -j show autorp)"
+		fi
+		aj=$(autorp_json r3 "announce_address,agent_address,agent_quiet_for,len(announce),len(heard),listener,discovery")
+		if [ "$aj" = "None None None 0 0 disabled enabled" ]; then
+			ok "r3, which plays neither role, reads null and empty in the same keys"
+		else
+			fail "r3's JSON says '$aj', want 'None None None 0 0 disabled enabled'"
+			dprint "$(pimctl r3 -j show autorp)"
+		fi
+	fi
+
 	result
+}
+
+# Fields of router $1's "pimctl -j show autorp", the Python expressions $2
+# over its keys, printed space separated
+autorp_json() {
+	pimctl "$1" -j show autorp 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(" ".join(str(v) for v in eval("(" + sys.argv[1] + ",)", {}, d)))
+' "$2"
 }
 
 check_static_rp() {

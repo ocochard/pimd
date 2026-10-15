@@ -551,6 +551,10 @@ extern int	ipc_json		(void);
 extern void	ipc_table		(FILE *fp, const char *title, const char *name);
 extern void	ipc_row			(FILE *fp, const struct ipc_field *row);
 extern void	ipc_table_end		(FILE *fp);
+/* Single values, the shape of "show status", for a dump outside ipc.c that
+ * renders its JSON apart from its prose */
+extern void	ipc_kv_str		(FILE *fp, const char *key, const char *val);
+extern void	ipc_kv_opt		(FILE *fp, const char *key, int have, long long val);
 extern void	ipc_init		(char *sockfile);
 /* The handler ipc_init() registers with the event loop, and the one entry
  * point of the daemon a fuzz harness can hand a pimctl command to: it is

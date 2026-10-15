@@ -1542,6 +1542,7 @@ void stop_autorp(void)
 }
 
 static void dump_autorp_config(FILE *fp);
+static void dump_autorp_json(FILE *fp);
 
 /* One mapping this router holds, the same row either way it is rendered */
 static void dump_autorp_map(FILE *fp, struct autorp_map *map)
@@ -1570,8 +1571,9 @@ static void dump_autorp_map(FILE *fp, struct autorp_map *map)
  * positive half of this and knows nothing of the rest.
  *
  * What this router announces and resolves is prose between the title and
- * the table, which is the shape "show status" has: JSON leaves it out and
- * keeps the mappings, which are what a script is after.
+ * the table, which is the shape "show status" has.  JSON has the mappings
+ * first, the table a script is most likely after, and the same facts as
+ * values and tables after them, dump_autorp_json().
  */
 int dump_autorp(FILE *fp, int detail)
 {
@@ -1593,6 +1595,9 @@ int dump_autorp(FILE *fp, int detail)
     for (map = autorp_maps; map; map = map->next)
 	dump_autorp_map(fp, map);
     ipc_table_end(fp);
+
+    if (ipc_json())
+	dump_autorp_json(fp);
 
     return 0;
 }
@@ -1634,6 +1639,60 @@ static void dump_autorp_config(FILE *fp)
 		    netname(map->group_addr, map->group_mask),
 		    map->negative ? "deny" : "");
     }
+}
+
+/*
+ * The prose half again, as JSON: every key whether or not this router plays
+ * the role, null where it does not and an empty table where it heard
+ * nothing, so that a script reads one shape from any router.
+ */
+static void dump_autorp_json(FILE *fp)
+{
+    struct autorp_prefix *pfx;
+    struct autorp_map *map;
+    int announce = autorp_announce_flag, agent = autorp_agent_flag;
+
+    ipc_kv_str(fp, "Discovery", autorp_enabled ? "enabled" : "disabled");
+
+    ipc_kv_str(fp, "Announce address",
+	       announce ? inet_fmt(autorp_announce_addr, s1, sizeof(s1)) : NULL);
+    ipc_kv_opt(fp, "Announce interval", announce, autorp_announce_interval);
+    ipc_kv_opt(fp, "Announce holdtime", announce, autorp_announce_holdtime);
+    ipc_kv_opt(fp, "Announce scope", announce, autorp_announce_ttl);
+    ipc_table(fp, "Announced prefixes", "announce");
+    for (pfx = announce ? autorp_prefixes : NULL; pfx; pfx = pfx->next) {
+	struct ipc_field row[] = {
+	    IPC_STR("Group Address", -18, netname(pfx->group_addr, pfx->group_mask)),
+	    IPC_STR("Deny",	       -4, pfx->negative ? "yes" : "no"),
+	    IPC_END
+	};
+
+	ipc_row(fp, row);
+    }
+    ipc_table_end(fp);
+
+    ipc_kv_str(fp, "Listener", !autorp_listener_flag ? "disabled" :
+	       autorp_relay_socket > -1 ? "enabled" : "no socket");
+
+    ipc_kv_str(fp, "Agent address",
+	       agent ? inet_fmt(autorp_agent_addr, s1, sizeof(s1)) : NULL);
+    ipc_kv_opt(fp, "Agent interval", agent, autorp_agent_interval);
+    ipc_kv_opt(fp, "Agent holdtime", agent, autorp_agent_holdtime);
+    ipc_kv_opt(fp, "Agent scope", agent, autorp_agent_ttl);
+    ipc_kv_str(fp, "Agent quiet for", agent && autorp_agent_better != INADDR_ANY_N
+	       ? inet_fmt(autorp_agent_better, s1, sizeof(s1)) : NULL);
+    ipc_table(fp, "Announcements heard", "heard");
+    for (map = agent ? autorp_announced : NULL; map; map = map->next) {
+	struct ipc_field row[] = {
+	    IPC_STR("RP Address",    -15, inet_fmt(map->rp_addr, s1, sizeof(s1))),
+	    IPC_STR("Group Address", -18, netname(map->group_addr, map->group_mask)),
+	    IPC_STR("Deny",	       -4, map->negative ? "yes" : "no"),
+	    IPC_END
+	};
+
+	ipc_row(fp, row);
+    }
+    ipc_table_end(fp);
 }
 
 /**
