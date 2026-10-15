@@ -7,6 +7,11 @@ issue of this repository is written out in full.
 --------------
 
 ### Changes
+- `pimctl -j show autorp` says what the text form does above its table:
+  what this router announces and with which prefixes, whether it is a
+  listener, and whether it is a mapping agent, which agent it went quiet
+  for and what it heard.  It carried the mappings alone before.  A role
+  the router does not play is `null`; the mappings stay the first key.
 - `autorp accept-from ADDRESS[/LEN]` in `pimd.conf` names the routers whose
   Auto-RP messages are believed: the mapping agents, and on an agent the
   candidate RPs.  Nothing in Auto-RP authenticates a sender, so anyone able
