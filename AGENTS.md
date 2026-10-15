@@ -897,7 +897,12 @@ CC=cgcc && REAL_CC=gcc make`.
 What sparse is really built for is out of reach here and would be a project rather than a job:
 endianness checking wants the wire types annotated `__bitwise`/`__be32`, and this daemon carries
 raw `uint32_t` through `htonl()` and `ntohl()` by hand.  Annotating them would put a whole class
-of byte-order bug in front of a checker rather than in front of a reviewer.
+of byte-order bug in front of a checker rather than in front of a reviewer, and it was measured
+and declined (2026-10-15): a typed `htonl()`/`ntohl()` shim alone gives 208 warnings over 18
+files, the conversions sit in `rp.c`, `mrt.c`, `pim_proto.c`, `config.c` and `autorp.c` rather
+than in the parse and encode files, which copy addresses as bytes, and each fix retypes one of
+some 494 address, group and mask declarations -- every file of the daemon, against mistakes the
+CBMC round trips and the interop labs already catch on the wire.
 
 `scan-build`, clang's static analyser, is deliberately **not** in CI, and the reason is here so
 that nobody re-derives it. Over this tree (`scan-build ./configure && scan-build make`, llvm 19)
