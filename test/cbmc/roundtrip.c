@@ -18,7 +18,7 @@
  *
  * A harness for cbmc(1), not a program: run.sh compiles it alone, with
  * SOURCE naming src/pim_encode.c or a mutant of it, and src/pim_parse.c
- * included as it is.  The other harnesses prove a decoder reads nothing
+ * and src/autorp_parse.c included as they are.  The other harnesses prove a decoder reads nothing
  * it should not; this one proves a decoder reads back what the encoder of
  * the same message wrote, for every value of every field:
  *
@@ -45,8 +45,15 @@
  *                           header the decoder reads the source, the group
  *                           and, once the sender has checksummed it, the
  *                           header length back out of
+ *   proof_rt_autorp         autorp_encode_hdr(), _rp() and _grp(), and
+ *                           autorp_parse_hdr() and autorp_parse_next(): two
+ *                           RP blocks, of one prefix and of two, every
+ *                           field of any value, and the two bytes the
+ *                           decoder skips -- the reserved word and the RP's
+ *                           PIM version -- read off the buffer instead
+ *   proof_rt_autorp_empty   the same with no prefix in the first block
  *
- * The body is written behind a PIM header of any four bytes, into a buffer
+ * A PIM body is written behind a PIM header of any four bytes, into a buffer
  * allocated at exactly the message's length, so a field written past the
  * end or read past it is a violation as well as a mismatch.
  *
@@ -62,10 +69,12 @@
 
 #include SOURCE
 #include "pim_parse.c"
+#include "autorp_parse.c"
 
 uint32_t nondet_uint32_t(void);
 uint16_t nondet_uint16_t(void);
 uint8_t nondet_uint8_t(void);
+int nondet_int(void);
 
 void proof_rt_register_stop(void);
 void proof_rt_assert(void);
@@ -75,6 +84,8 @@ void proof_rt_hello(void);
 void proof_rt_jp(void);
 void proof_rt_bsr(void);
 void proof_rt_hello_addr(void);
+void proof_rt_autorp(void);
+void proof_rt_autorp_empty(void);
 
 /* A message of exactly @body bytes behind a PIM header of any content, and
  * a writer on its body */
@@ -367,4 +378,93 @@ void proof_rt_bsr(void)
     __CPROVER_assert(rp.priority == rp_prio, "its priority comes back");
 
     free(buf);
+}
+
+/*
+ * An Auto-RP message is a UDP payload, so there is no PIM header in front
+ * of it: the buffer is the message.  Two shapes, written out rather than
+ * walked: two RP blocks, so that a prefix put under the wrong one is a
+ * case, the first with one prefix or, in proof_rt_autorp_empty, none -- a
+ * block the decoder steps over -- and the second with two.  Counts left
+ * nondeterministic make every offset symbolic: over nested loops that did
+ * not finish in six minutes, and with only @n0 so it took 6m41s, where a
+ * fixed shape takes seconds.  The mapping agent writes the RP count into
+ * the header after the blocks, msg[1] of autorp_send_mapping(), the one
+ * byte of the message this does not see written.
+ */
+static void rt_autorp(uint8_t n0)
+{
+    uint8_t type = nondet_uint8_t();
+    uint16_t holdtime = nondet_uint16_t();
+    uint32_t rp0 = nondet_uint32_t(), rp1 = nondet_uint32_t();
+    uint32_t g0 = nondet_uint32_t(), g1 = nondet_uint32_t(), g2 = nondet_uint32_t();
+    uint8_t m0 = nondet_uint8_t(), m1 = nondet_uint8_t(), m2 = nondet_uint8_t();
+    int neg0 = nondet_int(), neg1 = nondet_int(), neg2 = nondet_int();
+    struct autorp_wire_prefix pfx;
+    struct autorp_cursor cur;
+    struct autorp_hdr hdr;
+    struct pim_writer w;
+    uint8_t *buf;
+    size_t len;
+
+    __CPROVER_assume(type <= 0x0f);
+
+    len = AUTORP_HDR_LEN + 2 * AUTORP_RP_LEN + (size_t)(n0 + 2) * AUTORP_GRP_LEN;
+    buf = malloc(len);
+    __CPROVER_assume(buf != NULL);
+    pim_writer_init(&w, buf, len);
+
+    __CPROVER_assert(autorp_encode_hdr(&w, type, 2, holdtime), "the header fits");
+    __CPROVER_assert(autorp_encode_rp(&w, rp0, n0), "the first RP block fits");
+    if (n0)
+	__CPROVER_assert(autorp_encode_grp(&w, g0, m0, neg0), "its prefix fits");
+    __CPROVER_assert(autorp_encode_rp(&w, rp1, 2), "the second RP block fits");
+    __CPROVER_assert(autorp_encode_grp(&w, g1, m1, neg1), "its first prefix fits");
+    __CPROVER_assert(autorp_encode_grp(&w, g2, m2, neg2), "and its second");
+    __CPROVER_assert(w.left == 0, "and the message fills its length");
+
+    __CPROVER_assert(autorp_parse_hdr(&cur, &hdr, buf, len) == 0,
+		     "the decoder takes what the encoder wrote");
+    __CPROVER_assert(hdr.version == AUTORP_VERSION, "the version is the one pimd speaks");
+    __CPROVER_assert(hdr.type == type, "the type comes back");
+    __CPROVER_assert(hdr.rpcnt == 2, "the RP count comes back");
+    __CPROVER_assert(hdr.holdtime == holdtime, "the holdtime comes back");
+
+    /* The two the decoder skips, read off the buffer */
+    __CPROVER_assert(!buf[4] && !buf[5] && !buf[6] && !buf[7], "the reserved word goes out as zero");
+    __CPROVER_assert(AUTORP_RP_PIMVER(buf[AUTORP_HDR_LEN + 4]) == PIM_VERSION,
+		     "the first RP block says PIMv2");
+    __CPROVER_assert(AUTORP_RP_PIMVER(buf[AUTORP_HDR_LEN + AUTORP_RP_LEN + n0 * AUTORP_GRP_LEN + 4])
+		     == PIM_VERSION, "and so does the second");
+
+    if (n0) {
+	__CPROVER_assert(autorp_parse_next(&cur, &pfx) == AUTORP_PARSE_PREFIX, "the first prefix is read");
+	__CPROVER_assert(pfx.rp_addr == rp0, "under the first RP");
+	__CPROVER_assert(pfx.group_addr == g0, "its group comes back");
+	__CPROVER_assert(pfx.masklen == m0, "its mask length comes back");
+	__CPROVER_assert(pfx.negative == (neg0 != 0), "its N bit comes back");
+    }
+    __CPROVER_assert(autorp_parse_next(&cur, &pfx) == AUTORP_PARSE_PREFIX, "the second RP's first is read");
+    __CPROVER_assert(pfx.rp_addr == rp1, "under the second RP");
+    __CPROVER_assert(pfx.group_addr == g1, "its group comes back");
+    __CPROVER_assert(pfx.masklen == m1, "its mask length comes back");
+    __CPROVER_assert(pfx.negative == (neg1 != 0), "its N bit comes back");
+    __CPROVER_assert(autorp_parse_next(&cur, &pfx) == AUTORP_PARSE_PREFIX, "and its second");
+    __CPROVER_assert(pfx.rp_addr == rp1, "under the same RP");
+    __CPROVER_assert(pfx.group_addr == g2, "its group comes back");
+    __CPROVER_assert(pfx.masklen == m2, "its mask length comes back");
+    __CPROVER_assert(pfx.negative == (neg2 != 0), "its N bit comes back");
+    __CPROVER_assert(autorp_parse_next(&cur, &pfx) == AUTORP_PARSE_DONE, "and nothing else is");
+
+    free(buf);
+}
+
+void proof_rt_autorp(void)
+{
+    rt_autorp(1);
+}
+
+void proof_rt_autorp_empty(void)
+{
+    rt_autorp(0);
 }

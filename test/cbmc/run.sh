@@ -375,6 +375,16 @@ mutant rt-bsr-hash-as-priority     "$h" "$s" proof_rt_bsr       24 6 's/pim_put_
 mutant rt-bsr-frag-count-dropped   "$h" "$s" proof_rt_bsr       24 6 's/pim_put_u8(w, frag_rp_count);/pim_put_u8(w, 0);/'
 mutant rt-bsr-rp-holdtime-dropped  "$h" "$s" proof_rt_bsr       24 6 's/^    pim_put_u16(w, holdtime);$/    pim_put_u16(w, 0);/'
 mutant rt-bsr-rp-reserved-missing  "$h" "$s" proof_rt_bsr       24 6 '/^int pim_encode_bsr_rp/,/^}/s/^    pim_put_u8(w, 0);.*Reserved.*$/    ;/'
+# Auto-RP, the same writer and src/autorp_parse.c
+proof  rt-autorp                   "$h" "$s" proof_rt_autorp    0 1
+proof  rt-autorp-empty             "$h" "$s" proof_rt_autorp_empty 0 1
+mutant rt-autorp-type-fixed        "$h" "$s" proof_rt_autorp    0 1 's/| (type \& 0x0f)/| AUTORP_TYPE_MAPPING/'
+mutant rt-autorp-rpcnt-fixed       "$h" "$s" proof_rt_autorp    0 1 's/pim_put_u8(w, (uint8_t)rpcnt);/pim_put_u8(w, 1);/'
+mutant rt-autorp-reserved-set      "$h" "$s" proof_rt_autorp    0 1 '/^int autorp_encode_hdr/,/^}/s/pim_put_u32(w, 0);/pim_put_u32(w, 1);/'
+mutant rt-autorp-pimver-v1         "$h" "$s" proof_rt_autorp    0 1 's/pim_put_u8(w, PIM_VERSION \& 0x03);/pim_put_u8(w, 1);/'
+mutant rt-autorp-grpcnt-over       "$h" "$s" proof_rt_autorp    0 1 's/pim_put_u8(w, (uint8_t)grpcnt);/pim_put_u8(w, (uint8_t)(grpcnt + 1));/'
+mutant rt-autorp-n-bit-dropped     "$h" "$s" proof_rt_autorp    0 1 's/pim_put_u8(w, negative ? 0x01 : 0x00);/pim_put_u8(w, 0x00);/'
+mutant rt-autorp-masklen-fixed     "$h" "$s" proof_rt_autorp    0 1 '/^int autorp_encode_grp/,/^}/s/pim_put_u8(w, masklen);/pim_put_u8(w, 32);/'
 
 # Run the queue
 seq 1 "$njobs" | xargs -n 1 -P "$JOBS" sh "$0" --job "$work"

@@ -843,7 +843,10 @@ Candidate-RP-Advertisement, Hello, Join/Prune, Bootstrap, every message pimd bui
 Register, which is a copy -- behind a PIM header of any four bytes, into a buffer of exactly
 its length, and read back by the decoder of `src/pim_parse.c`, every field of it, for every value.
 The builders of `src/pim_proto.c` and `src/rp.c` call those encoders, so it is the message on the
-wire that is proven; the Join/Prune and Bootstrap ones write a header, a group set and an entry
+wire that is proven; Auto-RP's announcement and mapping go through three encoders of the same
+file and are read back by `src/autorp_parse.c`, two RP blocks of fixed shape per proof, since
+counts left nondeterministic made every offset symbolic and one such proof took 6m41s where the
+two fixed ones take a second; the Join/Prune and Bootstrap ones write a header, a group set and an entry
 apiece, and the builders keep their walks of the routing table and the RP set.  A round trip cannot see a field both halves get wrong the same way, which stays the
 interop labs'.  The Hello proofs fix the number of secondary addresses per proof: left
 nondeterministic it made every offset of the option walk symbolic, and one proof ran to 49G before

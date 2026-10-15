@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 
 #include "pimd.h"
+#include "autorp.h"
 
 void pim_writer_init(struct pim_writer *w, void *buf, size_t len)
 {
@@ -331,6 +332,42 @@ int pim_encode_null_register(struct pim_writer *w, uint32_t source, uint32_t gro
     pim_put_u16(w, 0);				/* Checksum, the caller's */
     pim_put_bytes(w, &source, sizeof(source));
     pim_put_bytes(w, &group, sizeof(group));
+
+    return !w->full;
+}
+
+/*
+ * Auto-RP, doc/pim-autorp-spec01.txt sec. 4: not PIM, but written through
+ * the same writer, and here so that test/cbmc/roundtrip.c proves it against
+ * src/autorp_parse.c.  The header both messages share: version and type in
+ * one byte, the RP count, the holdtime, and a reserved word.
+ */
+int autorp_encode_hdr(struct pim_writer *w, unsigned type, unsigned rpcnt, uint16_t holdtime)
+{
+    pim_put_u8(w, (uint8_t)(((AUTORP_VERSION & 0x0f) << 4) | (type & 0x0f)));
+    pim_put_u8(w, (uint8_t)rpcnt);
+    pim_put_u16(w, holdtime);
+    pim_put_u32(w, 0);
+
+    return !w->full;
+}
+
+/* An RP block: the address, this router's PIM version, a prefix count */
+int autorp_encode_rp(struct pim_writer *w, uint32_t rp_addr, unsigned grpcnt)
+{
+    pim_put_bytes(w, &rp_addr, sizeof(rp_addr));
+    pim_put_u8(w, PIM_VERSION & 0x03);
+    pim_put_u8(w, (uint8_t)grpcnt);
+
+    return !w->full;
+}
+
+/* And one encoded group prefix, with the N bit of sec. 4 in its first byte */
+int autorp_encode_grp(struct pim_writer *w, uint32_t group_addr, uint8_t masklen, int negative)
+{
+    pim_put_u8(w, negative ? 0x01 : 0x00);
+    pim_put_u8(w, masklen);
+    pim_put_bytes(w, &group_addr, sizeof(group_addr));
 
     return !w->full;
 }

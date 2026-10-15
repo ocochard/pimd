@@ -636,34 +636,6 @@ static void autorp_send(uint32_t group, uint8_t ttl, uint8_t *msg, size_t len)
 }
 
 /*
- * The header both messages share, sec. 4: version and type in one byte, the
- * RP count, the holdtime, and a reserved word.
- */
-static void autorp_put_hdr(struct pim_writer *w, unsigned type, unsigned rpcnt, uint16_t holdtime)
-{
-    pim_put_u8(w, (uint8_t)(((AUTORP_VERSION & 0x0f) << 4) | (type & 0x0f)));
-    pim_put_u8(w, (uint8_t)rpcnt);
-    pim_put_u16(w, holdtime);
-    pim_put_u32(w, 0);
-}
-
-/* An RP block: the address, this router's PIM version, a prefix count */
-static void autorp_put_rp(struct pim_writer *w, uint32_t rp_addr, unsigned grpcnt)
-{
-    pim_put_bytes(w, &rp_addr, sizeof(rp_addr));
-    pim_put_u8(w, PIM_VERSION & 0x03);
-    pim_put_u8(w, (uint8_t)grpcnt);
-}
-
-/* And one encoded group prefix, with the N bit of sec. 4 in its first byte */
-static void autorp_put_grp(struct pim_writer *w, uint32_t group_addr, uint8_t masklen, int negative)
-{
-    pim_put_u8(w, negative ? 0x01 : 0x00);
-    pim_put_u8(w, masklen);
-    pim_put_bytes(w, &group_addr, sizeof(group_addr));
-}
-
-/*
  * `autorp announce', sec. 3.1: what this router is willing to be the RP
  * for, said to the mapping agents every interval.  One message, one RP
  * block -- this router -- and every prefix pimd.conf gave it.
@@ -690,10 +662,10 @@ static void autorp_send_announce(void)
     /* Written through a writer bounded by msg (src/pim_encode.c), the
      * count above saying whether it fits and the writer making sure */
     pim_writer_init(&w, msg, sizeof(msg));
-    autorp_put_hdr(&w, AUTORP_TYPE_ANNOUNCE, 1, autorp_announce_holdtime);
-    autorp_put_rp(&w, autorp_announce_addr, count);
+    autorp_encode_hdr(&w, AUTORP_TYPE_ANNOUNCE, 1, autorp_announce_holdtime);
+    autorp_encode_rp(&w, autorp_announce_addr, count);
     for (pfx = autorp_prefixes; pfx; pfx = pfx->next)
-	autorp_put_grp(&w, pfx->group_addr, pfx->masklen, pfx->negative);
+	autorp_encode_grp(&w, pfx->group_addr, pfx->masklen, pfx->negative);
     if (w.full) {
 	logit(LOG_WARNING, 0, "Auto-RP: announcement overran its buffer, not sent");
 	return;
@@ -787,7 +759,7 @@ static void autorp_send_mapping(void)
 
     /* Written through a writer bounded by msg (src/pim_encode.c) */
     pim_writer_init(&w, msg, sizeof(msg));
-    autorp_put_hdr(&w, AUTORP_TYPE_MAPPING, 0, autorp_agent_holdtime);
+    autorp_encode_hdr(&w, AUTORP_TYPE_MAPPING, 0, autorp_agent_holdtime);
 
     /* One pass per RP, the list being keyed by prefix rather than by RP */
     for (rp = autorp_announced; rp; rp = rp->next) {
@@ -815,12 +787,12 @@ static void autorp_send_mapping(void)
 	    break;
 	}
 
-	autorp_put_rp(&w, rp->rp_addr, grpcnt);
+	autorp_encode_rp(&w, rp->rp_addr, grpcnt);
 	for (map = autorp_announced; map; map = map->next) {
 	    if (map->rp_addr != rp->rp_addr || !autorp_resolved(map))
 		continue;
 
-	    autorp_put_grp(&w, map->group_addr, map->masklen, map->negative);
+	    autorp_encode_grp(&w, map->group_addr, map->masklen, map->negative);
 	}
 
 	rpcnt++;

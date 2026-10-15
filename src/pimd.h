@@ -751,6 +751,9 @@ int    pim_encode_hello (struct pim_writer *w, uint16_t holdtime, uint16_t propa
 int    pim_encode_crp_hdr(struct pim_writer *w, uint8_t priority, uint16_t holdtime,
 			  uint32_t rp, uint8_t **cnt);
 int    pim_encode_crp_prefix(struct pim_writer *w, uint32_t group, uint8_t masklen);
+int    autorp_encode_hdr(struct pim_writer *w, unsigned type, unsigned rpcnt, uint16_t holdtime);
+int    autorp_encode_rp (struct pim_writer *w, uint32_t rp_addr, unsigned grpcnt);
+int    autorp_encode_grp(struct pim_writer *w, uint32_t group_addr, uint8_t masklen, int negative);
 
 /* The Assert decisions that read no state, src/pim_assert.c */
 int    compare_metrics  (uint32_t local_preference, uint32_t local_metric,
