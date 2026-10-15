@@ -34,6 +34,11 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- A router that wanted a Prune itself no longer holds its Join Timer back
+  on overhearing a neighbour's Prune(\*,G) or Prune(S,G) to the same
+  upstream.  That was RFC 2362's Prune suppression, which RFC 7761 sec.
+  4.5.4 and 4.5.5 do not have; a Prune is sent once, so all it delayed was
+  the timer that picks up a return to Joined.
 - A router on the source tree through an upstream other than its RP's
   sent its Join(S,G) every 60 s, however a neighbour's Join to that
   upstream was suppressing it: the Prune(S,G,rpt) that has to go with the

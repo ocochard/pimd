@@ -86,11 +86,6 @@ static uint32_t jp_override_timeout(vifi_t vifi)
     return RANDOM() % effective_override_interval(vifi);
 }
 
-/* The Join Timer in whole seconds, rounded up, for the comparisons against
- * a HoldTime that are older than RFC 7761 sec. 4.5.4 and sec. 4.5.5. */
-#define JP_TIMER_SECS(mrt)	((jp_timer_left(mrt) + 999) / 1000)
-
-
 /*
  * t_suppressed: how long a router holds off its own Join after hearing an
  * equivalent one from a neighbor.  RFC 7761 sec. 4.11 draws it from
@@ -2781,19 +2776,15 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		    if (!mrt)
 			continue;
 
+		    /* "See Prune(*,G) to RPF'(*,G)" is an event of the Joined
+		     * state alone, sec. 4.5.4: a router that wants a Prune
+		     * too has nothing to do.  This held such a router's own
+		     * Prune back, RFC 2362's suppression, which RFC 7761 does
+		     * not have; a Prune goes once, on the transition, so all
+		     * it held back was the Join Timer, which is also what picks
+		     * up a return to Joined nothing else fires it for. */
 		    my_action = join_or_prune(mrt, upstream_router);
-		    if (my_action == PIM_ACTION_PRUNE) {
-			/* TODO: XXX: TIMER implem. dependency! */
-			if ((JP_TIMER_SECS(mrt) < holdtime)
-			    || ((JP_TIMER_SECS(mrt) == holdtime)
-				&& (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
-			    /* Suppress the Prune */
-			    jp_value = jp_suppression_timeout();
-			    if (jp_timer_left(mrt) < jp_value * 1000)
-				jp_timer_set(mrt, jp_value * 1000);
-			}
-		    }
-		    else if (my_action == PIM_ACTION_JOIN) {
+		    if (my_action == PIM_ACTION_JOIN) {
 			/* Override the Prune by scheduling a Join */
 			jp_value = jp_override_timeout(vifi);
 			/* TODO: XXX: TIMER implem. dependency! */
@@ -2827,19 +2818,10 @@ int receive_pim_join_prune(uint32_t src, uint32_t dst __attribute__((unused)), c
 		if (!mrt)
 		    continue;
 
+		/* sec. 4.5.5's "See Prune(S,G) to RPF'(S,G)", the Joined
+		 * state's, as for the (*,G) above */
 		my_action = join_or_prune(mrt, upstream_router);
-		if (my_action == PIM_ACTION_PRUNE) {
-		    /* Suppress the (S,G) Prune */
-		    /* TODO: XXX: TIMER implem. dependency! */
-		    if ((JP_TIMER_SECS(mrt) < holdtime)
-			|| ((JP_TIMER_SECS(mrt) == holdtime)
-			    && (ntohl(src) > ntohl(v->uv_lcl_addr)))) {
-			jp_value = jp_suppression_timeout();
-			if (jp_timer_left(mrt) < jp_value * 1000)
-			    jp_timer_set(mrt, jp_value * 1000);
-		    }
-		}
-		else if (my_action == PIM_ACTION_JOIN) {
+		if (my_action == PIM_ACTION_JOIN) {
 		    /* Override the Prune by scheduling a Join */
 		    jp_value = jp_override_timeout(vifi);
 		    /* TODO: XXX: TIMER implem. dependency! */
