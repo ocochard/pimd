@@ -10337,6 +10337,16 @@ craft_step_13e() {
 			fail "r1 never registered ($SRC_ADDR,$CRAFT_KAT_GROUP) and was stopped, the step cannot be put"
 		elif sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
 			fail "r2 joined toward ED1 for $CRAFT_KAT_GROUP with no receiver for it, the step cannot be put"
+			# Seen on the Linux runner only, once, and the scenario's
+			# own log tails were twenty steps past it by the end: what
+			# r2 held for the group and what both routers said about
+			# it, while it is still there to read
+			dprint "--- r2: show mrt detail, $CRAFT_KAT_GROUP ---"
+			dprint "$(pimctl r2 show mrt detail 2>&1 | grep -A14 -F "$CRAFT_KAT_GROUP")"
+			dprint "--- r2.log, $CRAFT_KAT_GROUP ---"
+			dprint "$(${SUDO} grep -F "$CRAFT_KAT_GROUP" "$WORKDIR/r2.log" | tail -40)"
+			dprint "--- r1.log, $CRAFT_KAT_GROUP ---"
+			dprint "$(${SUDO} grep -F "$CRAFT_KAT_GROUP" "$WORKDIR/r1.log" | tail -20)"
 		else
 			ok "r2 stops r1's Registers for $CRAFT_KAT_GROUP, which has no receiver"
 			craft_on r2 "$CRAFT_R2_DOWN_ADDR" join -u "$CRAFT_R2_LINK23_ADDR" -g "$CRAFT_KAT_GROUP" \

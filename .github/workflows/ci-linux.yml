@@ -349,15 +349,35 @@ jobs:
                           sudo tail -n 200 "$f"
                   done
           done
-          # A pimd whose unprivileged half died takes its parent with it
-          # without logging a word, and the core goes into the chroot: the
-          # kernel's own line is the only thing that says a daemon was
-          # killed rather than merely quiet.
+          # A pimd whose unprivileged half died takes its parent with it,
+          # which logs how and exits 1 (src/privsep.c), but the core goes
+          # into the chroot: the kernel's own line is the only other
+          # witness of a daemon that was killed.
           if [ -n "${rc:-}" ]; then
                   echo "===== dmesg ====="
                   sudo dmesg | grep -iE "segfault|pimd|oom|killed process" | tail -n 40 || true
           fi
           exit ${rc:-0}
+
+      # The tails printed above are the end of a scenario, and crafted goes
+      # on for twenty more steps after one that fails: the lines about the
+      # step that failed are long gone from them.  The whole kept work
+      # directory, every router's log from the start, is what tells an
+      # intermittent failure from a regression.
+      - name: Archive the failed scenarios' work directories
+        if: failure()
+        run: |
+          sudo tar -czf lab-failed.tar.gz /tmp/pimd-test*.*.failed 2>/dev/null || true
+          sudo chown "$(id -u)" lab-failed.tar.gz 2>/dev/null || true
+
+      - name: Upload them
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-failed
+          path: lab-failed.tar.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
   frr-interop:
     # The other half of the same lab, with a second implementation on the
