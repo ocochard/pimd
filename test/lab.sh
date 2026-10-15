@@ -746,6 +746,22 @@
 #               ignored.  Read off R2's log of R1's messages.  Takes about
 #               2 minutes.
 #
+#   soak        The scale topology, for an hour by default and as long as
+#               SOAK_SECONDS says, and the only scenario not in "run all":
+#               it is a run to start by hand and leave.  Every SOAK_CYCLE
+#               seconds ED2 joins and leaves a block of groups, ED1 sends
+#               one packet to a larger block so that R1 makes and ages out
+#               that many (S,G), R2 is reloaded every few cycles and R3's
+#               pimd is killed and restarted every few more.  At the same
+#               quiet point of every cycle it samples both halves of R1's
+#               and R2's pimd -- resident set, descriptors, pid -- R1's
+#               table and its ageing pass, into a CSV kept beside the work
+#               directory, and asserts at the end that neither half grew,
+#               the table came back to where it started each time and no
+#               daemon died or lost a neighbour.  Leaks, timer drift and
+#               state that does not go away are what it is for; a counter
+#               wrap is out of reach of any run measured in hours.
+#
 #   static-rp   The rpt topology with nothing forwarded, and the only
 #               scenario where a router has an RP of its own configuration
 #               beside the one the BSR advertises.  RFC 7761 sec. 4.7
@@ -962,7 +978,7 @@
 # "shared-lan-spt", "assert-recover", "igmp-compat", "ssm", "ssm-range", "alias",
 # "altnet", "ifnew", "ifgone", "renumber", "register-filter", "crafted", "fuzz",
 # "static-rp", "anycast", "anycast-dr", or "all"
-# for run.
+# for run.  "soak" runs only when named, never as part of "all".
 #
 # Requires: root (via sudo), VIMAGE kernel, ip_mroute.ko, if_bridge.ko for
 # the shared segment scenarios, and a built pimd tree in $PIMD_SRC (./autogen.sh &&
@@ -1130,6 +1146,32 @@ SCALE_SHOW_MAX_SEC=${SCALE_SHOW_MAX_SEC:-30}
 # src/route.c -- one privsep round trip each, which is what this measures
 # against a run with SAN_NO_PRIVSEP=yes.
 SCALE_MEMBERS=${SCALE_MEMBERS:-0}
+
+# soak: how long, how long one cycle of churn is, and what each cycle does.
+# A cycle has to outlast PIM_DATA_TIMEOUT (210s, src/pimd.h) and a tick,
+# or the flood's (S,G) are still there when the cycle is sampled and the
+# "back where it started" assertion measures the timer rather than a leak.
+# Below 6 cycles there is not enough of a run for the growth assertion to
+# tell a leak from warming up, and it says so rather than passing.
+SOAK_SECONDS=${SOAK_SECONDS:-3600}
+SOAK_CYCLE=${SOAK_CYCLE:-300}
+SOAK_GROUP=${SOAK_GROUP:-239.192.0.1}
+SOAK_GROUPS=${SOAK_GROUPS:-1000}	# (S,G) R1 makes and ages out per cycle
+SOAK_MEMBERS=${SOAK_MEMBERS:-50}	# of those, groups ED2 joins and leaves
+SOAK_PPS=${SOAK_PPS:-500}
+SOAK_HOLD=${SOAK_HOLD:-30}		# seconds the members stay joined
+SOAK_RELOAD_EVERY=${SOAK_RELOAD_EVERY:-3}	# cycles between R2 reloads
+SOAK_RESTART_EVERY=${SOAK_RESTART_EVERY:-5}	# and R3 kill-and-restarts
+# What a process may grow by between the first and last third of the run,
+# in kilobytes, and what an ageing pass may take.  The first clean hour
+# (2026-10-15, FreeBSD) had the unprivileged halves warm up by the third
+# cycle and then move by 16K at most, so 64K is four times the noise: over
+# the default 12 cycles it flags a leak of 20K a cycle and passes one of
+# 4K, and a longer run, the thirds being further apart, flags a slower one.
+SOAK_RSS_SLACK_KB=${SOAK_RSS_SLACK_KB:-64}
+SOAK_AGEING_MAX_USEC=${SOAK_AGEING_MAX_USEC:-1000000}
+# Where the samples go: beside the work directory, which stop() removes
+SOAK_CSV=${SOAK_CSV:-}
 
 KEEP_GROUP=${KEEP_GROUP:-239.1.1.5}
 KEEP_NUM=${KEEP_NUM:-3}
@@ -2427,7 +2469,7 @@ is_shared_lan() {
 
 set_scenario() {
 	case ${1:-$SCENARIO} in
-	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale|jp-pack|mtrace)
+	rpt|solo|privsep|keepalive|rp-lasthop|rp-offpath|gif-tunnel|gif-tunnel-staticrp|shared-lan|shared-lan-spt|igmp-compat|bsr-elect|passive|ssm|ssm-range|alias|ifnew|ifgone|renumber|rp-nbr-gone|assert-recover|register-filter|crafted|fuzz|static-rp|autorp|autorp-agent|autorp-listener|anycast|anycast-dr|altnet|scale|jp-pack|mtrace|soak)
 		SCENARIO=${1:-$SCENARIO} ;;
 	*) usage; exit 2 ;;
 	esac
@@ -2997,17 +3039,19 @@ check_req() {
 # It also asks for spt-threshold infinity, like the pimd.conf in issue
 # #251, to keep the RP on the shared tree.
 write_configs() {
-	if [ "$SCENARIO" = scale ]; then
+	if [ "$SCENARIO" = scale ] || [ "$SCENARIO" = soak ]; then
 		# R1 is the DR of the source and the RP of everything it
 		# sends to, so every group makes it hold an (S,G), a source,
 		# a group and a kernel cache entry with nothing else in the
 		# way.  The limit is raised past the flood on purpose: what
 		# is being measured is what a large table costs, and
 		# local-sg-limit is the knob that otherwise stops one.
+		sc_flood=$SCALE_NUM
+		[ "$SCENARIO" = soak ] && sc_flood=$SOAK_GROUPS
 		cat <<-EOF > "$WORKDIR/r1.conf"
 		# R1: DR and RP, with room for the whole flood
 		spt-threshold infinity
-		local-sg-limit $((SCALE_NUM + 100))
+		local-sg-limit $((sc_flood + 100))
 		bsr-candidate ${EP}101b priority 1 interval 10
 		rp-candidate ${EP}101b priority 20 interval 10
 		group-prefix 224.0.0.0 masklen 4
@@ -4113,7 +4157,7 @@ start() {
 	done
 	verify_rpf_backend "$(pim_routers | awk '{ print $1 }')"
 
-	if [ "$SCENARIO" = scale ]; then
+	if [ "$SCENARIO" = scale ] || [ "$SCENARIO" = soak ]; then
 		print "Building mflood (one packet per group) ..."
 		build_mflood
 	fi
@@ -5317,6 +5361,7 @@ check() {
 	autorp-agent) check_autorp_agent; return $? ;;
 	autorp-listener) check_autorp_listener; return $? ;;
 	scale)      check_scale; return $? ;;
+	soak)       check_soak; return $? ;;
 	anycast)    check_anycast; return $? ;;
 	anycast-dr) check_anycast_dr; return $? ;;
 	privsep)    check_privsep; return $? ;;
@@ -7165,6 +7210,201 @@ check_scale() {
 	fi
 	[ "$FAILED" -eq 0 ] || return 1
 
+	result
+}
+
+# soak: the group $1 places past $SOAK_GROUP, as scale_group() does for its own
+soak_group() {
+	echo "$SOAK_GROUP" | awk -F. -v i="$1" '{
+		n = (($1 * 256 + $2) * 256 + $3) * 256 + $4 + i
+		printf "%d.%d.%d.%d\n", int(n / 16777216) % 256, int(n / 65536) % 256,
+			int(n / 256) % 256, n % 256
+	}'
+}
+
+# ED2 reports, or with -L leaves, the first $SOAK_MEMBERS groups: v2 from
+# test/igmpv3 rather than a socket, so that a leave is a leave and nothing
+# answers the queries afterwards
+soak_members() {
+	sm_i=0
+	while [ "$sm_i" -lt "$SOAK_MEMBERS" ]; do
+		box_run ed2 "$IGMPV3" -i "$RCV_ADDR" -g "$(soak_group "$sm_i")" -v 2 "$@" \
+			>/dev/null 2>&1 || true
+		sm_i=$((sm_i + 1))
+	done
+}
+
+# The privileged pid of router $1's pimd, and the unprivileged one forked
+# from it -- empty under --no-privsep, which has the one process
+soak_parent() { ${SUDO} cat "$WORKDIR/$1.pid" 2>/dev/null | tr -d ' \t\n'; }
+soak_child()  { proc_children "$1" | head -1; }
+
+# One sample, a CSV row: when, which cycle, then per router of R1 and R2 the
+# two pids, their resident sets and descriptors, and R1's table and ageing
+# pass.  "-" where a value could not be read, which the verdict counts.
+soak_sample() {
+	ss_row="$(date +%s),$1"
+	for ss_r in r1 r2; do
+		ss_p=$(soak_parent "$ss_r")
+		ss_c=$( [ -n "$ss_p" ] && soak_child "$ss_p" || true)
+		ss_row="$ss_row,${ss_p:--},${ss_c:--}"
+		ss_row="$ss_row,$( [ -n "$ss_p" ] && proc_rss "$ss_p" || echo -)"
+		ss_row="$ss_row,$( [ -n "$ss_c" ] && proc_rss "$ss_c" || echo -)"
+		ss_row="$ss_row,$( [ -n "$ss_p" ] && proc_nfds "$ss_p" || echo -)"
+		ss_row="$ss_row,$( [ -n "$ss_c" ] && proc_nfds "$ss_c" || echo -)"
+	done
+	ss_row="$ss_row,$(sg_entries r1),$(pimctl r1 -t show mrt 2>/dev/null | grep -c . || true)"
+	ss_row="$ss_row,$(ageing_usec r1),$(ageing_peak_usec r1)"
+	echo "$ss_row" >>"$SOAK_CSV"
+}
+
+# Column $2 of the CSV over the rows $3 to $4 (1-based, header excluded),
+# reduced by awk expression $1: "min" or "max"
+soak_col() {
+	awk -F, -v c="$2" -v a="$3" -v b="$4" -v op="$1" '
+		NR == 1 || NR - 1 < a || NR - 1 > b || $c == "-" { next }
+		{ v = $c + 0; if (!n++ || (op == "min" ? v < r : v > r)) r = v }
+		END { print n ? r : "-" }
+	' "$SOAK_CSV"
+}
+
+check_soak() {
+	SOAK_CSV=${SOAK_CSV:-$WORKDIR.soak.csv}
+
+	print "1. pimd is alive and the domain has converged"
+	for r in $ROUTERS; do
+		if wait_for "$PIMD_START_WAIT" pimd_is_up "$r"; then
+			ok "$r: pimd answers on its pimctl socket"
+		else
+			fail "$r: pimd not answering, see $WORKDIR/$r.log"
+		fi
+	done
+	if wait_for 90 has_rp r3 "224.0.0.0/4"; then
+		ok "r3 learned r1 as the RP, the members will have a tree to join"
+	else
+		fail "r3 never learned an RP, the churn would build nothing"
+		return 1
+	fi
+	[ "$FAILED" -eq 0 ] || return 1
+
+	sk_cycles=$((SOAK_SECONDS / SOAK_CYCLE))
+	[ "$sk_cycles" -ge 1 ] || sk_cycles=1
+	print "2. $sk_cycles cycles of ${SOAK_CYCLE}s, sampled into $SOAK_CSV"
+	echo "time,cycle,r1_pid,r1_child,r1_rss,r1_child_rss,r1_fds,r1_child_fds,r2_pid,r2_child,r2_rss,r2_child_rss,r2_fds,r2_child_fds,r1_sg,r1_mrt_lines,r1_ageing_usec,r1_ageing_peak_usec" \
+		>"$SOAK_CSV"
+	sk_r1_pid=$(soak_parent r1)
+	sk_r2_pid=$(soak_parent r2)
+	sk_dead=0
+	sk_nbr_lost=0
+	sk_built=0
+	sk_cycle=1
+	while [ "$sk_cycle" -le "$sk_cycles" ]; do
+		sk_began=$(date +%s)
+
+		# The reload and the kill go first, before anything is joined:
+		# killed after the leaves, R3 goes before its Prunes do, R2
+		# holds its Join state out to the holdtime, and the quiet
+		# sample of that cycle reads PIM working as written for a leak.
+		if [ $((sk_cycle % SOAK_RELOAD_EVERY)) -eq 0 ]; then
+			pimctl r2 restart >/dev/null 2>&1 || true
+		fi
+		if [ $((sk_cycle % SOAK_RESTART_EVERY)) -eq 0 ]; then
+			restart_pimd r3
+			wait_for 90 has_rp r3 "224.0.0.0/4" || true
+		fi
+
+		soak_members
+		box_run ed1 "$MFLOOD" "$SRC_ADDR" "$SOAK_GROUP" "$SOAK_GROUPS" "$SOAK_PPS" \
+			>/dev/null 2>&1 || true
+		# What the flood made, read at its height: the control that
+		# the quiet sample below is quiet because state went away,
+		# not because none was ever built
+		if wait_for 30 sg_entries_at_least r1 "$SOAK_GROUPS"; then
+			sk_built=$((sk_built + 1))
+		fi
+		sk_peak=$(sg_entries r1)
+		sleep "$SOAK_HOLD"
+		soak_members -L
+
+		sk_left=$((SOAK_CYCLE - ($(date +%s) - sk_began)))
+		[ "$sk_left" -le 0 ] || sleep "$sk_left"
+
+		for r in $ROUTERS; do
+			pimd_is_up "$r" || sk_dead=$((sk_dead + 1))
+		done
+		has_neighbor r1 10.0.12.2 || sk_nbr_lost=$((sk_nbr_lost + 1))
+		soak_sample "$sk_cycle"
+		dprint "cycle $sk_cycle/$sk_cycles: peak ${sk_peak:-?} (S,G), $(tail -1 "$SOAK_CSV")"
+		sk_cycle=$((sk_cycle + 1))
+	done
+
+	print "3. Nothing died, and nothing lost a neighbour"
+	if [ "$sk_dead" -eq 0 ]; then
+		ok "every pimd answered at every one of the $sk_cycles samples"
+	else
+		fail "$sk_dead time(s) a pimd did not answer at a sample, see $WORKDIR/*.log"
+	fi
+	if [ "$(soak_parent r1)" = "$sk_r1_pid" ] && [ "$(soak_parent r2)" = "$sk_r2_pid" ]; then
+		ok "r1 and r2 are the processes they started as, $sk_r1_pid and $sk_r2_pid"
+	else
+		fail "r1 or r2 is not the process it started as: a daemon was restarted under the run"
+	fi
+	if [ "$sk_nbr_lost" -eq 0 ]; then
+		ok "r1 held r2 as a neighbour at every sample, reloads of r2 among them"
+	else
+		fail "r1 had lost r2 at $sk_nbr_lost sample(s), a Hello timer that drifts or a reload that was not seamless"
+	fi
+
+	print "4. The table comes back to where it started, every cycle"
+	if [ "$sk_built" -eq "$sk_cycles" ]; then
+		ok "r1 held $SOAK_GROUPS (S,G) or more at the height of every cycle, the control"
+	else
+		fail "r1 reached $SOAK_GROUPS (S,G) in $sk_built of $sk_cycles cycles, so the churn did not happen"
+	fi
+	sk_sg_max=$(soak_col max 15 1 "$sk_cycles")
+	if [ "$sk_sg_max" != "-" ] && [ "$sk_sg_max" -le 10 ]; then
+		ok "and at most $sk_sg_max at every quiet point, the flood's entries all aged out"
+	else
+		fail "r1 held up to '$sk_sg_max' (S,G) at a quiet point, state the churn left behind"
+	fi
+	sk_peak_usec=$(soak_col max 18 1 "$sk_cycles")
+	if [ "$sk_peak_usec" != "-" ] && [ "$sk_peak_usec" -lt "$SOAK_AGEING_MAX_USEC" ]; then
+		ok "the longest ageing pass of the run took ${sk_peak_usec}us"
+	else
+		fail "an ageing pass took '${sk_peak_usec}'us, past the ${SOAK_AGEING_MAX_USEC}us bound"
+	fi
+
+	print "5. And no half of r1's or r2's pimd grew"
+	# The first third against the last: a leak is a floor that rises,
+	# so the smallest of the end has to stay within the slack of the
+	# largest of the start.  The first sample is left out, being the one
+	# where allocators and the pool of Join/Prune buffers warm up.
+	if [ "$sk_cycles" -lt 6 ]; then
+		skip "$sk_cycles cycles is too short to tell a leak from warming up, the numbers are in $SOAK_CSV"
+	else
+		sk_third=$((sk_cycles / 3))
+		for sk_col in 5:r1 6:r1_child 7:r1_fds 8:r1_child_fds 11:r2 12:r2_child 13:r2_fds 14:r2_child_fds; do
+			sk_c=${sk_col%%:*}
+			sk_n=${sk_col#*:}
+			sk_start=$(soak_col max "$sk_c" 2 $((sk_third + 1)))
+			sk_end=$(soak_col min "$sk_c" $((sk_cycles - sk_third + 1)) "$sk_cycles")
+			if [ "$sk_start" = "-" ] || [ "$sk_end" = "-" ]; then
+				skip "$sk_n: not sampled (no such process in this run)"
+				continue
+			fi
+			case $sk_n in
+			*fds) sk_slack=0 ;;
+			*)    sk_slack=$SOAK_RSS_SLACK_KB ;;
+			esac
+			if [ "$sk_end" -le $((sk_start + sk_slack)) ]; then
+				ok "$sk_n: $sk_start at the start, $sk_end at the end"
+			else
+				fail "$sk_n grew from $sk_start to $sk_end, past the slack of $sk_slack"
+			fi
+		done
+	fi
+
+	echo "soak samples kept in $SOAK_CSV"
 	result
 }
 

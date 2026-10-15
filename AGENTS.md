@@ -230,7 +230,7 @@ scenarios (`rpt`, `solo`, `keepalive`, `rp-lasthop`, `rp-offpath`, `gif-tunnel`,
 `shared-lan`, `shared-lan-spt`, `assert-recover`, `ssm`, `ssm-range`, `alias`, `altnet`, `ifnew`, `ifgone`,
 `renumber`, `rp-nbr-gone`, `register-filter`, `crafted`, `fuzz`, `static-rp`, `autorp`, `autorp-agent`,
 `autorp-listener`, `anycast`, `anycast-dr`, `igmp-compat`, `bsr-elect`, `passive`, `privsep`, `scale`,
-`jp-pack`, `mtrace`); see the script
+`jp-pack`, `mtrace`; `soak` only when named); see the script
 header for the topologies and which upstream issue each one pins down. `keepalive` is also the
 only one where a host floods a DR with groups, `local-sg-limit` capping the (S,G) state that makes
 (steps 5 and 6: the flood refused at the limit, and the count given back by a reload). `-s SLOT` (0-31) puts every
@@ -479,6 +479,18 @@ cost of a round trip was measured (see `check_data_from_source()`).  It
 bounds those numbers loosely and prints them, the way the coverage job reports
 rather than gates; the two entries of `doc/TODO.org` it answers carry the
 numbers and the date.
+`soak` is the other measurement, and the only scenario `run all` leaves out: an hour by default,
+`SOAK_SECONDS` for longer, on `scale`'s topology, in cycles of `SOAK_CYCLE` (300 s, longer than
+the 210 s an (S,G) takes to age) where ED2 joins and leaves 50 groups, ED1 makes R1 build and age
+out 1000 (S,G), R2 is reloaded every third cycle and R3's pimd killed and restarted every fifth,
+both before anything is joined so that their aftermath has settled by the sample.  Each cycle
+ends in a sample at the same quiet point -- pid, resident set and descriptors of both halves of
+R1's and R2's pimd, R1's (S,G) count, table and ageing pass -- into a CSV kept beside the work
+directory, and the verdict is that nothing died or restarted or lost a neighbour, the table was
+back to empty at every quiet point (with the peak of every cycle as its control), and no half
+grew from the first third of the run to the last, by 64K of memory or by one descriptor.  Its
+first hour found that every `pimctl` request left a descriptor open in the unprivileged half
+(`ipc_close()`, `d6b0073`), eight a cycle; the growth check needs six cycles and skips below them.
 `jp-pack` is the only one where pimd builds a Join/Prune larger than one message holds: ED1 joins (\*,G) at R1
 with 90 sources pruned off the shared tree in one message -- which is why `pimsend` takes 128 `-X` -- and R1's
 periodic Join(\*,G) has to carry the numerically smallest that fit, 63, with nothing of the group set after it

@@ -60,6 +60,9 @@ proc_root() { ${SUDO} readlink /proc/"$1"/root 2>/dev/null; }
 # Descriptors held, for comparing one moment against another.
 proc_nfds() { ${SUDO} ls /proc/"$1"/fd 2>/dev/null | wc -l | tr -d " "; }
 
+# Resident set in kilobytes, VmRSS of proc(5)
+proc_rss() { awk '/^VmRSS:/ { print $2 }' /proc/"$1"/status 2>/dev/null; }
+
 backend_check_req() {
 	[ "$NETLINK" = yes ] || \
 		die "pimd on Linux has no routing socket RPF backend, NETLINK=$NETLINK cannot be run"

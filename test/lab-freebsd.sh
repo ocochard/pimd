@@ -48,6 +48,7 @@
 #   proc_root PID                       the directory the kernel has as
 #                                       that process's root, "/" unchrooted
 #   proc_nfds PID                       how many descriptors it holds
+#   proc_rss PID                        its resident set, in kilobytes
 #   $LOOPBACK_IF                        the loopback interface's name
 #   $REGISTER_UPCALL                    what of a data Register the kernel
 #                                       hands pimd, "headers" or "whole"
@@ -101,6 +102,9 @@ proc_root() {
 # for its absolute value: the rows procstat prints include text, cwd, root
 # and jail, which are not descriptors but do not come and go either.
 proc_nfds() { ${SUDO} procstat -h -f "$1" 2>/dev/null | wc -l | tr -d " "; }
+
+# Resident set in kilobytes, which is what ps(1) reports rss in
+proc_rss() { ps -o rss= -p "$1" 2>/dev/null | tr -d " "; }
 
 # The ifconfig(8) group every interface this lab creates is put in, so a
 # human can find or destroy one lab's links and not another's.  The slot
