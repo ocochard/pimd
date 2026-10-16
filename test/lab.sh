@@ -8301,10 +8301,10 @@ craft_step_7() {
 		t1=$(log_since r2 "$m2" "Received PIM JOIN from $R1_UP_ADDR to group $SUPP_GROUP " | log_msec | head -1)
 		if [ -z "$t0" ]; then
 			fail "trial $i: r1 logged no Prune(*,$SUPP_GROUP) from $SUPP_ADDR, nothing to time the Join from"
-		elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
-			ok "trial $i: r1 overrode the Prune $((t1 - t0))ms after it, inside ${OVR_WINDOW}ms"
+		elif [ $(ms_since "$t0" "$t1") -le "$OVR_WINDOW" ]; then
+			ok "trial $i: r1 overrode the Prune $(ms_since "$t0" "$t1")ms after it, inside ${OVR_WINDOW}ms"
 		else
-			fail "trial $i: r1 overrode the Prune $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
+			fail "trial $i: r1 overrode the Prune $(ms_since "$t0" "$t1")ms after it, r2 waits ${OVR_WINDOW}ms"
 		fi
 		sleep 1
 	done
@@ -8336,10 +8336,10 @@ craft_step_7p() {
 		t1=$(log_since r2 "$m2" "Received PIM JOIN from $R1_UP_ADDR to group $SUPP_GROUP " | log_msec | head -1)
 		if [ -z "$t0" ]; then
 			fail "trial $i: r1 logged no Prune(*,$SUPP_GROUP) from $SUPP_ADDR, nothing to time the Join from"
-		elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
-			ok "trial $i: r1 overrode the Prune naming another RP $((t1 - t0))ms after it"
+		elif [ $(ms_since "$t0" "$t1") -le "$OVR_WINDOW" ]; then
+			ok "trial $i: r1 overrode the Prune naming another RP $(ms_since "$t0" "$t1")ms after it"
 		else
-			fail "trial $i: r1 overrode the Prune naming another RP $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
+			fail "trial $i: r1 overrode the Prune naming another RP $(ms_since "$t0" "$t1")ms after it, r2 waits ${OVR_WINDOW}ms"
 		fi
 		sleep 1
 	done
@@ -9752,7 +9752,7 @@ craft_step_9() {
 			fi
 			t0=$(log_since r1 "$m1" "Received PIM PRUNE from $SRC_ADDR to group $PP_GROUP " | log_msec | head -1)
 			t1=$(log_since r1 "$m1" ",$PP_GROUP) on ${EP}101b" | log_msec | head -1)
-			d=$((t1 - t0))
+			d=$(ms_since "$t0" "$t1")
 			if [ "$d" -ge $((PP_WINDOW - PP_EARLY)) ] && [ "$d" -le $((PP_WINDOW + PP_LATE)) ]; then
 				ok "trial $i: r1 let the interface go ${d}ms after the Prune, the interval is ${PP_WINDOW}ms"
 			else
@@ -9791,10 +9791,10 @@ craft_step_9b() {
 		else
 			t0=$(log_since r1 "$m1" "Received PIM PRUNE from $SRC_ADDR to group $ET_PP_GROUP " | log_msec | head -1)
 			t1=$(log_since r1 "$m1" "Send PruneEcho for ($RP_ADDR,$ET_PP_GROUP) on ${EP}101b" | log_msec | head -1)
-			if [ $((t1 - t0)) -lt $((ET_PP_OVERRIDE - PP_EARLY)) ]; then
-				fail "r1 let a held Join go $((t1 - t0))ms after the Prune, short of the ${ET_PP_OVERRIDE}ms advertised: the step proves nothing"
+			if [ $(ms_since "$t0" "$t1") -lt $((ET_PP_OVERRIDE - PP_EARLY)) ]; then
+				fail "r1 let a held Join go $(ms_since "$t0" "$t1")ms after the Prune, short of the ${ET_PP_OVERRIDE}ms advertised: the step proves nothing"
 			else
-				ok "r1 holds a pruned held Join $((t1 - t0))ms, the Override Interval advertised, the control"
+				ok "r1 holds a pruned held Join $(ms_since "$t0" "$t1")ms, the Override Interval advertised, the control"
 
 				m1=$(log_lines r1)
 				craft "$SRC_ADDR" join -u "$R1_LAN_ADDR" -g "$ET_PP_GROUP" -w -r "$RP_ADDR" -H 6
@@ -10008,10 +10008,10 @@ craft_step_13() {
 			t1=$(rpt_msg r2 "$m2" JOIN "$R1_UP_ADDR" "$RPT_GROUP" "$CRAFT_FAR_SRC" | log_msec | head -1)
 			if [ -z "$t0" ]; then
 				fail "trial $i: r1 logged no Prune(S,G,rpt) from $SUPP_ADDR, nothing to time the Join from"
-			elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
-				ok "trial $i: r1 overrode the Prune(S,G,rpt) $((t1 - t0))ms after it, inside ${OVR_WINDOW}ms"
+			elif [ $(ms_since "$t0" "$t1") -le "$OVR_WINDOW" ]; then
+				ok "trial $i: r1 overrode the Prune(S,G,rpt) $(ms_since "$t0" "$t1")ms after it, inside ${OVR_WINDOW}ms"
 			else
-				fail "trial $i: r1 overrode the Prune(S,G,rpt) $((t1 - t0))ms after it, r2 waits ${OVR_WINDOW}ms"
+				fail "trial $i: r1 overrode the Prune(S,G,rpt) $(ms_since "$t0" "$t1")ms after it, r2 waits ${OVR_WINDOW}ms"
 			fi
 			sleep 1
 		done
@@ -10100,10 +10100,10 @@ craft_step_13b() {
 				t1=$(wc_join r2 "$m2" "$R1_UP_ADDR" "$RPT_GROUP" "$RP_ADDR" | log_msec | head -1)
 				if [ -z "$t0" ]; then
 					fail "trial $i: r1 logged no Prune(S,G,rpt) from $SUPP_ADDR, nothing to time the Join from"
-				elif [ $((t1 - t0)) -le "$OVR_WINDOW" ]; then
-					ok "trial $i: at the limit r1 overrode with a Join(*,G) $((t1 - t0))ms after the Prune, inside ${OVR_WINDOW}ms"
+				elif [ $(ms_since "$t0" "$t1") -le "$OVR_WINDOW" ]; then
+					ok "trial $i: at the limit r1 overrode with a Join(*,G) $(ms_since "$t0" "$t1")ms after the Prune, inside ${OVR_WINDOW}ms"
 				else
-					fail "trial $i: at the limit r1's Join(*,G) came $((t1 - t0))ms after the Prune, r2 waits ${OVR_WINDOW}ms"
+					fail "trial $i: at the limit r1's Join(*,G) came $(ms_since "$t0" "$t1")ms after the Prune, r2 waits ${OVR_WINDOW}ms"
 				fi
 				sleep 1
 			done
@@ -11779,6 +11779,16 @@ log_msec() {
 	awk '{ split($2, t, "[:.]"); print ((t[1] * 60 + t[2]) * 60 + t[3]) * 1000 + t[4] }'
 }
 
+# Milliseconds from $1 to $2, two log_msec() times: a time of day starts
+# again at midnight, and a step that ran across it read its Prune as coming
+# a day after the Join it measured (-86379500ms, both CI runs of d18bc91).
+# Nothing here measures a day, so a negative difference is a wrap.
+ms_since() {
+	ms_d=$(($2 - $1))
+	[ "$ms_d" -ge 0 ] || ms_d=$((ms_d + 86400000))
+	echo "$ms_d"
+}
+
 # Milliseconds from router $1 meeting neighbour $3 to the next Hello it sent
 # on interface $4, counting log lines after the first $2.  Nothing, and
 # false, until it has sent one.
@@ -11786,7 +11796,10 @@ hello_answer() {
 	${SUDO} tail -n +$(($2 + 1)) "$WORKDIR/$1.log" 2>/dev/null | awk -v n="$3" -v i="$4" '
 		function msec(s, t) { split(s, t, "[:.]"); return ((t[1] * 60 + t[2]) * 60 + t[3]) * 1000 + t[4] }
 		/Received PIM HELLO from new neighbor/ && $NF == n { t0 = msec($2); next }
-		t0 != "" && /Sending PIM HELLO on / && $7 == i { print msec($2) - t0; found = 1; exit }
+		t0 != "" && /Sending PIM HELLO on / && $7 == i {
+			d = msec($2) - t0; if (d < 0) d += 86400000	# midnight, see ms_since()
+			print d; found = 1; exit
+		}
 		END { exit !found }
 	'
 }
