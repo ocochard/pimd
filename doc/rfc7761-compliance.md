@@ -1056,6 +1056,23 @@ interface is kept in joins(S,G), so an entry with no MFC programmed can hold
 it there.  *Test: none: `crafted` builds that Join and finds the kernel
 entry programmed within two seconds, the iif cleared with it.*
 
+M60, fixed: sec. 4.5.7 sends Prune(S,G) to RPF'(S,G) when JoinDesired(S,G)
+becomes false in the Joined state, with no exception for the RP.
+`join_or_prune()` (`src/pim_proto.c`) answered nothing for an (S,G) at the
+RP, citing the end of RFC 2362 sec. 3.3.2, which is about Register-Stops
+and says no such thing, so an RP that had joined toward a source and then
+lost its receivers left the source sent to it until the upstream's
+Expiry Timer ran out, 210 s at the default holdtime.  It showed on the
+Linux runner first, three times in `crafted` step 13e, because a Linux
+kernel forwards decapsulated Registers: a receiver's Prune(S,G,rpt) on a
+link with two neighbours forwards for the override interval in
+Prune-Pending, the RP's SPT-threshold poll counted those packets and joined,
+as it should, and never pruned once the window closed.  *Test: `crafted`
+step 13e in `test/lab.sh`: its premise waits for that transient Join to be
+withdrawn, and once the receiver leaves r2 has to prune the control group's
+source tree within 20 s (r1 held the Join for its holdtime before the fix,
+on FreeBSD as well).*
+
 M1 was the (S,G,rpt) state of sec. 4.5.3, 4.5.6 and 4.5.7, which pimd kept on
 the one (S,G) entry and its one `joined_oifs`/`pruned_oifs` pair.  A received
 Prune(S,G,rpt) went to the (S,G) machine and took a Join(S,G) another router

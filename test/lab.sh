@@ -10342,12 +10342,19 @@ craft_step_13e() {
 			"Received PIM_REGISTER_STOP from RP $RP_ADDR to $R1_LAN_ADDR for src = $SRC_ADDR and group = $CRAFT_KAT_GROUP" ||
 		   ! wait_for 20 register_oif_gone r1 "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
 			fail "r1 never registered ($SRC_ADDR,$CRAFT_KAT_GROUP) and was stopped, the step cannot be put"
-		elif sg_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
+		# Waited for rather than read once.  The receiver's link has two
+		# neighbours, so its Prune(S,G,rpt) waits out the override
+		# interval in Prune-Pending, which forwards (sec. 4.5.3); a
+		# Linux kernel forwards decapsulated Registers, so r2's
+		# SPT-threshold poll can count them in that window and join,
+		# as sec. 4.5.7 has it, and has to prune once the window shuts.
+		# It did not: join_or_prune() answered nothing for an (S,G) at
+		# the RP, and r1 held the Join for its holdtime (M60) -- three
+		# failures of this step on the Linux runner.
+		elif ! wait_for 15 sg_not_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_GROUP"; then
 			fail "r2 joined toward ED1 for $CRAFT_KAT_GROUP with no receiver for it, the step cannot be put"
-			# Seen on the Linux runner only, once, and the scenario's
-			# own log tails were twenty steps past it by the end: what
-			# r2 held for the group and what both routers said about
-			# it, while it is still there to read
+			# What r2 held for the group and what both routers said
+			# about it, while it is still there to read
 			dprint "--- r2: show mrt detail, $CRAFT_KAT_GROUP ---"
 			dprint "$(pimctl r2 show mrt detail 2>&1 | grep -A14 -F "$CRAFT_KAT_GROUP")"
 			dprint "--- r2.log, $CRAFT_KAT_GROUP ---"
@@ -10370,6 +10377,16 @@ craft_step_13e() {
 			craft_on r2 "$CRAFT_R2_DOWN_ADDR" prune -u "$CRAFT_R2_LINK23_ADDR" -g "$g" \
 				-w -r "$RP_ADDR"
 		done
+
+		# And the other way: with its receiver gone JoinDesired(S,G)
+		# turns false at the RP like anywhere, sec. 4.5.7, and r2 has
+		# to prune the source tree it joined for the control group.
+		# Before M60's fix r1 held the Join for its 210 s holdtime.
+		if wait_for 20 sg_not_joined_on r1 "${EP}112a" "$SRC_ADDR" "$CRAFT_KAT_CTL_GROUP"; then
+			ok "r2 prunes ED1 off for $CRAFT_KAT_CTL_GROUP once its receiver leaves"
+		else
+			fail "r1 still holds r2's Join for ($SRC_ADDR,$CRAFT_KAT_CTL_GROUP) 20s after the receiver left: the RP never pruned"
+		fi
 	fi
 
 	craft_on r2 "$CRAFT_R2_DOWN_ADDR" hello -H 0

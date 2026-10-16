@@ -39,6 +39,11 @@ issue of this repository is written out in full.
   DragonFly.
 
 ### Fixes
+- An RP that had joined toward a source and then lost its receivers sent
+  no Prune(S,G), so the source went on being forwarded to it until its
+  Join timed out, 210 seconds by default.  RFC 7761 sec. 4.5.7 makes no
+  exception for the RP; pimd did, after RFC 2362.  M60 of
+  `doc/rfc7761-compliance.md`.
 - When the unprivileged half of pimd died, the privileged parent exited
   with status 0 and logged nothing about it, so a crash -- or a `SIGSYS`
   from a system call the seccomp filter does not allow -- looked like a

@@ -2127,17 +2127,14 @@ int join_or_prune(mrtentry_t *mrtentry, pim_nbr_entry_t *upstream_router)
 		 * then pruned the source whose traffic it needs to get there,
 		 * and the two never resolved.
 		 */
-		if (!join_desired(mrtentry)) {
-		    if (mrtentry->group->active_rp_grp &&
-			i_am_rp(mrtentry->group->rpaddr)) {
-			/* (S,G) at the RP. Don't send Join/Prune
-			 * (see the end of Section 3.3.2)
-			 */
-			return PIM_ACTION_NOTHING;
-		    }
-
+		/* The RP is no exception: sec. 4.5.7 sends Prune(S,G) to
+		 * RPF'(S,G) when JoinDesired(S,G) becomes false, whoever the
+		 * router is.  pimd answered nothing at the RP, after RFC
+		 * 2362, so an RP that joined toward a source and then lost
+		 * its receivers had the source sent to it until its Join
+		 * timed out (M60). */
+		if (!join_desired(mrtentry))
 		    return PIM_ACTION_PRUNE;
-		}
 		else {
 		    return PIM_ACTION_JOIN;
 		}
