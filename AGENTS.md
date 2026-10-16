@@ -490,9 +490,14 @@ ends in a sample at the same quiet point -- pid, resident set and descriptors of
 R1's and R2's pimd, R1's (S,G) count, table and ageing pass -- into a CSV kept beside the work
 directory, and the verdict is that nothing died or restarted or lost a neighbour, the table was
 back to empty at every quiet point (with the peak of every cycle as its control), and no half
-grew from the first third of the run to the last, by 64K of memory or by one descriptor.  Its
-first hour found that every `pimctl` request left a descriptor open in the unprivileged half
-(`ipc_close()`, `d6b0073`), eight a cycle; the growth check needs six cycles and skips below them.
+held one more descriptor in the last third of the run than in the first.  Its first hour found
+that every `pimctl` request left a descriptor open in the unprivileged half (`ipc_close()`,
+`d6b0073`), eight a cycle; the check needs six cycles and skips below them.  Resident memory is
+printed and not judged: an eight hour run had the reloaded R2's unprivileged half grow 116K in
+steps on both systems, while Valgrind and LeakSanitizer over the same churn found nothing lost,
+so the number is the allocator's.  A leak verdict is theirs -- `SANITIZE=yes` with
+`SAN_ASAN_OPTIONS=detect_leaks=1` on Linux, where `check_sanitizer()` fails the run on a report,
+or `PIMD_SRC` at a tree whose `src/pimd` execs the real one under `valgrind --leak-check=full`.
 `jp-pack` is the only one where pimd builds a Join/Prune larger than one message holds: ED1 joins (\*,G) at R1
 with 90 sources pruned off the shared tree in one message -- which is why `pimsend` takes 128 `-X` -- and R1's
 periodic Join(\*,G) has to carry the numerically smallest that fit, 63, with nothing of the group set after it
