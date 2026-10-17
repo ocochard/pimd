@@ -1661,7 +1661,7 @@ int change_interfaces(mrtentry_t *mrt,
 	}
 
 	if (old_iif != new_iif) {
-	    if (mrt->source && new_iif == mrt->source->incoming) {
+	    if (new_iif == mrt->source->incoming) {
 		/* For example, if this was (S,G)RPbit with iif toward the RP,
 		 * and now switch to the Shortest Path.
 		 * The setup of MRTF_SPT flag must be
